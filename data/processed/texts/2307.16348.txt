@@ -1,0 +1,1177 @@
+Rating-Based Reinforcement Learning
+
+Devin White1, Mingkang Wu1, Ellen Novoseller2, Vernon J. Lawhern2, Nicholas Waytowich2,
+Yongcan Cao1
+
+1University of Texas, San Antonio
+2DEVCOM Army Research Laboratory
+
+arXiv:2307.16348v2 [cs.LG] 29 Jan 2024
+
+without directly handcrafting the reward. Existing work
+on reward learning includes inverse reinforcement learning
+(IRL) (Ziebart et al. 2008), preference-based reinforcement
+learning (PbRL) (Christiano et al. 2017), and the combina-
+tion of demonstrations and relative preferences, e.g. learning
+from preferences over demonstrations (Brown et al. 2019).
+Existing human-guided reward learning approaches have
+demonstrated effective performance in various tasks. How-
+ever, they suffer from some key limitations. For example,
+IRL requires expert demonstrations and hence, cannot be di-
+rectly applied to tasks that are difficult for humans to demon-
+strate. PbRL is a practical approach to learning rewards for
+RL, since it is straightforward for humans to provide accu-
+rate relative preference information. Yet, RL from pairwise
+preferences suffers from some key disadvantages. First, each
+pairwise preference provides only a single bit of informa-
+tion, which can result in sample inefficiency. In addition, due
+to their binary nature, standard preference queries do not in-
+dicate how much better or worse one sample is than another.
+Furthermore, because preference queries are relative, they
+cannot directly provide a global view of each sample’s abso-
+lute quality (good vs. bad); for instance, if all choices shown
+to the user are of poor quality, the user cannot say, “A is bet-
+ter than B, but they’re both bad!”. Thus, a PbRL algorithm
+may be more easily trapped in a local optimum, and cannot
+know to what extent its performance approaches the user’s
+goal. Finally, PbRL methods often require strict preferences,
+such that comparisons between similar-quality or incompa-
+rable trajectories cannot be used in reward learning. While
+some works use weak preference queries (Bıyık et al. 2020;
+Bıyık, Talati, and Sadigh 2022), in which the user can state
+that two choices are equally preferable, there is no way to
+specify the quality (good vs. poor) of such trajectories; thus,
+valuable information remains untapped.
+The objective of this paper is to design a new rating-
+based RL (RbRL) approach that infers reward functions
+via multi-class human ratings. RbRL differs from IRL and
+PbRL in that it leverages human ratings on individual sam-
+ples, whereas IRL uses demonstrations and PbRL uses rel-
+ative pairwise comparisons. In each query, RbRL displays
+one trajectory to a human and requests the human to pro-
+vide a discrete rating. The number of rating classes can be
+as low as two, e.g. “bad” and “good”, and can be as high
+as desired. For example, when the number of rating classes
+
+Abstract
+
+This paper develops a novel rating-based reinforcement learn-
+ing (RbRL) approach that uses human ratings to obtain hu-
+man guidance in reinforcement learning. Different from the
+existing preference-based and ranking-based reinforcement
+learning paradigms, based on human relative preferences over
+sample pairs, the proposed rating-based reinforcement learn-
+ing approach is based on human evaluation of individual tra-
+jectories without relative comparisons between sample pairs.
+The rating-based reinforcement learning approach builds on
+a new prediction model for human ratings and a novel multi-
+class loss function. We finally conduct several experimental
+studies based on synthetic ratings and real human ratings to
+evaluate the performance of the new rating-based reinforce-
+ment learning approach.
+
+Introduction
+With the development of deep neural network theory and
+improvements in computing hardware, deep reinforcement
+learning (RL) has become capable of handling complex
+tasks with large state and/or action spaces (e.g., Go and Atari
+games) and yielding human-level or better-than-human-
+level performance (Silver et al. 2016; Mnih et al. 2015).
+Numerous approaches, such as DQN (Mnih et al. 2015),
+DDPG (Lillicrap et al. 2015), PPO (Schulman et al. 2017),
+and SAC (Haarnoja et al. 2018) have been developed to ad-
+dress challenges such as stability, exploration, and conver-
+gence for various applications (Li 2019) such as robotic con-
+trol, autonomous driving, and gaming. Despite the important
+and fundamental advances behind these algorithms, one key
+obstacle for the wide application of deep RL is the required
+knowledge of a reward function, which is often unavailable
+in practical applications.
+Although human experts could design reward functions
+in some domains, the cost is high because human experts
+need to understand the relationship between the mission
+objective and state-action values and may need to spend
+extensive time adjusting reward parameters and trade-offs
+not to encounter adverse behaviors such as reward hack-
+ing (Amodei et al. 2016). Another approach is to uti-
+lize qualitative human inputs indirectly to learn a reward
+function, such that humans guide reward function design
+
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence ( All rights reserved.
+
+Problem Formulation
+We consider a Markov decision process without reward
+(MDP\R) augmented with ratings, which is a tuple of the
+form (S, A, T, ρ, γ, n). Here, S is the set of states, A is
+the set of possible actions, T : S × A × S →[0, 1] is a
+state transition probability function specifying the probabil-
+ity p(s′ | s, a) of reaching state s′ ∈S after taking action
+a in state s, ρ : S →[0, 1] specifies the initial state distri-
+bution, γ is a discount factor, and n is the number of rating
+classes. The learning agent interacts with the environment
+through rollout trajectories, where a length-k trajectory seg-
+ment takes the form (s1, a1, s2, a2, . . . , sk, ak). A policy π
+is a function that maps states to actions, such that π(a | s) is
+the probability of taking action a ∈A in state s ∈S.
+In traditional RL, the environment would receive a reward
+signal r : S × A →R, mapping state-action pairs to a nu-
+merical reward, such that at time-step t, the algorithm re-
+ceives a reward rt = r(st, at), where (st, at) is the state-
+action pair at time t. Accordingly, the standard RL prob-
+lem can be formulated as a search for the optimal policy
+π∗, where π∗= arg maxπ
+P∞
+t=0 E(st,at)∼ρπ
+h
+γtr(st, at)
+i
+,
+
+Related Work
+Inverse Reinforcement Learning (IRL) seeks to infer re-
+ward functions from demonstrations such that the learned
+reward functions generate behaviors that are similar to
+the demonstrations. Numerous IRL methods (Ng, Rus-
+sell et al. 2000), such as maximum entropy IRL (Ziebart
+et al. 2008; Wulfmeier, Ondruska, and Posner 2015), non-
+linear IRL (Finn, Levine, and Abbeel 2016), Bayesian
+IRL (Levine, Popovic, and Koltun 2011; Choi and Kim
+2011, 2012), adversarial IRL (Fu, Luo, and Levine 2018),
+and behavioral cloning IRL (Szot et al. 2022) have been de-
+veloped to infer reward functions. The need for demonstra-
+tions often makes these IRL methods costly, since human
+experts are needed to provide demonstrations.
+Instead of requiring human demonstrations, PbRL (Wirth
+et al. 2017; Christiano et al. 2017; Ibarz et al. 2018; Liang
+et al. 2022; Zhan, Tao, and Cao 2021; Xu et al. 2020; Lee,
+Smith, and Abbeel 2021; Park et al. 2022) leverages human
+pairwise preferences over trajectory pairs to learn reward
+functions. Querying humans for pairwise preferences rather
+than demonstrations can dramatically save human time. In
+addition, by leveraging techniques such as adversarial neu-
+ral networks (Zhan, Tao, and Cao 2021), additional human
+time can be saved by learning a well-performing model to
+predict human preference. Another benefit of PbRL is that
+humans can provide preferences with respect to uncertainty
+to promote exploration (Liang et al. 2022). Despite these
+benefits, PbRL can be ineffective, especially for complex
+environments, because pairwise preferences only provide
+
+at ∼π(·|st), and ρπ is the marginal state-action distribu-
+tion induced by the policy π. Note that standard RL assumes
+the availability of the reward function r. When such a re-
+ward function is unavailable, standard RL and its variants
+may not be used to derive control policies. Instead, we as-
+sume that the user can assign any given trajectory segment
+τ = (s1, a1, . . . , sk, ak) a rating in the set {0, 1, . . . , n −1}
+indicating the quality of that segment, where 0 is the lowest
+
+Rating-based Reinforcement Learning
+Different from the binary-class reward learning in Christiano
+et al. (2017) that utilizes relative human preferences between
+segment pairs, RbRL utilizes non-binary multi-class ratings
+for individual segments. We call this a multi-class reinforce-
+ment learning approach based on ratings.
+
+Qσ(i) =
+e−k( ˜
+R(σ)−¯
+Ri)( ˜
+R(σ)−¯
+Ri+1)
+Pn−1
+j=0 e−k( ˜
+R(σ)−¯
+Rj)( ˜
+R(σ)−¯
+Rj+1) ,
+(3)
+
+Modeling Reward and Return
+Our approach learns a reward model ˆr : S × A →R
+that predicts state-action rewards ˆr(s, a). We further de-
+fine ˆR(σ) := Pk
+t=1 γt−1ˆr(st, at) as the cumulative dis-
+counted reward, or the return, of length-k trajectory segment
+σ. Larger ˆR(σ) corresponds to a higher predicted human rat-
+ing for segment σ. Next, we define ˜R(σ) as a function map-
+ping a trajectory segment σ to an estimated total discounted
+reward, normalized to fall in the interval [0, 1] based on the
+dataset of rated trajectory segments X:
+
+where k is a hyperparameter modeling human label noisi-
+ness, and the denominator ensures that Pn−1
+i=0 Qσ(i) = 1,
+i.e. that the class probabilities sum to 1.
+To gain intuition for Equation (3), note that when ˜R(σ) ∈
+( ¯Ri, ¯Ri+1), such that the predicted return falls within rating
+class i’s predicted boundaries, then −( ˜R(σ) −¯Ri)( ˜R(σ) −
+¯Ri+1) ≥0 while −( ˜R(σ) −¯Rj)( ˜R(σ) −¯Rj+1) ≤0 for
+all j ̸= i. This means that Qσ(i) ≥Qσ(j), j ̸= i, so that
+the model assigns category i the highest class probability,
+as desired. Furthermore, we note that Qσ(i) is maximized
+when ˜R(σ) = 1
+
+2( ¯Ri + ¯Ri+1), such that the predicted return
+falls directly in the center of category i’s predicted range.
+As ˜R(σ) becomes increasingly further from 1
+
+˜R(σ) =
+ˆR(σ) −minσ′∈X ˆR(σ′)
+
+maxσ′∈X ˆR(σ′) −minσ′∈X ˆR(σ′)
+.
+(1)
+
+2( ¯Ri + ¯Ri+1),
+the modeled probability Qσ(i) of class i monotonically de-
+creases. These probability trends are illustrated in Figure 8
+in the Appendix. We next show how to compute the class
+boundaries ¯Ri, i = 1, . . . , n −1.
+
+Novel Rating-Based Cross-Entropy Loss Function
+To construct a new (cross-entropy) loss function that can
+take multi-class human ratings as the input, we need to es-
+timate the human’s rating class predictions. In addition, the
+range of the estimated rating class should belong to the in-
+terval [0, 1] for the cross-entropy computation. We here pro-
+pose a new multi-class cross-entropy loss given by:
+
+Modeling Boundaries between Rating Categories
+Next, we discuss how to model the boundaries between rat-
+ing categories, 0 =: ¯R0 ≤¯R1 ≤. . . ≤¯Rn := 1. This re-
+quires selecting the range, or the upper and lower bounds of
+˜R, corresponding to each rating class. We determine these
+boundary values based on the distribution of ˜R(σ) for the
+trajectory segments σ ∈X and the number of observed sam-
+ples in X from each rating class. We select the ¯Ri values
+such that the number of training data samples that the model
+assigns to each modeled rating class matches the number of
+samples in X that the human assigned to that rating class.
+Note that this does not require the predicted ratings based
+on ˜R(σ) to match the human ratings for σ in the training
+data X, but ensures that the proportions of segments in the
+training dataset X assigned to each rating class matches that
+in X. This matching in rating class proportions is desirable
+for learning an appropriate reward function based on hu-
+man preference, since different humans could give ratings in
+
+n−1
+X
+
+i=0
+µσ(i) log
+
+Qσ(i)
+
+!
+
+L(ˆr) = −
+X
+
+,
+(2)
+
+σ∈X
+
+where X is the collected dataset of user-labeled segments,
+µσ(i) is an indicator that equals 1 when the user assigns
+rating i to trajectory segment σ, and Qσ(i) ∈[0, 1] is the
+estimated probability that the human assigns the segment σ
+to the ith rating class. Next, we will model the probabilities
+Qσ(i) of the human choosing each rating class. Notably, we
+do this without comparing the segment σ to other segments.
+
+Modeling Human Rating Probabilities
+We next describe our model for Qσ(i) based on the normal-
+ized predicted returns ˜R(σ). To model the probability that σ
+
+900
+
+800
+
+700
+
+Mean Reward
+
+600
+
+500
+
+400
+
+¯Ri =
+˜Rkcum
+i−1 + ˜R1+kcum
+i−1
+2
+,
+i ∈{1, 2, . . . , n −1},
+(4)
+
+Preferences
+Ratings (n=2)
+Ratings (n=3)
+Ratings (n=4)
+Ratings (n=5)
+Ratings (n=6)
+
+300
+
+200
+
+where kcum
+i
+:= Pi
+j=0 kj is the total number of segments that
+the human assigned to any rating category j ≤i. When the
+user has not assigned any ratings within a particular cate-
+gory, i.e., ki = 0 for some i, then we define the upper bound
+for category i as ¯Rki+1 := ¯Rki.
+This definition guarantees that when all normalized re-
+turn predictions ˜R(σ), σ ∈X, are distinct, then our model
+places k0 segments within interval [ ¯R0, ¯R1), ki segments
+within each interval ( ¯Ri, ¯Ri+1) for 1 ≤i ≤n−2, and kn−1
+segments in ( ¯Rn−1, ¯Rn], and thus predicts that ki segments
+most likely have rating i.
+
+100
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+500
+
+400
+
+Mean Reward
+
+300
+
+200
+
+Preferences
+Ratings (n=2)
+Ratings (n=3)
+Ratings (n=4)
+Ratings (n=5)
+Ratings (n=6)
+
+Synthetic Experiments
+Setup
+We conduct synthetic experiments based on the setup in Lee
+et al. (2021) to evaluate RbRL relative to the PbRL base-
+line (Lee et al. 2021). The code can be found at
+//rb.gy/tdpc4y. The goal is to learn to perform a task by
+obtaining feedback from a teacher, in this case a synthetic
+human. For the PbRL baseline, we generate synthetic feed-
+back such that in each queried pair of segments, the seg-
+ment with the higher ground truth cumulative reward is pre-
+ferred. In contrast to the synthetic preferences between sam-
+ple pairs in Lee et al. (2021), RbRL was given synthetic rat-
+ings generated for individual samples, where these ratings
+were given by comparing the sample’s ground truth return to
+the ground truth rating class boundaries. For simplicity, we
+selected these ground truth rating class boundaries so that
+rating classes are evenly spaced in reward space.
+For the synthetic PbRL experiments, we selected pref-
+erence queries using the ensemble disagreement approach
+in Lee et al. (2021). We extend this method to select rat-
+ing queries for the synthetic RbRL experiments, designing
+an ensemble-based approach as in Lee et al. (2021) to se-
+lect trajectory segments for which to obtain synthetic rat-
+ings. First, we train a reward predictor ensemble and obtain
+the predicted reward for every candidate segment and en-
+semble member. We then select the segment with the largest
+standard deviation over the ensemble to receive a rating la-
+bel. We study the Walker and Quadruped tasks in Lee et al.
+(2021), with 1000 and 2000 synthetic queries, respectively.
+For all synthetic experiments, the reward network param-
+eters are optimized to minimize the cross entropy loss (2)
+
+100
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+Figure 1: Performance of RbRL in synthetic experiments for
+different n, compared to PbRL: mean reward ± standard er-
+ror over 10 runs for Walker (top) and Quadruped (bottom).
+
+Results
+
+Figure 1 shows the performance of RbRL for different num-
+bers of rating classes (i.e. values of n) and PbRL for two en-
+vironments from Lee et al. (2021): Walker and Quadruped.
+We observe that a higher number of rating classes yields bet-
+ter performance for Walker. In addition, RbRL with n = 5, 6
+outperforms PbRL. However, for Quadruped, while RbRL
+with n = 2, 3 still outperforms PbRL, a higher number of
+rating classes decreases performance; this decrease may be
+caused by the selection of rating class boundaries used to
+generate the synthetic feedback. The results indicate that
+RbRL is effective and can provide better performance than
+PbRL even if synthetic ratings feedback is generated using
+reward thresholds that are evenly distributed, without further
+optimization of their selection. We expect further optimiza-
+tion of the boundaries used to generate synthetic feedback
+to yield improved performance. For our experiments, we de-
+fined the rating boundaries by finding the maximum possible
+reward range for a segment and evenly dividing by the num-
+ber of rating classes.
+
+To evaluate the effectiveness of RbRL for non-expert users,
+we conducted an IRB-approved human user study. We con-
+ducted tests on 3 of the OpenAI Gym MuJoCo Environ-
+ments also used in Christiano et al. (2017): Swimmer, Hop-
+per and Cheetah. A total of 20 participants were recruited
+(7 for Cheetah, 7 for Swimmer, and 6 for Hopper). In our
+experiments, we provided a single 1 to 2 second long video
+segment to query users for each rating, while we provided
+pairs of 1 to 2 second videos to obtain human pairwise pref-
+erences. For Cheetah, the goal is to move the agent to the
+right as fast as possible; this is the same goal encoded in the
+default hand-crafted environment reward. Similarly, the goal
+for Swimmer matches that of the default hand-crafted envi-
+ronment reward. However, for Hopper, we instructed users
+to teach the agent to perform a backflip, which differs from
+the goal encoded by the default hand-crafted environment
+reward. We chose to study the back flip task to see how
+well RbRL can learn new behaviors for which a reward is
+unknown. Thus, the performance of Cheetah and Swimmer
+can be evaluated via the hand-crafted environment rewards,
+while the Hopper task cannot be evaluated via its hand-
+crafted environment reward. For Hopper, the performance
+of RbRL will be evaluated based on evaluating the agent’s
+behavior when running the learned policies from RbRL.
+During the user study, each participant performed two
+tests—one for RbRL and one for PbRL—in one of the three
+MuJoCo environments, both for n = 2 rating classes. To
+eliminate potential bias, we assigned each participant a ran-
+domized order in which to perform the PbRL and RbRL ex-
+periment runs. Because the participants had no prior knowl-
+edge of the MuJoCo environments tested, we provided sam-
+ple videos to show desired and undesired behaviors so that
+the participants could better understand the task. Upon re-
+quest, the participants could also conduct mock tests before
+we initiated human data collection. For each experiment run,
+the participant was given 30 minutes to give rating/prefer-
+ence labels. Once finished, the participant filled out a ques-
+tionnaire about the tested algorithm. The participant was
+then given a 10 minute break before conducting the second
+test and completing the questionnaire about the other algo-
+rithm. Afterwards, the participant completed a questionnaire
+comparing the two algorithms. The questionnaires can be
+found in the Appendix. Policy and reward learning occurred
+during the 30 minutes in which the user answered queries,
+and then continued after the human stepped away until code
+execution reached 4 million environment time-steps.
+
+Setup
+
+We conduct all human experiments by following a similar
+setup to Christiano et al. (2017). In particular, our tests were
+approved by the UTSA IRB Office, including proper steps
+to ensure privacy and informed consent of all participants.
+In particular, the goal is to learn to perform a given task
+by obtaining feedback from a teacher, in this case a human.
+Different from PbRL in Christiano et al. (2017), which asks
+humans to provide their preferences between sample pairs,
+typically in the form of short video segments, RbRL asks
+humans to evaluate individual samples, also in the form of
+short video segments, to provide their ratings, e.g., “segment
+performance is good” or “segment performance is bad”.
+For all human experiments, we trained a reward predictor
+by minimizing the cross entropy loss (2) based on the re-
+spective batch of data via the computation of (3). We used
+the same neural network structures for both the reward pre-
+dictor and control policy and the same hyperparameters as
+in Christiano et al. (2017).
+
+RbRL with Different Numbers of Rating Classes
+
+To evaluate the impact of the number of rating classes n
+on RbRL’s performance, we first conduct tests in which
+a human expert (an author on the study) provides ratings
+with n = 2, . . . , 8 in the Cheetah MuJoCo environment. In
+particular, three experiment runs were conducted for each
+n ∈{2, 3, . . . , 8}. Fig. 2 shows the performance of RbRL
+for each n. It can be observed that RbRL performs better for
+n ∈{3, 4, . . . , 7} than for n ∈{2, 8}, indicating that al-
+lowing more rating classes is typically beneficial. However,
+an overly large number of rating classes n will lead to dif-
+ficulties and inaccuracies in the human ratings, and hence
+n must be set to a reasonable value. Indeed, for smaller n,
+one can more intuitively assign physical meanings to each
+n, whereas for overly large n, it becomes difficult to assign
+such physical meanings, and hence it will be more challeng-
+ing for users to provide consistent ratings.
+
+3000
+
+2500
+
+Mean Reward
+
+2000
+
+1500
+
+Performance
+Figure 3 shows the performance of PbRL
+and RbRL across the seven participants for the Cheetah and
+Swimmer tasks. We see that RbRL performs similarly to or
+better than PbRL. In particular, RbRL can learn quickly in
+both cases, evidenced by the fast reward growth early dur-
+ing learning. Figure 3 additionally displays results when an
+expert (an author on the study) provided ratings and prefer-
+ences for Cheetah and Swimmer. For consistency, the same
+expert tested PbRL and RbRL in each environment. We ob-
+serve that for the expert trials, RbRL performs consistently
+better than PbRL given the same human time. These results
+
+1000
+
+500
+
+n = 2
+n = 3
+n = 4
+n = 5
+n = 6
+n = 7
+n = 8
+0
+
+Figure 2: RbRL performance for different n in a human ex-
+periment: performance in the Cheetah environment (mean ±
+standard error over 3 experiment runs).
+
+120
+
+100
+
+Mean Reward
+
+80
+
+60
+
+140
+
+40
+
+120
+
+20
+
+100
+
+Mean Reward
+
+Ratings (n=2)
+Preferences
+
+0
+
+80
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+60
+
+40
+
+Ratings (n=2)
+Preferences
+Expert Ratings (n=2)
+Expert Preferences
+
+12.5
+
+20
+
+10.0
+
+0
+
+7.5
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+Mean Reward
+
+5.0
+
+2.5
+
+20
+
+0.0
+
+15
+
+2.5
+
+Mean Reward
+
+Ratings (n=2)
+Preferences
+
+5.0
+
+10
+
+7.5
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+5
+
+0
+
+Figure 4: RbRL and PbRL performance for the top 3 (non-
+expert) user study participants: mean reward ± standard er-
+ror over the 3 experiment runs each for Cheetah (top) and
+Swimmer (bottom).
+
+Ratings (n=2)
+Preferences
+
+Expert Ratings (n=2)
+Expert Preferences
+
+5
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+Figure 3: Performance of RbRL and PbRL in the human user
+study: Cheetah (top) and Swimmer (bottom). For non-expert
+users, the plots show mean ± standard error over 7 users.
+The expert results are each over a single experiment run.
+
+of a desired backflip.
+
+User Questionnaire Results
+The previous results in this
+section focus on evaluating the performance of RbRL and
+PbRL via the ground-truth environment reward (Cheetah
+and Swimmer) and the learned behavior (Hopper). To un-
+derstand how the non-expert users view their experience of
+giving rating and preferences, we conduct a post-experiment
+user questionnaire, shown in the last section of the Ap-
+pendix. The questionnaire asked users for feedback about
+their experience supervising PbRL and RbRL and to com-
+pare PbRL and RbRL. Figure 5 displays the normalized sur-
+vey results from the 20 user study participants. In particu-
+lar, the top subfigure of Figure 5 shows the participants’ re-
+sponses with respect to their separate opinions about PbRL
+and RbRL. These responses suggest that PbRL is more de-
+manding and difficult than RbRL, leading users to feel more
+insecure and discouraged than when using RbRL. The bot-
+tom subfigure of Figure 5 shows the survey responses when
+users were asked to compare PbRL and RbRL; these results
+confirm the above findings and also show that users per-
+ceive themselves as completing the task more successfully
+when providing ratings (RbRL). One interesting observa-
+tion is that the participants prefer RbRL and PbRL equally,
+which differs from the other findings. However, one par-
+ticipant stated that he/she preferred PbRL because PbRL is
+more challenging, which is counter-intuitive. This suggests
+
+Although RbRL performs similarly to PbRL in the Chee-
+tah task, we observed that some participants performed very
+poorly in this environment, perhaps due to lack of under-
+standing of the task. In the Appendix, the raw data of all
+participants for Cheetah and Swimmer is provided to show
+performance under each individual participant’s guidance.
+From the individual results for Cheetah (RbRL), we can see
+that one of the trials performs very poorly (with the final re-
+ward less than −10). For all other tests, including both PbRL
+and RbRL, the final reward is in positive territory, usually
+more than 20. Hence, it may be more meaningful to evalu-
+ate the mean results for individuals who perform reasonably.
+Figure 4 shows the mean reward for the top 3 non-expert
+users at different iterations for Cheetah and Swimmer. It can
+be observed that RbRL consistently outperforms PbRL and
+learns the goal faster than PbRL.
+To compare PbRL and RbRL in the Hopper backflip task,
+we ran the learned policies for the 6 participants to gener-
+ate videos. Videos for the best learned policies from PbRL
+and RbRL can be found at rb.gy/nt1qm6, and indicate that
+(1) both RbRL and PbRL can learn the backflip, and (2) the
+backflip learned via RbRL fits better with our understanding
+
+421
+
+400
+
+Number of Queries
+
+350
+
+331
+
+292
+
+300
+
+261
+
+Frustration (RbRL)
+
+Frustration (PbRL)
+
+200
+
+153
+
+Difficulty (RbRL)
+
+100
+
+Difficulty (PbRL)
+
+Success (RbRL)
+
+0
+
+Cheetah
+Swimmer
+Hopper
+Total Queries
+
+Success (PbRL)
+
+Mental Demand
+
+(RbRL)
+
+Figure 6: Number of queries provided in 30 minutes in our
+human user study (mean ± standard error).
+
+Mental Demand
+
+(PbRL)
+
+Very Low
+Neutral
+Very High
+Response Value
+
+than preferences, especially when queries are not carefully
+selected. For environments with large state-action spaces,
+ratings can provide more value for reward learning. One lim-
+itation of ratings feedback is that the number of data samples
+in different rating classes can be very different, leading to
+imbalanced datasets. Reward learning in RbRL can be nega-
+tively impacted by this data imbalance issue (although our
+experiments still show the benefits of RbRL over PbRL).
+Hence, on-policy training with a large number of training
+steps may not help reward learning in RbRL because the
+collected human ratings data can become very unbalanced.
+We expect that addressing the data imbalance issue would
+further improve RbRL performance.
+One challenge for RbRL is that ratings may not be given
+consistently during learning, especially considering users’
+attention span and fatigue level over time. Future work in-
+cludes developing mechanisms to quantify users’ consis-
+tency levels, the impact of user inconsistency, or solutions
+to user inconsistency. Another potential limitation of RbRL
+is that it learns a less refined reward function than PbRL be-
+cause RbRL does not seek to distinguish between samples
+from the same rating class. Hence, future work could inte-
+grate RbRL and PbRL to create a multi-phase learning strat-
+egy, where RbRL provides fast initial global learning while
+PbRL further refines performance via local queries based on
+sample pairs.
+One open challenge is the lack of effective human in-
+terfaces in existing code bases. For example, in Lee et al.
+(2021), only synthetic human feedback is available. Al-
+though a human interface is available for the algorithm
+in Christiano et al. (2017), the use of Google cloud makes
+it difficult to set up and operate efficiently. One of our future
+goals is to address this challenge by developing an effec-
+tive human interface for reinforcement learning from human
+feedback, including preferences, ratings, and their variants.
+
+Preference
+
+Frustration
+
+Difficulty
+
+Success
+
+Mental Demand
+
+RbRL
+Neutral
+PbRL
+Response Value
+
+Figure 5: Participants’ responses to survey questions about
+RbRL and PbRL. The set of survey questions is detailed in
+the Appendix. The blue bar indicates the median and the
+edges depict the 1st quartile (left) and 3rd quartile (right).
+
+Human Time
+We also conducted a quantitative analy-
+sis of human time effectiveness when humans were asked
+to give ratings and preferences. Figure 6 shows the aver-
+age number of human queries provided in 30 minutes for
+Cheetah, Swimmer, Hopper, and for all three environments
+combined. It can be observed that the participants can pro-
+vide more ratings than pairwise preferences in all environ-
+ments, indicating that it is easier and more efficient to pro-
+vide ratings than to provide pairwise preferences. On aver-
+age, participants can provide approximately 14.03 ratings
+per minute, while they provide only 8.7 preferences per
+minute, which means that providing a preference requires
+62% more time than providing a rating. For Cheetah, provid-
+ing a preference requires 100%+ more time than providing
+a rating, which is mainly due to the need to compare video
+pairs that are very similar. For Swimmer and Hopper, the
+environments and goals are somewhat more complicated.
+Hence, providing ratings can be slightly more challenging,
+but is still easier than providing pairwise preferences.
+
+Acknowledgements
+
+The authors were supported in part by the Army Research
+Lab under grant W911NF2120232, Army Research Office
+under grant W911NF2110103, and Office of Naval Research
+under grant N000142212474. We thank Feng Tao, Van Ngo,
+Gabriella Forbis for their helpful feedback, code, and tests.
+
+Discussion and Open Challenges
+One key difference between PbRL and RbRL is the value of
+the acquired human data. Because ratings in RbRL are not
+relative, they have the potential to provide more global value
+
+Amodei, D.; Olah, C.; Steinhardt, J.; Christiano, P.; Schul-
+man, J.; and Man´e, D. 2016. Concrete problems in AI safety.
+arXiv preprint arXiv:1606.06565.
+
+Bıyık, E.; Losey, D. P.; Palan, M.; Landolfi, N. C.; Shevchuk,
+G.; and Sadigh, D. 2022. Learning reward functions from
+diverse sources of human feedback: Optimally integrating
+demonstrations and preferences. The International Journal
+of Robotics Research, 41(1): 45–67.
+
+Bıyık, E.; Palan, M.; Landolfi, N. C.; Losey, D. P.; Sadigh,
+D.; et al. 2020. Asking Easy Questions: A User-Friendly Ap-
+proach to Active Reward Learning. In Conference on Robot
+Learning, 1177–1190.
+
+Bıyık, E.; Talati, A.; and Sadigh, D. 2022. APReL: A library
+for active preference-based reward learning algorithms. In
+ACM/IEEE International Conference on Human-Robot In-
+teraction (HRI), 613–617.
+
+Brown, D.; Coleman, R.; Srinivasan, R.; and Niekum, S.
+2020. Safe imitation learning via fast Bayesian reward in-
+ference from preferences. In International Conference on
+Machine Learning, 1165–1177.
+
+Brown, D.; Goo, W.; Nagarajan, P.; and Niekum, S. 2019.
+Extrapolating beyond suboptimal demonstrations via inverse
+reinforcement learning from observations. In Proceedings
+of the International Conference on Machine Learning, 783–
+792.
+
+Brown, D. S.; Goo, W.; and Niekum, S. 2020. Better-than-
+demonstrator imitation learning via automatically-ranked
+demonstrations.
+In Conference on Robot Learning, 330–
+359.
+
+Celemin, C.; and Ruiz-del Solar, J. 2015. COACH: Learning
+continuous actions from corrective advice communicated by
+humans.
+In 2015 International Conference on Advanced
+Robotics (ICAR), 581–586.
+
+Choi, J.; and Kim, K.-E. 2011. MAP inference for Bayesian
+inverse reinforcement learning. Advances in Neural Infor-
+mation Processing Systems, 24.
+
+Choi, J.; and Kim, K.-E. 2012. Nonparametric Bayesian in-
+verse reinforcement learning for multiple reward functions.
+Advances in Neural Information Processing Systems, 25.
+
+Christiano, P. F.; Leike, J.; Brown, T.; Martic, M.; Legg, S.;
+and Amodei, D. 2017. Deep reinforcement learning from
+human preferences.
+Advances in neural information pro-
+cessing systems, 30.
+
+Ecoffet, A.; Huizinga, J.; Lehman, J.; Stanley, K. O.; and
+Clune, J. 2019.
+Go-explore: a new approach for hard-
+exploration problems. arXiv preprint arXiv:1901.10995.
+
+Finn, C.; Levine, S.; and Abbeel, P. 2016. Guided cost learn-
+ing: Deep inverse optimal control via policy optimization.
+In Proceedings of the International Conference on Machine
+Learning, 49–58.
+
+Fu, J.; Luo, K.; and Levine, S. 2018. Learning Robust Re-
+wards with Adverserial Inverse Reinforcement Learning. In
+International Conference on Learning Representations.
+
+Raw Data for Agent Performance from Individual Participants in the User Study
+Figure 7 displays the individual reward curves for non-expert users who participated in the human user study, for the Cheetah
+and Swimmer tasks.
+
+120
+
+140
+
+100
+
+120
+
+100
+
+80
+
+Mean Reward
+
+Mean Reward
+
+80
+
+60
+
+60
+
+40
+
+40
+
+20
+
+20
+
+0
+
+0
+
+20
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+(b) Individual results for Cheetah (RbRL with n = 2)
+
+(a) Individual results for Cheetah (PbRL)
+
+20
+
+15
+
+15
+
+10
+
+Mean Reward
+
+10
+
+Mean Reward
+
+5
+
+5
+
+0
+
+0
+
+5
+
+5
+
+10
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+0
+800k
+1.6e6
+2.4e6
+3.2e6
+4e6
+Timesteps
+
+(d) Individual results for Swimmer (RbRL with n = 2)
+
+(c) Individual results for Swimmer (PbRL)
+
+Figure 7: Results of individual runs in the human user study for the Cheetah and Swimmer environments (7 users in each case).
+
+Class i = 0
+Class i = 1
+Class i = 2
+
+Class i = 3
+Class i = 4
+
+0.8
+
+Class probability Q (i)
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+R0 = 0
+R1 = 0.2
+R2 = 0.4
+R3 = 0.6
+R4 = 0.8
+R5 = 1
+
+Normalized reward R( )
+
+Figure 8: RbRL’s modeled class probabilities Qσ(i). This figure illustrates Equation (3), evaluated with n = 5 classes, k =
+30, and the rating category separation parameters hard-coded at {0, 0.2, 0.4, 0.6, 0.8, 1}. We can see that the probability of
+belonging to a class i is maximized when the normalized return ˜R(σ) is halfway between ¯Ri and ¯Ri+1, and decreases as ˜R(σ)
+moves further from this point.
+
+Questionnaire
+The three-part questionnaire given to the user study participants appears next.
+
+User Study Questionnaire
+
+Instructions: Mark the bin best reflecting your response when instructed to do so.
+
+
+
+Rating-based feedback:
+
+1. How mentally demanding was the task?
+
+Very low Neutral Very high
+
+2. How successful were you in accomplishing what you were asked to do?
+
+Very low Neutral Very high
+
+3. How hard did you have to work to accomplish your level of performance?
+
+Very low Neutral Very high
+
+4. How insecure, discouraged, irritated, stressed, and annoyed were you?
+
+Very low Neutral Very high
+
+User Study Questionnaire
+
+Instructions: Mark the bin best reflecting your response when instructed to do so.
+
+
+
+Preference-based feedback:
+
+1. How mentally demanding was the task?
+
+Very low Neutral Very high
+
+2. How successful were you in accomplishing what you were asked to do?
+
+Very low Neutral Very high
+
+3. How hard did you have to work to accomplish your level of performance?
+
+Very low Neutral Very high
+
+4. How insecure, discouraged, irritated, stressed, and annoyed were you?
+
+Very low Neutral Very high
+
+User Study Questionnaire
+
+Instructions: Mark the bin best reflecting your response when instructed to do so.
+
+
+Comparison of preference-based and ratings-based feedback:
+
+1. Which was more mentally demanding?
+
+Ratings Neutral Preferences
+
+2. With which were you able to better accomplish the task?
+
+Ratings Neutral Preferences
+
+3. With which was it more difficult to accomplish the task?
+
+Ratings Neutral Preferences
+
+4. Which caused you to be more insecure, discouraged, irritated, stressed, and annoyed?
+
+Ratings Neutral Preferences
+
+5. Which did you like more?
+
+Ratings Neutral Preferences

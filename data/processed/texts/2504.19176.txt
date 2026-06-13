@@ -1,0 +1,3436 @@
+Newton-Puiseux Analysis for Interpretability and
+Calibration of Complex-Valued Neural Networks
+
+Piotr Migus
+
+Abstract
+
+arXiv:2504.19176v2 [cs.LG] 13 Oct 2025
+
+Complex-valued neural networks (CVNNs) are particularly suitable for handling
+phase-sensitive signals, including electrocardiography (ECG), radar/sonar, and wireless
+in-phase/quadrature (I/Q) streams. Nevertheless, their interpretability and probability
+calibration remain insufficiently investigated. In this work, we present a Newton–Puiseux
+framework that examines the local decision geometry of a trained CVNN by (i) fitting a
+small, kink-aware polynomial surrogate to the logit difference in the vicinity of uncertain
+inputs, and (ii) factorizing this surrogate using Newton–Puiseux expansions to derive
+analytic branch descriptors, including exponents, multiplicities, and orientations. These
+descriptors provide phase-aligned directions that induce class flips in the original network
+and allow for a straightforward, multiplicity-guided temperature adjustment for improved
+calibration. We outline assumptions and diagnostic measures under which the surrogate
+proves informative and characterize potential failure modes arising from piecewise-
+holomorphic activations (e.g., modReLU). Our phase-aware analysis identifies sensitive
+directions and enhances Expected Calibration Error in two case studies beyond a
+controlled C2 synthetic benchmark—namely, the MIT–BIH arrhythmia (ECG) dataset
+and RadioML 2016.10a (wireless modulation)—when compared to uncalibrated softmax
+and standard post-hoc baselines. We also present confidence intervals, non-parametric
+tests, and quantify sensitivity to inaccuracies in estimating branch multiplicity. Crucially,
+this method requires no modifications to the architecture and applies to any CVNN with
+complex logits transformed to real moduli.
+
+Keywords: Complex-valued neural networks ; Interpretability ; Newton–Puiseux analysis ;
+Explainable AI (XAI) ; Uncertainty quantification ; Probability calibration ; ECG arrhythmia
+detection ; RadioML
+
+1
+Introduction
+
+Deep learning serves as the foundation for contemporary pattern recognition across various
+domains, including vision, language, and biomedical signals [1]. While the majority of archi-
+tectures are real-valued, there is a growing argument that complex-valued neural networks
+(CVNN) present a more fitting inductive bias when phase is of significance (e.g., radar/sonar,
+Short-Time Fourier Transform (STFT)-based audio, magnetic resonance imaging (MRI), elec-
+troencephalography (EEG)/electrocardiography (ECG), coherent optics, wireless, and quantum
+machine learning). By modeling amplitude and phase, CVNNs honor rotational symme-
+tries and utilize Wirtinger calculus, enabling gradient-based optimization with advantageous
+landscapes [2–5].
+
+Why Newton–Puiseux beyond attribution
+Attributions (saliency/LIME/SHAP) pro-
+vide descriptive insights but do not offer an actionable direction that can be proven to cross
+the decision boundary, nor do they assess how quickly higher-order terms will dominate. Our
+Newton–Puiseux analysis addresses this gap: (i) a local polynomial approximation of the logit
+difference presents analytic branch descriptors (exponents, multiplicities, orientations); (ii)
+these descriptors generate phase-aligned rays that can change the class on the original network
+within a small radius around most uncertain anchors; and (iii) the same multiplicity signal
+informs a phase-aware temperature that minimizes Expected Calibration Error (ECE). We
+ensure that the surrogate remains compact and well-conditioned (with degree d≤4, kink-aware
+filtering, and column scaling) and consistently validate the Newton–Puiseux predictions on the
+original network through a radial sweep; potential failure modes and safeguards are detailed
+in C.
+Contributions.
+
+1. Local surrogate of decision geometry. We create a robust, kink-aware bivariate
+polynomial surrogate of the logit difference f : C2 →R around an uncertain input and
+factor it to extract Puiseux branches (exponents, multiplicities, orientations). The fitting
+process specifically manages neighborhoods with modReLU/zReLU through outlier
+rejection and distance weighting.
+
+2. Phase-aware robustness descriptors. The coefficients from the Puiseux series
+provide closed-form, phase-aligned curvature indicators that forecast adversarial flip
+radii and pinpoint fragile directions in C2—information that is not accessible through
+gradients, LIME, or SHAP.
+
+3. Branch-guided calibration. We introduce phase-aware temperature scaling where
+the estimated branch multiplicity influences the effective temperature. This approach
+
+4. Generality across domains. In addition to a controlled synthetic C2 benchmark, we
+assess performance on MIT–BIH arrhythmia (ECG) and RadioML 2016.10a (RadioML)
+[15] for modulation recognition.
+The same C2 pipeline is applicable without any
+architectural modifications, suggesting broader transferability beyond biomedicine.
+
+5. Design guidance and ablations. We provide: (a) an analysis of the sensitivity
+of uncertainty mining to (τ, δ) (anchor counts, dispersion, explanatory value), (b) a
+resource benchmark comparing the per-anchor wall-clock and memory usage of Puiseux
+analysis against gradient saliency, and (c) insights into how calibration is sensitive to
+fractional mis-estimation of branch multiplicity.
+
+Scope and assumptions. Our analysis specifically targets local decision geometry in
+C2. We do not assume global holomorphicity; instead, we quantify how frequently uncertain
+anchors fall into nonholomorphic regions caused by piecewise activations, reporting the effects
+on surrogate fitting and bias.
+Roadmap. Section 2 reviews relevant literature. Section 3 establishes notation and
+calibration preliminaries. Section 4 describes the surrogate and the Newton–Puiseux solver in
+detail. Section 5 outlines the assumptions, bounds, and failure modes. Section 6 discusses
+datasets, models, calibration baselines, and anchor selection. Results for MIT–BIH are covered
+in Section 7, with ablation studies in Section 8 and direct comparisons (including statistical
+tests) in Section 9. Findings and analyses for RadioML are presented in Sections 10 through 11.
+Section 12 addresses generalization and limitations, while Section 13 provides a summary. A
+synthetic sanity check is located in A; additional algorithmic, implementation, computational,
+sensitivity, calibration reporting, and dataset/model specifics can be found in B through J.
+
+Reproducibility
+All source code, pre-trained weights, and reproduction scripts are publicly
+accessible at
+
+2
+Related Work
+
+We examine four key areas: (i) architectures and training methodologies for CVNNs, (ii) inter-
+pretability approaches for complex-domain models, (iii) methods for probability calibration,
+and (iv) algebraic–geometric analyses of learning systems. We emphasize recent advancements
+and highlight the gaps that our method aims to fill.
+
+2.1
+Architectures and training for CVNNs
+
+Early studies established the theoretical foundation for holomorphic activations and Wirtinger–
+gradient learning in C [3, 4, 16–18]. The development of practical deep training was facilitated
+by activation functions like zReLU and modReLU, which address the issue of vanishing
+gradients while maintaining phase information [19]. The resurgence of deep learning led to
+the introduction of systematic complex architectures, including Complex CNNs that utilize
+appropriate normalization and initialization techniques [2] as well as unitary/complex recurrent
+models [20].
+
+2.2
+Interpretability for complex-domain networks
+
+Mainstream explainable Artificial Intelligence (XAI) methods (such as saliency, LRP, LIME,
+and SHAP [29, 30]) have been designed for real activations, often reducing complex activations
+to magnitudes or real–imaginary components [6, 7]. For complex-domain vision tasks, saliency
+modeling has also been studied with deep complex networks in transformed domains [31]. In
+safety–critical contexts, the essential criteria extend beyond merely achieving accuracy to
+include interpretability and probability calibration [32, 33]. A recent advancement towards
+complex-native explanations is DeepCShap, which adapts SHAP for complex-valued features
+and networks [34]. In the realm of phase-aware signal processing (such as in speech enhance-
+ment), efforts have been made to partially reclaim lost phase information [35]. Nevertheless,
+existing complex-domain XAI and calibration techniques typically inherit assumptions rooted
+in real values—examples include temperature scaling, isotonic regression, and Bayesian binning
+[8]—which treat each class score as if it were single-valued. However, these methods still
+regard each score as single-valued and fail to reveal the branching of decision surfaces in C2.
+Gap. We propose to provide analytic, phase-aware descriptors through Newton–Puiseux
+factorization of a local surrogate model, effectively capturing the multi-sheeted behavior that
+gradient-based techniques, LIME, and SHAP do not account for.
+
+2.3
+Confidence calibration (notes for CVNNs)
+
+The topic of calibration has garnered renewed focus, highlighted by recent surveys and
+extensive benchmarks of post-hoc methods (such as temperature/vector scaling, Dirich-
+let/Beta calibration, isotonic/spline families) [33, 36–39]. While these developments are
+mostly architecture-agnostic, there is limited understanding of how complex-phase geometry
+(e.g., branch multiplicity) influences calibration in CVNNs. Additionally, we evaluate the
+robustness of these calibration improvements with respect to unitary re-parameterizations of
+
+2.4
+Algebraic/tropical analyses and singular learning theory
+
+There is an ongoing discussion regarding the application of algebraic and tropical geometry
+to analyze decision regions and piecewise-linear abstractions [43, 44], which includes recent
+tutorials on machine learning and optimization [13, 45]. A broader strand connects algebraic
+geometry and modern ML more directly, from expository bridges to concrete applications [46–
+48]. Concurrently, singular learning theory is advancing PAC–Bayesian and asymptotic tools
+designed for models characterized by singular parameterizations [14, 49, 50]. Our contribution
+is not simply a novel Newton–Puiseux theorem; it marks the first application of this theorem
+to derive local analytic descriptors of intricate decision geometry, which directly relate to
+robustness radii and phase-aware calibration—an aspect not addressed by tropical analyses or
+singular learning theory.
+Positioning. To the best of our knowledge, the Newton–Puiseux decompositions have yet
+to be utilized for deriving local, analytic descriptors of complex decision geometry in learned
+classifiers. Our framework enhances tropical and singular analyses through (i) the fitting of
+a locally polynomial surrogate that accounts for kinks, and (ii) the extraction of Puiseux
+branches that provide insights into robustness directions and calibration.
+
+3
+Notation and Problem Setup
+
+Complex domain and input layout
+Write z = (z1, . . . , zD) ∈CD with zj = xj + i yj,
+xj, yj ∈R. We can equivalently represent CD ∼= R2D following the block convention
+
+[Re1, . . . , ReD | Im1, . . . , ImD] ∈R2D,
+
+where each pair (Rej, Imj) corresponds to a single complex coordinate zj. In all experiments,
+we set D = 2, meaning z = (z1, z2) ∈C2.
+
+Complex-valued neural network (CVNN)
+Let g : R2D →R2K represent a CVNN, where
+outputs consist of real and imaginary components concatenated as g(z) = (u1, v1, . . . , uK, vK),
+resulting in complex scores ck = uk + i vk. The real logits are defined as the magnitudes of
+these complex scores,
+ℓk(z) = |ck(z)| =
+p
+
+uk(z)2 + vk(z)2 + ε,
+(1)
+
+with a numerical stabilizer ε > 0 (we utilize ε = 10−9). The class probabilities are determined
+using a softmax function with an optional temperature T > 0:
+
+K
+X
+
+pk(z; T) =
+exp(ℓk(z)/T)
+PK
+j=1 exp(ℓj(z)/T)
+,
+
+k=1
+pk = 1.
+(2)
+
+We exclusively use the symbol T for the softmax temperature throughout this document.
+
+In our subsequent analysis, we reserve
+
+f(z) = ℓ1(z) −ℓ2(z),
+f : CD →R,
+(4)
+
+for the logit difference. Since p1(z; T) is a monotonic function of f(z)/T, the zero level set
+f(z) = 0 coincides with the binary decision boundary defined as
+
+B =
+
+z ∈CD : f(z) = 0
+
+.
+(5)
+
+For scenarios where K > 2, we utilize the top-2 variant f(z) = ℓ(1)(z) −ℓ(2)(z); while our
+experiments focus on binary classification, we include this extension for thoroughness.
+
+Expected calibration error
+Given B confidence bins denoted as B1, . . . , BB with respec-
+tive sizes |Bb|, the expected calibration error is calculated as
+
+B
+X
+
+|Bb|
+
+acc(Bb) −conf(Bb)
+,
+
+ECE =
+
+n
+
+b=1
+
+where acc and conf represent the empirical accuracy and average confidence in bin b. Our
+probability and loss notation follows standard pattern-recognition conventions [51].
+
+Uncertain inputs (anchor selection)
+We mine anchors from the union of two standard
+uncertainty tests:
+
+Uprob =
+
+z : max
+k
+pk(z; T) < τ
+
+,
+τ ∈(0, 1),
+(6)
+
+Umargin =
+
+z : m(z) < δ
+
+,
+δ ∈(0, 1).
+(7)
+
+We set U⋆:= Uprob ∪Umargin. Candidate anchors z⋆∈U⋆are selected for local analysis and
+postprocessing. When a post-hoc calibrator is developed using validation data (MIT–BIH:
+temperature or isotonic; RadioML: Platt or isotonic), the calibrated validation probabilities
+guide the selection of (τ, δ), and the same calibrator is subsequently applied unchanged to the
+test set to ensure fair selection and evaluation (refer to C).
+
+Local neighborhood and surrogate coordinates
+Fix an anchor z⋆= (z⋆
+1, z⋆
+2) ∈C2 and
+
+B∆(z⋆) := {z ∈C2 : ∥z −z⋆∥∞≤∆} ∼= [−∆, ∆]4 ⊂R4.
+
+We recenter the variables and denote (ξ, η) = (z1 −z⋆
+1, z2 −z⋆
+2) ∈C2 (resulting in four real
+coordinates in R4).
+
+Local surrogate (overview)
+We approximate f in B∆(z⋆) using a degree-d bivariate
+polynomial given by
+bfd(ξ, η) =
+X
+
+i+j≤d
+cij ξiηj,
+bfd(0, 0) = 0.
+(8)
+
+This polynomial is fitted via weighted least squares on N random perturbations within
+the range [−∆, ∆]4. To highlight the non-linear structure that is significant for branching, we
+
+Branch (singular) points and Wirtinger notation
+Utilizing the Wirtinger operators
+∂z = 1
+
+2(∂x −i ∂y), ∂¯z = 1
+
+2(∂x + i ∂y) component-wise for each complex coordinate, we define a
+point z⋆∈B as singular if f(z⋆) = 0 and both ∂zf(z⋆) = 0 and ∂¯zf(z⋆) = 0 hold true (noting
+that our function f is real-valued as a result of moduli) [18, 52]. In the vicinity of such points,
+the zero-set of bfd may split into multiple Puiseux branches; this scenario is addressed in the
+Newton–Puiseux stage (see Section 4).
+
+4
+Method
+
+We investigate the local decision geometry of the logit difference f(z) = ℓ1(z) −ℓ2(z) (refer
+to (4)) in C2 around an uncertain input z⋆. Our methodology comprises two interconnected
+stages: (i) the creation of a robust polynomial surrogate bfd fitted within a small neighborhood
+B∆(z⋆), and (ii) a Newton–Puiseux factorization of bfd = 0 that reveals branch exponents,
+multiplicities, and orientations. From this analysis, we derive (a) phase-aware robustness
+directions and (b) a multiplicity-guided temperature scaling rule for calibration.
+
+4.1
+Local polynomial surrogate in C2
+
+With a determined anchor z⋆= (x⋆, y⋆) ∈C2, we transition to local coordinates (ξ, η) =
+(x −x⋆, y −y⋆) and estimate the logit difference using a low-degree bivariate polynomial
+expressed as
+bfd(ξ, η) =
+X
+
+i+j≤d
+cij ξiηj,
+bfd(0, 0) = 0.
+
+(see also (8) for the overview definition). To better capture the non-linear geometry pertinent
+to branching, we exclude constant and linear terms (removing all monomials with i+j < 2),
+fit bfd on random perturbations originating from a compact hypercube around the anchor,
+and reduce emphasis on samples that are distant or located near piecewise-holomorphic kinks
+(e.g., modReLU/zReLU sectors). Fidelity on held-out perturbations is assessed via metrics
+such as RMSE, MAE, Pearson ρ, and sign agreement (SA); low fidelity prompts a reduction
+in the neighborhood size and/or a decrease in the polynomial degree.
+Unless otherwise indicated, we typically employ small neighborhoods and low polynomial
+degrees (usually d=4) to ensure a well-conditioned design matrix while adequately capturing
+curvature and branching characteristics. As outlined in our released code, the specific processes
+for sampling, weighting, kink management, and numerical safeguards (including scaling, ridge,
+and rank checks) are detailed in C (“Implementation details and controls”).
+
+4.2
+Newton–Puiseux factorization and descriptors
+
+We apply a Newton–Puiseux decomposition to factor the surrogate equation bfd(ξ, η) = 0.
+Each compact edge of the Newton polygon defines quasi-homogeneous factors, the univariate
+
+4.3
+Phase-aware temperature scaling guided by multiplicity
+
+Let m represent the estimated branch multiplicity at an anchor, which is the sum of the
+multiplicities of branches that locally intersect the decision sheet. From the surrogate model,
+we derive a phase-aware temperature as follows:
+
+T ′(m) = Tbase · m−γ,
+γ ∈[0, 1],
+default γ = 1
+
+2,
+(9)
+
+Here, Tbase refers to the global temperature (or 1 if it is absent). The intuition behind this is
+that a larger m signifies sharper confidence discontinuities; thus, a lower effective T ′ adjusts the
+logits to soften these discontinuities. In Sections 9 and 11, we present calibration metrics such
+as expected calibration error (ECE), negative log likelihood (NLL), Brier score, and confidence
+intervals. To examine robustness against surrogate noise, we explore relative mis-estimation
+as mest = (1 + ε) mtrue and apply the resulting multiplier Tmult = (mtrue/mest)γ = (1 + ε)−γ
+
+(with the default γ = 1
+
+2); the results of this exploration are included in our ablations.
+
+Rationale for multiplicity as an indicator of calibration
+An increased branch mul-
+tiplicity results in a steeper local profile of the logit difference surface. By decreasing the
+effective temperature according to m−γ, we counterbalance this steepness, thereby softening
+the class likelihoods precisely in regions where multi-sheeted behavior would typically lead
+to inflated confidence levels. We quantify this effect in our fixed-encoder MIT–BIH study,
+detailed in Section 9.
+
+4.4
+Transitioning from descriptors to robustness directions
+
+The principal Puiseux terms delineate phase-aligned directions where the sign of bfd changes
+most rapidly. We identify candidate directions by examining the phase indicated by the
+dominant coefficients, then validate these directions on the original network by traversing
+along rays from the anchor and documenting the smallest radius that leads to a change in
+the predicted class. This generates robustness curves and flip radii per anchor, which can be
+compared with gradient-based benchmarks. The exact probing protocol, along with default
+radii and step counts, is specified in C.
+
+4.5
+Practical control parameters (design choices)
+
+To achieve a balance between conditioning and geometric fidelity, we maintain small neigh-
+borhoods, low degrees, and moderate sample counts (typical values include d=4, ∆≈0.05,
+and hundreds of perturbations). Kink-aware filtering is employed to prevent the mixing
+of holomorphic sheets near modReLU/zReLU transitions, while light ridge regularization
+is utilized to stabilize the fitting process when necessary. A comprehensive list of default
+parameters as implemented in the released code, along with guidance for tuning, can be found
+in C, Table 16.
+
+We formalize the conditions under which a local polynomial surrogate provides meaningful
+information, how Newton–Puiseux descriptors constrain curvature and the emergence of
+higher-order dominance, and how piecewise-holomorphic activations lead to identifiable failure
+modes. Throughout this section, we denote f(z) = ℓ1(z) −ℓ2(z) as the logit difference (refer
+to Section 3). Anchors are derived using the union rule as described in Section 6.4; the
+surrogate bfd is fitted with constant and linear terms excluded (all monomials where i+j < 2
+are fixed to zero) using weighted least squares, while applying a small Tikhonov regularization
+term [53–55]. The diagnostics and numerical safeguards align with C and the released code.
+
+5.1
+Conditions for Informative Local Surrogates
+
+We operate in C2 ∼=R4 using local coordinates (ξ, η) centered around an anchor z⋆; we denote
+the Euclidean norm on R4 as ∥· ∥and defineQ∆= {(ξ, η) : ∥(ξ, η)∥∞≤∆}.
+
+Local regularity (away from kinks)
+We assume that within Q∆outside of a narrow kink
+bandKε (which is defined below), the logit difference f satisfies two conditions: (i) it is locally
+Lipschitz with a constant L, and (ii) it is twice differentiable with a remainder of the third order
+that is bounded by κ∥(ξ, η)∥3. These assumptions reflect the piecewise-holomorphic nature
+of typical CVNN activations (modReLU/zReLU) while excluding a vanishing neighborhood
+surrounding sector boundaries.
+
+Kink band and sample selection
+Let ah represent the complex pre-activation of the
+h-th hidden unit within the first complex layer, while bh denotes its modReLU bias. We
+define the per-unit margin as sh = |ah| + bh and introduce the ANY-unit band Kε = {(ξ, η) :
+minh sh ≤ε}. In our implementation (C), we exclude samples from Kε (with a default
+setting of exclude_kink_eps= 10−6) and weight the retained samples in proportion to
+max(minh sh, 0) + 10−9, optionally applying distance decay to reduce the emphasis on points
+situated near sector boundaries.
+
+A practical L2 error bound
+For a degree d ∈{3, 4}, using a column-normalised design
+along with a weighted ridge (with a default λ=10−8), the fit error satisfies the following
+inequality:
+∥f −bfd∥L2(Q∆\Kε) ≤C1 κ ∆3 + C2 σ
+q
+
+M
+Nkept,
+
+where M indicates the number of active monomials (with i+j ≥2), Nkept represents the count
+of perturbations remaining after filtering, σ signifies an effective noise scale, and constants
+C1,2 solely depend on the basis and weights. Thus, smaller values of ∆and a moderate M
+(indicating lower d) lead to improved fidelity, motivating our preference for default d=4 and
+compact neighborhoods.
+
+Technical note: approximation error near activation boundaries (informal)
+Let
+f(z) = ℓ1(z) −ℓ2(z) denote the (real) logit difference and let bfd be the degree-d local
+polynomial surrogate fitted in a cube Q∆= {(ξ, η) ∈R4 : ∥(ξ, η)∥∞≤∆} around an anchor.
+Assume that, away from a thin activation-band Kε (e.g., modReLU/zReLU sector boundaries),
+f is locally Lipschitz with constant L and C2 with a third-order remainder bounded by
+κ∥(ξ, η)∥3. Let M be the number of active monomials in bfd (with linear terms removed),
+
+s
+
+M
+Nkept
+,
+
+f −bfd
+
+
+L2(Q∆\Kε) ≤C1 κ ∆d+1 + C2 σ
+
+and consequently
+
+s
+
+M
+Nkept
++ C3 L meas(Kε)1/2.
+
+f −bfd
+
+
+L2(Q∆) ≤C1 κ ∆d+1 + C2 σ
+
+Thus, Newton–Puiseux analysis applied to bfd is a controlled proxy for the non-polynomial
+decision function: the approximation error outside the activation band scales with the
+truncation order (∆d+1) and sample estimation, while the contribution of the boundary layer
+shrinks with the band measure (for piecewise-holomorphic activations, meas(Kε) = O(ε)).
+Implementation details, diagnostics, and notation for Kε are given in Section 5.1 and C.
+
+Numerical guards (conditioning and sufficiency)
+We keep track of cond(A), rank(A),
+the kept-ratio Nkept/N, and the fidelity metrics (RMSE, MAE, Pearson ρ, sign agreement)
+for validation. Suppose cond(A) reaches excessive levels, rank falls short, or the kept-ratio
+is insufficient. In that case, we reattempt with ∆←1
+
+2∆and, if necessary, we reduce d to a
+minimum of 2, following the approach outlined in the released code. This strategy ensures
+that coefficients and derived descriptors remain stable.
+
+5.2
+Bounds implied by Puiseux coefficients
+
+i+j≥2 cijξiηj denote the fitted surrogate. The Newton–Puiseux decomposition
+of { bfd = 0} in the vicinity of (0, 0) reveals a finite number of branches characterized by
+ηk(ξ) = akξθk + h.o.t., where θk > 0 is rational, coefficients ak ∈C, and multiplicities mk ∈N.
+
+Let bfd(ξ, η) = P
+
+Quadratic curvature and flip radii
+In scenarios where quadratic terms are dominant,
+the principal curvature of the decision sheet is governed by the maximum of the absolute
+values of the coefficients: max{|c20|, |c11|, |c02|}. The phases of the leading Puiseux coefficients
+dictate phase-aligned rays along which the sign of bfd changes most rapidly. Probing a small
+selection of these rays using the original network provides upper bounds on the first class flip
+radius (see Section 4.4).
+
+Quartic onset and a dominance heuristic
+When quartic terms are substantial, the radius
+at which quartics begin to dominate quadratics can be approximated using the dominant-ratio
+heuristic as follows:
+
+DR =
+max(|c20|, |c11|, |c02|)
+max(|c40|, |c31|, |c22|, |c13|, |c04|),
+rdom ≈
+√
+
+DR.
+
+We report magnitudes for quadratic and quartic terms and regard rdom as a qualitative
+indicator. Empirical flip radii are always derived from ray probes on the original network.
+
+2). Furthermore,
+we investigate its sensitivity to the mis-estimation of multiplicity mest = (1 + ε)m through
+the expression Tmult = (m/mest)γ = (1 + ε)−γ (F). In empirical studies, we combine this
+with a dataset-specific calibrator (MIT–BIH: temperature or isotonic; RadioML: Platt or
+isotonic), using the calibrated probabilities on validation to select (τ, δ) and applying the
+same calibration on the test set (C).
+
+5.3
+Piecewise-holomorphic activations and kinks
+
+Modern CVNNs utilizing modReLU/zReLU generate phase sectors where the Wirtinger
+derivatives are undefined; mixing samples across these sectors can bias least squares fitting
+and inflate the value of cond(A). Our safeguards closely mirror the implementation:
+
+Detection and filtering (ANY-unit rule)
+For every perturbation, we calculate sh =
+|ah|+bh for each hidden unit in the first complex layer and discard the sample if minh sh ≤εkink
+(defaulting to 10−6). We weight the retained samples according to max(minh sh, 0) + 10−9 and
+optionally by their distance from z⋆.
+
+Reporting and fallbacks
+Per anchor, we provide fit fidelity metrics (RMSE/MAE/ρ/SA),
+numerical diagnostics (cond(A), rank(A), Nkept/N, and degree used), along with a kink
+prevalence score that represents the angular dispersion of local gradient directions. If the
+diagnostics do not meet the desired criteria, we will halve ∆and/or decrease d. In cases
+where non-holomorphic sectors are predominant, the Newton-Puiseux method may yield fewer
+and shallower branches, prompting us to prioritize empirical ray probes.
+
+These assumptions and controls clearly outline the contexts in which our descriptors
+(branch counts/orientations, curvature, rdom) can be considered quantitative, as well as those
+instances where they should be regarded as qualitative due to inherent piecewise behavior.
+
+6
+Experimental Setup
+
+This section outlines the datasets, models, calibration baselines, and metrics, as well as the
+anchor-selection rules that initiate the local analysis. Unless otherwise specified, defaults are
+consistent with those in Appendix C and the provided code.
+
+6.1
+Datasets
+
+We evaluate the framework on three datasets of increasing realism—a controlled synthetic C2
+
+helix, MIT–BIH arrhythmia (ECG), and RadioML (I/Q). Each subsection details preprocessing,
+splits, and how signals are compressed to C2 for a fair, shared pipeline.
+
+6.1.1
+Synthetic C2 helix
+
+We use a controlled two-class benchmark in C2, where samples consist of pairs of complex
+numbers (x, y) that exhibit class-dependent phase relationships, resulting in a helical decision
+boundary in R4.
+This experiment remains unchanged; all details about the generator,
+
+6.1.2
+MIT–BIH Arrhythmia (ECG)
+
+We utilize the MIT–BIH Arrhythmia Database, which is sampled at 360 Hz (channels: MLII,
+V1), to establish a binary N vs. V classification task. Following standard band-pass filtering
+and per-beat windowing around the R peak, both leads are transformed into analytic signals
+and reduced to a low-dimensional, phase-aware C2 representation through the first two complex
+moments (mean and first difference). The processing strictly prevents patient leakage by
+standardizing per-patient on training folds and employing patient-wise splits. Comprehensive
+details about signal processing and algorithmic pseudocode are available in G.2. The final
+dataset contains 10 487 N beats and 614 V beats, with evaluation conducted across 10 patient-
+wise folds (8 training / 1 validation / 1 testing per fold). For context, earlier ECG arrhythmia
+detection pipelines ranged from wavelet features and classical models to CNN-based approaches
+[56–58].
+
+6.1.3
+RadioML
+
+We consider the RadioML modulation-recognition benchmark, which includes short complex
+in-phase/quadrature (I/Q) sequences (128 complex samples per example) covering multiple
+analog and digital modulations over a broad range of signal-to-noise ratio (SNR) (from low
+to high SNR in fixed increments). Unless indicated otherwise, we implement a stratified split
+of 80/10/10 based on (modulation, SNR) and present results for both the overall dataset and
+per-SNR classifications. To ensure consistency with our C2 framework, each I/Q sequence
+is mapped to C2 using the same two-moment compressor applied to MIT–BIH; additional
+experiments with alternative feature representations are discussed in G.3.
+
+6.2
+Models and training
+
+For all datasets, we employ a shallow complex-valued network that follows the structure:
+
+C2
+ComplexLinear
+−−−−−−−−−→CH
+modReLU
+−−−−−−→CH
+ComplexLinear
+−−−−−−−−−→CK
+| · |
+−→RK
+softmax
+−−−−→∆K−1,
+
+which incorporates modulus logits and a softmax function. The hidden width varies, being
+H=16 for the synthetic helix, H=64 for MIT–BIH, and H=64 for RadioML. We utilize
+the Adam optimizer (η = 10−3, weight decay 10−4), with mini-batch sizes of 64 for the
+synthetic dataset and 128 for MIT–BIH/RadioML, conducting training sessions for 20–50
+epochs while employing early stopping based on validation loss. To address class imbalance,
+MIT–BIH uses a WeightedRandomSampler, while RadioML implements balanced sampling
+across (modulation, SNR). Unless otherwise noted, logits undergo calibration using the
+validation data, and the learned calibrator is subsequently applied to validation and test
+predictions. The complex-linear blocks, modulus logits, and modReLU activation adhere to
+the conventions and notations previously introduced in the paper.
+
+6.3
+Calibration baselines and evaluation metrics
+
+We compare standard post-hoc calibrators under identical splits and report both classification
+and calibration metrics to separate accuracy from reliability.
+
+Classification metrics
+MIT–BIH (binary): We report the accuracy, balanced accuracy,
+Area Under the Receiver Operating Characteristic Curve (AUROC), and Area Under the
+Precision–Recall Curve (AUPRC) for each fold, along with their average values [59]. For
+RadioML (multi-class), we provide the Top-1 accuracy (overall and per SNR), macroaveraged
+F1 scores, and confusion matrices. Where applicable, we also present per-class accuracies to
+highlight modulation confusions at low SNR.
+
+Calibration metrics and plots
+We report the negative log-likelihood (NLL), Brier score
+(binary and multiclass), and Expected Calibration Error (ECE) [8], which are computed based
+on the predicted confidence of the chosen class using B=15 equal-frequency bins.1 Reliability
+diagrams, which illustrate confidence versus accuracy, are created for the uncalibrated model,
+the dataset-specific baseline, and our phase-aware variant. Standard implementations of Platt,
+isotonic and vector scaling are widely available in common toolkits [60].
+
+6.4
+Uncertainty mining and anchor selection
+
+Uncertain inputs serve as the foundation for our local analysis. Let p represent calibrated
+softmax posteriors. We classify a sample as uncertain if it meets either a low-confidence
+criterion,
+max
+k
+pk < τ,
+
+or a small-margin criterion. For binary tasks, we utilize the absolute probability margin.
+
+m = |p1 −p2| < δ,
+
+while for multi-class tasks, we consider the difference between the top-1 and top-2 classes,
+
+m1,2 = p(1) −p(2) < δ.
+
+Unless stated otherwise, we set (τ, δ)=(0.5, 0.10) for the synthetic helix, (0.5, 0.15) for MIT–
+BIH, and (0.5, 0.10) for RadioML. These criteria and symbols align with the uncertainty sets
+introduced in our preliminaries and used throughout this analysis. The identified anchors will
+be exported (including IDs, inputs, calibrated probabilities) for further use in fitting the local
+polynomial surrogate and performing Newton–Puiseux decomposition.
+
+Two protocols, two answers (to preempt confusion)
+For the MIT–BIH dataset, we
+present two complementary perspectives: (i) patient-wise 10-fold cross-validation (CV) for
+genuine end-to-end realism, where the learned global temperature frequently remains at T≈1
+(RAW≡TS), and (ii) a fixed-encoder 5-fold study specifically designed for the comparison of
+post-hoc calibrators, where adjustments to temperature or non-parametric calibrators can
+significantly mitigate ECE. We maintain these protocols separately in all tables and clearly
+indicate the baseline used for each (Section 7 and Section 9).
+
+1Definitions for logits, softmax with temperature, and ECE are discussed in Sec. 3; our uncertainty
+thresholds follow the same notation.
+
+Metric
+RAW
+TS
+
+ECE
+0.197 ± 0.068
+0.197 ± 0.068
+NLL
+0.394 ± 0.129
+0.394 ± 0.129
+Brier
+0.112 ± 0.075
+0.112 ± 0.075
+
+7
+Results: MIT–BIH (ECG)
+
+We first present a summary of cross-patient results, followed by a fixed-encoder comparison of
+calibrators, uncertainty mining through local Puiseux analysis, two illustrative case studies,
+and an overview of the computational footprint.
+
+Executive summary (one glance)
+
+Actionable robustness. On uncertain ECG anchors, Puiseux-guided, phase-aligned rays
+uncover actual decision flips in the majority of cases within a radius of <0.02; one example
+indicates flips on 8 out of 10 anchors, with all anchors demonstrating exactly two Puiseux
+branches, aligning with the C2 geometry. LIME/SHAP do not yield these directional insights.
+(Refer to Table 8 and the surrounding text in the artefacts.)
+Calibration. Temperature scaling, informed by multiplicity, effectively reduces ECE on
+MIT–BIH compared to the uncalibrated softmax (T=1); we present 95% confidence intervals
+and conduct Wilcoxon signed-rank tests. The details are elaborated in F.
+What to look for. We provide: (i) cross-patient 10-fold performance (RAW vs. temperature
+scaling), (ii) a dedicated 5-fold calibration study with confidence intervals and statistical tests,
+(iii) uncertainty mining alongside local analysis around flagged anchors, (iv) two case studies,
+and (v) an overview of the computational footprint. All data in this section has been verified
+against the released artifacts.
+
+7.1
+Cross-patient 10-fold CV (RAW vs. TS)
+
+Table 1 summarizes the performance results from the 10-fold cross-patient evaluation. The
+learned temperature remained at T=1.000 across all folds, which indicates that RAW and TS
+values are identical.
+
+Reliability diagrams
+Figure 1 illustrates the RAW and TS reliability curves aggregated
+through different folds. Since T=1.000, the two curves coincide perfectly.
+
+7.2
+Calibration head-to-head (5-fold; fixed encoder)
+
+In addition to the cross-patient protocol, we conducted a 5-fold stratified cross-validation
+on the entire dataset using a fixed encoder to compare various post-hoc calibrators. Table 2
+presents the means ± 95% CIs across folds (ECE, Brier, NLL).
+
+Consistency across folds (10-fold view)
+In a separate 10-fold cross-patient study used
+for non-parametric analyses, all methods, except Temperature, outperformed NONE on 10/10
+
+(a) RAW
+(b) TS (T=1.000)
+
+Figure 1: Reliability diagrams (quantile binning, 10 bins).
+
+Table 2: Calibration methods on MIT–BIH (5-fold stratified CV; mean ± 95% CI). Lower
+values are preferable.
+
+Method
+ECE
+Brier
+NLL
+
+Uncalibrated (NONE)
+0.1516 ± 0.0015
+0.0839 ± 0.0044
+0.2440 ± 0.0112
+Temperature
+0.1289 ± 0.0014
+0.0953 ± 0.0031
+0.2872 ± 0.0065
+Platt
+0.0165 ± 0.0008
+0.0162 ± 0.0051
+0.0504 ± 0.0102
+Isotonic
+0.0034 ± 0.0005
+0.0047 ± 0.0008
+0.0148 ± 0.0016
+Beta
+0.0183 ± 0.0005
+0.0060 ± 0.0010
+0.0184 ± 0.0031
+Vector
+0.0165 ± 0.0008
+0.0175 ± 0.0066
+0.0600 ± 0.0286
+
+folds. The one-sided Wilcoxon test against NONE (ECE) yields p≈9.77×10−4 for Isotonic,
+Platt, Beta, and Vector methods, and p≈1.95×10−3 for Temperature.
+Definition of reported % improvements. We report the relative ECE change as ∆ECE =
+
+ECENONE −ECEmethod
+
+/ECENONE × 100%.
+
+7.3
+Uncertainty mining and local analysis
+
+Operating point and review budget
+A sweep over (τ, δ) on the validation set identified
+τ ⋆=0.0000, δ⋆=0.003586, producing abstain ≈0.0011 (9 samples), capture ≈0.0062, and
+precision ≈0.556. On the held-out test split, this flagged 17 uncertain windows in total.
+
+Uncertainty profiles
+Figure 3 displays the histogram of maximum softmax confidence
+(τ ⋆=0) and the margin histogram |p(1)−p(2)| with the vertical line indicating δ⋆.
+
+Prevalence of non-holomorphic sectors
+Within a local radius of 0.05 around each
+anchor, the modReLU kink detector reported no sector detections across all 17 anchors
+
+(a) Capture across (τ, δ)
+(b) Abstention across (τ, δ)
+
+Figure 2: Sensitivity heatmaps used to select (τ ⋆, δ⋆).
+
+(a) Max-softmax histogram (τ ⋆=0)
+(b) Margin histogram with δ⋆
+
+Figure 3: Uncertainty distributions at the designated operating point.
+
+(frac_kink= 0 for each), indicating locally stable behavior of the complex subnetwork
+following our preprocessing.
+
+Local surrogate fidelity (17 anchors)
+With a polynomial degree of d=4, radius of
+∆=0.05, and roughly 600 perturbations for each anchor, the aggregate surrogate quality is
+represented as follows:
+
+7.4
+Two case studies (fragile vs. benign)
+
+Fragile anchor (#11)
+The local contour and robustness sweep are displayed in Figure 4.
+The surrogate fidelity at anchor #11 is: RMSE = 0.045, MAE = 0.038, Pearson = 0.045,
+SA = 0.525. According to LIME (top local rules, absolute weight): Im(z1) > 0.34: 0.129,
+Re(z2) > −0.20: 0.115, Re(z1) > −0.10: 0.106. SHAP highlights Re(z2) and Im(z1) as the
+key contributors.
+
+Benign anchor (#14)
+No class flip was detected within the probed radius (≈0.02); see
+Figure 5. Surrogate fidelity at #14: RMSE = 0.033, MAE = 0.028, Pearson = 0.319, SA
+= 0.540. LIME (top rules): Im(z2) > −0.09: 0.129, Re(z2) > 0.22: 0.118.
+
+Metric
+Mean ± 95% CI
+Median [IQR]
+
+RMSE
+0.070 ± 0.014
+0.067 [0.058, 0.074]
+Sign agreement
+0.572 ± 0.034
+0.580 [0.555, 0.591]
+cond(A) (LSQ)
+—
+5.54 × 102 [5.37 × 102, 5.64 × 102]
+
+(a) Local contour (dims [1,3])
+(b) Robustness curves
+
+Figure 4: Case #11 (fragile).
+
+7.5
+Compute footprint
+
+Per-anchor Puiseux analysis required an average of 4.112 ± 0.098 s, in contrast to 4.934 ±
+0.542 ms for a single gradient-saliency pass; this means the Puiseux method is approximately
+∼833× slower per anchor. While this speed is acceptable for offline triage, online applications
+would necessitate batching and/or optimizations at the solver level.
+
+7.6
+Clinical notes and limitations
+
+(i) In the cross-patient protocol, temperature scaling did not enhance reliability, remaining at
+T=1.000 across all folds; (ii) the chosen review policy (τ ⋆=0) places emphasis on margin-based
+flags, thereby concentrating reviews on borderline cases; (iii) the use of binary labels might
+obscure multi-class phase effects, which could reveal additional nonholomorphic sectors and
+modify calibration dynamics.
+
+8
+Ablations and Sensitivity (MIT–BIH)
+
+In this section, we analyze design choices and sensitivities, including the (τ, δ) thresholds for
+mining anchors, robustness concerning multiplicity mis-estimation, and the evidence provided
+by Newton–Puiseux descriptors.
+
+(a) Local contour (dims [1,3])
+(b) Robustness curves
+
+Figure 5: Case #14 (benign). No class flip within the probed radius.
+
+Table 4: ECE vs. relative multiplicity error ε (γ = 1
+
+2). ∆is the absolute change vs. ε=0.
+
+ε
+ECE
+∆
+
+−0.50
+0.1964
++0.0448
+−0.10
+0.1579
++0.0063
+0.00
+0.1516
+0.0000
++0.10
+0.1451
+−0.0065
++0.50
+0.1305
+−0.0211
+
+8.1
+Sensitivity of anchor mining to (τ, δ)
+
+We explore (τ, δ) within the validation phase and report capture, abstention, precision, and
+the differenced “knee” score kink = capture −abstain. The knee score reaches its peak at
+(τ, δ)=(0.50, 0.60) with (abstain, capture) ≈(0.258, 0.695); while this surpasses typical review
+budgets, it indicates a regime of diminishing returns.
+
+8.2
+ECE sensitivity to multiplicity mis-estimation
+
+We introduce perturbations to the estimated branch multiplicity m by a relative error ε and
+apply T ′(m) ∝m−1/2. The resulting ECE is shown in the table below:
+Near zero, the relationship is approximately linear with a slope of d ECE/dε ≈−0.059;
+slight overestimation of m provides a marginal benefit, whereas underestimation proves more
+detrimental.
+
+8.3
+Newton–Puiseux evidence: flips, triage, and limits of rdom
+
+Puiseux descriptors find real flips
+Among the N=17 flagged anchors, a Puiseux–guided
+ray search detected an actual decision flip for 14/17 anchors (82.4%), consistently within the
+scan budget (r < 0.02). The mean observed minimum flip radius was rflip=0.0041 . These
+statistics are derived from our np-analysis joiner applied to the archived per-anchor reports.
+
+Score
+AUPRC ↑
+Top-K precision/recall
+
+|c4| (Puiseux)
+0.766
+0.786 / 0.786
+1/rgrad
+0.755
+0.857 / 0.857
+1/rLIME
+0.818
+0.857 / 0.857
+1/rSHAP
+0.795
+0.857 / 0.857
+∥∇logit∥
+0.903
+0.857 / 0.857
+
+Table 5: Fragile-anchor triage on MIT–BIH. Positives are anchors with a flip within
+r ≤0.02; the dashed baseline in PR plots equals the prevalence = 0.82. On this small,
+high-prevalence set, |c4| is a useful triage signal but does not dominate the simplest baselines
+(gradient norm ranks best). We therefore position Newton–Puiseux as a structural explainer
+(branching, phase-aware directions) with comparable triage utility and demonstrated calibra-
+tion benefits.
+
+Kinks do not drive the results
+The modReLU kink detector found no sector hits within
+a 0.05 neighborhood around any anchor (frac_kink= 0), indicating locally smooth behavior;
+thus, the small flip radii are attributed to the geometry of the holomorphic sheets rather than
+piecewise artifacts.
+
+Quartic magnitude serves as a proper triage signal
+By ranking anchors based on the
+quartic magnitude |c4| and selecting a top-K set, we achieve a practical reviewer triage with
+precision ≈0.79 and recall ≈0.79 for fragile anchors (those exhibiting a flip within the scan
+budget). This suggests that Puiseux coefficients contain actionable information even prior to
+any ray scanning.
+
+Limitations of the dominant-ratio heuristic
+The naive onset proxy rdom ≈
+p
+
+|c2|/|c4|
+does not linearly predict the observed flip radius within this dataset, as evidenced by a
+Pearson correlation coefficient of r =−0.45 and a Spearman rank correlation coefficient of
+ρ=−0.47 across anchors, coupled with a significant scale mismatch (rdom =3.58 compared to
+rflip =0.0041).
+
+Reasons for this discrepancy and utilization
+The surrogate fit employs column-
+normalized monomials for conditioning; coefficients must not be scaled for any geometric
+interpretation. Additionally, cubic terms can dominate the onset (|c2|/|c3|) before quartic
+terms exert their influence. Therefore, we interpret rdom as a qualitative indicator of higher-
+order dominance. We rely on two robust, empirically validated applications of the Puiseux
+analysis: (i) phase-aligned ray directions that yield real flips with small radii (14/17 anchors),
+and (ii) triage based on coefficients (e.g., |c4|) to prioritize fragile cases.
+
+Head-to-head fragile-anchor triage (MIT–BIH)
+To calibrate the practical value of
+Puiseux coefficients for triage, we compared |c4| against simple reference scores on the same
+N = 17 anchors (14/17 fragile, prevalence 0.82). Besides |c4| we consider (i) the inverse
+minimal flip radius along three standard directions, 1/rgrad, 1/rLIME, 1/rSHAP, and (ii) the
+gradient-norm score ∥∇logit∥at the anchor. Table 5 reports area under the precision–recall
+curve (AUPRC; higher is better) and the top-K operating point where K equals the number
+of fragile anchors (so that precision=recall). Complete PR curves for the triage scores (|c4|,
+1/rgrad, 1/rLIME, 1/rSHAP, and grad-norm) and the per-score AUPRC table are provided in I.
+
+Method
+ECE (mean ± 95% CI)
+∆ECE vs. NONE
+Wilcoxon p (10-fold)
+
+NONE
+0.1516 ± 0.0015
+—
+—
+Temperature
+0.1289 ± 0.0014
+14.9%
+1.95 × 10−3
+
+Platt
+0.0165 ± 0.0008
+89.1%
+9.77 × 10−4
+
+Isotonic
+0.0034 ± 0.0005
+97.8%
+9.77 × 10−4
+
+Beta
+0.0183 ± 0.0005
+87.9%
+9.77 × 10−4
+
+Vector
+0.0165 ± 0.0008
+89.1%
+9.77 × 10−4
+
+Table 7: RadioML — 10-fold CV (mean ± 95% CI over folds).
+
+Metric
+RAW
+Platt
+
+ECE
+0.0436 ± 0.0047
+0.0343 ± 0.0054
+NLL
+0.4727 ± 0.0207
+0.4497 ± 0.0201
+Brier
+0.1529 ± 0.0053
+0.1503 ± 0.0053
+
+Acc (Platt)
+0.7811 ± 0.0108
+AUC (Platt)
+0.8598 ± 0.0124
+
+9
+Comparisons and Statistical Tests (MIT–BIH)
+
+This section consolidates the calibration comparisons from the MIT–BIH dataset, highlighting
+changes in relative ECE, fold-wise win rates, and findings from Wilcoxon signed-rank tests.
+
+9.1
+Calibration methods head-to-head
+
+We evaluate the performance of different calibrators based on ECE (where a lower value
+is preferable), present relative changes compared to NONE, and report the win rates and
+Wilcoxon outcomes from the 10-fold cross-patient evaluation.
+All non-parametric methods achieve wins on 10/10 folds against NONE in the 10-fold setup;
+Temperature records wins in 0/10.
+
+10
+Results: RadioML (Wireless/I/Q)
+
+We implement the same pipeline for the RadioML dataset, presenting overall performance
+metrics, a head-to-head analysis of calibrators, anchor mining insights, case studies, and
+ablation results. Unless otherwise specified, the settings align with those from the MIT–BIH
+study.
+
+10.1
+Aggregate results (with CI and tests)
+
+10-fold stratified CV
+Table 7 displays the performance over 10 stratified folds (organized
+by modulation and SNR) for the uncalibrated model (RAW) and for Platt scaling (which is
+learned on the validation split and applied to validation and test sets). Confidence intervals
+are provided at 95% over the folds.
+
+(a) RAW
+(b) Platt
+
+Figure 6: RadioML — reliability diagrams (quantile binning, 10 bins).
+
+Table 8: RadioML — calibration methods (10-fold CV; mean ± 95% CI). Lower value is
+better.
+
+Method
+ECE
+Brier
+NLL
+
+NONE
+0.0440 ± 0.0055
+0.1506 ± 0.0052
+0.4634 ± 0.0188
+Temperature
+0.0440 ± 0.0047
+0.1516 ± 0.0047
+0.4728 ± 0.0194
+Platt
+0.0358 ± 0.0064
+0.1508 ± 0.0052
+0.4601 ± 0.0195
+Isotonic
+0.0350 ± 0.0058
+0.1497 ± 0.0048
+0.4596 ± 0.0188
+Beta
+0.0330 ± 0.0052
+0.1493 ± 0.0049
+0.4573 ± 0.0188
+Vector
+0.0352 ± 0.0055
+0.1496 ± 0.0047
+0.4589 ± 0.0190
+
+Reliability diagrams
+Figure 6 illustrates the reliability curves aggregated across folds for
+RAW and Platt scaling methods.
+
+Calibration head-to-head (post hoc)
+Additionally, we conduct a comparison of standard
+post-hoc calibration methods across the same folds: NONE (uncalibrated), Temperature,
+Platt, Isotonic, Beta, and Vector scaling. Table 8 presents the mean ± 95% CI (fold-wise)
+for ECE, Brier score, and NLL; Table 9 summarizes the win rates versus NONE and reports
+Wilcoxon signed-rank p-values (one-sided, H1: method < NONE on ECE).
+All improvements were computed using:
+
+∆ECE(method) = ECENONE −ECEmethod
+
+ECENONE
+× 100%.
+
+10.2
+Uncertainty mining and anchor selection
+
+Heatmaps and operating point
+We assess the (τ, δ) grid used for anchor mining (Sec-
+tion 6.4); Figure 7 presents the capture/abstain surfaces for the validation subset.
+
+Method
+∆ECE vs. NONE
+Win-rate
+Wilcoxon p
+
+Temperature
+−0.01%
+0/10
+0.997
+Platt
+18.6%
+7/10
+0.052
+Isotonic
+20.6%
+8/10
+0.021
+Beta
+25.1%
+9/10
+0.007
+Vector
+20.1%
+9/10
+0.012
+
+(a) Capture across (τ, δ)
+(b) Abstention across (τ, δ)
+
+Figure 7: RadioML — selection surfaces used to set (τ, δ).
+
+Maximizing the simple knee proxy capture −abstain across the grid yields τ ⋆=0.000 and
+δ⋆≈0.0176 with (abstain, capture, precision, riskaccept) ≈(0.010, 0.014, 0.300, 0.206). Consid-
+ering standard abstention budgets b, the best possible capture is:
+
+Uncertainty profiles and selected anchors
+The histograms displayed in Figure 8
+illustrate the max-softmax distribution and the top-2 margin, with a vertical line denoting
+δ⋆. Using (τ ⋆, δ⋆), the pipeline identifies 21 uncertain inputs (anchors) for in-depth analysis
+(refer to file uncertain_full.csv).
+
+Non-holomorphic sectors
+Within a local radius of 0.05 surrounding each anchor, the
+modReLU kink detector recorded no sector hits across all 21 anchors (kink_summary.csv,
+column frac_kink= 0 for each), indicating the locally smooth behavior of the complex
+subnetwork according to the RadioML preprocessing.
+
+10.3
+Two case studies (fragile vs benign)
+
+We demonstrate the local analysis using two representative anchors. Each panel presents a
+2D contour of the surrogate decision function along with the robustness curves obtained by
+scanning phase-aligned rays on the original network (following the protocol outlined in C).
+
+Budget b
+(τ, δ)
+Abstain
+Capture
+Precision
+Riskaccept
+
+0.01
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+0.02
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+0.05
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+0.10
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+0.15
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+0.20
+(0.00, 0.0176)
+0.0100
+0.0145
+0.300
+0.206
+
+(a) Max-softmax histogram (τ ⋆=0)
+(b) Margin histogram with δ⋆
+
+Figure 8: RadioML — uncertainty distributions at the chosen operating point.
+
+10.4
+Ablations and Sensitivity (RadioML)
+
+Fidelity of the local surrogate
+Under the fixed configuration (d=4, ∆=0.05, 600 sam-
+ples/anchor), the overall fidelity across N=21 anchors is:
+The correlation between the LSQ condition number and RMSE is ρ=0.20, while the
+correlation with sign-agreement is ρ=0.05 (local_fit_summary.csv), indicating a weak
+association between conditioning and error in this setting.
+
+Resource footprint
+The per-anchor Puiseux analysis, which includes sampling, weighted
+LSQ, symbolic factorization, simplification, Puiseux expansion, and directional scanning,
+averages 4.01 s ±0.08 s.
+In comparison, a single gradient-saliency pass averages 5.05 ms
+±0.42 ms;
+peak GPU memory usage is approximately 64.8 MB in both evaluations
+(resource_point{i}.txt). For the MIT–BIH dataset, this analysis is suitable for offline
+triage or batch processing.
+
+Practical note
+In RadioML, we utilize rdom for ranking fragile anchors instead of inter-
+preting it as an absolute radius; all candidate directions undergo validation through a brief
+ray sweep on the original network. This approach maintains the Newton–Puiseux value
+(including ordering and phase alignment) while preventing over-interpretation of the surrogate
+coefficients.
+
+10.5
+Newton–Puiseux evidence (RadioML)
+
+Setup
+We implement the same post-processing techniques applied to the MIT–BIH dataset
+(using a local polynomial surrogate with d=4, ∆=0.05, approximately 600 perturbations
+
+(a) Local contour (anchor #0)
+(b) Robustness curves (anchor #0)
+
+Figure 9: Case #0 (fragile). A Puiseux-guided direction shows an early class flip within the
+probed radius.
+
+Table 11:
+Surrogate fidelity across 21 anchors (degree d=4, radius ∆=0.05, 600 sam-
+ples/anchor). Mean ± 95% CI and median [IQR].
+
+Metric
+Mean ± 95% CI
+Median [IQR]
+
+RMSE
+0.149 ± 0.010
+0.145 [0.130, 0.160]
+Sign agreement
+0.580 ± 0.020
+0.577 [0.535, 0.607]
+cond(A) (LSQ)
+—
+5.55×102 [5.39×102, 5.71×102]
+
+per anchor; Puiseux analysis; and robustness rays extending to a radius of 0.02).
+The
+parser integrates uncertain_full.csv, per-anchor benchmark TXT, and the dominant-ratio
+summary to calculate the predicted onset radius rdom ≈
+p
+
+|c2|/|c4| and the observed minimum
+flip radius rflip for each anchor.
+
+Interpretation
+In RadioML, the Puiseux dominant-ratio predictor shows a moderate
+positive correlation with the observed flip radius (Pearson ≈0.61), yet only 4/21 anchors
+exhibit flips within the scanning budget of 0.02. The absolute scale exhibits an apparent
+discrepancy (rdom ≫rflip), indicating that rdom should be perceived as a relative fragility
+proxy instead of an absolute calibrated radius. The kink detector does not identify any events
+in the probed neighborhoods (panel b), suggesting that deviations from proportionality in
+this dataset are unlikely due to non-holomorphic sectors.
+
+Head-to-head fragile-anchor triage (RadioML)
+We also compare Newton–Puiseux
+descriptors against common XAI baselines for ranking fragile anchors (positives = class flip
+within the scan budget r ≤0.02). On this corpus only 4/21 anchors flip under the budget
+(baseline AUPRC ≈0.19). Table 13 reports area under the precision–recall curve (AUPRC;
+higher is better) for five scores: the quartic magnitude |c4| from the Puiseux surrogate, inverse
+flip radii along directions proposed by gradient/LIME/SHAP (1/rgrad, 1/rLIME, 1/rSHAP),
+and the gradient norm. Consistently with the summary in Table 11, the Puiseux coefficients
+carry ordering information but do not dominate here; the gradient norm performs best, with
+
+(a) Local contour (anchor #1)
+(b) Robustness curves (anchor #1)
+
+Figure 10: Case #1 (benign). No class flip is observed within the allocated scan budget.
+
+Table 12: Summary of Newton–Puiseux evidence from the parser in RadioML. Values are
+derived from all anchors exported by the uncertainty miner.
+
+Anchors
+Flips <0.02
+rdom
+rflip
+MAE
+rdom−rflip
+
+Pearson
+Spearman
+
+21
+4
+3.152
+0.0163
+1.810
+0.608
+0.400
+
+SHAP-based rays second. We therefore use rdom and |c4| chiefly as relative fragility signals
+on RadioML and always validate candidate directions by a short ray sweep on the original
+network. Full PR curves are provided in J.
+
+Contrast with MIT–BIH (for orientation)
+Utilizing the identical pipeline, MIT–
+BIH shows 14/17 flips within the budget and effectively triages by |c4| (precision/recall
+≈0.79/0.79), signifying that the Puiseux descriptors demonstrate higher predictive capability
+when the C2 representation aligns with the task geometry.2
+
+Takeaway for RadioML
+The Newton–Puiseux analysis supplies consistent ordering infor-
+mation (moderate r). However, it necessitates either (i) an expanded search budget and/or (ii)
+optimization of the surrogate specific to the dataset to achieve calibrated radii. Therefore, we
+primarily use rdom on RadioML for ranking fragile anchors and for phase-aligned directional
+probing, postponing absolute-radius claims to domains where the surrogate aligns more closely
+with the decision geometry.
+
+11
+Comparisons and Statistical Tests (RadioML)
+
+We present the results of calibration comparisons for RadioML, analyzing ∆ECE against
+NONE, the win rates across folds, and the significance of the Wilcoxon test across the folds.
+
+2Refer to the full numbers in the MIT–BIH parser report; see Section 7.
+
+Score
+|c4|
+1/rgrad
+1/rLIME
+1/rSHAP
+grad_norm
+
+AUPRC
+0.217
+0.219
+0.283
+0.429
+0.471
+
+Table 14: Head-to-head comparison of ECE for RadioML versus NONE (based on a 5-fold
+stratified approach: mean ± 95% CI). DeltaECE indicates the relative reduction compared
+to Uncalibrated; Wilcoxon p is calculated using the 10-fold run with the alternative hypothesis
+H1 : method < NONE.
+
+Method
+ECE (mean ± 95%
+CI)
+∆ECE vs. NONE
+Wilcoxon p (10-fold)
+
+Uncalibrated (NONE)
+0.0334 ± 0.0062
+—
+—
+Temperature
+0.0335 ± 0.0042
+−0.3%
+1.00
+Platt
+0.0283 ± 0.0037
+15.3%
+0.0527
+Isotonic
+0.0285 ± 0.0038
+14.9%
+0.0186
+Beta
+0.0269 ± 0.0036
+19.6%
+0.00488
+Vector
+0.0283 ± 0.0064
+15.3%
+0.00488
+
+11.1
+Calibration methods head-to-head (RadioML)
+
+We compare various calibration methods based on ECE, where lower values are preferable,
+report the relative change compared to NONE, and present the win-rate and Wilcoxon
+outcomes from the 10-fold cross-validation.
+Win-rate vs. NONE (10-fold). Beta achieved 8/10, Vector also 8/10, Isotonic reached
+7/10, Platt obtained 6/10, while Temperature recorded 0/10 wins.
+
+Takeaways
+All non-parametric/vectorized calibrators enhance ECE performance compared
+to NONE on RadioML; the Beta calibrator achieves the lowest average ECE, demonstrating
+significant effectiveness (p= 0.0049), along with the joint-best win rate (8/10). Vector scaling
+results in a similar reduction (15.3%) and is also statistically significant (p= 0.0049). Isotonic
+calibration shows significance (p= 0.0186), while Platt calibration is marginally significant
+at the 5% threshold (p= 0.0527). In contrast, temperature scaling does not provide any
+improvement in this instance (with a learned T near 1; p= 1.00).
+
+12
+Discussion: Generalization, Limitations, and Scope
+
+We summarize what elements transfer across different domains, discuss practical implications,
+outline limitations and validity threats, and conclude with guidance for design and future
+research.
+
+12.1
+What generalizes and why
+
+Our analysis is based on two key ingredients that are prevalent in CVNN applications: (i)
+complex logits, whose moduli represent real-valued decision scores, and (ii) locally smooth
+behavior away from activation-sector boundaries (modReLU/zReLU). Given these conditions,
+
+12.2
+Practical value
+
+The Newton–Puiseux descriptors yield two actionable results. First, the phases of the leading
+Puiseux coefficients indicate directions that can flip the class on the original network within a
+small radius for most uncertain anchors (ECG), facilitating targeted review and stress testing.
+Second, the local branch multiplicity serves as an indicator for phase-aware temperature
+adjustments, thereby enhancing calibration metrics without the need for retraining. Both
+results are inherently local and complement global post-hoc calibrators. We also quantify
+prioritization value against standard explainers: precision–recall triage by |c4| is competitive
+but not dominant on MIT–BIH, and near the prevalence baseline on RadioML; gradient-norm
+and SHAP-based rays provide the strongest ranking signals. See Section 8.3 and Section 10.5
+for AUPRC tables and I, J for full PR curves.
+
+12.3
+Limitations
+
+Newton–Puiseux is specifically a local tool. The absolute flip radii derived from surrogate
+coefficients are heuristic and require validation on the network through a short radial sweep.
+When piecewise-holomorphic sectors dominate the neighborhood (e.g., modReLU boundaries),
+the surrogate may be biased; our implementation mitigates this bias with kink-aware filtering
+and distance weights, although extreme cases can compromise fidelity. In terms of compu-
+tational efficiency, per-anchor Newton–Puiseux analysis is significantly slower than a single
+saliency pass; hence, it is best used in an offline or batched approach.
+
+12.4
+Threats to validity
+
+Three specific threats merit attention: (1) Representation mismatch: In the case of
+RadioML, a compact C2 featureization may not align perfectly with the task’s geometry,
+which could weaken the connection between dominant ratios and the observed flip radii. (2)
+Coefficient scaling: The monomial columns are normalized for conditioning; for geometric
+interpretations, unscaled coefficients are necessary; otherwise, the radius proxies may become
+poorly calibrated. (3) Selection bias: Anchors are derived from confidence/margin rules;
+varying abstention budgets may alter which regions are subjected to analysis.
+
+12.5
+Design guidance
+
+It is advisable to maintain small neighborhoods and low degrees (d∈{3, 4}) to enhance the
+stability of fits. Implement kink-aware exclusions and distance weights near modReLU/zReLU.
+Treat dominant-ratio radii as relative fragility scores and always validate candidate directions
+on the original network. For calibration purposes, initiate with a conservative exponent in
+T ′(m) = Tbase m−γ (γ ∈[0.5, 1]) and assess sensitivity to potential multiplicity mis-estimation.
+
+Two logical extensions for future research include: (i) developing a lightweight predictor
+for Newton–Puiseux descriptors utilizing local probes to eliminate the need for symbolic
+factorization during runtime, and (ii) integrating multiplicity-aware calibration with selective
+abstention strategies and domain-specific priors (e.g., SNR on RadioML).
+
+13
+Conclusion
+
+We have introduced a Newton–Puiseux framework for the interpretation and calibration
+of complex-valued neural networks (CVNNs).
+By fitting a local polynomial surrogate
+around uncertain inputs and factorizing it into fractional-power branches, this method pro-
+vides closed-form descriptors—branch multiplicities, phase-aligned curvature, and dominant
+Puiseux coefficients—that quantify robustness and over-confidence in ways that gradient- or
+perturbation-based explainers cannot.
+
+Empirical summary
+On a controlled C2 helix (synthetic sanity check; A), the surrogate
+successfully mirrored the local decision geometry with a RMSE < 0.09, accurately identified
+the number of decision sheets, and utilized quartic Puiseux terms to predict adversarial flip
+radii with a precision of within 10−3 (synthetic sanity check; A). In the analysis of the MIT–
+BIH arrhythmia corpus, a phase-aware temperature adjusted according to branch statistics led
+to an improvement in expected calibration error when compared to the uncalibrated softmax
+(T=1); we report 95% confidence intervals and conduct Wilcoxon signed-rank tests. During
+triage, only approximately ∼1.3% of regular beats were escalated for review, while fragile
+PVC cases were retained. Across various runs, the dominant Puiseux coefficients provided
+a significantly tighter estimate of the first flip radius compared to gradient-norm heuristics
+(with a median absolute error of approximately 7.5 × 10−4).
+
+What the analysis adds
+Puiseux expansions reveal: (i) where the surface has folds (indi-
+cated by branch multiplicity), (ii) how rapidly it twists (denoted by quadratic/cubic/quartic
+magnitudes), and (iii) in which phase directions the risk accumulates (reflected by coefficient
+phases). A straightforward operational gauge emerges from the surrogate’s coefficients, with
+an onset radius rdom ≈
+p
+
+|c2,0|/|c4,0| that signifies the point at which quartic growth surpasses
+quadratic curvature.
+
+Limitations
+The existing solver demonstrates robustness for d ≤2 complex variables;
+however, scaling to higher dimensions d will necessitate structured sparsity and advanced
+numerical algebra tools. The use of piecewise-holomorphic activations (for instance, zReLU)
+can introduce discontinuities that complicate polynomial fitting, and explicit noise modeling
+(including stochastic Puiseux series) remains an open area for exploration.
+
+Outlook
+Future research directions include (i) extending the Newton–Puiseux analysis
+to higher-dimensional CVNNs utilizing sparse or low-rank surrogates, (ii) implementing
+branch-aware calibration that goes beyond scalar temperature scaling, (iii) establishing a
+tighter integration with tropical/convex geometry to understand global structure, and (iv)
+conducting domain studies in areas such as radar, coherent optics, and biomedical monitoring.
+The available code and pre-trained models enable complete reproducibility, motivating the
+community to rigorously test and extend the proposed methodology.
+
+Amplitude r1
+Amplitude r2
+Phase µφ1
+Phase µφ2
+Class
+mean
+std
+mean
+std
+[rad]
+[rad]
+
+0
+1.0
+0.10
+2.0
+0.20
+0
+π
+4
+1
+1.5
+0.15
+2.0
+0.20
+π
+2
+−π
+
+Takeaway. By anchoring CVNN explainability in algebraic geometry, we address a practical
+gap between interpretability and calibration for phase-aware models, yielding actionable and
+quantitative indicators of local fragility that complement traditional XAI.
+
+Acknowledgments
+
+The author acknowledges partial support from the grant “Singularities and Applications” –
+CF 132/31.07.2023 funded by the European Union – NextGenerationEU – through Romania’s
+National Recovery and Resilience Plan.
+
+Appendices
+
+A
+Controlled synthetic C2 helix: data, model, and sanity
+check
+
+Purpose
+This illustrative task isolates the geometry targeted by our Newton–Puiseux
+analysis, free from the complications of large models or noisy sensors. It serves solely as an
+educational validation; all significant claims are drawn from the MIT–BIH dataset.
+
+A.1
+Data generation and rationale
+
+We create a binary classification task using ordered pairs of complex numbers. z = (x, y) ∈C2
+
+stored in R4 as [ Re x, Re y, Im x, Im y ] (This ordering is consistently maintained in all
+equations and code).
+For each class k ∈{0, 1}, we independently sample amplitudes and phases according to
+
+r(k)
+1
+∼N
+
+µ(k)
+r1 , (σ(k)
+r1 )2
+,
+φ(k)
+1
+∼N
+
+µ(k)
+φ1 , σ2
+φ
+
+,
+
+r(k)
+2
+∼N
+
+µ(k)
+r2 , (σ(k)
+r2 )2
+,
+φ(k)
+2
+∼N
+
+µ(k)
+φ2 , σ2
+φ
+
+,
+(10)
+
+with fixed phase noise σφ = 0.3 rad. We then set x = r(k)
+1 eiφ(k)
+1
+and y = r(k)
+2 eiφ(k)
+2 . By default,
+we generate N = 2000 samples per class (seed 42) and split them into training and testing sets
+in an 80/20 ratio; the generator scripts and respective seeds are available in the repository.
+
+Require: trained model g, data (X, y), margin δ
+
+1: for i ←1 to |X| do
+2:
+ℓ←|g(Xi)|
+3:
+p ←softmax(ℓ)
+4:
+margin ←|p1 −p2|
+5:
+if margin < δ then
+6:
+save (i, Xi, yi, p) to CSV
+
+Figure 11: PCA representation of the synthetic test set, colored by maximum class probability.
+Stars indicate points flagged as uncertain (δ = 0.1) [61].
+
+Design rationale
+Both classes occupy overlapping amplitude regions, yet they differ by
+90◦phase offsets, resulting in a helical decision boundary within R4. The Bayes-optimal
+boundary can be represented analytically as: |x| = |y| modulo arg(x) −arg(y) = π
+
+2, providing
+a benchmark against which surrogate errors can be assessed.
+
+A.2
+Uncertainty-based query sampling (synthetic)
+
+Algorithm 1 designates a test point as uncertain when |p1 −p2| < δ (with the default value of
+δ=0.1); ties are also classified as uncertain. On the held-out test set, this generally identifies
+approximately |U| ≈9.5% of the instances.
+
+A.3
+Model: SimpleComplexNet and training
+
+The synthetic task is situated in C2 (≡R4). To differentiate the impact of complex arithmetic
+from pure capacity, we utilize a compact network called SimpleComplexNet, which comprises
+ComplexLinear–modReLU – ComplexLinear and H=16 hidden units.
+
+Complex linear projection (derivation)
+Consider z = [z1, z2]⊤∈C2 where zj = xj + i yj.
+For W = Wr + iWi ∈CH×2,
+
+h = Wz = (Wr + iWi)(x + iy) = (Wrx −Wiy) + i (Wry + Wix),
+(11)
+
+Input
+[x1, y1, x2, y2]
+
+Complex
+Linear W1
+modReLU
+Complex
+Linear W2
+|·|
+Softmax
+
+Figure 12: SimpleComplexNet (H=16 hidden units). All tensors are represented as concate-
+nated real and imaginary parts.
+
+which translates to two real GEMMs supplemented by additions; this structure is equivariant
+to global phase rotations.
+
+Activation and logits
+Each hidden unit h = x + iy undergoes the transformation through
+modReLU(h; b) = 0 if |h| + b ≤0; otherwise, it transforms to |h|+b
+
+|h| h. The output layer of
+
+|ck|2 + 10−9.
+
+ComplexLinear generates scores ck ∈C, while the logits are computed as ℓk =
+p
+
+Training protocol
+The model is trained for 50 epochs using the Adam optimizer (η =
+10−3, β1 = 0.9, β2 = 0.999, ε = 10−8), with a batch size of 64, a weight decay of 10−4, no
+learning rate schedule, and early stopping was not activated. Across five different random
+splits (seed = 42), the accuracy achieved is 92.7%±0.6%.
+
+A.4
+Local surrogate and Puiseux decomposition
+
+For each flagged anchor, we fit a degree-4 bivariate polynomial to the logit difference (excluding
+constant and linear terms) using 200 Latin–Hypercube perturbations within a ±0.05 box [62].
+The surrogate is then factorized using the Newton–Puiseux solver to extract fractional-power
+branches and their dominant coefficients.
+
+A.5
+Results and take-aways
+
+Across the five anchors, the surrogates yielded low absolute errors and consistent decision
+signs on held-out perturbations; each anchor displayed exactly two Puiseux branches. Only
+the case with the highest curvature showed flips within the tested radius (r ≈5×10−3); the
+others maintained stability up to r = 0.02. Per-anchor metrics (from the original run) reveal:
+
+RMSE ∈{0.056, 0.122, 0.123, 0.137, 0.183},
+
+MAE ∈{0.046, 0.104, 0.106, 0.117, 0.167},
+
+with sign agreement ranging from 0.575 to 0.685, “# branches” equating to = 2 for all, and
+two flips observed in the most curved anchor. The quartic Puiseux magnitudes align with the
+observed flip radii, whereas LIME/SHAP attributions do not account for this higher-order
+behavior.
+
+Why coefficients matter
+In the synthetic benchmark, quartic Puiseux coefficients (|c4|)
+provide a better prediction of local fragility than attribution scores; the dominant-ratio
+heuristic rdom ≈
+p
+
+|c2|/|c4| corresponds well with the observed flip radius within a factor of
+×3, indicating that points with a larger |c4| tend to flip sooner.
+
+B
+Newton–Puiseux: algorithmic details and worked ex-
+amples
+
+In this section, we will outline the Newton–Puiseux algorithm for finding the roots of the
+equation f(x, y) = 0. It is worth noting that the presentation of this method lacks complete
+mathematical rigor; instead, it is designed to be understandable to a non-mathematical
+audience. For those seeking a comprehensive understanding of the theory surrounding the
+Newton polygon and Puiseux expansions, we recommend referencing classical texts [9–11].
+
+Let us first focus on the complex function of two variables f(x, y), which we will consider
+as a formal power series. However, for simplicity, we will treat f(x, y) as a complex polynomial
+with two variables. Thus, we can represent it as:
+
+f(x, y) =
+X
+
+i,j
+aijxiyj,
+
+where aij ∈C\{0}. When examining the equation f(x, y) = 0, the solutions form a complex
+curve.
+
+In general, visualizing a complex curve can be challenging, which is why we will examine the
+real curve x2−y3 = 0 to build some intuition. As shown in Figure 13, this curve exists in the real
+plane. Let (x0, y0) represent an arbitrary point on this curve, and let U and V be neighborhoods
+around the points x0 and y0, respectively (noting that U, V ⊂R). Our objective is to identify
+a function ϕ : U →V (or ψ : V →U) such that f(x, ϕ(x)) = 0 (or f(ψ(y), y) = 0). In simpler
+terms, we want to express the curve x2 −y3 = 0 in the vicinity of the point (x0, y0) as a graph
+of a function that depends on a single variable. If we select the point (x0, y0) such that the
+curve is smooth at this location (which means the derivatives (f ′
+x(x0, y0), f ′
+y(x0, y0)) ̸= (0, 0)),
+the Implicit Function Theorem applies. Specifically, this theorem asserts that if a function
+f(x, y) is continuously differentiable and (f ′
+x(x0, y0), f ′
+y(x0, y0)) ̸= (0, 0), it is possible to locally
+represent y as a function of x or x as a function of y. However, the theorem does not provide
+a method for efficiently determining these functions. In straightforward scenarios, we can
+achieve this through specific transformations. For instance, considering the point (1, 1), we
+first calculate the partial derivatives:
+
+(f ′
+x(x, y), f ′
+y(x, y)) = (2x, −3y2),
+(f ′
+x(1, 1), f ′
+y(1, 1)) = (2, −3) ̸= (0, 0).
+
+Consequently, the Implicit Function Theorem ensures that there exist functions y = ϕ(x)
+in the neighborhood of x = 1 and x = ψ(y) around y = 1 such that f(x, ϕ(x)) = 0 and
+f(ψ(y), y) = 0. Here, we can directly ascertain the explicit forms of these functions: ϕ(x) = x
+2
+3
+and ψ(y) = y
+3
+2. On the other hand, this theorem does not address scenarios where the point
+(x0, y0) is singular, meaning that (f ′
+x(x0, y0), f ′
+y(x0, y0)) = (0, 0). This limitation arises because
+it is impossible to represent the curve as a graph of a single function in the vicinity of
+such a point.
+In the case of our curve x2 −y3 = 0, the singular point is (0, 0) (since
+(f ′
+x(0, 0), f ′
+y(0, 0)) = (2 · 0, −3 · 02) = (0, 0)). As indicated by Figure 13, it is evident that near
+
+The Newton-Puiseux method is developed to identify such functions, which provide a local
+graphical representation of a given curve. This method also accommodates singular points,
+where both partial derivatives vanish.
+
+y
+
+(1, 1)
+
+1
+
+x
+
+(0, 0)
+
+−1
+1
+
+−1
+
+Figure 13: Curve defined by x2 −y3 = 0 with its tangent at (1, 1).
+
+After this brief discussion on visualization, we now shift our focus back to the complex
+scenario, that is, when we assume that f(x, y) is a complex polynomial. We will begin by
+defining some essential concepts.
+
+i,j aijxiyj is defined as the
+set supp(f) := {(i, j) ∈R2|aij ̸= 0}. To illustrate this concept, consider the polynomial
+f(x, y) = 2x4 + xy2 −y5 + x3y3, for which we find that supp(f) = {(4, 0), (1, 2), (0, 5), (3, 3)}.
+The Newton diagram ∆(f) is characterized as the smallest convex set that contains
+supp(f) + R2
++.
+The Newton polygon NP(f) refers to the set of compact edges on the
+boundary of the diagram ∆(f). To clarify these concepts further, let us examine our example
+once more. For the polynomial f(x, y) = 2x4 + xy2 −y5 + x3y3, Figure 14 (left) displays
+supp(f) + R2
++, while Figure 14 (right) illustrates the Newton diagram (highlighted in blue)
+and the Newton Polygon (outlined in red).
+
+Newton Polygon. The support of the polynomial f(x, y) = P
+
+y
+
+y
+
+(0, 5)
+
+(0, 5)
+
+(3, 3)
+
+(3, 3)
+
+(1, 2)
+
+(1, 2)
+
+x
+
+x
+
+(4, 0)
+
+(4, 0)
+
+Figure 14: For f(x, y) = 2x4 + xy2 −y5 + x3y3, on the left supp(f) + R2
++, on the right ∆(f)
+(marked in blue) and NP(f) (marked in red).
+
+g(x, y) =
+X
+
+i,j
+bi,j xiyj
+
+is termed quasi-homogeneous of type (p, q; d) if there exist positive integers p, q and an integer
+d such that for every monomial xiyj with a nonzero coefficient bi,j, the condition
+
+p i + q j = d.
+
+is satisfied. In simpler terms, all nonzero monomials in g lie along the line described by
+p i + q j = d within the integer lattice.
+
+An important connection to the Newton polygon becomes apparent in the fact that each
+compact edge E of NP(f) possesses a unique coslope, calculated as q
+
+p. Moreover, the integer
+vector (p, q) is perpendicular to that edge. Specifically, if an edge E can be mathematically
+represented by the equation p i + q j = d for some integers p, q, d, then the aggregated sum of
+the monomials aijxiyj of f for which (i, j) resides on E forms a quasi-homogeneous polynomial
+of type (p, q; d). We denote this polynomial as
+
+f(x, y; E) =
+X
+
+(i,j)∈E
+aijxiyj.
+
+Thus, each edge of the Newton polygon gives rise to a quasi-homogeneous polynomial explicitly
+determined by the coslope (p, q) of that edge and the corresponding integer d. This relationship
+plays a crucial role in understanding and factoring the local structure of the curve f(x, y) = 0
+in the subsequent steps of the Newton-Puiseux algorithm.
+
+Factorization of a quasi-homogeneous polynomial. A significant characteristic of such
+polynomials is that, by applying an appropriate substitution that respects the weights (p, q),
+the problem can be transformed into factoring a homogeneous polynomial in a single variable.
+Specifically, let g be a quasi-homogeneous polynomial of type (p, q; d). We can express g in
+the form
+g(x, y) =
+X
+
+i,j
+bij xi yj,
+where p i + q j = d whenever bij ̸= 0.
+
+For example, consider the substitution
+
+x = tp,
+y = tq · u,
+
+which transforms each monomial xi yj into tp i ·
+
+tq u
+j = tp i+q j uj. Since p i + q j = d for
+all terms with bij ̸= 0, it follows that each nonzero term contributes a total degree d in t.
+Therefore, we can write
+g
+
+tp, tqu
+
+= td ˜g(u),
+
+where ˜g(u) is a polynomial in the single variable u. This means that we have represented
+g(x, y) through a univariate polynomial ˜g(u) (up to the factor td). Consequently, factoring
+g over C equates to factoring ˜g(u) over C, which is often a much simpler problem. This
+methodology plays a crucial role in understanding how quasi-homogeneous components of f,
+derived from its edges in NP(f), can be factorized using the Newton-Puiseux algorithm.
+
+Example. Let us examine again f(x, y) = 2x4 + xy2 −y5 + x3y3. According to the definition
+of the Newton polygon NP(f), the set of integer points contributing to f is given by
+
+(0, 5)
+
+(3, 1)
+
+(3, 3)
+
+(1, 2)
+
+(2, 3)
+
+x
+
+(4, 0)
+
+Figure 15: Newton polygon of f(x, y) = 2x4 + x y2 −y5 + x3y3 with edges in red and normal
+vectors in blue.
+
+supp(f) = {(4, 0), (1, 2), (0, 5), (3, 3)}. Figure 15 below illustrates the Newton diagram ∆(f)
+along with its two compact edges, which are highlighted in red. Additionally, the corresponding
+normal (coslope) vectors (p, q) for each edge are marked in blue.
+
+Quasi-homogeneous polynomials derived from the edges.
+
+• The first edge (connecting (4, 0) and (1, 2)) is supported by the points (4, 0) and (1, 2). A
+normal vector to this edge is (2, 3). In fact, these points satisfy the equation 2i + 3j = 8.
+Thus, the quasi-homogeneous polynomial associated with this edge is 2x4 + xy2, and its
+type is (p, q; d) = (2, 3; 8). By applying the substitution x = t2, y = t3 u, we obtain
+
+x4 = t8,
+xy2 = t2(t3u)2 = t8u2,
+g1
+
+t2, t3u
+
+= t8(2 + u2).
+
+Thus ˜g1(u) = 2 + u2 factors (over C) as (u −i
+√
+
+2)(u + i
+√
+
+2). Translating back, u = y
+
+t3
+and t2 = x ⇒t = x1/2. Thus u =
+y
+(x1/2)3 =
+y
+x3/2. Consequently, we can write
+
+g1(x, y) = 2x4 + xy2 = x4 y
+
+2
+y
+
+x3/2 −i
+√
+
+x3/2 + i
+√
+
+2
+
+
+= x
+
+y −i
+√
+
+2x3/2
+y + i
+√
+
+2x3/2
+.
+
+• The second edge (connecting (1, 2) and (0, 5)) is supported by the points (1, 2) and (0, 5).
+A normal vector to this edge is (3, 1). The exponents along this line satisfy 3 i + j = 5.
+Therefore, the quasi-homogeneous polynomial corresponding to this edge is xy2 −y5,
+with its type being (p, q; d) = (3, 1; 5). Using the substitution x = t3, y = t u, each term
+becomes degree 5 in t:
+
+x y2 = t3(tu)2 = t5u2,
+y5 = (tu)5 = t5u5,
+
+g2
+
+t3, tu
+
+= t5
+u2 −u5
+= t5u2(1 −u3).
+
+Hence ˜g2(u) = u2(1 −u3) factors further as −u2(u −1)
+
+u −−1−i
+√
+
+3
+2
+
+u −−1+i
+√
+
+3
+2
+
+. Back
+
+g2(x, y) = xy2 −y5
+
+x1/3 −−1 −i
+√
+
+x1/3 −−1 + i
+√
+
+x1/3 −1
+y
+
+y
+
+= −xy2 y
+
+3
+2
+
+3
+2
+
+
+
+3
+2
+x1/3
+y −−1 + i
+√
+
+= −y2
+y −x1/3
+y −−1 −i
+√
+
+3
+2
+x1/3
+.
+
+Puiseux expansions. A Puiseux expansion (or Puiseux series) for a solution y(x) to the
+equation f
+
+x, y
+
+= 0 takes the form of a formal power series in fractional powers of x.
+Specifically, around x = 0, we can express it as
+
+∞
+X
+
+m=m0
+αm x
+m
+N ,
+
+y(x) =
+
+where αm ∈C and N is a positive integer. In this formulation, the exponents of y(x) can
+be rational and do not necessarily have to be integer multiples. Such expansions naturally
+arise when exploring the local (particularly singular) behavior of algebraic curves, and the
+Newton–Puiseux algorithm offers a structured approach to compute them term by term.
+
+Newton - Puiseux Theorem. Before delving into the Newton–Puiseux algorithm, we
+present a crucial result that elucidates how local expansions of the form y(x) = axθ + h.o.t.
+arise from the examination of the quasihomogeneous components of f. Specifically, once axθ
+
+is identified as a root of the polynomial restricted to a certain edge of NP(f), it can be
+extended to a comprehensive Puiseux expansion for the polynomial f itself.
+Theorem (Newton - Puiseux) emphLet f be a complex polynomial in two variables, let E
+represent an edge of NP(f) with co-slope θ, and assume a ∈C \ {0}. Then axθ serves as
+a root of the quasi-homogeneous polynomial f(x, y; E) (i.e., f(x, axθ; E) = 0) if and only
+if there exists a function y(x) that satisfies f
+
+x, y(x)
+
+= 0 and has its leading term as axθ,
+meaning y(x) = axθ + h.o.t..
+
+Remark. In practical terms, each edge E of NP(f) yields a specific number of local solutions
+y(x) for the equation f(x, y) = 0, corresponding to the distinct roots into which the associated
+quasi-homogeneous polynomial f(x, y; E) factors upon univariate reduction. Thus, when
+accounting for all such edges, each one contributes a certain number of Puiseux expansions
+of the type y(x) = a xθ + h.o.t.. In many cases, the overall count of these expansions can
+be determined by examining the vertex of NP(f) (the Newton diagram) with the highest
+“vertical” coordinate, as this vertex essentially sets a boundary on the total possible degree in
+y.
+Moreover, if f(x, y) is divisible by y, it follows that y(x) = 0 automatically provides a solution
+for f(x, y) = 0. In simpler terms, whenever f(x, y) = y · g(x, y), the curve defined by f = 0
+necessarily includes the line y = 0.
+Indeed, we can switch the roles of x and y and study the expansions x(y) in an entirely
+analogous manner: each edge of the Newton polygon projected along the opposite axis
+produces expansions that describe the solutions locally as functions of y. In summary, the
+Newton-Puiseux approach enables us to track all local branches of the curve f(x, y) = 0
+(around a singular point) by systematically addressing the contributions from each edge in
+the polygon.
+
+a11xθ1,
+a12xθ1,
+. . . ,
+a1n1xθ1.
+
+Step 3. For each solution a1k1 xθ1, consider the transformed function
+
+f1(x, y) = f
+
+x, y + a1k1xθ1
+.
+
+Generate NP
+
+f1
+
+and analyze its edges for co-slopes θ2 > θ1.
+
+• If no edge exists with a co-slope greater than θ1, then y(x) = a1k1xθ1 is (at this stage) a
+valid solution.
+
+• If such an edge does exist, let E2 be the edge with co-slope θ2 > θ1.
+
+Step 4. For the function f1, repeat the procedure from Step 2, identifying all nonzero
+solutions
+a21xθ2,
+a22xθ2,
+. . . ,
+a2n2xθ2
+
+associated with E2. For each root a2k2xθ2, refine the partial expansion to
+
+y(x) = a1k1xθ1 + a2k2xθ2.
+
+Then construct
+f2(x, y) = f1
+
+x, y + a2k2xθ2
+
+and check whether NP(f2) includes any edge with a co-slope greater than θ2. Continue
+similarly if such an edge is present.
+Step 5. The iteration continues until the expansions reach the desired order in x. Specifically,
+if
+y(x) = a1k1xθ1 + a2k2xθ2 + · · · + as ksxθs
+
+represents the current partial expansion, the last term as ksxθs originated from the newest edge
+of NP(fs−1). One can proceed with refinements until no new edges with higher co-slopes
+emerge or until the series has been established to a specified degree.
+Comment: Although the description here follows an algorithmic framework, practical
+implementation frequently involves symbolic manipulations of polynomials. The key concept
+is to track the new exponents θs that arise during each refinement step and resolve the
+corresponding (quasi-homogeneous) equations until the desired depth of the Puiseux expansion
+is achieved.
+
+Remark on the exponent threshold. Throughout the pseudocode presented below, we
+define a parameter T (“exponent threshold”), which specifies the extent to which we aim to
+develop the Puiseux series in relation to the exponents of x. Specifically, when a newly obtained
+coslope θ surpasses T , the algorithm stops further refinement of that branch, considering
+
+1: Input: A polynomial f(x,y) ∈C[x,y]; desired expansion degree T .
+
+2: Output: Puiseux expansions y(x) such that f
+
+x,y(x)
+
+= 0 up to order T .
+
+3: procedure NewtonPuiseux(f(x,y),T )
+
+4:
+Compute the Newton polygon NP(f).
+
+5:
+for each edge E1 of NP(f) with co-slope θ1 do
+
+6:
+Identify the quasi-homogeneous polynomial f(x,y;E1) and solve f(x,y;E1) = 0
+
+for nonzero roots a1k1xθ1.
+
+7:
+for each root a1k1xθ1 do
+
+8:
+Define f1(x,y) ←f
+
+x,y + a1k1xθ1
+.
+
+9:
+Compute NP(f1); let θnext be the smallest co-slope > θ1 (if such a value exists).
+
+10:
+if θnext does not exist or θnext > T (exceeds desired order) then
+
+11:
+Record partial expansion y(x) = a1k1xθ1.
+
+12:
+else
+
+13:
+RefineExpansion(f1,θnext,T , partialExpansion=a1k1xθ1)
+
+14:
+return All expansions identified up to order T .
+
+15: procedure RefineExpansion(fm,θm,T , partialExpansion)
+
+16:
+Solve fm(x,y;Em) = 0 on the new edge Em, giving roots am1xθm,am2xθm,...
+
+17:
+for each root amkmxθm do
+
+18:
+updatedExpansion ←partialExpansion +amkmxθm
+
+19:
+if θm > T then
+
+20:
+break (sufficient order reached)
+
+21:
+else
+
+22:
+fm+1(x,y) ←fm
+
+x,y + amkmxθm
+
+23:
+Recompute NP(fm+1); next co-slope θm+1 > θm (if any)
+
+24:
+if θm+1 does not exist or >T then
+
+25:
+Record updatedExpansion
+
+26:
+else
+
+Remark (multiple edges with identical coslope). In certain circumstances, the Newton
+polygon may include multiple edges sharing the same coslope. Practically, this implies the
+presence of several line segments positioned on parallel lines at the same height within the
+diagram. In such instances, all monomials from Supp(f) lying on any of these parallel
+edges are collected. Subsequently, the factorization of the corresponding quasi-homogeneous
+polynomials is carried out. Each factor yields a potential branch (local solution) for the
+Puiseux expansion. It is noteworthy that some factors may be identical or repeated, which
+could indicate branching or higher multiplicities within the local expansions.
+
+Remark (shifting the reference point). Although the Newton-Puiseux algorithm is
+typically described for expansions centered around x = 0, the same methodology is applicable
+for investigating local behavior around any designated point (x0, y0). By translating the
+coordinates, specifically setting X = x −x0 and Y = y −y0, one can construct the Newton
+polygon of f(X + x0, Y + y0) and derive Puiseux expansions of Y (X). Consequently, the
+curve f(x, y) = 0 can be decomposed globally into local branches at all of its (finite) singular
+or nonsingular points.
+
+Example illustrating the Newton-Puiseux algorithm. Consider the polynomial
+
+f(x, y) = y6 −3xy4 + 3x2y2 −x3 −2xy5 + 4x2y3 −2x3y + 8x5.
+
+Observe that f can be rewritten as
+
+f(x, y) = (y2 −x)3 −2xy(y2 −x)2 + 8x5,
+
+which notably reveals that supp(f) contains the exponent points
+
+{(0, 6), (1, 4), (2, 2), (3, 0), (1, 5), (2, 3), (3, 1), (5, 0)}.
+
+The corresponding Newton polygon is illustrated in Figure 16. It features exactly one compact
+edge E connecting (3, 0) and (0, 6). By restricting f along that edge, we derive:
+
+f(x, y; E) = y6 −3xy4 + 3x2y2 −x3 = (y2 −x)3 = (y −x1/2)3
+y + x1/2 3,
+
+indicating that the associated quasi-homogeneous polynomial factors into two distinct roots,
+± x1/2.
+
+Starting with y(x) = x1/2. We define
+
+f1(x, y) = f
+
+x, y + x1/2
+.
+
+One then computes
+
+f1(x, y) =f(x, y + x1/2)
+
+=y3(y + 2x1/2)3 −2x(y + x1/2)y2(y + 2x1/2)2 + 8x5
+
+=y6 + 6x1/2y5 + 6xy4 + 8x3/2y3 −2xy5 −10x3/2y4
+
+−16x2y3 −8x5/2y2 + 8x5
+
+supp(f1) = {(0, 6), (1/2, 5), (1, 4), (3/2, 3), (1, 5), (3/2, 4), (2, 3), (5/2, 2), (5, 0)},
+
+(0, 6)
+
+(1, 5)
+
+(2, 3)
+(1, 4)
+
+(2, 2)
+
+(5, 0)
+
+x
+
+(3, 0)
+
+Figure 16: Newton polygon of f(x, y) = y6 −3xy4 + 3x2y2 −x3 −2xy5 + 4x2y3 −2x3y + 8x5.
+There is exactly one compact edge, from (3, 0) to (0, 6).
+
+and its support comprises exponents that include fractional x-powers (resulting from the
+shifts by x1/2). The Newton polygon of f1 is illustrated in Figure 17. It features three edges,
+designated as E1, E2, and E3, with co-slopes of 5/4, 1, and 1/2, respectively. Since we aim to
+find expansions with exponents θ > 1/2 (indicating that the subsequent terms in the Puiseux
+series have exponents greater than 1/2), we concentrate on edges E1 and E2. We find that:
+
+f1(x, y; E1) = 8x3/2y3 −8x5/2y2 = 8x3/2y2(y −x)
+
+f1(x, y; E2) = −8x5/2y2 + 8x5 = −8x5/2(y −x5/4)(y + x5/4).
+
+By extracting the nonzero roots of these quasi-homogeneous polynomials, we obtain the
+following terms in the expansions:
+
+y1(x) = x1/2 + x + h.o.t.,
+y2(x) = x1/2 + x5/4 + h.o.t.,
+
+y3(x) = x1/2 −x5/4 + h.o.t..
+
+Thus, starting with the root x1/2, we derive three distinct solutions.
+
+Starting with y(x) = −x1/2. When we apply the same methodology to the second root
+−x1/2, we also obtain three expansions, represented as:
+
+y4(x) = −x1/2 + x + h.o.t.,
+y5(x) = −x1/2 + ix5/4 + h.o.t.,
+
+y6(x) = −x1/2 −ix5/4 + h.o.t..
+
+In total, these six series encompass all possible roots up to the specified order in x. In fact,
+from the original edge E of NP(f), we observe that the degree of f along that edge with
+respect to y is 6, which leads us to expect exactly six expansions of the form y(x) = · · ·. No
+further solutions emerge in later refinement steps, as each branch has been entirely accounted
+for through the corresponding edge analysis.
+
+C
+Implementation details and controls (for reproduction)
+
+Notation clash
+We reserve the symbol ∆for the local neighbourhood radius utilized to
+sample perturbations around an anchor, and use δ to denote the margin threshold in the
+uncertainty rule (Refer to Section 3). Temperature is consistently represented by T.
+
+E3
+
+E2
+
+E1
+
+x
+
+Figure 17: The Newton polygon of f1(x, y) = f
+
+x, y + x1/2
+, illustrating three edges E1, E2,
+and E3, with co-slopes 5/4, 1, and 1/2, respectively.
+
+C.1
+Anchor mining (uncertainty rules)
+
+Anchors are identified using the standard union rule
+
+U⋆=
+
+z : max
+k
+pk(z; T) < τ
+
+∪
+
+z : |p(1)(z; T) −p(2)(z; T)| < δ
+
+,
+
+applied exactly as described in up_real.py and up_radio.py. When a calibrator is learned
+on the validation set (using temperature / vector / Platt, or isotonic / beta techniques), the
+calibrated probabilities derived from the validation split are used to define (τ, δ), and the same
+calibrator is subsequently applied to the test set for unbiased selection and assessment.
+
+C.2
+C2 feature compression (inputs to the CVNN)
+
+Both the MIT–BIH and RadioML pipelines compress raw time windows to C2 ∼=R4:
+
+• MIT–BIH: complex_stats (which includes four complex-aware summary statistics),
+
+• RadioML: stft_stats (which consists of four STFT-based statistics).
+
+The arrangement follows [Re1, Re2, Im1, Im2] to align with the model’s first real layer, which
+has a size of 4.
+
+C.3
+Local polynomial surrogate in C2 (exact implementation)
+
+For a given anchor z⋆, we fit the logit-difference surrogate
+
+bfd(ξ, η) =
+X
+
+i+j≤d
+cij ξiηj,
+(ξ, η) = (x −x⋆, y −y⋆),
+
+using the following defaults (identical to the released code unless stated otherwise):
+
+• the degree is set to d=4; constant and all linear terms are removed (to enforce bfd(0, 0) = 0
+and zero gradient),
+
+• samples: N ≈600 (per anchor in experiments; the function’s default is 2000) drawn i.i.d.
+within [−∆, ∆]4,
+
+• kink rejection band: exclude_kink_eps = 10−6 (swept in ablations),
+
+• weighting: weight_by_distance=True (see below),
+
+• ridge regularization: λ=10−8 (Tikhonov).
+
+Design matrix and monomials
+We consider all monomials with total degrees such that
+2 ≤i+j ≤d, resulting in the number of unknowns given by M =
+d+2
+2
+
+−3 (the 3 omitted
+terms include the constant and two linear terms). Columns are scaled using ℓ2 norms to
+ensure unit length, which improves conditioning.
+
+Near-kink filtering (piecewise-holomorphic activations)
+If the network utilizes a
+modReLU-/zReLU-like first complex layer (indicated by the model attribute bias_modrelu
+or the layer name), we compute the per-sample pre-activation margins
+
+sn,h =
+an,h
++ bh
+
+where an,h represents the complex pre-activation and bh is the modReLU bias at the hidden
+unit h. Any perturbation for which minh sn,h ≤εkink is excluded (exclude_kink_eps). This
+step prevents the mixing of different holomorphic sheets in the fitting process.
+
+Sample weighting
+For the samples that remain, we assign weights using the formula
+
+wn ∝max
+
+min
+h sn,h, 0
+
++ 10−9,
+
+which means perturbations that are further away from modReLU kinks will have a greater
+effect on the weighted least-squares fitting. (If no modReLU-like layer is identified, we revert
+to using unit weights.)
+For space-filling sampling one may use Latin Hypercube designs [62] or low-discrepancy
+sequences such as (scrambled) Sobol’ nets [63, 64]; general DoE guidance is summarized in
+[65].
+
+Estimator and stability checks
+We solve
+
+min
+c
+∥W 1/2(Ac −F)∥2
+2 + λ∥c∥2
+2,
+
+with W = diag(w1, . . . , wN). As an alternative, the ridge parameter can be selected via
+generalized cross-validation (GCV) in the smoothing-spline tradition [66, 67]. We report
+cond(A) and rank(A). If cond(A)>1010, rank(A)<M, or the kept-ratio (#usable samples /
+N) falls below 0.25, we fallback by shrinking the radius (∆←0.5 ∆) and/or reducing d (down
+to ≥2), then refit. This logic is implemented in local_poly_approx_complex(...).
+
+Fidelity metrics
+On an independent set (≈200–500 perturbations), we calculate RMSE,
+MAE, Pearson correlation, and sign agreement:
+
+i
+I
+h
+sign bfd = sign f
+i
+,
+
+n
+X
+
+SA = 1
+
+which is returned by evaluate_poly_approx_quality(...) (we also report Pearson’s ρ)
+[68]. We include MAE since, for average performance assessment, it can be preferable to
+RMSE [69].
+
+We assess local non-holomorphicity by sampling small spheres around z⋆and analyzing the
+angular dispersion of the gradients ∇f directions; the kink_score indicates the standard
+deviation (measured in radians) of these angles. Higher values suggest a greater degree of
+piecewise behavior.
+
+C.5
+Newton–Puiseux stage (plumbing only)
+
+The surrogate bfd is symbolically factored and taken through our Puiseux routine to address
+fractional-power branches. For mathematical and algorithmic details, refer to B; our focus
+here is on noting that the implementation yields (branch exponent, multiplicity, leading
+coefficient, orientation) for each branch.
+
+C.6
+Recommended defaults and how to tune them
+
+• Degree d: Start with a value of 4; if ρP < 0.2 or cond(A) becomes excessively large,
+try d ∈{3, 2}.
+
+• Radius ∆: Set so that a typical perturbation results in an approximate 1–3% relative
+change in logits; in our experiments, the code defaults to 0.05.
+
+• Samples N: 600 is sufficient for d=4; consider increasing to 1000 if the kink filter
+discards many points.
+
+• Kink band εkink: 10−6 is safe; we sweep up to 10−2 in C to show robustness.
+
+• Regularization λ: Maintain a small Tikhonov value (10−8); increase by one order of
+magnitude if rank deficiency remains an issue.
+
+Component
+Default / Setting
+
+Local neighborhood
+∆= 0.05 in scaled feature space (R4 ∼=C2)
+Polynomial degree
+d = 4; constant and linear terms omitted (i+j < 2 fixed to 0)
+Fit samples / eval samples
+N = 600 (fit), Neval = 200 (fidelity)
+Weights and filtering
+Distance weighting, kink-aware exclusion with kink_eps = 10−6
+
+Stability
+Column scaling;
+Tikhonov applied if necessary (λ
+=
+10−8);
+min_keep_ratio=0.25
+Kink diagnostics
+2 000 draws; ∆= 0.05; kink_eps sweep 10−6 →10−2
+
+Puiseux precision
+Symbolic factorization; precision set to 4 (timing recorded for each
+stage)
+Robustness rays
+20 random phase directions; testing radius 0.02; 20 iterations
+Calibration (CV)
+For MIT–BIH: none, temperature, isotonic; for RadioML: none,
+Platt (logistic), isotonic. 5-fold stratified CV (calibrator trained on
+validation set, applied to test).
+ECE bins
+10–15 bins (per script); confidence intervals via t-intervals; Wilcoxon
+tests for pairwise
+
+Table 16: Defaults matching the released code.
+
+D.1
+Computational notes (implementation)
+
+The surrogate is transformed into a symbolic expression and factorized using sympy’s routines,
+with classical Hensel-lifting–style factorization underpinning the approach [70]. We log wall
+time for each stage (sampling, least squares, factorization, simplification, and Puiseux) and
+report CPU/GPU memory usage as part of the resource benchmark. Refer to Table 17 for
+additional information.
+
+D.2
+What we time and what we measure
+
+For
+every
+anchor,
+benchmark_local_poly_approx_and_puiseux(...)
+provides:
+time_sampling,
+time_lstsq,
+time_factor,
+time_simplify,
+time_puiseux,
+time_total.
+We
+compare
+this
+against
+a
+single
+backpropagation-based
+saliency
+pass
+through
+time_gradient_saliency(...), which records wall-clock time and peak GPU mem-
+ory (using torch.cuda.max_memory_allocated), along with the CPU RSS change.
+
+D.3
+Asymptotics and empirical scaling
+
+Let M =
+d+2
+2
+
+−3 represent the number of active monomials. Sampling operates at O(N);
+solving the weighted ridge regression can be O(NM 2) (using the normal equations) or O(NM)
+if a stable least-squares backend is employed. The symbolic factor and Puiseux routine
+exhibit super-linear scaling with respect to d and the number of nonzero terms; in practice,
+these operations are typically dominated by small degrees (d ∈{3, 4, 5}) and sparse supports.
+
+D.4
+Hardware and software
+
+All timing measurements are conducted using time.perf_counter() on the training host;
+GPU peak statistics are recorded for each anchor after resetting CUDA peak counters before
+every call. Symbolic algebra relies on sympy with default settings.
+
+Table 17: Resource benchmark (per anchor). Values presented are median [IQR] for anchors
+from 17 MIT–BIH and 21 RadioML anchors; times are measured in milliseconds. The saliency
+reports a single pass of gradient-based saliency. Peak GPU usage is tracked during the Puiseux
+pipeline, with saliency peak measurements being equivalent within measurement noise.
+
+Sampling
+LSQ
+Factor
+Simplify
+Puiseux
+Total
+
+MIT–BIH (ms)
+0.0
+[0.0–
+0.0]
+280.0
+[280.0–
+290.0]
+
+4080.0
+[4000.0–
+4260.0]
+RadioML (ms)
+0.0
+[0.0–
+0.0]
+290.0
+[280.0–
+290.0]
+
+10.0 [10.0–
+10.0]
+90.0 [90.0–
+100.0]
+3700.0
+[3590.0–
+3870.0]
+
+10.0 [10.0–
+10.0]
+90.0 [90.0–
+90.0]
+3660.0
+[3460.0–
+3740.0]
+
+4060.0
+[3850.0–
+4140.0]
+
+Saliency (ms)
+4.77 [4.52–5.00]
+GPU peak (MB)
+64.0 [64.0–64.0]
+
+The primary compute failure modes identified are: (i) rank deficiency / ill-conditioning of A,
+which is addressed by radius shrinking and degree fallback, (ii) protracted symbolic factor
+execution times for dense degree-5 fits, mitigated by early termination at d=4, and (iii)
+excessive kink pruning, which can be alleviated by increasing either N or εkink).
+
+E
+Sensitivity of anchors to (τ, δ)
+
+This section evaluates how the uncertainty thresholds (τ, δ) influence: (i) the quantity of
+anchors, (ii) the spatial distribution of anchors within feature space, (iii) the capture of actual
+errors, (iv) the precision of the uncertain flag, and (v) the accepted-set risk.
+
+E.1
+Grid evaluation protocol
+
+For a grid τ ∈[0.50, 0.95] and δ∈[0.00, 0.60] (the defaults in up_real.py and up_radio.py),
+we compute:
+
+abstain = #{z : max pk(z; T)<τ or |p(1)−p(2)|<δ}
+
+n
+,
+
+capture = #{misclassified z flagged uncertain}
+
+#{misclassified z}
+,
+
+precision = #{misclassified z flagged uncertain}
+
+#{flagged uncertain}
+,
+
+riskaccept = #{misclassified z not flagged}
+
+#{not flagged}
+.
+
+Additionally, we monitor a normalized dispersion of the flagged set: given that U denotes the
+set of flagged samples, ¯xU represents its centroid in R4, and gspread is the global maximum–
+minimum spread of the complete set, the dispersion is calculated as
+
+x∈U
+∥x−¯xU∥2
+
+dispersion =
+1
+|U|
+P
+
+gspread ,
+
+with a stable fallback to 0 for |U|
+≤
+1.
+These concepts are implemented in
+sensitivity_analysis(...) and are logged to sens_grid.csv.
+
+E.2
+Reporting and selection under a review budget
+
+We normalize abstain and capture to the range [0, 1] and present kink=capture−abstain as
+a unified benefit–cost summary (which is also stored). For a specified integer review_budget,
+we determine (τ ⋆, δ⋆) by ordering flagged points based on pmax (for τ) and the top-2 margin
+(for δ), truncating to fit the budget (select_thresholds_budget_count(...)).
+
+F
+Calibration reporting: CIs, tests, and multiplicity mis-
+estimation
+
+F.1
+Comparison criteria and percentage calculations
+
+Unless otherwise specified, all relative improvements (such as “61% ECE drop”) are calculated
+relative to the uncalibrated softmax (T=1), maintaining consistency across identical folds and
+
+ECENONE
+× 100%.
+
+Averages are computed across folds; we also provide raw per-fold CSVs.
+
+F.2
+Confidence intervals and non-parametric testing
+
+For each method and metric ∈{ECE, NLL, Brier, Acc, AUC}, we compute a 95% Student-t
+confidence interval as follows:
+¯x ± t0.975, n−1
+s
+√n,
+
+utilizing the function mean_ci_t(...). Pairwise comparisons of methods employ the Wilcoxon
+signed-rank test across folds, using the alternative “less” for error metrics (ECE, NLL, Brier)
+and “greater” for Accuracy/AUC; p-values are reported when n ≥5 and foldwise differences
+are non-degenerate. We also include a win-rate vs. NONE table, detailing the number of folds
+in which a method’s ECE is lower than that of NONE. This mirrors the format used in the
+released scripts.
+
+F.3
+Stability against re-parameterizations of (Re, Im)
+
+In our ablation studies, we ensure that the calibration trends remain consistent when applying
+global complex rotations and channel permutations (unitary transformations of the R4 input).
+This is achieved by adjusting the validation/test features and reapplying the calibrated model.
+
+F.4
+From multiplicity to temperature: sensitivity to mis-estimation
+
+Our phase-aware temperature relies on a heuristic relationship between the estimated branch
+multiplicity m and the effective temperature T:
+
+T ∝m−γ,
+γ ∈[0.5, 1].
+
+When the surrogate’s factorization causes a relative error ε in m, such that mest = mtrue(1+ε),
+the proportional temperature adjustment is given by
+
+γ
+= (1 + ε)−γ.
+
+Tmult =
+
+mtrue
+
+mest
+
+We
+explore
+the
+effects
+of
+ε
+∈
+{−0.50, −0.25, −0.10, −0.05, 0, 0.05, 0.10, 0.25, 0.50}
+with γ = 0.5 (the default) and report the resulting ECE for each scenario using
+sweep_multiplicity_mis-estimation(...).
+
+F.5
+Fold structure and fairness
+
+All calibration methods utilize identical splits and a single validation calibrator that is
+learned once per fold. For multiclass-to-binary reporting, we implement the top-2 reduction.
+Metrics for each fold are recorded in cv_metrics_per_fold_multi.csv and summarized
+into a confidence interval table (calibration_ci_table.csv) along with a human-readable
+report.
+
+Require: record IDs R, window size L = 128, pre-samples P = 50
+
+1: for r ∈R do
+2:
+Load raw signal and annotations
+3:
+Band-pass filter 0.5–40 Hz (2nd-order Butterworth; zero-phase)
+4:
+for all beats labeled N or V do
+5:
+if segment [t −P, t −P + L] within bounds then
+6:
+Extract segment (both channels)
+7:
+Compute analytic signal via Hilbert transform
+8:
+Concatenate Re and Im parts →feature vector
+
+9: Standardize features per patient on the training set to prevent leakage; then, perform a
+patient-wise, class-stratified split (80/20).
+
+G
+Datasets and Preprocessing (extended)
+
+G.1
+Controlled synthetic C2 helix (full details)
+
+All relevant information about the synthetic C2 helix (including data, figures, and methodolo-
+gies) can be found in A.
+
+G.2
+MIT–BIH Arrhythmia (signal processing and feature construc-
+tion)
+
+The evaluation is conducted using the MIT–BIH Arrhythmia Database [71, 72], which was
+recorded at a frequency of 360 Hz across two leads (channel 0: MLII, channel 1: V1). In
+accordance with [73], the task is framed as a binary classification challenge between regular
+beats (designated as class N) and premature ventricular contractions (PVC, designated as
+class V).
+
+Preprocessing pipeline
+Algorithm 3 describes the procedure. A zero-phase Butterworth
+band-pass filter (operating between 0.5 Hz to 40 Hz, 2nd-order, zero-phase via filtfilt) is
+applied to eliminate baseline wander and high-frequency noise. For each annotated beat, we
+extract a window containing L = 128 samples starting P = 50 samples before the R peak.
+The analytic signal is computed using the discrete Hilbert transform [74, 75].
+
+Complex compression to C2
+Training CVNNs directly on 4L real features is inefficient
+and increases the risk of overfitting. Hence, we compress each segment into C2 by calculating
+the first two complex moments as follows:
+
+2L−1
+X
+
+2L
+X
+
+Φ(z) =
+
+µ, ∆
+
+,
+µ = 1
+
+t=1
+zt,
+∆=
+1
+2L −1
+
+t=1
+(zt+1 −zt),
+(12)
+
+2L
+
+where z ∈C2L stacks the per-lead analytic signals. Writing µ = µr + iµi and ∆= ∆r + i∆i
+results in a four-dimensional real vector [µr, ∆r, µi, ∆i] ∈R4, which serves as input to the
+CVNN.
+
+Figure 18: Class distribution in the MIT–BIH subset.
+
+Figure 19: Raw vs. band-pass filtered ECG segments (lead II). Left: normal beat (N); right:
+PVC (V). Dashed line marks the R peak.
+
+Exploratory analysis
+Figure 18 confirms imbalance (N : V ≈20:1). Waveforms (Fig. 19),
+Hilbert envelopes (Figure 20) and STFT spectrograms (Figure 21; Hamming window 32, 50%
+overlap) illustrate morphology. The correlation matrix of the first 50 features (Figure 22) shows
+redundancy; a t-distributed stochastic neighbor embedding (t-SNE) embedding (Figure 23)
+reveals partial cluster separation [76].
+
+Dataset summary
+After discarding truncated beats, the final corpus contains 10 487
+normal and 614 PVC samples (Table 18); overall imbalance 1:17.1.
+
+G.3
+RadioML (I/Q; feature construction)
+
+We utilize the canonical RadioML pickled dictionary RML2016.10a_dict.pkl, which maps
+(modulation: str, SNR: int) to arrays with a shape of (num, 2, 128), where axis 1 stores I
+and Q components. Each example is flattened to (256, ) by concatenating I first, followed by
+Q, and a compact C2 representation is generated through STFT-based summary statistics,
+referred to as stft_stats in the code (see C).
+
+Loader and filters
+Only selected modulations and a specific SNR range are retained;
+if no samples correspond to the filters, the loader triggers a ValueError. The dataset is
+subsequently divided into training, validation, and test partitions with stratified sampling.
+
+Figure 20: Hilbert-transform envelopes for the same segments as Figure 19.
+
+Figure 21: Short-time Fourier spectrograms (Hamming window, 32 samples, 50% overlap)
+[77].
+
+Compression to C2 via STFT statistics
+For each IQ window, we compute short-time
+Fourier features and aggregate four complex-valued summary statistics (two complex features)
+to produce [Re1, Re2, Im1, Im2] ∈R4 ≡C2. The precise code is available in pre_pro.py /
+find_up_radio.py, mirroring the C2 design utilized in the ECG pipeline.
+
+Uncertainty rule
+We flag anchors using the same union rule as described in the main
+text: maxk pk < τ or |p(1) −p(2)| < δ (defaults specified in C), with the flagged anchors being
+exported for further local analysis.
+
+H
+Model Architectures and Training (full)
+
+H.1
+SimpleComplexNet (synthetic benchmark)
+
+Details regarding the architecture and training for the synthetic benchmark can be found in
+A.
+
+H.2
+MIT–BIH CVNN pipeline (full)
+
+We adopt the SimpleComplexNet backbone, broadening it to H = 64 and positioning it after
+the signal→C2 compression detailed in (G.2), and preceding calibration (Figure 24).
+
+Training and calibration
+Using the Adam optimizer (η = 10−3, β1 = 0.9, β2 = 0.999, ε =
+10−8), we conduct 20 epochs with a batch size of 128, incorporating early stopping with a
+patience of 6. The data is split patient-wise into folds; the validation fold is used to determine
+a scalar temperature (using the limited-memory BFGS algorithm, L-BFGS; |T| ≤10 for
+
+Figure 22: Correlation matrix of the first 50 features after Hilbert transform.
+
+Figure 23: t-SNE embedding of normal (blue) and PVC (red) beats.
+
+stability). The uncertainty rule applied is: maxk pk < τ (τ = 0.5) or the margin between the
+top two probabilities < δ (δ = 0.15).
+
+H.3
+RadioML pipeline (full)
+
+We utilize the same SimpleComplexNet with H = 64 on the C2 features derived from
+stft_stats (G.3). For calibration baselines, we employ either Platt (logistic) or isotonic
+scaling, which are trained on the validation split. By default, we present results based on
+Platt scaling and integrate our phase-aware temperature T ′(m) with the baseline where it is
+applicable.
+
+Normal (N)
+PVC (V)
+Total
+Imbalance
+
+Train
+8389
+491
+8880
+1 : 17.1
+Test
+2098
+123
+2221
+1 : 17.1
+
+Overall
+10 487
+614
+11 101
+1 : 17.1
+
+Raw ECG
+Band-pass
+Hilbert
+
+Φ : R4L →C2
+
+CVNN (64 hidden)
+
+Comp. W1
+modReLU
+Comp. W2
+| · |
+
+Softmax
+Temp. T
+Uncertain
+
+Figure 24: Pipeline for MIT–BIH: signal processing, feature extraction, CVNN, temperature
+scaling, and uncertainty filter.
+
+I
+Fragile-anchor triage: PR curves and AUPRC (MIT–
+BIH)
+
+Setup. We treat an anchor as fragile if a class flip is observed within the ray-scan budget
+(r ≤0.02). The positive rate on MIT–BIH is 14/17 ≈0.82. We compare five scores for
+prioritizing anchors: the quartic magnitude |c4| from the Puiseux surrogate, the inverse flip
+radii along gradient/LIME/SHAP axes (1/rgrad, 1/rLIME, 1/rSHAP), and the local gradient
+norm (“grad_norm”). Average precision (AUPRC) and PR curves are computed exactly as in
+the released scripts (Figure 25).
+
+J
+RadioML fragile-anchor triage: full PR curves
+
+Positives are anchors that flip within the scan budget r≤0.02 (4/21; baseline AUPRC ≈0.19).
+Panels show precision–recall curves for the compared scores (Figure 26). Consistent with
+Table 13, the gradient norm yields the best ranking signal, SHAP-based rays are second, and
+|c4| is near the baseline. On RadioML we thus use Puiseux descriptors for ranking and for
+phase-aligned probing, not for absolute radii.
+
+Figure 25: MIT–BIH — PR curves for triage scores. Dashed line marks the fragile prevalence
+(0.82).
+
+Figure 26: RadioML — PR curves for triage scores. Dashed line marks the fragile prevalence
+(0.19).
+
+[1] Y. LeCun, Y. Bengio, G. Hinton, Deep learning, nature 521 (7553) (2015) 436–444.
+
+[2] C. Trabelsi, O. Bilaniuk, Y. Zhang, D. Serdyuk, S. Subramanian, J. F. Santos,
+S. Mehri, N. Rostamzadeh, Y. Bengio, C. J. Pal, Deep complex networks, arXiv preprint
+arXiv:1705.09792 (2017).
+
+[3] J. A. Barrachina, C. Ren, G. Vieillard, C. Morisseau, J.-P. Ovarlez, Theory and imple-
+mentation of complex-valued neural networks, arXiv preprint arXiv:2302.08286 (2023).
+
+[4] R. Abdalla, Complex-valued neural networks–theory and analysis, arXiv preprint
+arXiv:2312.06087 (2023).
+
+[5] J. Bassey, L. Qian, X. Li, A survey of complex-valued neural networks, arXiv preprint
+arXiv:2101.12249 (2021).
+
+[6] G. Montavon, W. Samek, K.-R. Müller, Methods for interpreting and understanding
+deep neural networks, Digital signal processing 73 (2018) 1–15.
+
+[7] W. Samek, T. Wiegand, K.-R. Müller, Explainable artificial intelligence: Understanding,
+visualizing and interpreting deep learning models, arXiv preprint arXiv:1708.08296 (2017).
+
+[8] M. P. Naeini, G. Cooper, M. Hauskrecht, Obtaining well calibrated probabilities using
+bayesian binning, Tech. Rep. 1 (2015).
+
+[9] C. T. C. Wall, Singular points of plane curves, no. 63, Cambridge University Press, 2004.
+
+[10] E. Brieskorn, H. Knörrer, Plane Algebraic Curves, Birkhäuser, 1986.
+
+[11] R. J. Walker, Algebraic curves, Vol. 58, Springer, 1950.
+
+[12] S. Watanabe, Algebraic geometry and statistical learning theory, Vol. 25, Cambridge
+university press, 2009.
+
+[13] P. Maragos, V. Charisopoulos, E. Theodosis, Tropical geometry and machine learning,
+Proceedings of the IEEE 109 (5) (2021) 728–755.
+
+[14] J. Suzuki, Waic and wbic with r stan: 100 exercises for building logic, Springer Nature,
+2023.
+
+[15] T. J. O’Shea, J. Corgan, T. C. Clancy, Convolutional radio modulation recognition
+networks, in: International conference on engineering applications of neural networks,
+Springer, 2016, pp. 213–226.
+
+[16] A. Hirose, et al., Complex-valued neural networks, Vol. 32, Wiley Online Library, 2006.
+
+[17] T. Nitta, Orthogonality of decision boundaries in complex-valued neural networks, Neural
+computation 16 (1) (2004) 73–97.
+
+[18] K. Kreutz-Delgado, The complex gradient operator and the cr-calculus, arXiv preprint
+arXiv:0906.4835 (2009).
+
+[19] N. Guberman, On complex valued convolutional neural networks, arXiv preprint
+arXiv:1602.09046 (2016).
+
+[21] M. Wolff, F. Eilers, X. Jiang, Cvkan: Complex-valued kolmogorov-arnold networks, arXiv
+preprint arXiv:2502.02417 (2025).
+
+[22] Z. Liu, Y. Wang, S. Vaidya, F. Ruehle, J. Halverson, M. Soljačić, T. Y. Hou, M. Tegmark,
+Kan: Kolmogorov-arnold networks, arXiv preprint arXiv:2404.19756 (2024).
+
+[23] G. Dudek, T. Rodak, Hkan: Hierarchical kolmogorov-arnold network without backpropa-
+gation, arXiv preprint arXiv:2501.18199 (2025).
+
+[24] H. Yu, Y. Liu, M. Chen, Complex-valued neural-network-based federated learning for
+multiuser indoor positioning performance optimization, IEEE Internet of Things Journal
+11 (21) (2024) 34065–34077.
+
+[25] D. Zhao, Z. Zhang, D. Lu, X. Qiu, W. Li, H. Li, Y. Wu, Cv-yolo: A complex-valued
+convolutional neural network for oriented ship detection in single-polarization single-look
+complex sar images, Remote Sensing 17 (8) (2025) 1478.
+
+[26] J. Zhang, Y. Wu, Complex-valued unsupervised convolutional neural networks for sleep
+stage classification, Computer methods and programs in biomedicine 164 (2018) 181–191.
+
+[27] Y. Xu, F. Pourahmadian, J. Song, C. Wang, Deep learning for full-field ultrasonic
+characterization, Mechanical Systems and Signal Processing 201 (2023) 110668.
+
+[28] S. Li, L. Zhang, H. Guo, J. Li, J. Yu, X. He, Y. Zhao, X. He, Csa-fcn: Channel- and
+spatial-gated attention mechanism based fully complex-valued neural network for system
+matrix calibration in magnetic particle imaging, IEEE Transactions on Computational
+Imaging 11 (2025) 65–76.
+
+[29] M. T. Ribeiro, S. Singh, C. Guestrin, " why should i trust you?" explaining the predictions
+of any classifier, in: Proceedings of the 22nd ACM SIGKDD international conference on
+knowledge discovery and data mining, 2016, pp. 1135–1144.
+
+[30] S. M. Lundberg, S.-I. Lee, A unified approach to interpreting model predictions, Advances
+in neural information processing systems 30 (2017).
+
+[31] L. Jiang, Z. Wang, M. Xu, Z. Wang, Image saliency prediction in transformed domain:
+A deep complex neural network method, in: Proceedings of the AAAI Conference on
+Artificial Intelligence, Vol. 33, 2019, pp. 8521–8528.
+
+[32] A. Barredo Arrieta, N. Díaz-Rodríguez, J. Del Ser, A. Bennetot, S. Tabik, A. Barbado,
+S. Garcia, S. Gil-Lopez, D. Molina, R. Benjamins, R. Chatila, F. Herrera, Explainable
+artificial intelligence (xai): Concepts, taxonomies, opportunities and challenges toward
+responsible ai, Information Fusion 58 (2020) 82–115.
+
+[33] C. Guo, G. Pleiss, Y. Sun, K. Q. Weinberger, On calibration of modern neural networks,
+in: International conference on machine learning, PMLR, 2017, pp. 1321–1330.
+
+[34] F. Eilers, X. Jiang, Deepcshap: Utilizing shapley values to explain deep complex-valued
+neural networks, arXiv preprint arXiv:2403.08428 (2024).
+
+[36] C. Wang, Calibration in deep learning: A survey of the state-of-the-art, arXiv preprint
+arXiv:2308.01222 (2023).
+
+[37] L. Tao, Y. Zhu, H. Guo, M. Dong, C. Xu, A benchmark study on calibration, arXiv
+preprint arXiv:2308.11838 (2023).
+
+[38] A. Le Coz, S. Herbin, F. Adjed, Confidence calibration of classifiers with many classes,
+Advances in Neural Information Processing Systems 37 (2024) 77686–77725.
+
+[39] M. Kull, M. Perello Nieto, M. Kängsepp, T. Silva Filho, H. Song, P. Flach, Beyond
+temperature scaling: Obtaining well-calibrated multi-class probabilities with dirichlet
+calibration, Vol. 32, 2019.
+
+[40] M. Minderer, J. Djolonga, R. Romijnders, F. Hubis, X. Zhai, N. Houlsby, D. Tran,
+M. Lucic, Revisiting the calibration of modern neural networks, Advances in neural
+information processing systems 34 (2021) 15682–15694.
+
+[41] B. Lakshminarayanan, A. Pritzel, C. Blundell, Simple and scalable predictive uncertainty
+estimation using deep ensembles, Advances in neural information processing systems 30
+(2017).
+
+[42] S. Messoudi, Conformal prediction methods for complex data: application to real estate
+management, Ph.D. thesis, Université de Technologie de Compiègne (2022).
+
+[43] D. Maclagan, B. Sturmfels, Introduction to tropical geometry, Vol. 161, American
+Mathematical Soc., 2015.
+
+[44] G. F. Montufar, R. Pascanu, K. Cho, Y. Bengio, On the number of linear regions of deep
+neural networks, Advances in neural information processing systems 27 (2014).
+
+[45] D. Barnhill, R. Yoshida, G. Aliatimis, K. Miura, Tropical geometric tools for machine
+learning: The tml package, Journal of Software for Algebra and Geometry 14 (1) (2024)
+133–174.
+
+[46] M. R. Douglas, From algebraic geometry to machine learning, Pure and Applied Mathe-
+matics Quarterly 17 (2) (2021) 605–617.
+
+[47] J. Bao, Y.-H. He, E. Heyes, E. Hirst, Machine learning algebraic geometry for physics,
+arXiv preprint arXiv:2204.10334 (2022).
+
+[48] T. Coates, A. Kasprzyk, S. Veneziale, Machine learning detects terminal singularities,
+Vol. 36, 2023, pp. 67183–67194.
+
+[49] N. Hayashi, Y. Sawada, Upper bound of bayesian generalization error in partial con-
+cept bottleneck model (cbm): Partial cbm outperforms naive cbm, arXiv preprint
+arXiv:2403.09206 (2024).
+
+[50] L. Bushnaq, J. Mendel, S. Heimersheim, D. Braun, N. Goldowsky-Dill, K. Hänni, C. Wu,
+M. Hobbhahn, Using degeneracy in the loss landscape for mechanistic interpretability,
+arXiv preprint arXiv:2405.10927 (2024).
+
+[52] D. H. Brandwood, A complex gradient operator and its application in adaptive array
+theory, in: IEE Proceedings F (Communications, Radar and Signal Processing), Vol. 130,
+IET, 1983, pp. 11–16.
+
+[53] G. H. Golub, C. F. Van Loan, Matrix computations, JHU press, 2013.
+
+[54] P. C. Hansen, Rank-deficient and discrete ill-posed problems: numerical aspects of linear
+inversion, SIAM, 1998.
+
+[55] J. W. Demmel, Applied numerical linear algebra, SIAM, 1997.
+
+[56] C. Saritha, V. Sukanya, Y. N. Murthy, Ecg signal analysis using wavelet transforms,
+Bulg. J. Phys 35 (1) (2008) 68–77.
+
+[57] W. Lu, H. Hou, J. Chu, Feature fusion for imbalanced ecg data analysis, Biomedical
+Signal Processing and Control 41 (2018) 152–160.
+
+[58] U. R. Acharya, H. Fujita, O. S. Lih, Y. Hagiwara, J. H. Tan, M. Adam, Automated
+detection of arrhythmias using different intervals of tachycardia ecg segments with
+convolutional neural network, Information sciences 405 (2017) 81–90.
+
+[59] T. Fawcett, An introduction to roc analysis, Pattern recognition letters 27 (8) (2006)
+861–874.
+
+[60] F. Pedregosa, G. Varoquaux, A. Gramfort, V. Michel, B. Thirion, O. Grisel, M. Blondel,
+P. Prettenhofer, R. Weiss, V. Dubourg, et al., Scikit-learn: Machine learning in python,
+the Journal of machine Learning research 12 (2011) 2825–2830.
+
+[61] I. T. Jolliffe, Principal component analysis for special types of data, Springer, 2002.
+
+[62] M. D. McKay, R. J. Beckman, W. J. Conover, A comparison of three methods for selecting
+values of input variables in the analysis of output from a computer code, Technometrics
+42 (1) (2000) 55–61.
+
+[63] I. M. Sobol, The distribution of points in a cube and the approximate evaluation of
+integrals, USSR Computational mathematics and mathematical physics 7 (1967) 86–112.
+
+[64] A. B. Owen, Monte carlo variance of scrambled net quadrature, SIAM Journal on
+Numerical Analysis 34 (5) (1997) 1884–1910.
+
+[65] A. Dean, D. Voss, Design and analysis of experiments, Springer, 1999.
+
+[66] G. H. Golub, M. Heath, G. Wahba, Generalized cross-validation as a method for choosing
+a good ridge parameter, Technometrics 21 (2) (1979) 215–223.
+
+[67] G. Wahba, Spline models for observational data, SIAM, 1990.
+
+[68] I. Cohen, Y. Huang, J. Chen, J. Benesty, J. Benesty, J. Chen, Y. Huang, I. Cohen,
+Pearson correlation coefficient, Noise reduction in speech processing (2009) 1–4.
+
+[70] H. Zassenhaus, On hensel factorization i, J. Number Theory 1 (1) (1969) 291–311.
+
+[71] G. B. Moody, R. G. Mark, The impact of the mit-bih arrhythmia database, IEEE
+engineering in medicine and biology magazine 20 (3) (2001) 45–50.
+
+[72] A. L. Goldberger, L. A. N. Amaral, L. Glass, J. M. Hausdorff, P. C. Ivanov, R. G.
+Mark, J. E. Mietus, G. B. Moody, C.-K. Peng, H. E. Stanley, Physiobank, physiotoolkit,
+and physionet: Components of a new research resource for complex physiologic signals,
+Circulation 101 (23) (2000).
+
+[73] N. B. Nizam, S. I. S. K. Nuhash, T. Hasan, Hilbert-envelope features for cardiac disease
+classification from noisy phonocardiograms, Biomedical Signal Processing and Control 78
+(2022) 103864.
+
+[74] B. Boashash, Estimating and interpreting the instantaneous frequency of a signal-part2:
+Algorithms and applications proceedings of the ieee, VOL80 4 (1992).
+
+[75] D. Benitez, P. Gaydecki, A. Zaidi, A. Fitzpatrick, The use of the hilbert transform in ecg
+signal analysis, Computers in biology and medicine 31 (5) (2001) 399–406.
+
+[76] L. Van der Maaten, G. Hinton, Visualizing data using t-sne., Journal of machine learning
+research 9 (11) (2008).
+
+[77] S. Smith, Digital signal processing: a practical guide for engineers and scientists, Newnes,
+2003.

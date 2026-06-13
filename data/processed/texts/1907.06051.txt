@@ -1,0 +1,1993 @@
+k-hop graph neural networks
+
+Giannis Nikolentzos1,2, George Dasoulas1,3 and Michalis Vazirgiannis1,2
+
+1´Ecole Polytechnique, France
+2Athens University of Economics and Business, Greece
+3Noah’s Ark Lab, Huawei, France
+
+Abstract
+
+arXiv:1907.06051v2 [stat.ML] 9 Aug 2020
+
+Graph neural networks (GNNs) have emerged recently as a powerful architecture for
+learning node and graph representations. Standard GNNs have the same expressive power as
+the Weisfeiler–Lehman test of graph isomorphism in terms of distinguishing non-isomorphic
+graphs. However, it was recently shown that this test cannot identify fundamental graph
+properties such as connectivity and triangle freeness. We show that GNNs also suﬀer from
+the same limitation. To address this limitation, we propose a more expressive architecture,
+k-hop GNNs, which updates a node’s representation by aggregating information not only
+from its direct neighbors, but from its k-hop neighborhood. We show that the proposed
+architecture can identify fundamental graph properties. We evaluate the proposed archi-
+tecture on standard node classiﬁcation and graph classiﬁcation datasets. Our experimental
+evaluation conﬁrms our theoretical ﬁndings since the proposed model achieves performance
+better or comparable to standard GNNs and to state-of-the-art algorithms.
+
+1
+Introduction
+
+In the past years, the amount of graph-structured data has grown steadily in a wide range of
+domains, such as in social networks and in chemoinformatics. Learning useful representations
+from graph data is essential for many real-world applications. For instance, in social network
+analysis, one might be interested in predicting the interests of users represented by the nodes of
+a network [40]. In biology, an issue of high interest is the prediction of the functions of proteins
+modeled as graphs [5]. These applications typically involve either node-focused or graph-focused
+tasks, with the diﬀerence lying in the entity of interest, a node or a graph.
+Graph Neural Networks (GNNs) have recently emerged as a general framework addressing
+both node-related and graph-related tasks [6]. Although numerous GNN variants have been
+proposed in the past years [15, 30, 24, 9, 19, 23, 16, 20, 36, 42], they all share the same basic idea,
+and can be reformulated into a single common framework. Speciﬁcally, GNNs employ a message
+passing procedure, where each node updates its feature vector by aggregating the feature vectors
+of its neighbors [13]. After k iterations of the message passing procedure, each node obtains a
+feature vector which captures the structural information within its k-hop neighborhood. These
+representations can be used as features for node-related tasks. For graph-related tasks, GNNs
+compute a feature vector for the entire graph using some permutation invariant readout function
+such as summing the feature vectors of all the nodes of the graph.
+The GNN architectures have achieved state-of-the-art performance in many tasks such as
+in node classiﬁcation and in link prediction. Furthermore, they have seen considerable success
+in graph-related tasks even though they have faced intense competition from graph kernels, the
+approach that dominated the ﬁeld for more than a decade [27]. With the exception of the work
+
+1
+
+of Scarselli [29], until recently, there has been little attempt to understand the properties and
+limitations of GNNs. It was clear though that there is a close connection between GNNs and
+the Weisfeiler–Lehman (WL) test of graph isomorphism [37], a powerful heuristic which can
+successfully test isomorphism for a broad class of graphs [2]. Similar to GNNs, the WL test
+iteratively updates a given node’s label by aggregating the labels of its neighbors. Speciﬁcally,
+the algorithm augments the label of each node by the sorted multiset of labels of neighboring
+nodes, and compresses these augmented labels into new, short labels. To test graph isomor-
+phism, this relabeling procedure is repeated until the label sets of the input graphs are not
+identical, or the number of iterations reaches a speciﬁc value.
+Some recent studies have made attempts to formally characterize the expressive power of
+GNNs [25, 39]. These studies have compared the expressiveness of GNNs with that of the WL
+test, and have shown that GNNs do not have more power in terms of distinguishing between
+non-isomorphic graphs than the WL algorithm. To make matters worse, it was recently shown
+that the WL subtree kernel (which capitalizes on the WL test) has insuﬃcient expressive power
+for identifying fundamental graph properties [22]. It remains though unclear how GNNs encode
+subgraph/graph information into their learned representations, and whether they can identify
+such properties. Since these architectures are directly related to the WL test, they may also
+lack expressive power, and they may fail to identify these properties. Hence, the need for more
+powerful representations is more essential than ever.
+Present Work. In this paper, we further analyze the representational power of GNNs.
+Speciﬁcally, we study if GNNs can identify speciﬁc properties of graphs. We say that a GNN
+identiﬁes a property if no two graphs are mapped to the same feature vector unless they both
+have or both do not have the property. We demonstrate that the standard GNN fails to identify
+fundamental graph properties such as connectivity, bipartiteness and triangle-freeness. We show
+that this limitation of GNNs stems from the myopic nature of the message-passing procedure
+which only considers the direct neighbors of each node. To account for that, we propose a novel
+architecture, called k-hop-GNNs, which takes into account not only the immediate neighbors
+of each node, but its whole k-hop neighborhood. By updating node features using not only
+the direct neighbors, but taking into account the entire k-hop neighborhood, we can capture
+structural information that is not visible when aggregating only the 1-hop neighborhood. The
+proposed model is strictly more powerful than the standard GNN architecture. Furthermore, in
+contrast to the GNN framework, the proposed architecture is capable of distinguishing global
+properties such as connectivity.
+We demonstrate the proposed architecture in a variety of
+node and graph classiﬁcation tasks. The results show that the proposed k-hop-GNNs are able
+to consistently outperform traditional GNNs on most datasets. Our main contributions are
+summarized as follows:
+
+• We show that standard GNNs cannot identify essential graph properties such as connec-
+tivity, bipartiteness and triangle-freeness.
+
+• We propose k-hop-GNNs, a novel architecture for performing machine learning on graphs
+which is more powerful than traditional GNNs.
+
+• We evaluate the proposed architecture on several node classiﬁcation and graph classiﬁca-
+tion datasets, and achieve performance better or comparable to standard GNNs and to
+state-of-the-art algorithms.
+
+The rest of this paper is organized as follows. Section 2 introduces some preliminary concepts
+and summarizes the standard graph neural network model. Section 3 analyzes the expressive
+power of the graph neural network model highlighting its limitations. Section 4 presents the
+proposed model for performing machine learning tasks on graph-structured data, and shows
+
+2
+
+that it is theoretically more powerful than the standard graph neural network architecture.
+Section 5 evaluates the proposed architecture on several standard datasets. Finally, section 6
+concludes.
+
+2
+Preliminaries
+
+We start by ﬁxing our notation, and then we present the standard graph neural network frame-
+work.
+
+2.1
+Notation
+
+Let G = (V, E) be an undirected graph consisting of a set V of nodes and a set E of edges
+between them. We will denote by n the number of nodes and by m the number of edges. The
+neighborhood of radius k (or k-hop neighborhood) of a node v ∈V is the set of nodes at a
+distance less than or equal to k from v and is denoted by Nk(v). Given a set of nodes S ⊆V ,
+the subgraph induced by S is a graph that has S as its node set and it contains every edge of
+G whose endpoints are in S. The neighborhood subgraph of radius k of a node v ∈V is the
+subgraph induced by the neighborhood of radius k of v and v itself, and is denoted by Gk
+v. A
+node-labeled graph is a graph with labels on nodes. That is, given a set of labels L, there exists
+a function ℓ: V →L that assigns labels to the nodes of the graph. Instead of discrete labels,
+nodes may also be annotated with multiple categorical or real-valued properties. These graphs
+are known as attributed graphs.
+
+2.2
+Graph Neural Networks
+
+Let G = (V, E) be a graph. Suppose each vertex v ∈V is annotated with a feature vector
+h(0)
+v
+∈Rd.
+For graphs with discrete node labels, these vectors usually correspond to some
+representations (e. g., one-hot encoding) such that two nodes v and u have identical feature
+vectors if and only if ℓ(v) = ℓ(u). For attributed graphs, these feature vectors may be set equal
+to the attribute vectors of the nodes. For graphs without node labels and node attributes, these
+vectors can be initialized with a collection of local vertex features that are invariant to vertex
+renumbering (e. g., degree, k-core number, number of triangles, etc.). A GNN model consists of
+a series of neighborhood aggregation layers. Each one of these layers uses the graph structure
+and the node feature vectors from the previous layer to generate new representations for the
+nodes. The feature vectors are updated by aggregating local neighborhood information.
+Suppose we have a GNN model that contains T neighborhood aggregation layers. In the
+t-th neighborhood aggregation layer (t > 0), the hidden state h(t)
+v
+of a node v is updated as
+follows:
+
+a(t)
+v
+= AGGREGATE(t) n
+h(t−1)
+u
+|u ∈N1(v)
+o
+
+h(t)
+v
+= MERGE(t)
+h(t−1)
+v
+, a(t)
+v
+
+(1)
+
+By deﬁning diﬀerent AGGREGATE(t) and MERGE(t) functions, we obtain a diﬀerent GNN
+variant.
+For the GNN to be end-to-end trainable, both functions need to be diﬀerentiable.
+Furthermore, since there is no natural ordering of the neighbors of a node, the AGGREGATE(t)
+
+function must be permutation invariant. There are numerous concrete implementations of the
+above GNN framework. Some of them integrate the AGGREGATE(t) and MERGE(t) steps into
+
+3
+
+a single function [20, 42] as follows:
+
+h(t)
+v
+=
+1
+|N1(v)| + 1
+
+X
+
+u∈N1(v)∪{v}
+MLP(t)
+h(t−1)
+u
+
+
+where MLP(t) is a multi-layer perceptron of the t-th neighborhood aggregation layer. Note
+that the majority of the proposed models use 1-layer perceptrons instead of MLPs. Another
+widely-used GNN model is implemented as follows [23]:
+
+a(t)
+v
+=
+1
+|N1(v)|
+
+u∈N1(v)
+MLP(t)
+1
+
+h(t−1)
+u
+
+
+X
+
+h(t)
+v
+= MLP(t)
+2
+
+h(t−1)
+v
++ a(t)
+v
+
+
+where again MLP(t)
+1
+and MLP(t)
+2
+are multi-layer perceptrons of the t-th neighborhood aggrega-
+tion layer.
+For node-level tasks, the node feature vectors h(T)
+v
+of the ﬁnal neighborhood aggregation layer
+are usually passed on to a fully-connected neural network. For graph-level tasks, GNNs apply a
+READOUT function to node representations generated by the ﬁnal neighborhood aggregation
+layer to obtain a vector representation over the whole graph:
+
+hG = READOUT
+n
+h(T)
+v
+|v ∈V
+o
+(2)
+
+Similarly to the AGGREGATE(t) function, the READOUT function is necessary to be diﬀer-
+entiable and permutation invariant. A common READOUT function computes the mean of the
+representations of the nodes:
+
+hG =
+1
+|V |
+
+X
+
+v∈V
+h(T)
+v
+
+However, there have also been proposed more sophisticated functions based on sorting [42], on
+concatenation across the iterations/layers [39] and on clustering [35, 41].
+
+3
+Limitations of the Standard GNN Model
+
+To gain theoretical understanding of the properties and weaknesses of GNNs, we capitalize on
+concepts introduced by Goldreich in the context of property testing [14], and further reﬁned by
+Kriege et al. for investigating the expressive power of graph kernels [22].
+Let Gn be the set of graphs on n vertices, where n ∈N. A graph property is a set P of
+graphs that is closed under isomorphism. We denote the set of graphs in P on n vertices by Pn.
+In this paper we study the following three fundamental graph properties: (1) connectivity, (2)
+bipartiteness, and (3) triangle-freeness. A graph is connected if there is a path from any vertex
+to any other vertex in the graph. A graph G = (V, E) is bipartite if its set of vertices V can
+be decomposed into two disjoint sets V1 and V2, i. e., V = V1 ∪V2, such that every edge e ∈E
+connects a vertex in V1 to a vertex in V2. Finally, a graph is triangle-free if it does not contain
+a triangle (i. e., a cycle of three vertices). Following [22], we say that a GNN can identify a
+property if no two graphs obtain the same representation unless they both have or both do not
+have the property.
+
+Deﬁnition 1. Let P be a graph property. If for each n ∈N, a GNN produces diﬀerent repre-
+sentations for every G1 ∈Pn and G2 ̸∈Pn, i. e., it holds that hG1 ̸= hG2, then we say that P
+can be identiﬁed by the GNN.
+
+4
+
+G1
+G2
+
+Figure 1: Two 2-regular graphs on 6 vertices. The two graphs serve as a counterexample for
+the proof of Theorem 1.
+
+We next study if the standard GNN architecture can identify the above three graph prop-
+erties. We assume that either all nodes or nodes with the same degree are annotated with
+the same feature vector.
+We ﬁrst show that the standard GNN produces exactly the same
+representation for the nodes of all regular graphs of a speciﬁc degree in Gn for some n ∈N.
+
+Lemma 1. The standard GNN maps the nodes of two regular graphs of the same size and degree
+to the same feature vector.
+
+Proof. Let G1 = (V1, E1) and G2 = (V2, E2) be two non-isomorphic regular graphs of the same
+degree with the same number of vertices. We show for an arbitrary iteration t ≥1 and nodes
+v1 ∈V1, v2 ∈V2 that h(t)
+v1 = h(t)
+v2 . All nodes have the same initial representation, hence, in
+iteration 0, it holds that h(0)
+v1 = h(0)
+v2 . Assume for induction that h(t−1)
+v1
+= h(t−1)
+v2
+. Let Mv1 =
+{h(t−1)
+u1
+|u1 ∈N1(v1)} and Mv2 = {h(t−1)
+u2
+|u2 ∈N1(v2)} be the multisets of feature vectors of the
+neighbors of v1 and v2, respectively. By the induction hypothesis, we know that Mv1 = Mv2 and
+that h(t−1)
+v1
+= h(t−1)
+v2
+such that independent of the choice of the AGGREGATE(t) and MERGE(t)
+
+functions in (1), we get h(t)
+v1 = h(t)
+v2 . This holds as the input to both functions AGGREGATE(t)
+
+and MERGE(t) is identical. This proves that h(t)
+v1 = h(t)
+v2 , and thereby the lemma.
+
+Note that the Lemma implies that two regular graphs with the same node degree and the
+same size also have the same graph representation because the READOUT function receives
+the same input.
+We next show that the GNN architecture cannot identify the three graph
+properties deﬁned above since for each one of these properties, there exists one regular graph
+in Pn and another regular graph of the same degree in Gn \ Pn.
+
+Theorem 1. The standard GNN cannot identify connectivity, bipartiteness or triangle freeness.
+
+Proof. Consider a cycle with six vertices (graph G2) and two triangles with three vertices (graph
+G1) as illustrated in Figure 1. Both G1 and G2 are regular graphs of the same degree with
+the same number of vertices. Hence, according to Lemma 1, after T neighborhood aggregation
+steps, the nodes of both graphs have obtained identical representations, i. e., h(T)
+v
+= h(T)
+u , ∀v, u ∈
+V1 ∪V2. Therefore, independent of the choice of the READOUT function in (2), the two graphs
+will have identical representations, hG1 = hG2, since the input to the READOUT function
+is identical.
+Clearly, G1 is disconnected, while G2 is connected.
+Hence, these two graphs
+correspond to a counterexample to the distinguishability of connectivity. Furthermore, consider
+the graphs G3 and G4 as illustrated in Figure 2. Note that G3 contains triangles, but is not
+bipartite, whereas G4 is bipartite, and triangle-free. Both G3 and G4 are regular graphs of the
+same degree with the same number of vertices. Therefore, they obtain identical representations
+hG3 = hG4, and correspond thus to a counterexample to the distinguishability of the above two
+properties.
+
+5
+
+G3
+G4
+
+Figure 2: Two 3-regular graphs on 6 vertices. The two graphs serve as a counterexample for
+the proof of Theorem 1.
+
+We should note here that there exist complex network measures which have served as features
+for node classiﬁcation tasks in previous studies and which can capture some of these graph
+properties [34, 7, 8].
+
+4
+k-hop Graph Neural Networks
+
+In this section, we propose a generalization of GNNs, so-called k-hop Graph Neural Networks
+(k-hop GNNs). This new model consists of neighborhood aggregation layers that do not take
+into account only the direct neighbors of the nodes, but their entire k-hop neighborhood. Hence,
+instead of the neighborhood aggregation layer shown in (1), the proposed model updates the
+hidden state h(t)
+v
+of a node v as follows:
+
+a(t)
+v
+= AGGREGATE(t) n
+h(t−1)
+u
+|u ∈Nk(v)
+o
+
+h(t)
+v
+= MERGE(t)
+h(t−1)
+v
+, a(t)
+v
+
+(3)
+
+We next present an instance of the proposed architecture which is strictly stronger than standard
+GNNs in terms of distinguishing non-isomorphic graphs, and is capable of identifying graph
+properties which are not captured by the standard GNN architecture.
+
+4.1
+Proposed Architecture
+
+Let G = (V, E) be a graph. In what follows, we will focus on a single node v ∈V , and we will
+present how the representation of this node is updated during the neighborhood aggregation
+phase. Node v will also be referred as the root of the k-hop neighborhood subgraph Gk
+v. For a
+given iteration/layer t, and a root node v, we deﬁne an inner representation xu of each node
+u ∈Nk(v) and we initialize it as xu = h(t−1)
+u
+. We will next describe how the hidden state h(t)
+v
+of the root v is computed. Let UPDATE(w, S) denote a module which takes as input a node w
+and a set of nodes S, and is deﬁned as follows:
+
+UPDATE(w, S) = MLP
+
+MLP1
+
+xw
+
++
+X
+
+u∈S
+MLP2
+
+xu
+
+
+where MLP, MLP1, MLP2 are multi-layer perceptrons and xw, xu are the inner representations
+of nodes w and u, respectively. The proposed approach uses a series of UPDATE modules to
+update the representations of the nodes that belong to the k-hop neighborhood of v, following
+a sequential procedure from the most distant ones to the direct neighbors of v. Although the
+neural network learns a new vector representation for some of the nodes u ∈Nk(v), these
+feature vectors are only calculated in the context of updating the root node’s representation.
+Hence, after computing the new representation h(t)
+v
+of v, these representations are not useful any
+
+6
+
+more. These inner representations should not be confused with the h(t)
+u representation that the
+network learns for each of these nodes by taking into account their own k-hop neighborhoods.
+Let Rd(v) denote the set of nodes at distance (hop count) exactly d > 0 from v. Hence,
+R1(v) = N1(v) is the set of direct neighbors of v, while Rd(v) denotes the ring of nodes at
+distance d, which we refer to as the nodes at level d.
+Note that the neighbors of a node
+u ∈Rd(v) belong to one of the next three sets: Rd−1(v), Rd(v) or Rd+1(v). Speciﬁcally, u
+cannot be connected with nodes at levels l > d + 1 because then these nodes would belong to
+level d + 1 instead of l. Furthermore, u cannot be connected with nodes at levels l < d −1
+because then u would belong to some level smaller than d. Given a node u ∈Nk(v), the inner
+representation xu of u is updated at most twice. The two updates aggregate information from
+the neighbors of u that are located at the immediately higher and at the same level of the
+neighborhood subgraph, respectively. Hence, the proposed model performs the following two
+types of updates of inner representations: (1) updates across rings of nodes, and (2) updates
+within a ring of nodes. We next present these two updates in detail:
+
+• Updates across rings of nodes: Let u ∈Rd(v) be a node that belongs to the k-hop
+neighborhood of v and whose shortest path distance from v is equal to d. Let also B =
+N1(u) ∩Rd+1(v) denote the neighbors of u that belong to level d + 1 of Gk
+v. Note that B
+is empty if k = d or if all the neighbors of u belong to levels d −1 and d of Gk
+v. If B is
+not empty, the representation xu of u is updated as follows:
+
+xu = UPDATE(t)
+d,across
+
+u, B
+
+
+Otherwise, if u has no neighbors at the next higher level (i. e., N1(u) ∪Rd+1(v) is empty),
+then its representation is not updated.
+
+• Updates within a ring of nodes: If u has one or more neighbors at the same level of Gk
+v,
+and hence D = N1(u) ∩Rd(v) is not empty, the representation xu of u is re-updated as
+follows:
+xu = UPDATE(t)
+d,within
+
+u, D
+
+
+Otherwise, if D = ∅, its representation is not updated.
+
+The proposed approach starts from the most distant nodes and follows a sequential procedure
+updating the feature vectors of nodes that are gradually closer to the root. The ﬁrst type of
+update (across rings) precedes the second (within a ring). After all its direct neighbors u ∈N1(v)
+have been processed, the hidden state of the root node v is computed as follows:
+
+h(t)
+v
+= UPDATE(t)
+0,across
+
+v, N1(v)
+
+
+As mentioned above, although the model learns a new inner representation xu for some of the
+nodes in Nk(v), these representations are only learned for the purpose of updating the root
+node’s hidden state. Furthermore, it is clear that for a single neighborhood aggregation layer,
+the proposed model needs at most 2k UPDATE modules. As we will show next, the proposed
+model can capture the structural information within the root node’s k-hop neighborhood even
+if it comprises of a single neighborhood aggregation layer. Hence, instead of using multiple
+neighborhood aggregation layers/iterations, it is more suitable to increase the value of k. The
+various steps of the proposed model are illustrated in Algorithm 1. We provide below a simple
+example that illustrates the update procedure that was presented above.
+After T iterations (i. e., T neighborhood aggregation layers), the emerging node feature
+vectors h(T)
+v
+can be used in any node-related task. For graph-level tasks, the proposed model
+can compute a vector representation over the whole graph by applying a READOUT function
+similar to the one shown in (2).
+
+7
+
+Algorithm 1: k-hop GNN
+
+Input: Graph G = (V, E), node features {hv : v ∈V }, number of neighborhood
+aggregation layers T, number of hops k
+Output: Node features {h(T)
+v
+: v ∈V }
+
+1: for t ∈{1, . . . , T} do
+
+2:
+for v ∈V do
+
+3:
+for u ∈Rk(v) do
+
+4:
+D ←−N1(u) ∩Rk(v)
+
+5:
+xu ←−UPDATE(t)
+k,within
+
+u, D
+
+
+6:
+end for
+
+7:
+for i ∈{k −1, . . . , 1} do
+
+8:
+for u ∈Ri(v) do
+
+9:
+B ←−N1(u) ∩Ri+1(v)
+
+10:
+xu ←−UPDATE(t)
+i,across
+
+u, B
+
+
+11:
+D ←−N1(u) ∩Ri(v)
+
+12:
+xu ←−UPDATE(t)
+i,within
+
+u, D
+
+
+13:
+end for
+
+14:
+end for
+
+15:
+h(t)
+v
+= UPDATE(t)
+0,across
+
+v, N1(v)
+
+
+16:
+end for
+
+17: end for
+
+4.2
+Example
+
+We next provide a simple example that illustrates the update procedure that was presented
+above.
+Speciﬁcally, Figure 3 shows the 2-hop neighborhood graph G2
+v1 of a node v1 ∈V .
+As mentioned above, we ﬁrst consider the most distant nodes (i. e., nodes v4 and v5 since
+v4, v5 ∈R2(v1)). The representations of nodes v4 and v5 are not updated since these two nodes
+are at the frontier of G2
+v1. Furthermore, there is no edge between the two nodes. However, these
+two nodes contribute to the update of the representation of node v2. Speciﬁcally, the inner
+representation of node v2 is updated as follows:
+
+xv2 = UPDATE(t)
+1,across
+
+v2, {v4, v5}
+
+
+Then, we update the inner representations of nodes whose shortest path distance from the root
+is 1 and which are connected with other nodes with the same distance from the root. There is
+one such pair of nodes (i. e., nodes v2 and v3) which are updated as:
+
+xv2 = UPDATE(t)
+1,within
+
+v2, {v3}
+
+
+xv3 = UPDATE(t)
+1,within
+
+v3, {v2}
+
+
+Finally, we update the root by aggregating information from its direct neighbors:
+
+h(t)
+v1 = UPDATE(t)
+0,across
+
+v1, {v2, v3}
+
+
+4.3
+Expressive Power
+
+We next study the identiﬁability of the proposed k-hop GNN. The following Theorem comprises
+the main results about graph properties that can be identiﬁed by the proposed model.
+
+8
+
+d = 2
+
+v4
+v5
+
+d = 1
+
+v2
+v3
+
+d = 0
+v1
+
+Figure 3: The 2-hop neighborhood graph G2
+v1 of a node v1 of graph G.
+
+Theorem 2. For the k-hop GNN, there exists a sequence of modules UPDATE(0)
+0,across, UPDATE(0)
+1,within,
+
+UPDATE(0)
+1,across, . . . . . . , UPDATE(T)
+k−1,across, UPDATE(T)
+k,within such that
+
+1. it can identify triangle-freeness for k ≥1
+
+2. connectivity for k > δmin where δmin is the minimum of the diameters of the connected
+components
+
+3. bipartiteness for k ≥l−1
+
+2
+where l is the length of the smallest odd cycle in the graph (if
+any)
+
+Proof. The proof is left to the Appendix.
+
+It should be mentioned that there have already been proposed GNNs that update the rep-
+resentations of the nodes based on their k-hop neighborhoods. Such GNNs employ polynomials
+of order k [9] or auto-regressive moving average (ARMA) ﬁlters [3] to approximate a transfer
+function that acts on the eigenvalues of the normalized Laplacian matrix, and can be shown that
+they utilize information from the nodes’ k-hop neighborhoods. However, in our experimental
+evaluation, these models fail to consistently capture the above three properties. Furthermore,
+other methods take into account higher-order neighborhoods by computing powers of the adja-
+cency matrix [1].
+
+4.4
+Computational Complexity
+
+The increase of expressiveness provided by the k-hop GNN model does not come without a
+price. Clearly the time complexity of the proposed model is higher than that of the standard
+GNN. The computational steps of the proposed method consist of two parts:
+
+1. Preprocessing step: In this phase, the model extracts the neighborhood subgraphs of
+all nodes. For each node, the neighborhood subgraph can be extracted in linear time in
+the number of edges of the neighborhood. Hence, the complexity of the preprocessing step
+is O(nm) in the worst case (i. e., for a complete graph). For sparse graphs, it can become
+signiﬁcantly lower, i. e., O(n ¯dk) where ¯d is the average degree of the nodes. We should
+note that this step is computed only once.
+
+2. Message passing procedure: To compute the representation of each node, for each
+edge of its neighborhood subgraph, a message needs to be sent from some node to another
+node.
+Therefore, the complexity of one message passing iteration (i. e., one epoch in
+our implementation) is O(nm) in the worst case and O(n ¯dk) for sparse graphs. Note
+however, that the proposed message passing layer allows a GPU-friendly implementation.
+Therefore, in practice, as veriﬁed by our experiments, the running time is not prohibitive.
+
+9
+
+To sum up, the total computational complexity of k-hop Graph Neural Network is O(nm), while
+for sparse graphs is O(n ¯dk). On the other hand, the complexity of the standard GNN model is
+O(km) where k is the number of message passing iterations. For sparse graphs, and when the
+number of hops k is set to a small value, the complexity of the proposed model is comparable
+to the complexity of the standard GNNs.
+
+5
+Experimental Evaluation
+
+In this Section, we evaluate the performance of the proposed k-hop GNN in two tasks: (1) node
+classiﬁcation, (2) graph classiﬁcation.
+
+5.1
+Node Classiﬁcation
+
+The main objective of node classiﬁcation is to assign class labels to unlabeled nodes.
+We
+evaluate the proposed model on synthetic graphs with planted structural equivalences and on
+one real-world dataset. Each node vi ∈V has an associated class label yi and the goal is to
+learn a representation vector h(T)
+vi
+of vi such that vi’s label can be predicted as yi = f(h(T)
+vi ).
+
+5.1.1
+Synthetic Datasets
+
+Datasets.
+To generate the graphs, we follow the same procedure as in [10].
+Structurally
+equivalent nodes are assigned the same class labels.
+All the generated graphs consist of a cycle of length 40 and some basic shapes (“house”,
+“fan”, “star”) which are regularly placed along the cycle. In the “basic” setup, 10 instances
+of only one of the three types (randomly chosen with uniform probability) are placed along
+the cycle. In the “varied” setup, 10 instances of each one of the three shapes are randomly
+placed along the cycle. The use of multiple shapes increases the number and complexity of
+the structural role patterns, posing a challenge to the learning algorithms.
+To assess how
+the algorithms perform in noisy scenarios, we introduce two additional conﬁgurations (“basic
+perturbed” and “varied perturbed”) where we add edges uniformly at random on the generated
+graphs. The number of edges that are added is equal to 10% of the edges of the graph. The
+shapes that are placed along the cycle graph in the diﬀerent setups are illustrated in Table 1.
+Baselines. We compare the proposed model against 3 recent state-of-the-art techniques for
+learning structural node representations: (1) RolX [17], (2) struc2vec [28], and (3) Graph-
+Wave [10]. Note that these 3 algorithms are unsupervised, in the sense that they only take a
+graph as input and not any class labels of the nodes. We also compare the k-hop GNN model
+against the standard GNN architecture as described in Equation (1), and the ChebNet [9] and
+ARMA [3] models which also aggregate information from the nodes’ k-hop neighborhoods. The
+ChebNet and ARMA models were implemented using the Pytorch Geometric library [11].
+Experimental setup.
+For each conﬁguration, we generate 20 graphs using the procedure
+described above. For each graph, we perform 10-fold cross validation. We repeat the whole
+process 25 times. We measure the performance of the diﬀerent algorithms using the following
+two evaluation metrics: (1) average accuracy and (2) average F1-score.
+For the unsupervised algorithms, we learn an embedding for each node, and we predict the
+class label of each node in the test set using a 4-nearest neighbors classiﬁer. For the proposed
+k-hop GNN model, the standard GNN model, ChebNet and ARMA, we train the models on
+the training set of each fold and use the models to classify the nodes of the test set.
+For all the unsupervised algorithms, we use the default parameter values. Speciﬁcally, for
+struc2vec, we set the probability that the random walks stays in current layer to 0.3, the
+
+10
+
+Configuration
+Shapes placed along a cycle graph
+
+1
+
+2
+2
+
+1
+
+1
+
+1
+
+1
+1
+
+2
+2
+2
+
+basic
+OR
+OR
+
+1
+1
+
+1
+
+2
+1
+1
+
+2
+
+1
+
+1
+
+2
+2
+
+1
+
+1
+
+1
+
+basic
+perturbed
+OR
+OR
+
+1
+1
+
+2
+2
+2
+
+1
+1
+
+1
+
+2
+1
+1
+
+2
+
+1
+
+1
+
+2
+2
+
+1
+
+1
+
+1
+
+1
+1
+
+2
+2
+2
+
+varied
+AND
+AND
+
+1
+1
+
+1
+
+2
+1
+1
+
+2
+
+1
+
+1
+
+2
+2
+
+1
+
+1
+
+1
+
+varied
+perturbed
+AND
+AND
+
+1
+1
+
+2
+2
+2
+
+1
+1
+
+1
+
+2
+1
+1
+
+2
+
+1
+
+Table 1: Example of synthetically generated structures for each conﬁguration. The diﬀerent
+colors denote structurally equivalent nodes. Dashed lines denote perturbed graphs (obtained
+by randomly adding edges).
+
+dimensionality of the embeddings to 128, the number of epochs to 5, the number of walks per
+node to 10, the walk length to 80 and the context window size to 10. Furthermore, we make
+use of all approximations OPT1, OPT2, and OPT3. For GraphWave, we use the multiscale
+version, set d = 50 and use evenly spaced sampling points ti in range [0, 100]. Finally, for RolX,
+we did not use any approach for automatically detecting the number of diﬀerent roles, but we
+directly provided the algorithm with the correct number of roles. We use 2 and 3 neighborhood
+aggregation layers for the standard GNN, and 1 layer for ChebNet, ARMA and the proposed
+2-hop and 3-hop GNNs. For ChebNet, we use polynomials of order 2 and 3, and for ARMA,
+we set the number of stacks K to 2 and the depth T to 2 and 3. The neighborhood aggregation
+layers of the k-hop GNN models and of the standard GNN models consist of MLPs with 2
+layers. Batch normalization is applied to the output of every neighborhood aggregation layer.
+The hidden-dimension size of the MLPs is chosen from {8, 16, 32} and the dropout rate from
+{0.0, 0.2}. To train all neural networks, we use the Adam optimizer with initial learning rate
+0.01 and decay the learning rate by 0.5 every 50 epochs. We set the number of epochs to 200.
+We store the model that achieved the best validation accuracy into disk. At the end of training,
+the model is retrieved from the disk, and we use it to classify the test instances.
+Results. Table 2 shows that the instances of the proposed k-hop GNN architecture outperform
+all the baselines in the node classiﬁcation task. Interestingly, struc2vec is the worst-performing
+method in all conﬁgurations. Speciﬁcally, in the least challenging conﬁguration (“basic”), the
+k-hop GNN models, and RolX perform the best. All these methods yield perfect performance,
+while the standard GNN models, the ChebNet and ARMA models, and GraphWave exhibit
+slightly worse performance.
+In the presence of noise (“basic perturbed” conﬁguration), the
+performance of all methods degrades a lot.
+The 3-hop GNN model is the best-performing
+method followed by the 2-hop GNN model, RolX, and the 2-GNN model, in that order. The
+remaining models achieve slightly lower accuracies and F1-scores than the above 4 methods. In
+the “varied” conﬁguration, the k-hop GNN models are once again the best-performing methods
+along with RolX. In the “varied perturbed” conﬁguration, the 3-hop GNN model yields the best
+performance. The 2-hop GNN model achieves slightly worse performance, while the performance
+
+11
+
+Configuration
+basic
+basic perturbed
+varied
+varied perturbed
+Accuracy
+F1-score
+Accuracy
+F1-score
+Accuracy
+F1-score
+Accuracy
+F1-score
+RolX
+1.000
+1.000
+0.928
+0.886
+0.998
+0.996
+0.856
+0.768
+struc2vec
+0.784
+0.708
+0.703
+0.632
+0.738
+0.592
+0.573
+0.412
+GraphWave
+0.995
+0.993
+0.906
+0.861
+0.982
+0.965
+0.793
+0.682
+2-GNN
+0.997
+0.994
+0.920
+0.876
+0.990
+0.979
+0.852
+0.753
+3-GNN
+0.997
+0.994
+0.911
+0.859
+0.993
+0.985
+0.866
+0.775
+ChebNet (K=2)
+0.988
+0.979
+0.866
+0.787
+0.852
+0.732
+0.624
+0.471
+ChebNet (K=3)
+0.992
+0.987
+0.904
+0.850
+0.958
+0.917
+0.758
+0.612
+ARMA (T=2)
+0.996
+0.992
+0.914
+0.861
+0.982
+0.961
+0.839
+0.728
+ARMA (T=3)
+0.997
+0.996
+0.919
+0.872
+0.993
+0.987
+0.850
+0.747
+2-hop GNN
+1.000
+1.000
+0.961
+0.934
+0.999
+0.999
+0.948
+0.910
+3-hop GNN
+1.000
+1.000
+0.962
+0.934
+0.996
+0.993
+0.952
+0.916
+
+Method
+
+Table 2: Performance of the baselines and the proposed k-hop GNN models for learning struc-
+tural embeddings averaged over 20 synthetically generated graphs for each conﬁguration.
+
+of the remaining methods is much lower. From the two noisy conﬁgurations, it is clear that the
+baseline methods are more prone to noise compared to the k-hop GNN model. Furthermore,
+with regards to the two instances of the k-hop GNN model, the 3-hop GNN model outperforms
+the 2-hop GNN model in two conﬁgurations (i. e., “basic perturbed” and “varied perturbed”),
+is outperformed by the 2-hop GNN model in one conﬁguration (i. e., “varied”), while the two
+models achieve the same performance in the “basic” conﬁguration. Finally, the proposed k-hop
+GNN models outperform the two standard GNN models in all experiments, thereby validating
+our theoretical results. Overall, the proposed k-hop GNN model is robust and achieves good
+performance, demonstrating that it can learn high-quality node representations.
+
+5.1.2
+Real-World Dataset
+
+Datasets. We study the Enron dataset, an e-mail network encoding communication between
+employees in a company.
+We expect structural equivalences in job titles due to corporate
+organizational hierarchy. Nodes of the network represent Enron employees and edges correspond
+to e-mail communication between the employees. There are 143 nodes and 2583 edges in the
+emerging network. An employee has one of seven functions in the company (e. g., CEO, manager,
+etc.). These functions provide ground-truth information about roles of the corresponding nodes
+in the network.
+Baselines.
+We compare the proposed model against the 9 baseline algorithms which were
+presented above: (1) RolX, (2) struc2vec, (3) GraphWave, (4) 2-GNN, (5) 3-GNN, (6) ChebNet
+(K = 2), (7) ChebNet (K = 3), (8) ARMA (T = 2), and (9) ARMA (T = 3).
+Experimental setup. We perform 10-fold cross validation, and repeat the whole process 20
+times. For each algorithm, we report (1) its average accuracy, and (2) its average F1-score.
+For the unsupervised algorithms, we ﬁrst learn an embedding for each node, and then, for
+each fold, we use a 4-nearest neighbors classiﬁer to predict the job titles of the nodes of the test
+set. For the proposed k-hop GNN model, the standard GNN model, ChebNet and ARMA, we
+train the models on the training set of each fold and use the models to classify the nodes of the
+test set.
+For all algorithms, we set/optimize their hyperparameters as described in subsection 5.1.1.
+Results.
+We can see in Table 3 that the supervised neural network models outperformed
+the unsupervised algorithms on this dataset. From the unsupervised algorithms, only struc2vec
+achieved performance comparable to that of the supervised models. In terms of accuracy, ARMA
+is the best-performing method. Both ARMA (T = 2) and ARMA (T = 3) outperform all the
+
+12
+
+Method
+Accuracy
+F1-score
+RolX
+0.264
+0.154
+struc2vec
+0.323
+0.190
+GraphWave
+0.257
+0.149
+2-GNN
+0.357
+0.183
+3-GNN
+0.366
+0.195
+ChebNet (K=2)
+0.342
+0.179
+ChebNet (K=3)
+0.360
+0.191
+ARMA (T=2)
+0.374
+0.192
+ARMA (T=3)
+0.376
+0.190
+2-hop GNN
+0.366
+0.198
+3-hop GNN
+0.327
+0.171
+
+Table 3: Performance of the baselines and the proposed k-hop GNN models for learning struc-
+tural embeddings on the Enron dataset.
+
+other methods on the Enron dataset. On the other hand, in terms of F1-score, 2-hop GNN
+achieves the best performance among the diﬀerent methods, followed by 3-GNN and ARMA
+(T = 2). Surprisingly, the 3-hop GNN model performs much worse than the 2-hop GNN model.
+We hypothesize that this is related to the structure of the e-mail network.
+
+5.2
+Graph Classiﬁcation
+
+We next apply the proposed model to the problem of graph classiﬁcation., i. e., the supervised
+learning task of assigning a graph to a set of predeﬁned categories. Speciﬁcally, given a set of
+graphs {G1, . . . , GN} ⊆G and their class labels {y1, . . . , yN}, the goal is to learn a representation
+vector hGi such that the class label of every graph of the test set can be predicted as yi = f(hGi).
+For this task, we are going to evaluate the performance of the proposed model in two diﬀerent
+types of datasets: (1) synthetic datasets containing graphs that satisfy or do not satisfy the
+considered graph properties, and (2) standard widely-used datasets from real-world scenarios.
+
+5.2.1
+Synthetic Datasets
+
+Datasets.
+In order to investigate if the proposed model can distinguish triangle-freeness,
+bipartiteness and connectivity, we created three synthetic datasets. Each one consists of 800 4-
+regular graphs of 60 nodes each and is assigned a class label which denotes whether it satisﬁes
+the corresponding property or not (i. e., binary classiﬁcation task). All the nodes are assigned
+identical labels.
+Furthermore, all three datasets are balanced, i. e., half of the graphs (400
+graphs) satisfy the examined graph property, while the rest of the graphs (400 graphs) do not
+satisfy it.
+Baselines. We compare our model against the standard GNN architecture of Equations (1) and
+(2), and against the ChebNet [9] and ARMA [3] models. Based on our theoretical results, we
+expect the standard GNN model to perform worse than the proposed model on these 3 datasets.
+On the other hand, since the ChebNet and ARMA models aggregate information based on the
+k-hop neighborhood of each node, these models may be able to capture these properties.
+Experimental setup. For ChebNet, ARMA and the proposed k-hop GNN models (2-hop
+GNN and 3-hop GNN), we used a single neighborhood aggregation layer, while for the standard
+GNN, we used 2 and 3 layers.
+The hidden-dimension size of these layers was chosen from
+{16, 32, 64}. For ChebNet, we used polynomials of order 2 and 3, and for ARMA, we set the
+number of stacks K to 2 and the depth T to 2 and 3. To generate graph representations, we
+employed a readout function that sums the vector representations of the nodes. The generated
+graph representations are then fed into a two layer MLP, with a softmax output. We used the
+
+13
+
+Property
+
+Method
+
+Connectivity
+Bipartiteness
+Triangle
+
+freeness
+
+2-GNN
+55.00 ± 5.30
+53.78 ± 2.61
+51.87 ± 7.43
+3-GNN
+56.20 ± 2.28
+58.13 ± 2.10
+55.90 ± 4.44
+ChebNet (K=2)
+56.37 ± 7.76
+50.33 ± 1.20
+53.12 ± 6.35
+Chebnet (K=3)
+57.62 ± 3.84
+51.98 ± 3.56
+54.75 ± 7.14
+ARMA (T=2)
+55.55 ± 5.59
+54.50 ± 4.61
+53.00 ± 3.18
+ARMA (T=3)
+55.63 ± 5.69
+53.92 ± 3.22
+54.25 ± 5.80
+
+2-hop GNN
+81.24 ± 5.22
+84.69 ± 1.74
+84.06 ± 2.12
+3-hop GNN
+94.77 ± 3.41
+91.12 ± 2.76
+82.53 ± 5.33
+
+Table 4: Average classiﬁcation accuracy of the proposed k-hop GNN models and the baselines
+on the 3 synthetic datasets.
+
+ReLU activation function, and set the batch size to 32. We used the Adam optimizer with a
+learning rate of 10−3, while we set the number of epochs to 100.
+Results. We report in Table 4 average prediction accuracies across the 10 folds. It is clear that
+the standard GNN architectures are unable to distinguish the 3 graph properties. Speciﬁcally,
+they all achieve an average accuracy slightly greater than 50% on all three datasets.
+The
+ChebNet and ARMA models, even though they aggregate information from each node’s k-
+hop neighborhood, they are also unable to distinguish the 3 properties. On the other hand,
+the proposed k-hop GNN architectures achieved much higher average accuracies, indicating
+that the proposed architecture can distinguish the 3 properties in regular graphs. In the case
+of bipartiteness and connectivity, the 3-hop GNN model achieved very high accuracy.
+The
+performance of the 2-hop GNN model was slightly worse than that of the 3-hop GNN model.
+However, the former managed to better distinguish triangle-free graphs than the latter. Overall,
+we can conclude that in contrast to the GNN, ChebNet and ARMA architectures, the proposed
+model leads to more expressive node representations.
+
+5.2.2
+Real-World Datasets
+
+We also evaluate the proposed k-hop GNN model on standard graph classiﬁcation datasets
+derived from bio/chemoinformatics, and from social networks.
+Datasets.
+We use the following 3 datasets from bioinformatics and chemoinformatics: (1)
+MUTAG, (2) PROTEINS, (3) NCI1. We also use the following 2 social interaction datasets: (1)
+IMDB-BINARY, (2) IMDB-MULTI. We next give more details about the employed datasets1.
+MUTAG consists of 188 mutagenic aromatic and heteroaromatic nitro compounds. The task
+is to predict whether or not each chemical compound has mutagenic eﬀect on the Gram-negative
+bacterium Salmonella typhimurium.
+PROTEINS comprises of 1113 proteins represented as
+graphs where vertices are secondary structure elements and there is an edge between two vertices
+if they are neighbors in the amino-acid sequence or in 3D space. The task is to classify proteins
+into enzymes and non-enzymes. NCI1 contains 4110 chemical compounds screened for activity
+against non-small cell lung cancer and ovarian cancer cell lines. IMDB-BINARY and IMDB-
+MULTI contain 1000 and 1500 movie collaboration graphs, respectively.
+Each graph is the
+ego-network of an actor/actress, and the task is to predict which genre an ego-network belongs
+to.
+Note that the social network graphs are unlabeled, while all other graph datasets come
+with discrete node labels. Hence, for the social network graphs, we assign an one-dimensional
+
+1The datasets, further references and statistics are available at
+staff/morris/graphkerneldatasets.
+
+14
+
+Statistics
+
+Dataset
+
+#Graphs
+#Classes
+Max Class
+Avg.
+Avg.
+Labels
+Imbalance
+#Nodes
+#Edges
+(Num.)
+MUTAG
+188
+2
+1 : 1.98
+17.93
+19.79
++
+(7)
+PROTEINS
+1,113
+2
+1 : 1.47
+39.06
+72.82
++
+(3)
+NCI1
+4,110
+2
+1 : 1
+29.87
+32.30
++
+(37)
+IMDB-BINARY
+1,000
+2
+1 : 1
+19.77
+96.53
+–
+IMDB-MULTI
+1,500
+3
+1 : 1
+13.00
+65.94
+–
+
+Table 5: Summary of the 5 datasets used in our experiments. The “Max Class Imbalance”
+column indicates the ratio of the size of the smallest class of the dataset to the size of its largest
+class.
+
+feature to each node which is equal to its degree, while for the remaining datasets, we use
+one-hot encodings of the node labels.
+Table 5 provides a summary of the employed datasets.
+Baselines.
+We compare our methods against four graph kernels: (1) the graphlet kernel
+(GK) [32], (2) the shortest-path kernel (SP) [4], (3) the Weisfeiler–Lehman subtree kernel
+(WL) [31], and (4) the Weisfeiler–Lehman Optimal Assignment kernel (WL-OA) [21].
+The
+ﬁrst three kernels are available in the GraKeL library [33], while for WL-OA we used the code
+provided by the authors. Besides graph kernels, we also compare the proposed model against
+the basic GNN architecture of Equations (1) and (2), against GS-SVM [12] which makes use of
+geometric scattering features, and against the following state-of-the-art deep learning architec-
+tures: (1) ChebNet [9], (2) ARMA [3], (3) PatchySan [26], (4) Deep Graph CNN (DGCNN) [42],
+(5) CapsGNN [38], and (6) 1-2-3-GNN [25]. For ChebNet and ARMA, we use the implementa-
+tions contained in the PyTorch Geometric library [11]. For GS-SVM and the rest of the deep
+learning methods, we compare against the accuracies reported in the original papers.
+Experimental Setup. We performed 10-fold cross-validation where 10% of the graphs of each
+training fold was used as a validation set. The whole process was repeated 10 times for each
+dataset and each approach.
+We chose parameters for the graph kernels as follows. For the Weisfeiler–Lehman subtree
+kernel and for the Weisfeiler–Lehman optimal assignment kernel, we chose the number of itera-
+tions from h = {4, 5, 6, 7}, while the graphlet kernel that we implemented samples 500 graphlets
+of size up to 6 from each graph. For ChebNet, ARMA and the proposed k-hop GNN models
+(2-hop GNN and 3-hop GNN), we used a single neighborhood aggregation layer, while for the
+standard GNN, we used 2 and 3 layers. The parameters of the neighborhood aggregation layers
+correspond to MLPs with 2 layers. Batch normalization is applied to the output of every neigh-
+borhood aggregation layer. The hidden-dimension size of the MLPs was chosen from {16, 32, 64}.
+For ChebNet, we used polynomials of order 2 and 3, and for ARMA, we set the number of stacks
+K to 2 and the depth T to 2 and 3. To generate graph representations, we employed a readout
+function that sums the vector representations of the nodes. The generated graph representa-
+tions are then fed into a two layer MLP, with a softmax output. We used the ReLU activation
+function, and we chose the batch size from {32, 64, 128}. We used the Adam optimizer with
+an initial learning rate of 10−3 and decay the learning rate by 0.5 every 50 epochs. We set the
+number of epochs to 500, and we select the epoch with the best validation accuracy. The source
+code of the proposed model is available at
+Results. We report in Table 6 average prediction accuracies and standard deviations across
+the 10 repetitions. Note that the graphs contained in the IMDB-BINARY and IMDB-MULTI
+datasets correspond to the ego-networks of actors/actresses. The diameter of these graphs is
+at most equal to 2, and therefore, the 3-hop neighborhoods of the nodes are identical to their
+
+15
+
+Method
+Dataset
+MUTAG
+PROTEINS
+NCI1
+IMDB
+IMDB
+Average
+BINARY
+MULTI
+Rank
+
+GK
+69.97 (± 2.22)
+71.23 (± 0.38)
+65.47 (± 0.14)
+60.33 (± 0.25)
+36.53 (± 0.93)
+16.8
+SP
+84.03 (± 1.49)
+75.36 (± 0.61)
+72.85 (± 0.24)
+60.21 (± 0.58)
+39.62 (± 0.57)
+12.8
+WL
+83.63 (± 1.57)
+73.12 (± 0.52)
+84.42 (± 0.25)
+73.36 (± 0.38)
+51.06 (± 0.47)
+6.8
+WL-OA
+86.63 (± 1.49)
+75.35 (± 0.45)
+85.74 (± 0.37)
+73.61 (± 0.60)
+50.48 (± 0.33)
+3.0
+
+GS-SVM
+83.57 (± 6.75)
+74.11 (± 4.02)
+79.14 (± 1.28)
+71.20 (± 3.25)
+48.73 (± 2.32)
+10.8
+
+2-GNN
+85.92 (± 2.19)
+75.24 (± 0.45)
+76.32 (± 0.41)
+71.40 (± 0.74)
+47.73 (± 0.86)
+8.8
+3-GNN
+85.74 (± 1.48)
+74.59 (± 0.71)
+79.62 (± 0.45)
+71.60 (± 0.84)
+47.33 (± 1.01)
+9.4
+ChebyNet (K=2)
+85.33 (± 1.42)
+74.72 (± 0.97)
+78.97 (± 0.35)
+71.08 (± 0.51)
+47.08 (± 0.60)
+10.6
+ChebyNet (K=3)
+82.49 (± 1.52)
+74.81 (± 0.82)
+81.01 (± 0.39)
+70.90 (± 0.73)
+46.66 (± 0.59)
+10.8
+ARMA (T=2)
+82.98 (± 1.90)
+74.84 (± 0.59)
+80.83 (± 0.42)
+70.62 (± 0.95)
+46.10 (± 0.82)
+11.2
+ARMA (T=3)
+81.52 (± 1.22)
+74.74 (± 0.67)
+81.34 (± 0.38)
+70.52 (± 0.71)
+46.12 (± 0.98)
+11.6
+PatchySan (k = 10)
+88.95 (± 4.37)
+75.00 (± 2.51)
+76.34 (± 1.68)
+71.00 (± 2.29)
+45.23 (± 2.84)
+9.6
+DGCNN
+85.83 (± 1.66)
+75.54 (± 0.94)
+74.44 (± 0.47)
+70.03 (± 0.86)
+47.83 (± 0.85)
+9.6
+CapsGNN
+86.67 (± 6.88)
+76.28 (± 3.63)
+78.35 (± 1.55)
+73.10 (± 4.83)
+50.27 (± 2.65)
+5.0
+1-2-3-GNN
+86.1
+75.5
+76.2
+74.2
+49.5
+6.0
+
+2-hop GNN
+87.93 (± 1.22)
+75.03 (± 0.42)
+79.31 (± 0.57)
+73.33 (± 0.30)
+49.79 (± 0.25)
+5.4
+3-hop GNN
+87.56 (± 0.72)
+75.28 (± 0.36)
+80.61 (± 0.34)
+-
+-
+4.8
+
+Table 6: Average classiﬁcation accuracy (± standard deviation) of the baselines and the pro-
+posed k-hop GNN models on the 5 graph classiﬁcation benchmark datasets. The “Average
+Rank” column illustrates the average rank of each method. The lower the average rank, the
+better the overall performance of the method.
+
+Method
+Dataset
+MUTAG
+PROTEINS
+NCI1
+IMDB
+IMDB
+BINARY
+MULTI
+
+2-GNN
+0.01
+0.08
+0.29
+0.07
+0.10
+3-GNN
+0.02
+0.12
+0.38
+0.09
+0.13
+
+2-hop GNN
+0.03
+0.18
+0.59
+0.18
+0.22
+3-hop GNN
+0.04
+0.27
+0.82
+0.18
+0.22
+
+Table 7: Average running time per epoch (in seconds) of the proposed k-hop GNN models and
+the standard GNN models on the 5 graph classiﬁcation benchmark datasets.
+
+2-hop neighborhoods. This is why we do not report the performance of the 3-hop GNN on these
+datasets.
+In general, we observe that the variants of the proposed model achieve high levels of per-
+formance. Speciﬁcally, they achieve the second best performance on MUTAG, the fourth best
+performance on IMDB-BINARY and IMDB-MULTI, and the sixth best performance on the
+NCI1 and PROTEINS datasets. On most datasets, the proposed model yields only slightly
+worse accuracies compared to the best performing method, the WL-OA kernel. Interestingly,
+the two k-hop GNN models perform equally well in general. More speciﬁcally, the 3-hop GNN
+achieves slightly better accuracy than the 2-hop GNN on most datasets. However, the diﬀerence
+in performance is not very large. Furthermore, it should be mentioned that the proposed k-hop
+GNN models outperform the two standard GNN models on all datasets, demonstrating their
+superiority. Overall, the proposed architecture yields good performance, demonstrating that it
+can learn not only high-quality node representations, but also graph representations.
+Runtime Analysis. We also compare the running time of the proposed model against that
+of the standard GNN model on the ﬁve real-world datasets. We report in Table 7 the average
+time per epoch, and in Table 8 the preprocessing time (both in seconds). The hyperparameters
+of all models were set to the same values.
+As expected, the standard GNN is faster than the proposed model both in terms of time per
+
+16
+
+Method
+Dataset
+MUTAG
+PROTEINS
+NCI1
+IMDB
+IMDB
+BINARY
+MULTI
+
+2-GNN
+2.72
+3.36
+4.78
+3.20
+3.35
+3-GNN
+2.72
+3.38
+4.79
+3.21
+3.33
+
+2-hop GNN
+3.11
+13.02
+19.63
+31.38
+28.36
+3-hop GNN
+3.28
+19.00
+27.50
+31.37
+28.37
+
+Table 8: Preprocessing time (in seconds) of the proposed k-hop GNN models and the standard
+GNN models on the 5 graph classiﬁcation benchmark datasets.
+
+epoch and in terms of the preprocessing time. However, the running time of the proposed model
+is by no means prohibitive. In general, the average time per epoch of the proposed models is
+twice as high as that of the corresponding standard GNN models. Furthermore, we should note
+that the preprocessing time of the standard GNN is independent of the value of k, while for the
+proposed model, it increases as k increases (since larger neighborhoods need to be processed).
+
+6
+Conclusion
+
+In this paper, we analyzed the expressive power of GNNs, showing that a wide class of GNN
+architectures cannot identify fundamental properties of graphs. We also proposed the k-hop
+GNN model which aggregates information from the nodes’ k-hop neighborhoods, and is capable
+of identifying graph properties that are not captured by standard GNNs. We evaluated the
+proposed model on node and graph classiﬁcation datasets, where it achieved results competitive
+with state-of-the-art algorithms.
+
+Acknowledgment
+
+Giannis Nikolentzos was supported by the project “ESIGMA” (ANR-17-CE40-0028). The au-
+thors gratefully acknowledge the support of the NVIDIA Corporation, who donated the Titan
+Xp GPU that was used for this research in the context of the NVIDIA GPU Grant program.
+
+Appendix
+
+Proof of Theorem 2
+
+We assume that the feature vectors of the nodes come from a countable set. This set may
+correspond to a subset of an uncountable set such as Rd. Furthermore, the feature vectors of a
+set of nodes form a multiset (i. e., since some nodes may have identical feature vectors).
+We will show that if a graph has one of the three considered properties (i. e., triangle-freeness,
+bipartiteness, and connectivity), some of its nodes can be mapped to diﬀerent feature vectors
+compared to the nodes of a graph that does not have the property.
+Then, by applying an
+injective readout function, the two graphs can also be mapped to diﬀerent feature vectors.
+For simplicity of presentation, we will assume that the proposed model consists of a single
+neighborhood aggregation layer. The same results also hold for multiple neighborhood aggre-
+gation layers. We ﬁrst show that the aggregation scheme that our model employs can represent
+universal functions over the pairs of a node and the multiset of its neighbors. The following
+Lemma generalizes the setting in [39].
+
+Lemma 2. Assume X is countable, and let r ∈N. There exist functions f : X →Rd and
+f′ : X →Rd, such that hi(c, X) = f(c) + P
+x∈X f′(x) is unique for each i ∈{0, . . . , r} and each
+
+17
+
+pair (c, X), where c ∈X and X ⊂X is a ﬁnite multiset. Moreover, any function gi over such
+pairs can be decomposed as gi(c, X) = φ
+
+f(c) + P
+x∈X f′(x)
+
+for some function φ.
+
+Proof. We ﬁrst show that there exists a mapping f′ such that P
+x∈X f′(x) is unique for each
+ﬁnite multiset X. Because X is countable, there exists a mapping Z : X →N from x ∈X to
+natural numbers. Because the multisets X are ﬁnite, there exists a number N ∈N such that
+|X| < N for all X. Then, an example of such f′ is f′(x) = N−Z(x). The sum of the above
+function for all ﬁnite multisets X takes values less than 1, i. e., P
+x∈X f′(x) < 1. Hence, if we
+also set f(x) = Z(x)+(r −i)|X|, then it holds that hi(c, X) = f(c)+P
+x∈X f′(x) is an injective
+function over pairs of elements and multisets, and is also unique for each i ∈{0, . . . , r}.
+For any function gi over the pairs (c, X), we can construct such φ for the desired decom-
+position by letting gi(c, X) = φ
+
+f(c) + P
+x∈X f′(x)
+
+. Note that such φ is well-deﬁned because
+hi(c, X) = f(c) + P
+x∈X f′(x) is injective.
+
+In our setting, the UPDATE modules correspond to gi(c, X) functions. These modules use
+multi-layer perceptrons (MLPs) to model and learn f, f′ and φ in the above Lemma, thanks to
+the universal approximation theorem [18]. Note that given two nodes v, v′, if a node u ∈Nk(v)
+obtains a representation that is never obtained by any node u′ ∈Nk(v′), then based on the
+above Lemma, there exist UPDATE modules such that the root nodes v, v′ are assigned diﬀerent
+representations. Hence, for all three properties, it is suﬃcient to show that at some point of
+the algorithm, a node of the graph that satisﬁes the property can obtain a representation that
+is never obtained by any node of a graph that does not satisfy the property.
+
+Triangle-freeness
+If a graph is not triangle-free, then there exist at least three nodes whose
+1-hop neighborhoods contain a triangle. Let v be such a node. Then, clearly there are at least
+two nodes u ∈R1(v) which are connected to each other by an edge. The representations of
+these nodes are updated as follows: xu = UPDATE(0)
+1,within
+
+u, D
+
+. On the other hand, no such
+update takes place in the case of triangle-free graphs since D = ∅. Hence, based on Lemma 2,
+the above UPDATE(0)
+1,within module can generate diﬀerent representations for the nodes that
+participate in a triangle from the representations of the nodes of the neighborhood subgraph of
+each node of a triangle-free graph.
+
+Connectivity
+Let G be a disconnected graph and C its component which has the minimum
+diameter δmin. Then, for an arbitrary node v of component C, it holds that Ri(v) = ∅for all
+i > δmin. On the other hand, if the graph is connected, for some node v, it holds that |Ri(v)| > 0
+for all i ≤δ where δ > δmin is the diameter of the connected graph. Hence, the representations
+of the nodes u ∈Ri(v) and u′ ∈Ri−1(v) are updated as xu = UPDATE(0)
+i,within
+
+u, D
+
+and
+
+xu′ = UPDATE(0)
+i−1,across
+
+u′, D′
+, respectively. Based on Lemma 2, the above two UPDATE
+modules can generate diﬀerent representations for the nodes of a neighborhood subgraph of a
+disconnected graph compared to those of the nodes of the neighborhood subgraph of a connected
+graph.
+
+Bipartiteness
+It is well-known that a graph is bipartite if and only if it does not contain
+an odd cycle. If G is bipartite and l is the length of the smallest odd cycle in G, then the
+k-hop neighborhood subgraphs (k ≥l−1
+
+2 ) of more than one nodes contain a cycle of odd length.
+According to Lemma 3, the k-hop neighborhood subgraph of a node v contains a cycle of odd
+length if and only if the shortest path lengths from two adjacent nodes u, w ∈Nk(v) to v
+are identical.
+In other words, there exist two nodes both at the same level i of the k-hop
+neighborhood subgraph of node v that are connected to each other with an edge. During the
+
+18
+
+process of updating the representation of the root v, the feature vectors of these nodes are also
+updated as follows: xu = UPDATE(0)
+i,within
+
+u, D
+
+. This update does not take place in the case
+of a non-bipartite graph since D = ∅for all nodes of all neighborhood subgraphs. Based on
+Lemma 2, these nodes can obtain diﬀerent representations from all the representations of the
+nodes of a neighborhood subgraph extracted from a bipartite graph.
+
+Lemma 3. Let Gk
+v be the k-hop neighborhood subgraph of a node v. Then, Gk
+v contains a cycle
+of odd length if and only if the shortest path lengths from two adjacent nodes u, w ∈Nk(v) to v
+are identical.
+
+Proof. Let u, w be two vertices such that u, w ∈Nk(v). Assume that the shortest path lengths
+between each of these two vertices and the root v are identical and equal to d ∈N such that
+d ≤k. If u and w are connected by an edge, then Gk
+v contains a cycle of length 2d + 1 which is
+clearly an odd number. This proves the ﬁrst statement. For the second statement, assume that
+Gk
+v contains a cycle of odd length and there is no edge between two vertices whose shortest path
+lengths from the root v are identical. Then, from all the nodes of the cycle, there is a single
+node u such that the shortest path distance from the root v to u is maximum, and another node
+w such that the shortest path distance from the root v to w is minimum (w could correspond
+to the root itself). Since this is a cycle, there are two paths from w to u of length d. Hence,
+the length of the cycle is 2d which is an even number, contradicting the assumption.
+
+References
+
+[1] Sami Abu-El-Haija, Bryan Perozzi, Amol Kapoor, Nazanin Alipourfard, Kristina Lerman,
+Hrayr Harutyunyan, Greg Ver Steeg, and Aram Galstyan. MixHop: Higher-Order Graph
+Convolutional Architectures via Sparsiﬁed Neighborhood Mixing. In Proceedings of 36th
+International Conference on Machine Learning, pages 21–29, 2019.
+
+[2] L´aszl´o Babai and Ludik Kucera. Canonical labelling of graphs in linear average time. In
+Foundations of Computer Science, 1979., 20th Annual Symposium on, pages 39–46. IEEE,
+1979.
+
+[3] Filippo Maria Bianchi, Daniele Grattarola, Cesare Alippi, and Lorenzo Livi. Graph Neural
+Networks with Convolutional ARMA Filters. arXiv preprint arXiv:1901.01343, 2019.
+
+[4] Karsten M Borgwardt and Hans-Peter Kriegel. Shortest-path kernels on graphs. In Pro-
+ceedings of the 5th International Conference on Data Mining, pages 74–81, 2005.
+
+[5] Karsten M Borgwardt, Cheng Soon Ong, Stefan Sch¨onauer, SVN Vishwanathan, Alex J
+Smola, and Hans-Peter Kriegel. Protein function prediction via graph kernels. Bioinfor-
+matics, 21(suppl 1):i47–i56, 2005.
+
+[6] Michael M Bronstein, Joan Bruna, Yann LeCun, Arthur Szlam, and Pierre Vandergheynst.
+Geometric Deep Learning: Going beyond Euclidean data. IEEE Signal Processing Maga-
+zine, 34(4):18–42, 2017.
+
+[7] Murillo Guimar˜aes Carneiro and Liang Zhao. Organizational Data Classiﬁcation Based on
+the Importance Concept of Complex Networks. IEEE Transactions on Neural Networks
+and Learning Systems, 29(8):3361–3373, 2017.
+
+[8] Thiago Henrique Cupertino, Murillo Guimar˜aes Carneiro, Qiusheng Zheng, Junbao Zhang,
+and Liang Zhao. A scheme for high level data classiﬁcation using random walk and network
+measures. Expert Systems with Applications, 92:289–303, 2018.
+
+19
+
+[9] Micha¨el Deﬀerrard, Xavier Bresson, and Pierre Vandergheynst. Convolutional Neural Net-
+works on Graphs with Fast Localized Spectral Filtering. In Advances in Neural Information
+Processing Systems, pages 3844–3852, 2016.
+
+[10] Claire Donnat, Marinka Zitnik, David Hallac, and Jure Leskovec. Learning Structural Node
+Embeddings via Diﬀusion Wavelets. In Proceedings of the 24rd International Conference
+on Knowledge Discovery and Data Mining, pages 1320–1329, 2018.
+
+[11] Matthias Fey and Jan Eric Lenssen.
+Fast graph representation learning with pytorch
+geometric. arXiv preprint arXiv:1903.02428, 2019.
+
+[12] Feng Gao, Guy Wolf, and Matthew Hirn. Geometric Scattering for Graph Data Analysis. In
+Proceedings of the 36th International Conference on Machine Learning, pages 2122–2131,
+2019.
+
+[13] Justin Gilmer, Samuel S Schoenholz, Patrick F Riley, Oriol Vinyals, and George E Dahl.
+Neural Message Passing for Quantum Chemistry. In Proceedings of the 34th International
+Conference on Machine Learning, pages 1263–1272, 2017.
+
+[14] Oded Goldreich. Introduction to property testing. Cambridge University Press, 2017.
+
+[15] Marco Gori, Gabriele Monfardini, and Franco Scarselli.
+A New Model for Learning in
+Graph Domains. In Proceedings of the 2005 IEEE International Joint Conference on Neural
+Networks, volume 2, pages 729–734, 2005.
+
+[16] Will Hamilton, Zhitao Ying, and Jure Leskovec. Inductive Representation Learning on
+Large Graphs. In Advances in Neural Information Processing Systems, pages 1024–1034,
+2017.
+
+[17] Keith Henderson, Brian Gallagher, Tina Eliassi-Rad, Hanghang Tong, Sugato Basu, Leman
+Akoglu, Danai Koutra, Christos Faloutsos, and Lei Li. RolX: Structural Role Extraction &
+Mining in Large Graphs. In Proceedings of the 18th International Conference on Knowledge
+Discovery and Data Mining, pages 1231–1239, 2012.
+
+[18] Kurt Hornik, Maxwell Stinchcombe, and Halbert White. Multilayer Feedforward Networks
+are Universal Approximators. Neural networks, 2(5):359–366, 1989.
+
+[19] Steven Kearnes, Kevin McCloskey, Marc Berndl, Vijay Pande, and Patrick Riley. Molecular
+graph convolutions: moving beyond ﬁngerprints.
+Journal of computer-aided molecular
+design, 30(8):595–608, 2016.
+
+[20] Thomas N Kipf and Max Welling. Semi-Supervised Classiﬁcation with Graph Convolu-
+tional Networks. In Proceedings of the 5th International Conference on Learning Repre-
+sentations, 2017.
+
+[21] Nils M Kriege, Pierre-Louis Giscard, and Richard Wilson. On valid optimal assignment ker-
+nels and applications to graph classiﬁcation. In Advances in Neural Information Processing
+Systems, pages 1623–1631, 2016.
+
+[22] Nils M Kriege, Christopher Morris, Anja Rey, and Christian Sohler. A Property Testing
+Framework for the Theoretical Expressivity of Graph Kernels. In Proceedings of the 27th
+International Joint Conference on Artiﬁcial Intelligence, pages 2348–2354, 2018.
+
+20
+
+[23] Tao Lei, Wengong Jin, Regina Barzilay, and Tommi Jaakkola. Deriving Neural Architec-
+tures from Sequence and Graph Kernels. In Proceedings of the 34th International Confer-
+ence on Machine Learning, pages 2024–2033, 2017.
+
+[24] Yujia Li, Daniel Tarlow, Marc Brockschmidt, and Richard Zemel. Gated Graph Sequence
+Neural Networks. arXiv preprint arXiv:1511.05493, 2015.
+
+[25] Christopher Morris, Martin Ritzert, Matthias Fey, William L Hamilton, Jan Eric Lenssen,
+Gaurav Rattan, and Martin Grohe. Weisfeiler and Leman Go Neural: Higher-order Graph
+Neural Networks. In Proceedings of the 33rd AAAI Conference on Artiﬁcial Intelligence,
+2019.
+
+[26] Mathias Niepert, Mohamed Ahmed, and Konstantin Kutzkov.
+Learning Convolutional
+Neural Networks for Graphs. In Proceedings of the 33rd International Conference on Ma-
+chine Learning, 2016.
+
+[27] Giannis Nikolentzos, Giannis Siglidis, and Michalis Vazirgiannis. Graph Kernels: A Survey.
+arXiv preprint arXiv:1904.12218, 2019.
+
+[28] Leonardo FR Ribeiro, Pedro HP Saverese, and Daniel R Figueiredo. struc2vec: Learning
+Node Representations from Structural Identity. In Proceedings of the 23rd International
+Conference on Knowledge Discovery and Data Mining, pages 385–394, 2017.
+
+[29] Franco Scarselli, Marco Gori, Ah Chung Tsoi, Markus Hagenbuchner, and Gabriele Mon-
+fardini. Computational Capabilities of Graph Neural Networks. IEEE Transactions on
+Neural Networks, 20(1):81–102, 2008.
+
+[30] Franco Scarselli, Marco Gori, Ah Chung Tsoi, Markus Hagenbuchner, and Gabriele Mon-
+fardini.
+The Graph Neural Network Model.
+IEEE Transactions on Neural Networks,
+20(1):61–80, 2009.
+
+[31] Nino Shervashidze, Pascal Schweitzer, Erik Jan van Leeuwen, Kurt Mehlhorn, and
+Karsten M Borgwardt. Weisfeiler-Lehman Graph Kernels. The Journal of Machine Learn-
+ing Research, 12:2539–2561, 2011.
+
+[32] Nino Shervashidze, SVN Vishwanathan, Tobias Petri, Kurt Mehlhorn, and Karsten Borg-
+wardt.
+Eﬃcient Graphlet Kernels for Large Graph Comparison.
+In Proceedings of the
+International Conference on Artiﬁcial Intelligence and Statistics, pages 488–495, 2009.
+
+[33] Giannis Siglidis, Giannis Nikolentzos, Stratis Limnios, Christos Giatsidis, Konstantinos
+Skianis, and Michalis Vazirgiannis. GraKeL: A Graph Kernel Library in Python. Journal
+of Machine Learning Research, 21(54):1–5, 2020.
+
+[34] Thiago Christiano Silva and Liang Zhao. Network-Based High Level Data Classiﬁcation.
+IEEE Transactions on Neural Networks and Learning Systems, 23(6):954–970, 2012.
+
+[35] Felipe Petroski Such, Shagan Sah, Miguel Alexander Dominguez, Suhas Pillai, Chao Zhang,
+Andrew Michael, Nathan D Cahill, and Raymond Ptucha. Robust Spatial Filtering With
+Graph Convolutional Neural Networks. IEEE Journal of Selected Topics in Signal Pro-
+cessing, 11(6):884–896, 2017.
+
+[36] Petar Velickovic, Guillem Cucurull, Arantxa Casanova, Adriana Romero, Pietro Lio, and
+Yoshua Bengio. Graph Attention Networks. In Proceedings of the 6th International Con-
+ference on Learning Representations, 2018.
+
+21
+
+[37] Boris Weisfeiler and AA Lehman. A reduction of a graph to a canonical form and an
+algebra arising during this reduction. Nauchno-Technicheskaya Informatsia, 2(9):12–16,
+1968.
+
+[38] Zhang Xinyi and Lihui Chen. Capsule Graph Neural Network. In Proceedings of the 7th
+International Conference on Learning Representations, 2019.
+
+[39] Keyulu Xu, Weihua Hu, Jure Leskovec, and Stefanie Jegelka. How Powerful are Graph
+Neural Networks? arXiv preprint arXiv:1810.00826, 2018.
+
+[40] Shuang-Hong Yang, Bo Long, Alex Smola, Narayanan Sadagopan, Zhaohui Zheng, and
+Hongyuan Zha. Like like alike - Joint Friendship and Interest Propagation in Social Net-
+works. In Proceedings of the 20th International Conference on World Wide Web, pages
+537–546. ACM, 2011.
+
+[41] Zhitao Ying, Jiaxuan You, Christopher Morris, Xiang Ren, Will Hamilton, and Jure
+Leskovec.
+Hierarchical Graph Representation Learning with Diﬀerentiable Pooling.
+In
+Advances in Neural Information Processing Systems, pages 4801–4811, 2018.
+
+[42] Muhan Zhang, Zhicheng Cui, Marion Neumann, and Yixin Chen. An End-to-End Deep
+Learning Architecture for Graph Classiﬁcation. In Proceedings of the 32nd AAAI Confer-
+ence on Artiﬁcial Intelligence, pages 4438–4445, 2018.
+
+22

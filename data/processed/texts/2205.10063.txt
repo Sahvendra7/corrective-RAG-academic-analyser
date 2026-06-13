@@ -1,0 +1,1222 @@
+Uniform Masking: Enabling MAE Pre-training for
+Pyramid-based Vision Transformers with Locality
+
+Xiang Li1, Wenhai Wang2, Lingfeng Yang1, Jian Yang1∗
+
+1Nanjing University of Science and Technology, 2Shanghai AI Laboratory
+
+arXiv:2205.10063v1 [cs.CV] 20 May 2022
+
+{xiang.li.implus, yanglfnju,
+
+Abstract
+
+Masked AutoEncoder (MAE) has recently led the trends of visual self-supervision
+area by an elegant asymmetric encoder-decoder design, which signiﬁcantly op-
+timizes both the pre-training efﬁciency and ﬁne-tuning accuracy. Notably, the
+success of the asymmetric structure relies on the “global” property of Vanilla
+Vision Transformer (ViT), whose self-attention mechanism reasons over arbitrary
+subset of discrete image patches. However, it is still unclear how the advanced
+Pyramid-based ViTs (e.g., PVT, Swin) can be adopted in MAE pre-training as
+they commonly introduce operators within “local” windows, making it difﬁcult
+to handle the random sequence of partial vision tokens. In this paper, we pro-
+pose Uniform Masking (UM) strategy, successfully enabling MAE pre-training
+for Pyramid-based ViTs with locality (termed “UM-MAE” for short). Speciﬁcally,
+UM includes a Uniform Sampling (US) that strictly samples 1 random patch from
+each 2 × 2 grid, and a Secondary Masking (SM) which randomly masks a portion
+of (usually 25%) the already sampled regions as learnable tokens. US preserves
+equivalent elements across multiple non-overlapped local windows, resulting in
+the smooth support for popular Pyramid-based ViTs; whilst SM is designed for
+better transferable visual representations since US reduces the difﬁculty of pixel
+recovery pre-task that hinders the semantic learning. We demonstrate that UM-
+MAE signiﬁcantly improves the pre-training efﬁciency (e.g., it speeds up by ∼2×
+and reduces the GPU memory by at least ∼2×) of Pyramid-based ViTs, but main-
+tains the competitive (or even better) ﬁne-tuning performance across downstream
+tasks. For example using HTC++ detector, the pre-trained Swin-Large backbone
+self-supervised under UM-MAE only in ImageNet-1K can even outperform the
+one supervised in ImageNet-22K. The code and pre-trained models are available at
+
+1
+Introduction
+
+Self-Supervised Learning (SSL) uses auxiliary tasks to mine their own supervision from large-scale
+unlabeled data, and learns representations that are transferable to downstream tasks. SSL ﬁrst shows
+great potential in Natural Language Processing (NLP) ﬁeld by the “masked autoencoding” solutions
+of GPT [30, 31, 3] and BERT [11]. These techniques, through learning to predict the removed portion
+of data based on the available context, have innovated the paradigm of NLP pipelines.
+
+Inspired by the success of BERT, the vision community has recently raised great interest in imitating
+its formulation (i.e., masked autoencoding) for image understanding. A series of works [2, 13, 49, 6,
+19, 42, 39, 35] has been proposed in past months, where Masked AutoEncoder (MAE) [19] becomes
+
+∗Corresponding author.
+
+75% mask drop
+
+75% mask drop
+75% mask token
+
+input
+
+Pyramid-based
+
+Pyramid-based
+
+ViT
+(e.g., PVT, Swin)
+
+ViT
+(e.g., PVT, Swin)
+
+Vanilla ViT
+
+Encoder:
+
+…
+Local window
+
+…
+Local window
+
+Global window
+
+(a)
+(b)
+
+(c)
+
+25% mask token
+
+75% mask drop
+
+MAE Decoder
+
+Pyramid-based
+
+ViT
+(e.g., PVT, Swin)
+
+(d)
+
+target
+
+Uniform Sampling
+Secondary Masking
+
+MAE-style Pre-training
+
+Figure 1: Illustration of various input strategy for supporting Vanilla ViT and Pyramid-based ViT. (a) The “global” window of Vanilla ViT
+can receive arbitrary subset of image patches by skipping random 75% of the total, whilst (b) skipping these 75% patches is unacceptable for
+Pyramid-based ViT as patch elements are not equivalent across the “local” windows. (c) A straightforward solution is to adopt the mask token
+for the encoder (e.g., SimMIM [42]) at the cost of slower training. (d) Our Uniform Masking (UM) approach (including Uniform Sampling and
+Secondary Masking) enables the efﬁcient MAE-style pre-training for Pyramid-based ViTs while keeping its competitive ﬁne-tuning accuracy.
+
+one of the most representative methods which signiﬁcantly optimizes both the pre-training efﬁciency
+and ﬁne-tuning accuracy, successfully leading the new trend of SSL across vision tasks.
+
+One of the most impactful designs in MAE is the asymmetric encoder-decoder architecture. Different
+from the decoder part where it receives entire sequence of patch tokens, the encoder part only takes
+the visible image patches (usually only 25% of the total) as input. Interestingly, such design not only
+signiﬁcantly reduces the pre-training complexity, but also obtains superior ﬁne-tuning performance.
+
+It is worth noting that the successful application of the asymmetric structure relies on the “global”
+property of Vanilla Vision Transformer (ViT) [14], whose self-attention mechanism can reason over
+arbitrary subset of discrete image patches (see Fig. 1 (a)). Nevertheless, the “global” property of
+Vanilla ViT is a double-edged sword: When transferring Vanilla ViT to downstream vision tasks with
+considerably larger input resolution (e.g., ∼10002 in object detection), its large memory requirement
+is challenging for modern GPUs due to the quadratic complexity of the global self-attention. Although
+ViTDet [23, 24] attempts to partially restrict the local, windowed self-attention for certain blocks of
+Vanilla ViT during ﬁne-tuning, the optimal architecture is unknown considering that the information
+ﬂow can be arbitrarily different between pre-training and ﬁne-tuning stage. Therefore, to address
+the above issue, the Pyramid-based ViTs [28, 27, 37, 38] can be the preferred options since they are
+more storage-friendly via naturally introducing the local window operators, and they have already
+demonstrated the great compatibility and advance in transferring to downstream vision tasks [21].
+
+However, it is still unclear to effectively pre-train Pyramid-based ViTs using the efﬁcient asymmetric
+structure likewise in MAE, as they are commonly equipped with operators in “local” windows.
+Speciﬁcally, the amount of visible elements in each local window is usually not equal, which prevents
+the effective parallel computation of window-based operators (see Fig. 1 (b)). A compromise solution
+is to recall back the dropped patches as proposed in SimMIM [42], where all the masked regions
+
+8
+
+Spatial-Reduction Window
+
+…
+
+8
+
+4
+
+…
+
+4
+
+PVT Forward
+(original size input)
+
+2
+
+…
+
+2
+
+4
+4
+
+…
+
+4
+
+…
+
+…
+…
+2
+2
+
+4
+
+PVT Forward
+(reorganized compact input)
+
+…
+
+…
+
+Figure 2: The equivalence between forwarding original size input with masked place holders and reorganized compact input for
+PVT [37]. We typical show three stages with pyramid spatial sizes. The spatial reduction window is performed over non-overlapped regions
+as in PVT.
+
+are modelled as learnable, shared mask tokens (see Fig. 1 (c)). Consequently, it sacriﬁces a lot of
+efﬁciency due to the considerably large computation and storage complexity for the encoders.
+
+To successfully enable MAE pre-training (i.e., adopt the efﬁcient asymmetric structure) for Pyramid-
+based ViTs with locality, in this paper, we propose the Uniform Masking (UM) strategy that contains
+the Uniform Sampling (US) and Secondary Masking (SM) step. As illustrated in Fig. 1 (d), US
+ﬁrst strictly samples 1 random patch from each 2 × 2 grid, resulting in 75% drop of the image.
+Compared to the completely random 75% drop in MAE, US has more risks to leak semantic clues as
+its sampled patches are distributed more uniformly than the Random Sampling (RS) of MAE, which
+reduces the difﬁculty of the pixel recovery pre-task (see the “Pre-train Loss” of Table 1) and hinders
+the representation learning (see Table 1). Therefore, SM is further introduced to randomly mask a
+(relatively small, e.g., 25%) portion of the already sampled regions by US as shared, learnable tokens.
+Finally, the uniform-sampled patches, together with the secondary-masked tokens, are reorganized as
+a compact 2D input under a quarter of original image resolution, to sequentially feed through the
+Pyramid-based ViT encoder and MAE decoder for the reconstruction of the raw image pixels.
+
+Our contributions are summarized as follows: (1) We propose Uniform Masking, which successfully
+enables MAE pre-training (i.e., UM-MAE) for popular Pyramid-based ViTs; (2) We empirically
+show that UM-MAE considerably speeds up pre-training efﬁciency by ∼2× and reduces the GPU
+memory consumption by at least ∼2× compared to the existing sota Masked Image Modelling
+(MIM) framework, whilst maintaining the competitive ﬁne-tuning performance; (3) We reveal and
+discuss several notable different behaviors between Vanilla ViT and Pyramid-based ViTs under MIM.
+
+2
+Related Work
+
+Masked Image Modeling (MIM). The past few months have witnessed a huge surge in MIM.
+BEiT [2] ﬁrst introduces the idea of BERT [11], which dominates the ﬁeld of Natural Language
+Processing (NLP), into computer vision. Due to the large structural difference between images
+and languages, they adopt the dVAE [32] model to discretize image patches to obtain their class
+labels. The algorithm randomly masks the input image blocks, and expects the network to restore the
+categories of masked image patches according to the context. To further improve the quality of the
+discretized labels, PeCo [13] proposes to replace dVAE with VQ-VAE [36] model, and introduces
+perceptual loss in the reconstruction stage. iBOT [49] and data2vec [1] attempt to use the mean
+teacher network to build an online discretization module, avoiding the additional and separate pre-
+steps of training the discretization model. CAE [6] proposes to separate representation learning from
+the image reconstruction task as much as possible, resulting in more robust feature representations.
+
+Local Shifted Self-Attention Window
+
+Local Self-Attention Window
+
+16
+
+16
+
+16
+
+16
+
+Swin Forward
+(original size input)
+
+16
+
+16
+
+2
+2
+
+4
+4
+
+8
+
+…
+
+8
+
+8
+
+8
+
+Swin Forward
+(reorganized compact input)
+
+8
+
+8
+
+Figure 3: The equivalence between forwarding original size input with masked place holders and reorganized compact input for
+Swin [28]. We typically show the case of non-overlapped local self-attention window along with its shifted version in consecutive blocks of
+the same stage.
+
+Different from recovering discretized labels (i.e., high-dimensional semantic labels) of image patches,
+the Masked Autoencoder [19] (MAE) method is the ﬁrst to demonstrate that high-quality image
+representations can also be obtained by directly recovering the original pixels of an image. MAE
+utilizes an asymmetric encoder-decoder design, that is, the encoder only receives visible image blocks
+as input in the feed-forward stage, which simultaneously improves the pre-training efﬁciency and
+achieves SOTA results on multiple image classiﬁcation datasets. Concurrently, SimMIM [42] applies
+learnable mask tokens on the masked input patches and performs a similar self-supervised scheme to
+Swin Transformer [28], a Pyramid-based variant of ViT [14], achieving a competitive improvement.
+MaskFeat [39] proves that the feature descriptor of the predicted image (e.g., HOG [9]), instead of
+raw pixels, can further improve the ﬁne-tuning performance.
+
+Pyramid-based Vison Transformer. Ever since the successful application of Vanilla ViT [14] in
+image classiﬁcation, the vision community has put a lot of effort into researching its pyramid-based
+(i.e., hierarchical) variants [37, 38, 44, 20, 40, 28, 27, 34, 7, 12, 18, 43, 15, 46, 17, 45, 16], to
+inherit the advantages of the pyramid structure [25] in the downstream vision tasks. There are
+two representative series among these variants: PVT [37, 38] and Swin [28, 27]. Generally, PVT
+introduces non-overlapped Spatial-Reduction Window (SRW) to reduce the complexity of global
+self-attention mechanism, whilst Swin restrains self-attention operator inside non-overlapped, shifted
+local windows. Given their popularity, this paper focuses on these two representative architectures.
+
+3
+Method
+
+We propose Uniform Masking (UM) to enable the support of MAE-style pre-training for Pyramid-
+based ViTs. UM is a simple and two-stage strategy that converts dense image tokens into sparse
+ones but spatially preserves their uniform distribution. It consists of two stages including Uniform
+Sampling (US) and Secondary Masking (SM), which together guarantee the efﬁciency and quality of
+self-supervised learning representations. We introduce them respectively in the following subsections.
+
+3.1
+Uniform Sampling
+
+As illustrated in Fig. 1, UM ﬁrstly perform Uniform Sampling (US) that samples 25%2 visible image
+patches with a uniform constraint: 1 of every 2 × 2 blocks is strictly sampled across the image space.
+Similarly following MAE [19], the left 75% masked patches are dropped and would not participate
+in the feed-forward process of the encoders. US brings a desirable property to input data: the amount
+
+2Here 25% sample ratio empirically refers to the optimal mask ratio 75% in MAE [19].
+
+(a) RS
+(b) GS
+(c) US
+(d) UM(US + SM)
+
+Figure 4: Different sampling strategy with a sample ratio of 25%. (a) Random Sampling (RS) in MAE [19]; (b) Grid-wise Sampling (GS)
+in MAE; and the proposed (c) Uniform Sampling (US); (d) Uniform Masking (UM) that includes US and Secondary Masking (SM).
+
+of elements is ensured equal across the shifted (and non-overlapped [37, 28]) local windows. This
+property thus makes it possible for most popular Pyramid-based ViTs (e.g., PVT [37] and Swin [28])
+to process the discrete subset of image patch sequence, as these sampled patches can be reorganized as
+a compact 2D image (see Fig. 1 (d), 2, 3) thanks to the equivalence of the operated elements. Taking
+the representative Pyramid-based ViTs: PVT [37] and Swin [28] as examples, we elaborate on the
+details of how US makes the uniform-distributed, sparse patches compatible for these architectures
+with locality.
+
+Compatibility with PVT [37]. As shown in Fig. 2, PVT introduces Spatial-Reduction Window
+(SRW) to reduce the complexity of the original self-attention block which builds relations over each
+feature pair. The information in SRW would be aggregated to present the keys and values with con-
+siderably reduced scales. In Fig. 2, starting from the input image with uniformly sampled patches, we
+show the ﬁrst three stages of PVT and mark its typical spatial-reduction hyper-parameters as {8, 4, 2}
+sequentially in the upper pipeline. The masked patches are considered as blank place holders inside
+the original image/feature space. We demonstrate that for PVT, by simultaneously reorganizing the
+original visible input to its compact form and halving the edge sizes of spatial-reduction windows (i.e.,
+{4, 2, 1}) accordingly, the effective elements are equivalent between corresponding local windows
+across the two pipelines. Therefore, US is compatible with PVT, and the input elements are reduced
+by 75% in case of the encoder part when using the reorganized compact 2D image as input.
+
+Compatibility with Swin [28]. Swin has two major differences from PVT: (1) the Local Self-
+Attention Window (LSAW) size is usually ﬁxed across stages; and (2) it has a Shifted version of the
+Local Self-Attention Window (SLSAW) in successive blocks, which introduces connections between
+neighboring non-overlapping windows. Based on these differences, we deduce that Swin has more
+restrictions on the selection of window size and input image scale during pre-training: a window (and
+input image) size of 16·2n ×16·2n(n ∈N) is necessary to ensure the equivalence when considering
+the shifted cases with a shift offset being 8 · 2n × 8 · 2n, as illustrated in Fig. 3. Under the above
+constraints, the effective elements are equivalent between corresponding (shifted) local windows
+across the two pipelines, similar to PVT.
+
+3.2
+Secondary Masking
+
+Compared to Random Sampling as adopted in MAE [19], Uniform Sampling (US) samples the
+image patches uniformly distributed over the 2D space that makes it compatible for representative
+Pyramid-based ViTs. However, US can potentially make the self-supervisory task less challenging
+by providing shortcuts for pixel reconstruction purely through the neighbouring low-level image
+statistics. It has already been evidenced in MAE, where a similar sampling strategy termed “Grid-wise
+Sampling” largely hinders the representation quality. It is also observed that in Table 1, the uniform
+distribution by US indeed reduces the difﬁculty of the pre-training – the pre-train loss decreases from
+0.4256 (MAE Baseline) to 0.3858, but impedes the quality of learned representations for downstream
+tasks – the ﬁne-tuning accuracy is dropped by ∼1 absolute mIoU point in semantic segmentation.
+
+To address the degradation issues brought by US, we further propose the Secondary Masking (SM)
+strategy that performs a secondary random mask among the already sampled visible patches of US,
+as illustrated in Fig. 4 from (c) to (d). Different from the US stage where the masked patches are
+entirely dropped, SM keeps the masked patches by using shared mask tokens for the compatibility of
+Pyramid-based ViTs with locality (see Sec. 3.1). The simple operation thus increases the difﬁculty of
+semantic recovery pre-task, which focuses the network on learning high-quality representations over
+the incomplete visual context, without heavily relying on the neighbouring low-level pixels.
+
+Pyramid-based ViTs
+
+Uniform Masking
+
+16
+16
+
+MAE Decoder
+
+Stride
+
+32
+
+…
+
+…
+
+Pixel Shuffle
+
+input
+target
+Encoder
+
+Figure 5: The Uniform Masking MAE pipeline (UM-MAE) for Pyramid-based ViTs. The image patches are reorganized as 2D compact
+input after Uniform Masking as the input of Pyramid-based ViT Encoder (e.g., PVT, Swin). A Pixel Shufﬂe [33, 29] layer is applied to recover
+the feature resolution due to the default large stride of the encoder backbone. The resulted representations are further fed into the MAE Decoder
+(lightweight Vanilla ViT) with mask tokens for the reconstruction of the original image.
+
+3.3
+UM-MAE Pipeline with Pyramid-based ViT
+
+Fig. 5 demonstrates the detailed asymmetric design (i.e., the MAE-style pipeline) of our approach
+when applied to typical Pyramid-based ViTs (e.g., PVT and Swin). For easier reference, we term our
+method as UM-MAE and describe its major components as follows.
+
+Encoder. We follow MAE [19] where the operation units are 16 × 16 image patches. The proposed
+Uniform Masking is performed to obtain the compact, reorganized 2D input (consisting of both
+visible patches and mask tokens). It is with reduced scale (i.e., 25% of the full set) as the input for the
+encoder. Each mask token [11] is a shared, learned embedding vector that indicates the presence of a
+miss. Whether to append the positional embeddings here is decided by the speciﬁc architectures used
+in the encoder (e.g., “yes” for PVT and “no” for Swin by default). However, hierarchical ViTs usually
+have four stages with a total stride being 32, which makes the 16 × 16 unit become a sub-pixel ﬁnally.
+Therefore, the sub-pixel convolution [33] is adopted (i.e., PixelShufﬂe operator in Pytorch [29]) to
+recover its resolution before feeding the learned representations to the decoder.
+
+Decoder. The decoder part is similar to that of MAE. The input to the decoder is the full set of tokens
+including (i) encoded patches from UM, and (ii) mask tokens. Positional embeddings are added to all
+tokens and the architecture of decoder refers to the lightweight Vanilla ViT as adopted in MAE.
+
+Reconstruction Target. We reconstruct the input by predicting the pixel values (the normalized
+version in MAE) for each dropped patch during Uniform Masking. A linear projection is applied on
+the last layer of the decoder whose number of elements equals the number of pixel values in a patch.
+The loss function is Mean Squared Error (MSE) and it is computed only on the dropped patches.
+
+4
+Experiment
+
+In this paper, as suggested in MAE [19], we focus on the ﬁne-tuning accuracy (instead of linear
+probing) over a series of downstream tasks, including image classiﬁcation using ImageNet-1K
+(IN1K) [10], semantic segmentation using ADE20K [47] and object detection using COCO [26]. The
+pre-training is conducted on IN1K training set with 2562 resolution by default. Unless otherwise
+stated, we perform supervised ﬁne-tuning (or learning from scratch) over image classiﬁcation for
+100 epochs with 2562 resolution, semantic segmentation for 160K iterations with 5122 resolution,
+and object detection for 25 epochs with 10242 resolution. We adopt UperNet [41] as the segmentor
+and GFL [22] as the object detector. The depth of decoder in UM-MAE is set to 2 for faster ablation
+iterations. To show the efﬁciency and effectiveness of our method, we mainly compare against the
+existing sota self-supervised approach, i.e., SimMIM [42] that has already been adopted successfully
+in pre-training Pyramid-based ViT like Swin [28, 27]. Two representative models from Pyramid-
+based ViTs, PVT-Small (PVT-S) and Swin-Tiny (Swin-T) are adopted in most ablation studies for
+experimental efﬁciency. Our codebase is built upon the ofﬁcial repositories of MAE, SimMIM,
+MMDetection and MMSegmentation3. More details refer to the Supplementary Material.
+
+3
+
+Sampling Strategy (25%)
+Pyramid
+SM
+Pre-train
+ImageNet-1K
+ADE20K
+COCO
+Support
+Ratio
+Loss
+Top-1 Acc
+mIoU
+aAcc
+AP
+AP50
+AP75
+(a) RS (MAE [19] Baseline)
+×
+–
+0.4256
+82.88
+42.54
+80.85
+46.0
+64.7
+49.8
+(b) GS
+✓
+–
+0.3682
+82.48
+38.79
+79.16
+44.4
+63.2
+48.6
+(c) US (Ours)
+✓
+–
+0.3858
+82.74
+41.55
+80.48
+45.5
+64.2
+49.6
+
+✓
+15%
+0.4171
+82.75
+41.68
+80.54
+45.8
+64.6
+49.8
+✓
+25%
+0.4395
+82.88
+42.59
+80.80
+45.9
+64.5
+50.2
+✓
+35%
+0.4645
+82.68
+42.02
+80.72
+45.9
+64.6
+50.1
+
+(d) UM (Ours)
+
+Table 1: Comparisons among different sampling strategies using Vanilla ViT-Base (ViT-B/16) backbone under 200-epoch pre-training.
+“Pyramid Support” denotes whether the strategy supports the Pyramid-based ViTs. “SM Ratio” denotes the Secondary Masking Ratio. “Pre-
+train Loss” refers to the converged pre-training loss value which can represent the difﬁculty of the self-supervisory task.
+
+4.1
+Pilot Experiments with Vanilla ViT
+
+Instead of directly applying UM to Pyramid-based ViTs, we ﬁrst conduct pilot experiments using
+UM strategy in pre-training Vanilla ViT to validate its effectiveness and capture a brief understanding
+of its mechanism. It is believed that “UM works for Vanilla ViT” is a necessary (but not sufﬁcient)
+condition for “UM works for Pyramid-based ViTs”.
+
+Pilot Settings. ViT-Base (ViT-B/16) [14] is adopted as the backbone in our pilot experiments.
+Following the ofﬁcial codes of MAE, we ﬁrst do self-supervised pre-training (under 200 epochs) on
+the ImageNet-1K (IN1K) [10] training set using different sampling strategies as illustrated in Fig. 4.
+For fair comparisons, the number of input image patches and self-supervised signals are kept exactly
+the same across the sampling strategies during pre-training. Then we perform supervised ﬁne-tuning
+over image classiﬁcation (100 epochs, 2242 resolution), semantic segmentation (160K iterations,
+5122 resolution) and object detection (25 epochs, 8962 resolution). We adopt UperNet [41] as the
+segmentor and GFL [22] as the object detector. The other pre-training/ﬁne-tuning hyper-parameters
+follow the descriptions from MAE [19]. More details can be found in Supplementary Material. For
+the mask ratio of Secondary Masking in UM, we ablate their values in {15%, 25%, 35%}.
+
+Results. In Table 1, it is observed that the proposed UM with 25% SM Ratio is as competitive as the
+RS (MAE Baseline), whilst other variants lead to performance degradation during ﬁne-tuning. The
+results of (a), (b), (c) show the more uniform the distribution, the simpler the pre-training task and
+the worse the transfer ability. Our proposed UM (with 25% SM Ratio) achieves the best trade-off.
+
+4.2
+Experiments with Pyramid-based ViT
+
+Ablation Study on Secondary Masking Ratio. Accord-
+ing to the optimal mask ratio (i.e., 25%) validated in the
+pilot experiment using Vanilla ViT, we continue to perform
+ablation study on Secondary Masking Ratio around 25%
+(i.e., {20%, 25%, 30%}) for Pyramid-based ViTs (here we
+take Swin-T as an example), which are the focus of this
+paper. The models ﬁne-tuned on ImageNet are also used
+for ﬁne-tuning on COCO object detection and ADE20K
+semantic segmentation tasks, following the intermediate
+ﬁne-tuning scheme as proposed in BEiT [2] and adopted in SwinV2 [27]. The pre-training schedule
+is set as 200 epoch for efﬁciency. As shown in Table 2, comprehensively considering the performance
+of multiple downstream tasks, a good choice of SM Ratio for Pyramid-based ViT is 25%, as same as
+that of Vanilla ViT. The ratio is thus ﬁxed as 25% by default in the following experiments.
+
+SM Ratio
+IN1K
+ADE20K
+COCO
+20%
+82.04
+45.75
+47.5
+25%
+82.04
+45.96
+47.7
+30%
+82.10
+45.81
+47.3
+
+Table 2: Secondary Masking Ratio. Based on Swin-
+T, we pre-train models using different SM ratios for
+200 epochs. The Top-1 Accuracy for IN1K, mIoU for
+ADE20K and AP for COCO are reported. 25% per-
+forms good overall considering multiple tasks.
+
+Ablation Study on Pre-training Schedules. We ablate the pre-training schedules of both UM-MAE
+(with 25% SM Ratio) and SimMIM (with the optimal 25% RS as in MAE) from 200 to 800 to show
+its inﬂuence on the IN1K ﬁne-tuning accuracy using PVT-S. We ﬁx the ﬁne-tuning epoch as 100.
+The supervised baseline of learning from “Scratch” for 100 epochs is also provided for a better
+comparison. Fig. 6 shows that more pre-training epochs lead to better ﬁne-tuning accuracy.
+
+Ablation Study on Fine-tuning Schedules.
+We empirically discover that the self-supervised
+Pyramid-based ViTs using MIM can have consistent beneﬁts from more ﬁne-tuning epochs. Based
+on PVT-S which is ﬁrst pre-trained using SimMIM and UM-MAE on ImageNet-1K for 200 epochs,
+we ﬁne-tune the model again on ImageNet-1K for 100, 200 and 300 epochs, respectively. The
+
+Figure 6: Pre-training schedules. Longer pre-training epoch brings
+a slight improvement on ﬁne-tuning accuracy. All the models (in-
+cluding the “Scratch”) are ﬁne-tuned/supervised for 100 epochs.
+
+Figure 7: Fine-tuning schedules. Longer ﬁne-tuning epoch leads
+to consistent improvement, while the direct supervised scheme (i.e.,
+Scratch) lags behind the self-supervised counterparts.
+
+Architecture
+Method
+Pre-train (200 epoch)
+Fine-tune (/Scratch) Performance
+Time
+Memory
+ImageNet-1K
+ADE20K
+COCO
+
+Supervised from Scratch (Baseline)
+77.84
+40.38
+42.3
+SimMIM [42]
+38.0 h
+20.6 GB
+79.28 (+1.44)
+43.04 (+2.66)
+44.8 (+2.5)
+UM-MAE (ours)
+21.3 h
+11.6 GB
+79.31 (+1.47)
+43.01 (+2.63)
+45.1 (+2.8)
+
+PVT-S [37]
+
+Supervised from Scratch (Baseline)
+81.82
+44.51
+47.2
+SimMIM [42]
+49.3 h
+37.4 GB*
+82.20 (+0.38)
+45.35 (+0.84)
+47.6 (+0.4)
+UM-MAE (ours)
+25.0 h
+13.4 GB
+82.04 (+0.22)
+45.96 (+1.45)
+47.7 (+0.5)
+
+Swin-T [28]
+
+Table 3: Efﬁciency comparisons with representative ﬁne-tuning performance. The real time (hours) and memory consumption (GB) are
+evaluated on 8 GeForce RTX 3090 GPUs with 128 images per GPU (∗denotes the estimation due to memory limitation 24 GB). To train
+Swin-T under SimMIM which exceeds the GPU memory, we halve the batch size per GPU and double the accumulation step for maintaining
+the same effective global batch size. The models ﬁne-tuned on ImageNet are also used for ﬁne-tuning on COCO object detection and ADE20K
+semantic segmentation (i.e., the intermediate ﬁne-tuning scheme [2, 27]). Compared to SimMIM, UM-MAE speeds up by ∼2× and reduces
+the memory by at least ∼2×, whilst performing competitively.
+
+direct supervised baseline (i.e., learning from “Scratch”) is also provided. Fig. 7 demonstrates that
+UM-MAE performs on par with SimMIM, and they both outperform the supervised baseline by a
+non-trivial margin.
+
+Efﬁciency. Compared to the SimMIM framework for self-supervising Pyramid-based ViTs, the core
+advantage of the proposed UM-MAE is the memory and runtime efﬁciency. In Table 3, we show
+their clear comparisons based on PVT-S and Swin-T in case of pre-training over 200 epochs. The
+ﬁne-tuning and supervised-from-scratch performances are as well demonstrated. The statistics of
+pre-training time and memory usage are evaluated on 8 GeForce RTX 3090 GPUs. It is observed that
+the proposed UM-MAE signiﬁcantly saves almost half of the pre-training hours and around
+1
+2 to 2
+
+3
+GPU memory budgets against SimMIM, where their performances under multiple downstream tasks
+are comparable (and sometimes better, e.g., 45.96 vs. 45.35 mIoU on ADE20K).
+
+Performance on Large Models. The above ablation
+study mainly focuses on relatively small models for
+experimental efﬁciency. We are interested whether the
+proposed approach can scale to large architectures, e.g.,
+Swin-Large (Swin-L) [28]. Following the settings of
+SimMIM [42], we apply UM-MAE pre-training for 800
+epochs and perform ﬁne-tuning for 100 epochs on IN1K.
+Table 4 reports the Top-1 accuracy, showing that our
+UM-MAE maintains the competitive performance on
+large-scale models. The model is further ﬁne-tuned on COCO under the same HTC++ [4, 28]
+framework and evaluated on COCO validation set. Table 5 demonstrates that the pre-trained backbone
+self-supervised under UM-MAE only in IN1K can even outperform the one supervised in IN22K,
+using only half the training epochs of Baseline.
+
+Method (Swin-L)
+P-Size
+EP-Size
+IN1K
+SimMIM [42]
+1922
+1922
+85.4
+UM-MAE (ours)
+2562
+1282
+85.3
+
+Table 4: IN1K Performance on large models. The re-
+sult of SimMIM is borrowed from the paper [42]. “EP-
+Size” denotes the Effective Pre-training Size. The reor-
+ganized compact 2D input in UM-MAE quarters the Pre-
+training Size from 2562 to 1282 by dropping 75% to-
+kens.
+
+Visualization of Reconstructions.
+Based on
+Swin-T, we visualize the image reconstruction
+results for both UM-MAE and SimMIM, using
+a shared mask drawn from Uniform Sampling.
+Note that for UM-MAE we further perform Sec-
+ondary Masking at a ratio of 25% as input mask
+embeddings for ﬁnal reconstruction (i.e., UM-
+
+HTC++ (Swin-L)
+Pre-train
+Epoch
+APbox
+APmask
+
+Baseline [28]
+IN22K, sup
+72
+57.1
+49.5
+UM-MAE (ours)
+IN1K, unsup
+36
+57.4
+49.8
+
+Table 5: COCO Performance on large models. The result of the
+Baseline refers to the paper [28].
+“Epoch”: training schedule on
+COCO.
+
+UM-MAE
+SimMIM
+Mask
+Origin
+UM-MAE
+SimMIM
+Mask
+Origin
+UM-MAE
+SimMIM
+Mask
+Origin
+
+Figure 8: Uncurated reconstruction visualizations under the same 75% mask pattern. The models are both pre-trained for 800 epochs.
+
+MAE has 18.75% valid input image patches in fact). In Fig. 8, we observe that they all roughly
+recover the semantic details close to the original images, whilst the results of SimMIM may be
+over-smooth sometimes, e.g., the long right leg of the frog.
+
+4.3
+Discussion: Different Behaviors between Vanilla ViT and Pyramid-based ViT under
+MIM
+
+For downstream tasks with dense predictions, we empirically discover several notable differences
+between Vanilla ViT and Pyramid-based ViT under the framework of MIM. Take the semantic
+segmentation task on ADE20K as an example, we mainly demonstrate the following two aspects:
+
+(1) The performance of direct ﬁne-tuning self-supervised Pyramid-based ViTs under MIM
+lags far behind the intermediate ﬁne-tuning scheme as proposed in BEiT [2]. From Table 6, we
+observe that the self-supervised Pyramid-based ViTs under MIM framework are not competitive
+in directly ﬁne-tuning downstream tasks with dense predictions. However, an intermediate ﬁne-
+tuning process on IN1K can signiﬁcantly improve its performance, which even outperforms the
+supervised baseline by a considerable margin (44.51 →45.96). Following BEiT [2], the intermediate
+ﬁne-tuning further trains the model on an intermediate dataset after MIM pre-training, and then
+ﬁne-tunes the model on the target downstream tasks. The similar scheme is also supported in
+SwinV2 [27], where all the demonstrated top results of Swin Transformers on downstream dense
+prediction tasks contain an intermediate ﬁne-tuning step, instead of directly ﬁne-tuning the model
+self-supervised by SimMIM [42] on the target tasks. This phenomenon is quite different from
+the case of Vanilla ViT, where the self-supervised Vanilla ViT after MIM pre-training can directly
+beats the supervised counterparts (e.g. on ADE20K, 45.3 →45.6 in BEiT [2] and 47.4 →48.1 in
+MAE [19]). Considering the lack of intrinsic inductive bias in modeling local visual structures, we
+deduce that the Vanilla ViT can beneﬁt much more from the pre-training MIM stage as it usually
+suffers from many optimization problems (e.g., attention collapse [48]). MIM tends to provide
+a fantastic initialization and probably brings effective inductive bias (see the next paragraph) for
+Vanilla ViT through meaningful semantic reconstruction over the visual context. Therefore, it has a
+great chance to avoid the bad local minimums and fully unleash the potential of Vanilla ViT during
+supervised ﬁne-tuning on downstream tasks with dense predictions.
+
+(2) Layer-wise learning rate decay [8, 2] is crucial for Vanilla ViT to obtain the optimal perfor-
+mance, but is harmful for Pyramid-based ViTs. As demonstrated in Table 7, when ﬁne-tuning
+models on ADE20K, Vanilla ViT relies heavily on the layer-wise learning rate decay strategy, whilst
+Pyramid-based ViTs have the opposite effect. We suspect that the pre-training MIM step probably
+brings effective inductive bias for Vanilla ViT especially under its early layers, thereby a relatively
+small learning rate at early stages would not dramatically change the pre-learned implicit local
+structures which preserve the generalization ability. In contrast, Pyramid-based ViTs have already
+introduced the inductive bias via local window operators, thus there is probably no need for them to
+apply the layer-wise learning rate decay strategy in this case.
+
+5
+Conclusion
+
+In this paper, we propose UM-MAE with a novel Uniform Masking (UM) strategy which contains a
+Uniform Sampling (US) and a Secondary Masking (SM) step, successfully enabling MAE pre-training
+for popular Pyramid-based Vision Transformers with locality. Compared to the existing alternative
+
+Swin-T
+Intermediate
+mIoU
+mAcc
+aAcc
+Supervised
+–
+44.51
+54.95
+81.52
+SimMIM
+×
+40.25
+50.89
+80.10
+UM-MAE
+×
+41.14
+52.13
+80.01
+SimMIM
+✓
+45.35
+55.65
+81.81
+UM-MAE
+✓
+45.96
+56.55
+81.58
+
+Model
+Pre-train
+lw-lr decay
+mIoU
+mAcc
+aAcc
+
+1.00
+45.87
+56.19
+82.46
+0.85
+47.80
+58.26
+83.27
+0.65
+48.15
+58.99
+83.05
+
+ViT-B
+1600,
+MAE
+
+1.00
+45.96
+56.55
+81.58
+0.85
+45.80
+56.68
+81.45
+0.65
+45.42
+56.43
+80.74
+
+Swin-T
+200,
+UM-MAE
+
+Table 6: The effectiveness of intermediate ﬁne-tuning based on
+Swin-T when transferring it to downstream semantic segmen-
+tation tasks. The intermediate ﬁne-tuning is crucial for Pyramid-
+based ViTs self-supervised by various MIM frameworks. “Inter-
+mediate” denotes the usage of intermediate ﬁne-tuning [2, 27] on
+IN1K for 100 epochs, after the self-supervising process.
+
+Table 7: The effectiveness of layer-wise learning rate decay (“lw-
+lr decay” for short). Under MIM, lw-lr decay is crucial for Vanilla
+ViT, but is harmful for Pyramid-based ViTs. “lw-lr decay” being
+1.00 means no decay applied. The pre-trained ViT-B model is down-
+loaded from the ofﬁcial MAE github.
+
+SimMIM, UM-MAE signiﬁcantly improves the pre-training efﬁciency in both memory and runtime
+of Pyramid-based ViTs but maintains the competitive ﬁne-tuning performance. We also discuss
+several empirical ﬁndings about the different behaviors between Vanilla ViT and Pyramid-based ViT
+under the framework of MIM. We hope our approach and discovery can faithfully inspire the vision
+community and push forward the topic of MIM.
+
+References
+
+[1] Alexei Baevski, Wei-Ning Hsu, Qiantong Xu, Arun Babu, Jiatao Gu, and Michael Auli. Data2vec:
+A general framework for self-supervised learning in speech, vision and language.
+arXiv preprint
+arXiv:2202.03555, 2022. 3
+
+[2] Hangbo Bao, Li Dong, and Furu Wei. Beit: Bert pre-training of image transformers. arXiv preprint
+arXiv:2106.08254, 2021. 1, 3, 7, 8, 9, 10, 14
+
+[3] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners.
+NeurIPS, 2020. 1
+
+[4] Kai Chen, Jiangmiao Pang, Jiaqi Wang, Yu Xiong, Xiaoxiao Li, Shuyang Sun, Wansen Feng, Ziwei Liu,
+Jianping Shi, Wanli Ouyang, et al. Hybrid task cascade for instance segmentation. In CVPR, 2019. 8
+
+[5] Kai Chen, Jiaqi Wang, Jiangmiao Pang, Yuhang Cao, Yu Xiong, Xiaoxiao Li, Shuyang Sun, Wansen Feng,
+Ziwei Liu, Jiarui Xu, et al. Mmdetection: Open mmlab detection toolbox and benchmark. arXiv preprint
+arXiv:1906.07155, 2019. 14
+
+[6] Xiaokang Chen, Mingyu Ding, Xiaodi Wang, Ying Xin, Shentong Mo, Yunhao Wang, Shumin Han, Ping
+Luo, Gang Zeng, and Jingdong Wang. Context autoencoder for self-supervised representation learning.
+arXiv preprint arXiv:2202.03026, 2022. 1, 3
+
+[7] Xiangxiang Chu, Zhi Tian, Yuqing Wang, Bo Zhang, Haibing Ren, Xiaolin Wei, Huaxia Xia, and Chunhua
+Shen. Twins: Revisiting the design of spatial attention in vision transformers. NeurIPS, 2021. 4
+
+[8] Kevin Clark, Minh-Thang Luong, Quoc V Le, and Christopher D Manning. Electra: Pre-training text
+encoders as discriminators rather than generators. arXiv preprint arXiv:2003.10555, 2020. 9, 14
+
+[9] Navneet Dalal and Bill Triggs. Histograms of oriented gradients for human detection. In CVPR, 2005. 4
+
+[10] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hierarchical
+image database. In CVPR, 2009. 6, 7, 13
+
+[11] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert: Pre-training of deep bidirec-
+tional transformers for language understanding. arXiv preprint arXiv:1810.04805, 2018. 1, 3, 6
+
+[12] Xiaoyi Dong, Jianmin Bao, Dongdong Chen, Weiming Zhang, Nenghai Yu, Lu Yuan, Dong Chen, and
+Baining Guo. Cswin transformer: A general vision transformer backbone with cross-shaped windows. In
+CVPR, 2022. 4
+
+[13] Xiaoyi Dong, Jianmin Bao, Ting Zhang, Dongdong Chen, Weiming Zhang, Lu Yuan, Dong Chen, Fang
+Wen, and Nenghai Yu. Peco: Perceptual codebook for bert pre-training of vision transformers. arXiv
+preprint arXiv:2111.12710, 2021. 1, 3
+
+[14] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas
+Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. An image is worth
+16x16 words: Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929, 2020. 2, 4, 7
+
+[15] Haoqi Fan, Bo Xiong, Karttikeya Mangalam, Yanghao Li, Zhicheng Yan, Jitendra Malik, and Christoph
+Feichtenhofer. Multiscale vision transformers. In ICCV, 2021. 4
+
+[16] Peng Gao, Jiasen Lu, Hongsheng Li, Roozbeh Mottaghi, and Aniruddha Kembhavi. Container: Context
+aggregation network. NeurIPS, 2021. 4
+
+[17] Benjamin Graham, Alaaeldin El-Nouby, Hugo Touvron, Pierre Stock, Armand Joulin, Hervé Jégou, and
+Matthijs Douze. Levit: a vision transformer in convnet’s clothing for faster inference. In ICCV, 2021. 4
+
+[18] Jianyuan Guo, Kai Han, Han Wu, Chang Xu, Yehui Tang, Chunjing Xu, and Yunhe Wang. Cmt: Convolu-
+tional neural networks meet vision transformers. arXiv preprint arXiv:2107.06263, 2021. 4
+
+[19] Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Dollár, and Ross Girshick. Masked autoencoders
+are scalable vision learners. In CVPR, 2021. 1, 4, 5, 6, 7, 9, 12, 13
+
+[20] Byeongho Heo, Sangdoo Yun, Dongyoon Han, Sanghyuk Chun, Junsuk Choe, and Seong Joon Oh.
+Rethinking spatial dimensions of vision transformers. In ICCV, 2021. 4
+
+[21] Salman Khan, Muzammal Naseer, Munawar Hayat, Syed Waqas Zamir, Fahad Shahbaz Khan, and Mubarak
+Shah. Transformers in vision: A survey. ACM Computing Surveys, 2021. 2
+
+[22] Xiang Li, Wenhai Wang, Lijun Wu, Shuo Chen, Xiaolin Hu, Jun Li, Jinhui Tang, and Jian Yang. Generalized
+focal loss: Learning qualiﬁed and distributed bounding boxes for dense object detection. In NeurIPS, 2020.
+6, 7, 14
+
+[23] Yanghao Li, Hanzi Mao, Ross Girshick, and Kaiming He. Exploring plain vision transformer backbones
+for object detection. arXiv preprint arXiv:2203.16527, 2022. 2, 14
+
+[24] Yanghao Li, Saining Xie, Xinlei Chen, Piotr Dollar, Kaiming He, and Ross Girshick. Benchmarking
+detection transfer learning with vision transformers. arXiv preprint arXiv:2111.11429, 2021. 2, 14
+
+[25] Tsung-Yi Lin, Piotr Dollár, Ross Girshick, Kaiming He, Bharath Hariharan, and Serge Belongie. Feature
+pyramid networks for object detection. In CVPR, 2017. 4, 14
+
+[26] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays, Pietro Perona, Deva Ramanan, Piotr Dollár,
+and C Lawrence Zitnick. Microsoft coco: Common objects in context. In ECCV, 2014. 6, 14
+
+[27] Ze Liu, Han Hu, Yutong Lin, Zhuliang Yao, Zhenda Xie, Yixuan Wei, Jia Ning, Yue Cao, Zheng Zhang,
+Li Dong, et al. Swin transformer v2: Scaling up capacity and resolution. In CVPR, 2022. 2, 4, 6, 7, 8, 9,
+10, 13
+
+[28] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo. Swin
+transformer: Hierarchical vision transformer using shifted windows. In ICCV, 2021. 2, 4, 5, 6, 8, 13
+
+[29] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen,
+Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: An imperative style, high-performance deep
+learning library. NeurIPS, 2019. 6
+
+[30] Alec Radford, Karthik Narasimhan, Tim Salimans, and Ilya Sutskever. Improving language understanding
+by generative pre-training. 2018. 1
+
+[31] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language
+models are unsupervised multitask learners. OpenAI blog, 2019. 1
+
+[32] Aditya Ramesh, Mikhail Pavlov, Gabriel Goh, Scott Gray, Chelsea Voss, Alec Radford, Mark Chen, and
+Ilya Sutskever. Zero-shot text-to-image generation. In ICML, 2021. 3
+
+[33] Wenzhe Shi, Jose Caballero, Ferenc Huszár, Johannes Totz, Andrew P Aitken, Rob Bishop, Daniel
+Rueckert, and Zehan Wang. Real-time single image and video super-resolution using an efﬁcient sub-pixel
+convolutional neural network. In CVPR, 2016. 6
+
+[34] Aravind Srinivas, Tsung-Yi Lin, Niki Parmar, Jonathon Shlens, Pieter Abbeel, and Ashish Vaswani.
+Bottleneck transformers for visual recognition. In CVPR, 2021. 4
+
+[35] Zhan Tong, Yibing Song, Jue Wang, and Limin Wang. Videomae: Masked autoencoders are data-efﬁcient
+learners for self-supervised video pre-training. arXiv preprint arXiv:2203.12602, 2022. 1
+
+[36] Aaron Van Den Oord, Oriol Vinyals, et al. Neural discrete representation learning. NeurIPS, 2017. 3
+
+[37] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao Song, Ding Liang, Tong Lu, Ping Luo, and
+Ling Shao. Pyramid vision transformer: A versatile backbone for dense prediction without convolutions.
+In ICCV, 2021. 2, 3, 4, 5, 8, 12
+
+[38] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao Song, Ding Liang, Tong Lu, Ping Luo, and
+Ling Shao. Pvt v2: Improved baselines with pyramid vision transformer. Computational Visual Media,
+2022. 2, 4, 12
+
+[39] Chen Wei, Haoqi Fan, Saining Xie, Chao-Yuan Wu, Alan Yuille, and Christoph Feichtenhofer. Masked
+feature prediction for self-supervised visual pre-training. arXiv preprint arXiv:2112.09133, 2021. 1, 4
+
+[40] Haiping Wu, Bin Xiao, Noel Codella, Mengchen Liu, Xiyang Dai, Lu Yuan, and Lei Zhang. Cvt:
+Introducing convolutions to vision transformers. In ICCV, 2021. 4
+
+[41] Tete Xiao, Yingcheng Liu, Bolei Zhou, Yuning Jiang, and Jian Sun. Uniﬁed perceptual parsing for scene
+understanding. In ECCV, 2018. 6, 7, 14
+
+conﬁg
+Pre-train Value
+Fine-tune Value
+optimizer
+AdamW
+AdamW
+base learning rate
+1.5e-4
+5e-4
+weight decay
+0.05
+0.05
+optimizer momentum
+β1, β2=0.9, 0.95
+β1, β2=0.9, 0.999
+layer-wise lr decay
+1.0
+0.7 (Swin-L), 0.8 (ViT-B), 0.85 (Swin-T, PVT-S)
+global batch size (over 8 GPUs)
+4096
+1024
+batch size per GPU
+128
+64
+accumulated iteration
+4
+2
+learning rate schedule
+cosine decay
+cosine decay
+warmup epochs
+10
+5
+augmentation
+RandomResizedCrop
+RandAug (9, 0.5)
+label smoothing
+–
+0.1
+mixup
+–
+0.8
+cutmix
+–
+1.0
+drop path
+–
+0.1 (ViT-B, Swin-T, PVT-S), 0.2 (Swin-L)
+
+Table 8: Pre-training and ﬁne-tuning settings on ImageNet-1K dataset.
+
+[42] Zhenda Xie, Zheng Zhang, Yue Cao, Yutong Lin, Jianmin Bao, Zhuliang Yao, Qi Dai, and Han Hu.
+Simmim: A simple framework for masked image modeling. In CVPR, 2021. 1, 2, 4, 6, 8, 9
+
+[43] Jianwei Yang, Chunyuan Li, Pengchuan Zhang, Xiyang Dai, Bin Xiao, Lu Yuan, and Jianfeng Gao. Focal
+self-attention for local-global interactions in vision transformers. arXiv preprint arXiv:2107.00641, 2021.
+4
+
+[44] Li Yuan, Yunpeng Chen, Tao Wang, Weihao Yu, Yujun Shi, Zi-Hang Jiang, Francis EH Tay, Jiashi Feng,
+and Shuicheng Yan. Tokens-to-token vit: Training vision transformers from scratch on imagenet. In ICCV,
+2021. 4
+
+[45] Qinglong Zhang and Yu-Bin Yang. Rest: An efﬁcient transformer for visual recognition. NeurIPS, 2021. 4
+
+[46] Zizhao Zhang, Han Zhang, Long Zhao, Ting Chen, Sercan Arik, and Tomas Pﬁster. Nested hierarchical
+transformer: Towards accurate, data-efﬁcient and interpretable visual understanding. 2022. 4
+
+[47] Bolei Zhou, Hang Zhao, Xavier Puig, Sanja Fidler, Adela Barriuso, and Antonio Torralba. Scene parsing
+through ade20k dataset. In CVPR, 2017. 6
+
+[48] Daquan Zhou, Bingyi Kang, Xiaojie Jin, Linjie Yang, Xiaochen Lian, Zihang Jiang, Qibin Hou, and Jiashi
+Feng. Deepvit: Towards deeper vision transformer. arXiv preprint arXiv:2103.11886, 2021. 9
+
+[49] Jinghao Zhou, Chen Wei, Huiyu Wang, Wei Shen, Cihang Xie, Alan Yuille, and Tao Kong. ibot: Image
+bert pre-training with online tokenizer. arXiv preprint arXiv:2111.07832, 2021. 1, 3
+
+A
+Broader Impacts
+
+The proposed method may generate inexistent images and introduce biases from the learned training
+dataset, which would contain possible negative societal impacts. These issues warrant further research
+and consideration when using the pre-trained models.
+
+B
+Implementation Details
+
+B.1
+Architectures
+
+Vanilla ViT Architecture. We follow the standard Vanilla ViT architecture adopted in MAE [19].
+The encoder and decoder share the similar structures which consist of a stack of Transformer blocks.
+The positional embeddings use the sine-cosine version as well. To ﬁne-tune image classiﬁcation tasks
+with Vanilla ViT, we extract globally averaged feature vector from the encoder output.
+
+PVT Architecture. The PVT architecture generally follows the ﬁrst version of PVT [37]. The
+positional embeddings use the sine-cosine version as well, and they are adopted only in the input
+stage. In order to ﬂexibly adjust the operation size of SRW (e.g., from window size 4 to 8) when
+transferring to downstream tasks, we adopt the spatial pooling operator as proposed in [38] for the
+implementation of SRW. The architectures and pre-training/ﬁne-tuning resolutions are kept the same
+under different MIM methods in our ablation experiments for fair comparisons.
+
+UM-MAE
+SimMIM
+Mask
+Origin
+UM-MAE
+SimMIM
+Mask
+Origin
+UM-MAE
+SimMIM
+Mask
+Origin
+
+Figure 9: Uncurated random samples on ImageNet validation images. The masking ratio is 75%. The Swin-T models under UM-MAE and
+SimMIM are both pre-trained for 800 epochs.
+
+Swin Architecture. The Swin architecture generally follows the ﬁrst version of Swin [28]. To
+ﬂexibly transfer the relative position biases to downstream tasks with arbitrary input scales, we refer
+to the continuous approach of [27] where a small meta network is adopted to produce the biases based
+on the log-spaced relative coordinates. The architectures and pre-training/ﬁne-tuning resolutions are
+kept the same under different MIM methods in our ablation experiments for fair comparisons.
+
+B.2
+Pre-training and Fine-tuning Settings on ImageNet-1K
+
+ImageNet-1K [10] contains 1.3M images of 1K categories for training and 50K images for validation.
+The larger dataset, ImageNet-22K (IN22K), which contains 14.2M images and 22K classes, is not
+used at all in our method. In this paper, the pre-training is conducted on ImageNet-1K training
+set. The default setting is in Table 8 in case of pre-training for 200 epochs, where most of the
+conﬁguration values refer to that of MAE [19]. The warmup epoch is linearly scaled when the
+pre-training epoch increases to 400 or 800. To train the models which exceeds the GPU memory, we
+halve the batch size per GPU (e.g., 128 →64) and double the accumulation step (e.g., 4 →8) for
+maintaining the same effective global batch size. We follow MAE and use the linear lr scaling rule:
+lr = base_lr×globalbatchsize / 256.
+
+B.3
+Object Detection on COCO
+
+The COCO benchmark [26] consists of trainval35k (115K images) for training and minival (5K
+images) for validation. We adopt the one-stage GFL [22] detector on COCO dataset. Speciﬁcally,
+we replace the backbone of GFL with the pre-trained Vanilla ViT, PVT and Swin, respectively. The
+hyper-parameters mainly follow the default settings of GFL for PVT in mmdetection [5]. We report
+the performance using AdamW optimizer under a 25 epochs cosine schedule with a base learning
+rate of 1e-4, a weight decay of 0.05, and augmentation by large-scale jitter with a scale range of [0.1,
+2.0]. The batch size is 16, distributed across 8 GPUs (i.e., 2 images per GPU).
+
+For Vanilla ViT (ViT-B in this paper), we use the local-global adaptation during ﬁne-tuning as
+proposed in [24], where the network blocks are divided into 4 subsets, each consisting of a last
+global-window block and several local-window blocks otherwise. The intermediate feature maps
+at the tail of each subset are applied with convolutions to upsample or downsample to different
+scales for matching the input requirement of FPN [25]. The default training resolution is 10242 as
+suggested in [24, 23]. However, even under the memory-friendly implementation of the local-global
+adaptation [24], 10242 input resolution exceeds the memory limitation of our GPU (24 GB), thus we
+choose a slightly smaller size 8962 during training.
+
+For PVT (PVT-S) and Swin (Swin-T), the input resolution is 10242 during training. As these
+hierarchical ViTs already contain pyramid feature maps that are compatible with FPN, there is no
+need to apply further adaptations like ViT-B does.
+
+B.4
+Semantic Segmentation on ADE20K
+
+ADE20K has 20K training images and 2K validation images of 150 categories. We use UperNet [41]
+following the code of [2]. The 16K-iteration polynomial learning rate schedule is applied with the
+ﬁrst warm-up 1500 iterations. The AdamW optimizer is adopted with an initial learning rate of 1e-4,
+a weight decay of 0.05 and a batch size of 16 across 8 GPUs. The training resolution is 5122.
+
+For Vanilla ViT (ViT-B in this paper), following MAE, the relative position bias is turned on during
+transfer learning, initialized as zero. The layer-wise lr decay [8, 2] is set as 0.65 by default.
+
+For PVT (PVT-S) and Swin (Swin-T), the layer-wise lr decay is not applied by simply setting it as
+1.0, which always performs best in our experiments.
+
+C
+More Visualization Results
+
+We demonstrate more visualization results based on Swin-T under UM-MAE and SimMIM framework
+in Fig. 9. It is observed that the results of SimMIM are smoother than that of UM-MAE usually, yet
+are sometimes too smooth causing distortion. Although there are some differences in their visual
+reconstructions, the performances of ﬁne-tuning are very close.

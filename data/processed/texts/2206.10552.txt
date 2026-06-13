@@ -1,0 +1,2079 @@
+Weixuan Sun, Zhen Qin, Hui Deng, Jianyuan Wang, Yi Zhang, Kaihao Zhang,
+Nick Barnes, Stan Birchfield, Lingpeng Kong, Yiran Zhong
+
+Abstract—Vision transformers have shown great success on numerous computer vision tasks. However, their central component,
+softmax attention, prohibits vision transformers from scaling up to high-resolution images, due to both the computational complexity and
+memory footprint being quadratic. Linear attention was introduced in natural language processing (NLP) which reorders the self-attention
+mechanism to mitigate a similar issue, but directly applying existing linear attention to vision may not lead to satisfactory results. We
+investigate this problem and point out that existing linear attention methods ignore an inductive bias in vision tasks, i.e., 2D locality.
+In this paper, we propose Vicinity Attention, which is a type of linear attention that integrates 2D locality. Specifically, for each image
+patch, we adjust its attention weight based on its 2D Manhattan distance from its neighbouring patches. In this case, we achieve 2D
+locality in a linear complexity where the neighbouring image patches receive stronger attention than far away patches. In addition, we
+propose a novel Vicinity Attention Block that is comprised of Feature Reduction Attention (FRA) and Feature Preserving Connection
+(FPC) in order to address the computational bottleneck of linear attention approaches, including our Vicinity Attention, whose complexity
+grows quadratically with respect to the feature dimension. The Vicinity Attention Block computes attention in a compressed feature
+space with an extra skip connection to retrieve the original feature distribution. We experimentally validate that the block further reduces
+computation without degenerating the accuracy. Finally, to validate the proposed methods, we build a linear vision transformer backbone
+named Vicinity Vision Transformer (VVT). Targeting general vision tasks, we build VVT in a pyramid structure with progressively reduced
+sequence length. We perform extensive experiments on CIFAR-100, ImageNet-1k, and ADE20K datasets to validate the effectiveness of
+our method. Our method has a slower growth rate in terms of computational overhead than previous transformer-based and convolution-
+based networks when the input resolution increases. In particular, our approach achieves state-of-the-art image classification accuracy
+with 50% fewer parameters than previous approaches.
+
+arXiv:2206.10552v2 [cs.CV] 20 Jul 2023
+
+Index Terms—Vision Transformer, Image Classification, Linear Transformer, 2D Vicinity, Semantic Segmentation
+
+✦
+
+1
+INTRODUCTION
+R
+
+ECENT years have witnessed the success of the transformer
+structure in natural language processing [1]–[3] and com-
+puter vision [4]–[6]. However, transformers inherently suffer from
+quadratic computational complexity and a quadratic memory foot-
+print. As a result, vision transformer networks have to adopt patch-
+wise image tokenization to reduce the sequence length. Despite
+the temporary relief provided by such a tokenization method, the
+quadratic complexity problem still exists. This limitation prohibits
+vision transformers from handling high-resolution images or fine-
+grained image patches.
+Linear attention is a promising direction to solve this issue.
+This group of methods reorders the self-attention mechanism of
+transformers with Kernelization methods to reduce the quadratic
+complexity to linear [7]. Numerous methods have been pro-
+posed for attention decomposition, such as approximating the
+softmax [8]–[10], and finding a new similarity metric [11], [12].
+However, most of these methods are only verified on NLP tasks
+
+VVT-S
+
+Twins-L
+Twins-B
+Twins-S
+
+600
+
+Swin-B
+Swin-S
+
+-B16
+
+PVT_M
+PVT_L
+ViT-B
+
+81
+
+Swin-T
+
+500
+
+PVT_S
+
+152
+-B
+
+VVT-T
+
+400
+
+78
+
+Top-1 Acc(%)
+
+Res152
+
+GFLOPs
+
+Res101
+
+300
+
+Res50
+
+75
+
+PVT_T
+
+200
+
+72
+
+100
+
+Res18
+
+69
+
+0
+
+10
+30
+50
+70
+90
+
+100
+400
+700
+1000
+1300
+
+Parameters(M)
+
+Input resolution
+
+Fig. 1: Top-1 accuracy of our Vicinity Vision Transformer (VVT) with respect to parameters on the ImageNet-1k [16] dataset, and the
+GFLOPs corresponding to various input image sizes. Our VVT outperforms all competitors with 50% fewer parameters, and it enjoys
+the lowest GFLOPs growth rate.
+
+which introduces a Manhattan distance-based 2D locality to linear
+vision transformers. (2) To further reduce computational complex-
+ity by targeting linear attention, we propose a novel attention block
+called the Vicinity Attention Block. It contains a feature reduction
+attention (FRA) to improve the efficiency and a feature preserving
+connection (FPC) to retain the feature extraction ability. (3) We
+correspondingly build the Vicinity Vision Transformer (VVT),
+which serves as a general-purpose vision backbone and can be
+easily applied to various vision tasks. Extensive experiments
+validate the effectiveness of VVT on various computer vision
+benchmarks.
+
+2
+RELATED WORK
+
+2.1
+Vision Transformer Backbones
+
+×
+
+N x N
+
+d x N
+
+×
+
+Softmax
+
+O(Nd2)
+
+d x d
+×
+
+=
+d x N
+
+×
+=
+
+N x d
+
+d x N
+Output
+=
+
+=
+
+O(N2d)
+
+KT
+
+N x d
+
+K’T
+
+d x N
+
+d x N
+
+Output
+
+X
+X
+
+d x N
+
+×
+
+×
+
+d x N
+
+O(N2d + N2d)≈O(N2)
+O(Nd2 + Nd2 )≈O(N)
+
+V
+
+V
+
+d x N
+
+Standard self attention
+Linearized self attention
+
+Fig. 2: Illustration of the standard self-attention (left) and linearized self-attention (right). N denotes the patch number of the input
+image, and d is the feature dimension. With N ≫d, the computational complexity of the linearized self-attention grows linearly with
+respect to the input length, while that of the standard self-attention is quadratic.
+
+PVT [32] introduces a pure transformer network with a pyra-
+mid structure, and it further proposes spatial reduction attention
+which computes self-attention in reduced sequence length to save
+computation. Twins [33] combines locally-grouped self-attention
+from Swin [22] and sub-sampled attention from [32], which
+decreases the computational cost and enhances communications
+between sub-windows. DAT [26] builds a general vision trans-
+former backbone with deformable attention. More recently, [34]
+adopts the quad-tree algorithm which progressively ignores less
+related image patches to improve efficiency. However, none of
+the above methods are able to directly process full-length self-
+attention on high-resolution inputs, requiring locally grouping or
+sub-sampling. Contrarily, our method can directly calculate self-
+attention on high-resolution input.
+
+network. SOFT [13] uses a Gaussian kernel function to replace
+the dot-product similarity in self attention. It assumes that the
+similarity is symmetrical, which may not hold true in practice.
+Further, it does not consider the 2D locality mechanism. In this
+paper, we propose a linear self-attention that facilitates a 2D
+locality mechanism, and we validate the proposed method on
+various vision tasks.
+
+3
+PRELIMINARY
+Self-attention was originally proposed for 1D NLP tasks [1]. To
+make it suitable for 2D vision tasks, we often convert an image
+to several patches and then embed them to a 1D sequence x ∈
+RN×d, where d is the embedding size and N = H
+
+p × W
+
+p is the
+patch number, with p, H, W denoting patch size, image height,
+and image width respectively. Mathematically, a transformer block
+T : RN×d →RN×d with input x is defined as:
+
+2.2
+Efficient Transformers
+
+T (x) = F(Att(x) + x)
+(1)
+
+where Att(·) is the self-attention module and F(·) is a feed-
+forward module.
+The self-attention module Att(·) adopts three learnable
+weights WQ, WK, WV to project x into query (Q), key (K),
+and value (V ). It usually computes an attention matrix A by a
+similarity function S(·) over queries and keys. In standard self-
+attention, S(·) is softmax normalization. The output of the self-
+attention module is O = Att(x) = AV , where A ∈RN×N
+
+suffers from a quadratic space and time complexity with respect
+to the patch number N. Therefore, the theoretical computation
+complexity here is O(N 2d) = O( H2W 2
+
+p4
+d). Consequently the
+self-attention module becomes sensitive to image size H, W and
+patch size p, which are the computation bottlenecks in vision
+transformer networks.
+Linearization of self-attention aims to reduce the quadratic the-
+oretical computation complexity to linear. It can be achieved by
+picking a decomposable similarity function S(·) to satisfy
+
+S(Qi, Kj) = ϕ(Qi)ϕ(Kj)⊤
+(2)
+
+where ϕ(·) is a kernel function. Given such a kernel, we can write
+the outputs of the self-attention module as follows:
+
+PN
+j=1(ϕ(Qi)ϕ(Kj)⊤)Vj
+PN
+j=1(ϕ(Qi)ϕ(Kj)⊤)
+(3)
+
+S(Qi, Kj)
+P
+j S(Qi, Kj)Vj =
+
+Oi =
+X
+
+j
+
+a
+b
+c
+d
+
+Fig. 3: Visualization of the locality re-weighting patterns. The red cross symbol denotes the query position and the mask denotes the
+locality weights to it. We use a lighter color to indicate a larger weight. (a) If we directly adopt 1D distance re-weighting [12] in
+self-attention, the query token will be assigned lower weights on vertical tokens as they are far away when processed in 1D. (b), (c),
+(d) In our method, although self-attention is calculated in 1D, our re-weighting mechanism ensures that a token is encouraged to have
+higher relation weights with its neighbours in two dimensions.
+
+so that the O(N 2d) operation is converted to an O(Nd2) one.
+Its computational complexity grows linearly with respect to the
+sequence length N. A number of linear attention approaches have
+been proposed for NLP tasks, which use different kernel functions
+ϕ(x) to replace the quadratic softmax, as discussed in the Related
+Work. However, directly applying existing linear attention [8],
+[10], [12] to vision suffers from a performance drop [13]. Notably,
+all of the aforementioned linear attention approaches and existing
+linear vision transformers [13], [34], [41] do not consider 2D
+locality in vision. To address this problem, we propose a linear
+self-attention that is aware of 2D position.
+Locality is a widely used assumption in computer vision [14]–
+[20], [42], [43], i.e., neighbouring pixels should have a higher
+possibility to belong to the same object than distant pixels. In
+convolution-based networks, this assumption is inherently coupled
+into each layer throughout the whole model via convolutional ker-
+nels [14]–[16]. However, it does not hold for standard transformer-
+based networks due to the self-attention mechanism [4]. Sev-
+eral works show that with the same number of parameters,
+transformer-based networks cannot match the performance of the
+CNN counterparts, possibly due to the lack of locality bias [17],
+[44]. Recent state-of-the-art methods partially introduce locality
+bias to vision transformers at the architectural level. [17]–[20]
+directly combine convolution with transformers. Some efficient
+transformer backbones use window attention [22], [23], neigh-
+bourhood attention [24], or deformable attention [25], [26] to
+achieve lower complexity and better performance. These methods
+enable 2D locality, however, they still suffer limited receptive field
+and quadratic complexity within the sampled tokens.
+In this paper, for the first time, we introduce locality bias
+into the linear self-attention. It can be smoothly integrated into
+existing vision transformer architectures for better performance.
+In fact, our method achieves better performance than previous
+state-of-the-art vision transformers in various computer vision
+benchmarks.
+
+our Vicinity Attention into a four-stage pyramid structure. Each
+stage consists of a patch embedding module followed by several
+Vicinity Vision Blocks and feed forward residual blocks, Image
+inputs are progressively down-sampled to generate multi-scale
+outputs. We provide a family of VVT variants and detail their
+configurations in Table. 1.
+
+4.1
+Vicinity Attention
+
+It has been verified that the softmax normalization is the root of the
+quadratic complexity of self-attention [13]. In this section, we pro-
+vide the details of our linear self-attention technique, i.e., vicinity
+attention for vision tasks. The key insight is to replace the standard
+softmax operation by another similarity function, which (1) can
+be decomposed to simple kernel functions and (2) introduces
+a locality constraint that is beneficial in visual understanding.
+Inspired by [12], we adopt ReLU(·) as the kernel function, and
+conduct a row-wise normalization to replace softmax. Our self-
+attention then can be reformulated as:
+
+PN
+j=1[ReLU(Qi)ReLU(Kj)⊤]Vj
+PN
+j=1[ReLU(Qi)ReLU(Kj)⊤]
+
+Oi =
+
+(5)
+
+= ReLU(Qi) PN
+j=1[ReLU(Kj)⊤Vj]
+
+ReLU(Qi) PN
+j=1 ReLU(Kj)⊤
+
+where we can reorder the calculation so the complexity is reduced
+to linear with respect to the sequence length N. This ReLU-
+based normalization method retains two important properties of
+softmax self-attention: (1) it is always positive, avoiding aggre-
+gating negatively-correlated information. (2) all the elements lie
+between [0, 1].
+Enforcing 2D Locality Bias Locality bias has been discussed
+in language tasks [12], [45], [46] with 1D sequence distance
+encoding, but not considered by existing linear attention in vision.
+In vision transformers, the embedding sequence is flattened from
+a 2D mask, hence it is essential to consider token positions in
+2D before being flattened. To enforce the locality bias in linear
+transformers, we need a kernel function that can 1) put more
+emphasis on 2D neighboring patches and 2) can be decomposed
+with Eq. (2).
+Given two tokens qi, kj from Q and K respectively, the
+positions of these two tokens on the 2D feature maps before
+flattening are:
+
+4
+OUR METHOD
+
+S(Qi, Kj) = ϕ(Qi)G(D(i, j))ϕ(Kj)⊤
+(7)
+
+where G produces the weight according to the distance so nearby
+patches can be emphasized. A naive choice might be directly us-
+ing the Euclidean distance
+p
+
+(rj −ri)2 + (uj −ui)2. However,
+since this term cannot be decomposed into two terms relating to i
+and j separately, it cannot be applied to the linear transformers.
+Instead, since 2D Manhattan distance [47] decouples relative
+position in two directions, we propose to use it as the distance
+function:
+
+4.2
+Vicinity Attention Block
+
+Compared to vanilla attention, the complexity of linear attention
+grows linearly with sequence length but quadratically with respect
+to feature embedding size. Thus, the computational bottleneck
+of linear attention is shifted from the input resolution to fea-
+ture dimension, whilst it is not considered by existing linear
+vision transformers [13], [34], [40]. This issue is amplified in
+Vicinity Attention as our theoretical computational complexity is
+O(N(4d)2). To achieve a better computational efficiency in linear
+attention, we redesign the structure of the multi-head self-attention
+(MSA) module to reduce the feature dimension without hindering
+the performance.
+We present a schematic illustration of our Vicinity Attention
+Block in Fig. 4. Our block is generally composed of two steps:
+compressing and preserving. In the first compressing step, it re-
+ceives an input X ∈RN×d, which is projected into a compressed
+feature space Q ∈RN× d
+
+S(Qi, Kj) = ϕ(Qi)G(|rj −ri| + |uj −ui|)ϕ(Kj)⊤
+(8)
+
+However, direct Manhattan distance decoupling is still hindered as
+the absolute operation cannot be decomposed.
+Inspired by [12], the cosine function has two desirable fea-
+tures: 1) It cancels the absolute operation in Eq. (8) and applies
+non-linear emphasis on the nearby tokens; and 2) It can be
+decomposed into two terms relating to i and j separately, which
+fulfills the linear complexity. Thus, we propose to bind Manhattan
+distance and cosine function to achieve linear attention with 2D
+locality. First, given a feature map with size m by n, following
+Eq. (6) we redefine the 2D positions as:
+
+2 , K ∈RN× d
+
+2 , V ∈RN× d
+
+2 . We call it
+Feature Reduction Attention (FRA). Then, following our locality
+decomposition in Eq. (10), we obtain Q
+′ ∈RN×2d, K
+′ ∈RN×2d
+
+2n , aj = πuj
+
+2n , bi = πri
+
+2m, bj = πri
+
+ai = πui
+
+2m
+(9)
+
+Then, using the Manhattan distance, the self-attention calculation
+can be decomposed into four terms:
+
+S(Qi, Kj) = ϕ(Qi)(cos(ai −aj) + cos(bi −bj))ϕ(Kj)⊤
+
+= ϕ(Qi)(cos(ai) cos(aj))ϕ(Kj)⊤+
+
+ϕ(Qi)(sin(ai) sin(aj))ϕ(Kj)⊤+
+
+ϕ(Qi)(cos(bi) cos(bj))ϕ(Kj)⊤+
+
+ϕ(Qi)(sin(bi) sin(bj))ϕ(Kj)⊤
+
+= ϕcos ai(Qi)ϕcos aj(Kj)⊤+
+
+ϕsin ai(Qi)ϕsin aj(Kj)⊤+
+
+ϕcos bi(Qi)ϕcos bj(Kj)⊤+
+
+ϕsin bi(Qi)ϕsin bj(Kj)⊤
+(10)
+where ϕcos y(x) ≜cos(y)ϕ(x), ϕsin y(x) ≜sin(y)ϕ(x).
+Here the queries and keys are related to their own positions i
+and j, and hence we can fulfill Eq. (4) to reorder the dot product
+in self-attention. Following our locality decomposition, we get:
+
+Q′
+i = [ϕcos ai(Qi), ϕsin ai(Qi), ϕcos bi(Qi), ϕsin bi(Qi)]
+
+K′
+j = [ϕcos aj(Kj), ϕsin aj(Kj), ϕcos bj(Kj), ϕsin bj(Kj)]
+(11)
+where
+
+ϕcos y(x) ≜cos(y)ϕ(x), ϕsin y(x) ≜sin(y)ϕ(x)
+(12)
+
+Finally, we have the output as:
+
+Q
+
+Input
+
+𝑁∗(𝐶
+
+Output
+
+2)
+
+Linear
+ReLU and cos
+Re-weighting
+
+𝑁∗2𝐶
+
+𝑁∗𝐶
+
+N ∗(𝐶
+
+N ∗𝐶
+N ∗𝐶
+
+K
+
+2)
+
+𝑁∗(𝐶
+
+2𝐶∗(𝐶
+
+2)
+
+2)
+
+𝑁∗2𝐶
+
+V
+
+𝑁∗(𝐶
+
+Linear Vicinity Attention
+
+2)
+
+Fig. 4: Illustration of the Vicinity Attention Block. The input feature dimension is down-sampled to reduce the computational cost,
+while the original feature distribution is retained by the FPC (the skip connection at the top).
+
+Stage 1
+Stage 2
+Stage 3
+Stage 4
+
+𝐻
+
+4 ∗𝑊
+
+𝐻
+
+8 ∗𝑊
+
+𝐻
+32 ∗𝑊
+
+𝐻
+16 ∗𝑊
+
+4 ∗𝐶1
+
+8 ∗𝐶2
+
+32 ∗𝐶4
+
+16 ∗𝐶3
+
+Patch embedding
+
+Patch embedding
+
+embedding
+
+embedding
+
+Vicinity
+Transformer
+
+Vicinity
+Transformer
+
+Vicinity
+Transformer
+
+Vicinity
+Transformer
+
+Patch
+
+Patch
+
+Layer
+
+Layer
+
+Layer
+
+Layer
+
+× 3
+
+× 9
+
+× 3
+
+× 3
+
+𝐻× 𝑊× 3
+
+Attention
+
+Vicinity
+
+Forward
+
+Conv2D
+
+Flatten
+
+Norm
+
+Norm
+
+Norm
+
+Block
+
+Feed
+
+…
+
+Patch Embedding
+𝐻× 𝑊× 𝐶1
+
+× 3
+
+Fig. 5: Overall architecture of our VVT. VVT adopts a pyramid structure and is divided into four stages. The illustrated sample is
+VVT-Small. The output resolution progressively shrinks to generate multi-scale feature maps.
+
+constraint. We also have a channel attention-like connection called
+FPC which is an instantiation of the squeeze-excitation (SE)
+connection [49], but aims to reduce complexity while preserving
+representation ability. Results in Table 7 show the superiority of
+the Vicinity Attention Block compared to the GCNet block.
+
+and FPC to further reduce the complexity without diminishing
+performance, The Vicinity Attention Block is then used to build
+vision backbones with a pyramid structure and can process high-
+resolution images.
+
+Relationship to existing window attention and neighborhood
+attention. 2D locality has been introduced into vision transform-
+ers by several methods such as window attention [22], [23],
+deformable attention [25], [26] and neighborhood attention [50].
+A key difference between these and our Vicinity Attention lies in
+the receptive field. These existing methods apply hard locality, i.e.,
+they consider self-attention only within the sampled tokens (from
+nearby windows or deformable operations) unsampled tokens are
+disregarded. Further, complexity within the sampled tokens is still
+quadratic. Differently, Vicinity Attention has a constant global
+receptive field via soft locality, i.e., all spatial locations are visible,
+but spatially nearby ones are emphasized via our linear attention.
+
+4.3
+The Vicinity Vision Transformer
+
+In this section, we introduce the overall architecture of Vicinity
+Vision Transformer (VVT) as shown in Fig. 5.
+The linear complexity of Vicinity Attention enables higher-
+resolution inputs, so we integrate the Vicinity Attention Block into
+a progressively shrinking pyramid structure that has four stages to
+generate feature maps at different scales. Each stage contains a
+patch embedding layer and multiple stacked Vicinity Transformer
+Blocks and Feed-forward blocks. In detail, we use a patch size
+of 4 × 4 in the first stage. Given the input image of size H ×
+W × 3, we first divide it into H
+
+4 × W
+
+4 patches. Then we feed
+the patches into a patch embedding module to obtain a flattened
+embedding sequence with a size of HW
+
+Output Size
+Layer Name
+Tiny
+Small
+Medium
+Large
+
+4
+Patch Embedding
+C = 96, P = 4
+
+Stage 1
+H
+
+4 × W
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+R = 2
+H = 1
+E = 8
+
+
+R = 2
+H = 1
+E = 8
+
+
+R = 2
+H = 1
+E = 8
+
+
+R = 2
+H = 1
+E = 4
+
+Transformer
+Encoder
+
+× 2
+
+× 3
+
+× 3
+
+× 4
+
+8
+Patch Embedding
+C = 160, P = 2
+
+Stage 2
+H
+
+8 × W
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+R = 2
+H = 2
+E = 8
+
+
+R = 2
+H = 2
+E = 8
+
+
+R = 2
+H = 2
+E = 8
+
+
+R = 2
+H = 2
+E = 4
+
+Transformer
+Encoder
+
+× 2
+
+× 3
+
+× 3
+
+× 4
+
+16
+Patch Embedding
+C = 320, P = 2
+
+Stage 3
+H
+16 × W
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+R = 2
+H = 5
+E = 4
+
+
+R = 2
+H = 5
+E = 4
+
+
+R = 2
+H = 5
+E = 4
+
+
+R = 2
+H = 5
+E = 4
+
+Transformer
+Encoder
+
+× 2
+
+× 9
+
+× 27
+
+× 36
+
+32
+Patch Embedding
+C = 512, P = 2
+
+Stage 4
+H
+32 × W
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+R = 2
+H = 8
+E = 4
+
+
+R = 2
+H = 8
+E = 4
+
+
+R = 2
+H = 8
+E = 4
+
+
+R = 2
+H = 8
+E = 4
+
+Transformer
+Encoder
+
+× 2
+
+× 3
+
+× 3
+
+× 4
+
+sequence of size HW
+
+5
+EXPERIMENTS
+
+82 ×C2, and then processed by the transformer
+blocks of the second stage. We follow the same approach to obtain
+multi-scale output feature maps of the third and fourth stage with
+output sizes of H
+
+To verify the effectiveness of our method, we conduct exten-
+sive experiments on the CIFAR-100 [59] and ImageNet-1k [54]
+datasets for image classification, and on the ADE20K [60] dataset
+for semantic segmentation. Specifically, we first make a com-
+parison with existing state-of-the-art methods, and then give an
+ablation study over the design of VVT.
+
+16 × W
+
+16 and H
+
+32 × W
+
+32 , respectively. Hierarchical
+feature maps can be easily leveraged to many downstream vision
+tasks. In Fig. 6, we show qualitative examples of Grad-CAM [52]
+obtained from different stages of VVT and ViT [4] respectively.
+As shown, our approach is able to produce fine-grained features
+whereas the ViT [4] can only capture low-resolution features.
+Table 1 details different architecture variants of VVT from
+VVT Tiny to VVT Large. We empirically choose our network
+settings following the common principles of vision backbones
+[15], [53]: (1) spatial resolution is decreased progressively with
+feature dimension increased. (2) stage 3 has the most of the
+computational cost. The architecture hyper-parameters of VVT
+are:
+
+5.1
+Image Classification
+
+•
+C: the input channel dimension of the attention block.
+
+•
+P: the patch size of the patch embedding.
+
+•
+R: the feature reduction ratio of the Vicinity Attention
+Block.
+
+•
+H: the number of heads in the Vicinity Attention Block.
+
+•
+E: the feature expansion ratio of the feed forward layer.
+
+VVT stage 1
+VVT stage 4
+
+Method
+Style
+MS out
+Param
+GFLOPs
+Top-1 Acc(%)
+ResNet18 [31]
+ConvNets
+✓
+11.7
+1.8
+69.8
+DeiT-Tiny/16 [55]
+Transformers
+✗
+5.7
+1.3
+72.2
+PVTv2-B1 [51]
+Transformers
+✓
+13.1
+2.1
+78.7
+SOFT [13]
+Transformer
+✓
+13.0
+1.9
+79.3
+VVT-T(ours)
+Transformers
+✓
+12.9
+3.0
+79.4
+ResNet50 [31]
+ConvNets
+✓
+25.6
+4.1
+76.1
+PVT-Small [32]
+Transformers
+✓
+24.5
+3.8
+79.8
+RegNetY-4G [56]
+ConvNets
+✓
+21.0
+4.0
+80.0
+TNT-S [18]
+Transformers
+✗
+23.8
+5.2
+81.3
+Swin-T [22]
+Transformers
+✓
+29.0
+4.5
+81.6
+CvT-13 [17]
+Hybrid
+✓
+20.0
+4.5
+81.6
+Twins-SVT-S [33]
+Hybrid
+✓
+24.0
+2.8
+81.7
+XCiT-S12 [41]
+Linear Transformers
+✗
+26.0
+4.8
+82.0
+DAT-T [26]
+Transformer
+✓
+29.0
+4.6
+82.0
+PVTv2-B2-Li [51]
+Transformers
+✓
+22.6
+3.9
+82.1
+SOFT [13]
+Linear Transformers
+✓
+24.0
+3.3
+82.2
+Focal-Tiny [57]
+Transformers
+✓
+29.1
+4.9
+82.2
+Quadtree-B-b2 [34]
+Linear Transformers
+✓
+24.2
+4.5
+82.7
+VVT-S(ours)
+Linear Transformers
+✓
+25.5
+5.6
+82.7
+ResNet101 [31]
+ConvNets
+✓
+44.7
+7.9
+77.4
+ViT-Small16 [4]
+Transformers
+✗
+48.8
+9.9
+80.8
+PVT-Medium [32]
+Transformers
+✓
+44.2
+6.7
+81.2
+RegNetY-8G [56]
+ConvNets
+✓
+39.0
+8.0
+81.7
+CvT-21 [17]
+Hybrid
+✓
+32.0
+7.1
+82.5
+XCiT-S24 [41]
+Linear Transformers
+✗
+48.0
+9.1
+82.6
+SOFT [13]
+Linear Transformers
+✓
+45.0
+7.2
+82.9
+Swin-S [22]
+Transformers
+✓
+50.0
+8.7
+83.0
+Twins-SVT-B [33]
+Hybrid
+✓
+56.0
+8.3
+83.2
+PVTv2-B3 [51]
+Transformers
+✓
+45.2
+6.9
+83.2
+Focal-Small [57]
+Transformers
+✓
+51.1
+9.1
+83.5
+PVTv2-B4 [51]
+Transformers
+✓
+62.6
+10.1
+83.6
+DAT-S [26]
+Transformer
+✓
+50.0
+9.0
+83.7
+Quadtree-B-b3 [34]
+Linear Transformers
+✓
+46.3
+7.8
+83.7
+VVT-M(ours)
+Linear Transformers
+✓
+47.9
+9.4
+83.8
+ResNet152 [31]
+ConvNets
+✓
+60.2
+11.6
+78.3
+PVT-Large [32]
+Transformers
+✓
+61.4
+9.8
+81.7
+ViT-Base16 [4]
+Transformers
+✗
+86.6
+16.0
+81.8
+T2T-ViT-24 [19]
+Transformers
+✓
+63.9
+13.2
+82.2
+XCiT-M24 [41]
+Linear Transformers
+✗
+84.0
+16.2
+82.7
+ResNeXt101-64x4d [58]
+ConvNets
+✓
+84.0
+16.0
+82.9
+TNT-B [18]
+Transformers
+✗
+65.6
+14.1
+82.9
+RegNetY-16G [56]
+ConvNets
+✓
+84.0
+16.0
+82.9
+SOFT [13]
+Linear Transformers
+✓
+64.0
+11.0
+83.1
+Swin-B [22]
+Transformers
+✓
+88.0
+15.4
+83.3
+Twins-SVT-L [33]
+Hybrid
+✓
+99.2
+14.8
+83.7
+PVTv2-B5 [51]
+Transformers
+✓
+82.0
+11.8
+83.8
+Focal-Base [57]
+Transformers
+✓
+89.8
+16.0
+83.8
+DAT-B [26]
+Transformer
+✓
+88.0
+15.8
+84.0
+Quadtree-B-b4 [34]
+Linear Transformers
+✓
+64.2
+11.5
+84.0
+VVT-L(ours)
+Linear Transformers
+✓
+61.8
+10.8
+84.1
+
+TABLE 3. CIFAR-10 [59] classification results.
+
+TABLE 4. CIFAR-100 [59] classification results.
+
+Method
+Style
+MS out
+Top-1 Acc(%)
+ViT-Small [4]
+Transformers
+✗
+81.9
+TNT-S [18]
+Transformers
+✗
+85.8
+Swin-T [22]
+Transformers
+✓
+89.8
+PVT-Small [32]
+Transformers
+✓
+91.1
+ResNet50 [31]
+ConvNets
+✓
+92.5
+Twins-SVT-S [33]
+Hybrid
+✓
+93.8
+PVTv2-B2 [51]
+Transformers
+✓
+95.7
+VVT-S(ours)
+Linear Transformers
+✓
+96.1
+
+Method
+Style
+MS out
+Top-1 Acc(%)
+ViT-Small [4]
+Transformers
+✗
+47.4
+TNT-S [18]
+Transformers
+✗
+71.5
+Swin-T [22]
+Transformers
+✓
+74.8
+PVT-Small [32]
+Transformers
+✓
+76.3
+ResNet50 [31]
+ConvNets
+✓
+79.2
+Twins-SVT-S [33]
+Hybrid
+✓
+81.6
+PVTv2-B2 [51]
+Transformers
+✓
+83.9
+VVT-S(ours)
+Linear Transformers
+✓
+84.6
+
+Method
+Semantic FPN (PVT [32] setting)
+UPerNet (Swin [22] setting)
+Params
+GFLOPs
+mIoU(%)
+Params
+GFLOPs
+mIoU(%)
+ResNet50 [31]
+28.5
+45.6
+36.7
+-
+-
+-
+PVT-Small [32]
+28.2
+44.5
+39.8
+-
+-
+-
+Swin-T [22]
+31.9
+46.0
+41.5
+59.9
+237
+44.5
+Twins-SVT-S [33]
+28.3
+37.0
+43.2
+54.4
+228
+46.2
+PVTv2-b2 [51]
+29.1
+45.8
+45.2
+-
+-
+-
+VVT-S(ours)
+29.2
+50.9
+45.6
+55.5
+240
+46.8
+ResNet101 [31]
+47.5
+65.1
+38.8
+-
+-
+-
+ResNeXt101-32x4d [58]
+47.1
+64.7
+39.7
+-
+-
+-
+PVT-Medium [32]
+51.6
+61.0
+41.6
+-
+-
+-
+SWIN-S [22]
+53.2
+70.0
+45.2
+81.3
+261
+47.6
+Twins-SVT-B [33]
+60.4
+67.0
+45.3
+88.5
+261
+47.7
+PVTv2-b3 [51]
+49.0
+62.4
+47.3
+-
+-
+-
+VVT-M(ours)
+51.7
+70.8
+47.4
+77.9
+260
+48.1
+ResNeXt101-64x4d [58]
+86.4
+103.9
+40.2
+-
+-
+-
+PVT-Large [32]
+65.1
+79.6
+42.1
+-
+-
+-
+SWIN-B [22]
+91.2
+107.0
+46.0
+121
+299
+48.1
+Twins-SVT-L [33]
+103.7
+102.0
+46.7
+133
+297
+48.8
+PVTv2-b4 [51]
+66.3
+81.3
+47.9
+-
+-
+-
+VVT-L(ours)
+65.5
+78.1
+47.9
+91.9
+267
+48.8
+
+TABLE 6. Analysis of locality constraint on CIFAR-100 [59]
+and ImageNet-1k [54].
+
+methods on both CIFAR-10 and CIFAR-100. We hypothesize that
+for small datasets, stronger inductive bias may make the model
+more data efficient. We can see ViT does not have inductive bias
+and performs poorly. Other models that have different types of
+locality bias achieve better results than ViT. Our VVT introduces
+self-attention with 2D locality and achieves the best results.
+
+Datasets
+Method
+Top-1 Acc(%)
+
+CIFAR-100
+VVT w/o locality
+82.13
+VVT 1D locality
+76.78
+VVT 2D locality
+82.92
+
+ImageNet-1k
+VVT w/o locality
+78.0
+VVT 1D locality
+✗
+VVT 2D locality
+79.4
+
+5.2
+Semantic Segmentation
+
+We utilize the challenging ADE20K [60] dataset to evaluate our
+idea in semantic segmentation. It has 150 semantic classes, with
+20,210, 2,000 and 3,352 images for training, validation and
+testing. With the VVT models (pre-trained on ImageNet-1k) as the
+backbone, we provide the results using two segmentation methods
+in Table 5 and show qualitative samples in Fig. 7. Specifically,
+we pick Semantic FPN [64] and UPerNet [65] as the semantic
+segmentation architecture, respectively following the settings of
+PVT [32] and Swin Transformer [22]. The quantitative results
+show that our method is consistently superior to the competing
+CNN-based methods. For example, using Semantic FPN, VVT-
+S outperforms ResNet50 [31] by 8.9%, and VVT-L is 7.7%
+better than ResNeXt101-32x4d [58], using mIoU as the metric.
+VVT also shows a more favourable segmentation result than the
+transformer-based competitors such as the Swin Transformer. A
+similar phenomenon is observed if taking UPerNet [65] as the
+segmentation method. These results validate that the extracted
+features of VVT are also valuable for semantic segmentation,
+which benefits from the locality mechanism together with the
+global attention.
+
+All results are obtained under the same settings including fea-
+ture dimension, number of heads etc. Note that although VVT,
+SOFT [13], Performer [10], Quad [34] and Linformer [39] all
+have linear complexity, their actual memory consumption may
+vary according to their specific algorithms.
+From Fig. 8, we can make the following observations: (i)
+Our method consumes relatively more memory than Performer
+[10] and Linformer [39], as both methods are designed for
+1D sequences and show inferior performance on vision tasks.
+(ii) Compared to efficient vision transformers, i.e., PVTv2
+[51], SOFT [13] and Quadtree [34], the memory consumption
+of Vicinity Attention grows notably slower, allowing inputs
+with much higher resolutions. (iii) The spatial reduction (sr)
+is a computation reduction technique proposed by PVT [53].
+Specifically, it reduces the spatial dimensions of the key and value
+vectors in the self-attention module with convolution or pooling
+operations, thus the complexity of the self-attention computation
+is reduced. PVTv2 [51], SOFT [13], and Quadtree [34] all adopt
+the sr strategy to reduce computation, while the standard VVT
+directly calculates attention on the original sequence without sr.
+If we also integrate sr, the VVT sr in Fig. 8 validates that the
+efficiency can be further improved with a spatial reduction ratio
+of 4. Finally, in Table. 8, we show memory footprints of the
+models with various attention modules that correspond to Table 7.
+In summary, this ablation study validates that VVT successfully
+mitigates the computational issue in the vision transformers.
+
+5.3
+Ablation Study
+
+Fig. 7: Qualitative results of semantic segmentation on ADE20K [60]. The results are generated by VVT-L based Semantic FPN [64].
+
+TABLE 7. Ablation of different attention choices. We fix the
+architecture to VVT-T and test different attention modules on
+CIFAR-100 and ImageNet-1k. cosFormer fails to converge under
+the same setting on ImageNet1K.
+
+10000
+
+8000
+
+Memory
+
+VVT
+VVT_sr
+PVTv2
+ViT
+SOFT
+Quad
+Performer
+Linformer
+
+Dataset
+Architecture
+Attention
+Memory
+Top-1 Acc(%)
+
+6000
+
+VVT-T
+GCNet [48]
+66.34
+VVT-T
+cosFormer [12]
+76.78
+VVT-T
+Performer [10]
+79.86
+VVT-T
+Linformer [39]
+80.95
+VVT-T
+PVTv2 [51]
+82.16
+VVT-T
+Vanilla [1]
+82.68
+VVT-T
+Ours
+82.92
+
+4000
+
+CIFAR-100
+
+2000
+
+0
+
+VVT-T
+GCNet [48]
+76.6
+VVT-T
+cosFormer [12]
+✗
+VVT-T
+Performer [10]
+77.2
+VVT-T
+Linformer [39]
+79.1
+VVT-T
+PVTv2 [51]
+79.3
+VVT-T
+Vanilla [1]
+80.0
+VVT-T
+Ours
+79.4
+
+0
+100
+200
+300
+400
+500
+600
+700
+
+Input resolution
+
+ImageNet-1k
+
+Fig. 8: Comparison of attention memory footprints growth rates
+between VVT and recent efficient transformer methods: PVTv2
+[51], SOFT [13], Quadtree [34], Performer [10] and Linformer
+[39]. We set the feature dimension to 128 and the number of heads
+to 1 for all methods. Following their official implementation, the
+spatial reduction ratio is set as 8 on PVTv2 and SOFT, and 4 on
+Quadtree. For VVT sr, we integrate a spatial reduction ratio of 4
+into our VVT, which further improves efficiency.
+
+TABLE 8. Quantitative memory footprints of networks in table 7.
+All models have the same network structure except the attention
+module. All results are obtained with a batch size of 16 on a GPU
+with 32GB VRAM.
+
+Resolutions Vanilla GCNet cosFormer Performer Linformer PVTv2 VVT
+
+2242
+4.8
+1.8
+3.1
+2.5
+3.0
+2.4
+3.2
+3842
+29.7
+5.2
+8.8
+7.4
+8.7
+9.1
+9.2
+5122
+OOM
+9.1
+15.7
+13.0
+15.4
+20.8
+16.1
+
+Fig. 9: We compare the class-wise attention maps of VVT against VVT w/o locality (VVT-wol in the figure), PVT [32] and ViT [4]. The
+attention maps are generated using Grad CAM [52]. We observe that the activation of PVT and VVT w/o locality is more concentrated
+than ViT due to the fact that overlapping patch embedding or pyramid structure may also introduce locality. In VVT, we enforce 2D
+locality bias in terms of the attention module, so that the activation areas are more concentrated and appropriately located on the object.
+
+500
+
+By FRA, we reduce the feature dimension to fulfill the as-
+sumption of N ≫d, which forces the computational complexity
+to approach linear. In Fig. 10, we ablate the computational cost
+under different feature reduction (FR) ratios. We can observe an
+obvious GFLOPs decrease when increasing the FR ratio from 1
+to 2 (reducing the feature dimension by half). However, when the
+FR ratio further increases, the reduction tends to saturate. This
+is because the computational cost of the self-attention module
+is already significantly reduced and the remaining model parts
+dominate the computational overhead. Additionally, we ablate the
+performance under different FR ratios on the CIFAR-100 dataset.
+As shown in Table 9. When the FR ratio is small, the model retains
+a similar performance (i.e., 82.89% vs. 82.92%), indicating that
+the result is not affected. When the FR ratio increases to a number
+like 8, a clear performance drop is observed. As a trade-off, we
+set the FR ratio as 2 for our formal model settings.
+
+FR=1
+ResNet
+FR=2
+FR=4
+FR=8
+
+400
+
+300
+
+GFLOPs
+
+200
+
+100
+
+0
+
+160
+320
+480
+640
+800
+960 1120 1280
+
+Input resolution
+
+Fig. 10: GFLOPs of VVT using different feature reduction rates.
+When FR ratio is increased larger than 4, the growth ratio tends to
+be saturated.
+
+TABLE 9. Results of VVT on CIFAR100 using different feature
+reduction ratio (FR). We empirically find that the FR = 2 leads
+to the best performance.
+
+TABLE 10. Results of VVT-tiny with and without feature
+preserving connection(FPC) on ImageNet-1k.
+
+Method
+FPC
+Top-1 Acc(%)
+VVT
+✗
+77.9
+VVT
+✓
+79.4
+
+Method
+Feature Reduction ratio
+Top-1 Acc(%)
+PVT [32]
+–
+81.67
+VVT
+FR=1
+82.89
+VVT
+FR=2
+82.92
+VVT
+FR=4
+82.00
+VVT
+FR=8
+80.60
+
+TABLE 11. Results of integrating feature reduction attention
+(FRA) and feature preserving connection (FPC) with Per-
+former [10] on ImageNet-1k.
+
+linear attention methods, i.e., cosFormer [12], Linformer [39]
+and Performer [10], whereas our performances on both datasets
+are superior. Finally, VVT has better memory efficiency than
+PVTv2 [51] and vanilla softmax attention [4].
+
+Method
+FRA&FPC
+Top-1 Acc(%)
+Performer [10]
+✗
+77.2
+Performer [10]
+✓
+77.3
+
+Method
+Resolution
+Param
+GFLOPs
+Top-1 Acc(%)
+
+VVT-T
+3842
+12.9
+8.8
+80.3
+
+Method
+CIFAR-10 Acc(%)
+ImagNet Acc(%)
+Deit-Tiny [55]
+81.9
+72.2
+PVT-Tiny [53]
+88.9
+75.1
+VVT-Tiny*
+89.5
+75.3
+
+Swin-T [22]
+3842
+29.0
+14.0
+82.2
+CVT-21 [17]
+3842
+32.0
+24.9
+83.3
+VVT-S
+3842
+25.5
+16.5
+83.4
+
+Swin-S [22]
+3842
+50.0
+27.0
+83.9
+VVT-M
+3842
+47.9
+27.7
+84.5
+
+exhaust GPU memory in the high-resolution regime. In summary,
+due to the better overall efficiency curve we consider slightly
+increased time consumption in the low-resolution regime is a price
+worth paying for our better accuracy.
+
+ViT-Base16 [4]
+3842
+86.6
+55.5
+77.9
+Swin-B [22]
+3842
+88.0
+47.0
+84.5
+VVT-L
+3842
+61.8
+31.8
+84.7
+
+can still observe an accuracy improvement (i.e., 77.2% vs. 77.3%).
+It validates that our FRA and FPC yield performance gains in the
+existing linear attention approach.
+Image Classification with Different Input Size Table 12 lists
+the performance of VVT with higher input resolution i.e., 384.
+Obviously, larger input resolution leads to better top-1 accuracy
+but requires larger computation. Compared to competing methods
+such as ViT [4], Swin [22] and CVT [17], VVT achieves better
+results with fewer parameters and a comparable computational
+overhead.
+
+6
+CONCLUSION
+
+We have introduced Vicinity Vision Transformer (VVT), a
+general-purpose vision backbone that produces hierarchical fea-
+ture representations through a pyramid structure. At its core,
+we propose Vicinity Attention, which introduces 2D locality
+into linear self-attention modules. We validate that the local-
+ity mechanism improves results and helps generate better class
+activation. Then, targeting the computational bottleneck of the
+linear attention, we propose a novel Vicinity Attention Block
+to further reduce computation. In addition, because VVT has
+linear complexity, it facilitates processing feature maps or input
+images with higher resolutions. The proposed VVT has been
+validated with strong performance on both image classification
+and semantic segmentation. Future work will be aimed at using
+neural architecture search to further improve upon architectures
+specifically designed for linear vision transformers.
+
+VVT-L
+PVTv2-B5
+Swin-B
+
+5
+
+4
+
+Throughputs(ln)
+
+3
+
+2
+
+1
+
+REFERENCES
+
+0
+
+0
+500
+1000
+1500
+2000
+
+Resolution
+
+Fig. 11: Throughput-resolution curve. We take log of throughput
+for better readability since throughput differences saturate in the
+high-resolution regime.
+
+Nick Barnes Nick Barnes is a Professor with the
+School of Computing at the Australian National
+University. He received his B.Sc. (Hons) degree
+and PhD in Robotic Vision from the University
+of Melbourne, in 1994 and 1999. With NICTA,
+2003-16, and CSIRO, he was a Senior Principal
+Researcher and led the Computer Vision Re-
+search Group. He has best paper awards and
+nominations including from CVPR, Robotics and
+Systems Science, IROS, and DICTA.
+
+Zhen Qin Zhen Qin is a researcher from Sense-
+time. He received his B.S. degree in mathemat-
+ics and applied mathematics from Fudan Uni-
+versity in 2017 and his M.S. degree in applied
+statistics from Tsinghua University in 2020. His
+current research areas are Efficient Network De-
+sign and Transformer.
+
+Stan Birchfield Stan Birchfield is a Principal Re-
+search Scientist and Senior Research Manager.
+from NVIDIA. He remains an adjunct faculty
+member at Clemson. He conducted research at
+Microsoft, was the principal architect of a com-
+mercial product at a startup company in the Bay
+Area, co-founded a startup with collaborators at
+Clemson, and consulted for various companies.
+He has authored or co-authored more than 100
+publications and a textbook on image processing
+and analysis. He regularly serves on the pro-
+gram committees and editorial boards of various leading conferences
+and journals in computer vision and robotics. He received his Ph.D. in
+electrical engineering, with a minor in computer science, from Stanford
+University.
+
+Hui
+Deng
+Hui
+Deng
+is
+a
+Ph.D
+student
+at
+the
+Northwestern
+Polytechnical
+Univer-
+sity(NWPU).He received the B.E. degree and
+M.E degree from Northwestern Polytechnical
+University Xi’an, China in 2019 and 2022 re-
+sprctively . During his Ph.D he joined sensetime
+research as a research intern to work on Mul-
+tiModal Machine Learning. His current research
+interests including gernerative models, non-rigid
+structure from motion and depth estimation.
+
+Jianyuan Wang Jianyuan Wang is currently a
+DPhil student in the Visual Geometry Group,
+University of Oxford. He achieved his B.E. de-
+gree with first-class honors from the Australian
+National University in 2019. He serves as the re-
+viewer for TPAMI, ICLR, CVPR, ICCV, and so on.
+His research interests include visual geometry
+and generative modelling.
+
+Lingpeng Kong Lingpeng Kong is an assistant
+professor in the Department of Computer Sci-
+ence at the University of Hong Kong (HKU), and
+a co-director of the HKU NLP Lab. His work
+lies at the intersection of natural language pro-
+cessing (NLP) and machine learning (ML), with
+a focus on representation learning, structured
+prediction, and generative models. Before join-
+ing HKU, he was a research scientist at Google
+DeepMind. He obtained his Ph.D. from School of
+Computer Science, Carnegie Mellon University.
+
+Yi Zhang Yi Zhang is currently a computer vi-
+sion researcher at SenseTime. He received his
+M.S. degree in advanced computer science from
+the University of Birmingham(UOB), Birming-
+ham, UK, in 2019. His research interests include
+deep learning, computer vision and object de-
+tection, especially dense pedestrian detection,
+cross-modality object detection, and 3D recon-
+struction.

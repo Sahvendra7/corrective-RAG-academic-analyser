@@ -1,0 +1,892 @@
+Westone Information Industry INC.
+Chengdu, China
+
+Jie Wu
+
+Ying Peng
+
+Shengming Zhang
+
+Weigang Qi
+
+Jian Zhang
+
+Abstract
+
+Scene text recognition (STR) enables computers to recognize and read the text in var-
+ious real-world scenes. Recent STR models beneﬁt from taking linguistic information in
+addition to visual cues into consideration. We propose a novel Masked Vision-Language
+Transformers (MVLT) to capture both the explicit and the implicit linguistic information.
+Our encoder is a Vision Transformer, and our decoder is a multi-modal Transformer.
+MVLT is trained in two stages: in the ﬁrst stage, we design a STR-tailored pretraining
+method based on a masking strategy; in the second stage, we ﬁne-tune our model and
+adopt an iterative correction method to improve the performance. MVLT attains superior
+results compared to state-of-the-art STR models on several benchmarks. Our code and
+model are available at
+
+1
+Introduction
+
+We propose a Masked Vision-Language Transformers (MVLT) for STR, with a Vision
+Transformer (ViT) [6] encoder and a creatively designed multi-modal Transformer [23, 34,
+43] decoder. The potential of Transformers [37] has been proved in the area of NLP and
+CV, while the pretraining and ﬁne-tuning pipelines of Transformer-based models further
+boost the performance of down-streaming tasks. To this end, we adopt a two-stage training
+strategy to train the model as follows:
+
+In the ﬁrst stage, we pretrain the model by borrowing the idea from masked autoencoders
+(MAE) [11]. MAE splits an image into several patches, randomly masks a percentage of
+them, and learns to reconstruct the masked ones. Different from MAE, our MVLT recognizes
+scene text in addition to reconstructing the masked patches. To recognize text, we seek to
+use linguistic information to assist the visual cues. Motivated by multi-modal Transformers,
+which combine image regions with language semantics through a Transformer and learn the
+interaction between the two, we build a multi-modal Transformer decoder to bring linguistic
+information into our model. For the input of our multi-modal decoder, the visual part consists
+of encoded patches and mask tokens; the textual part comes from the ground-truth text label
+of the corresponding image and is formed into a sequence of character embeddings. We build
+two sub-decoders to model explicit and implicit textual semantics, respectively. Similar
+to MLM in VisualBERT [23], which masks some tokens in the textual input and predicts
+them according to the visual and textual features, for one sub-decoder, we mask a part of
+characters in the ground-truth text label and learn to predict the masked characters. The
+visible characters serve as word-level textual cues, explicitly guiding the model to learn
+linguistic knowledge. To endow the model with the ability to predict the correct word-
+level text even without explicit textual input, which is closer to the application scenario of
+STR, for another sub-decoder, we mask all input characters. The model is now left with
+only visual cues and thus is pushed to learn linguistic information implicitly without an
+additional language model. It is worth noticing that the two sub-decoders share parameters
+during training for efﬁciency. Furthermore, as an extension of our MVLT, we propose a
+simple but efﬁcient method to use real-world unlabeled data together with labeled one in
+pretraining.
+
+In the second stage, we ﬁne-tune the model, where the encoder takes the unmasked scene
+text image as input, and the decoder outputs the predicted text. To better use the pretrained
+knowledge, different from MAE or ViTSTR [2], which only ﬁne-tune on the pretrained
+encoder, we ﬁne-tune on both the encoder and the decoder. Meanwhile, we propose an
+iterative correction method to gradually modify the predicted text during iterations. In each
+iteration, the input of the decoder consists of the image feature that is output from encoder,
+and the text feature that is output from the previous iteration.
+
+One of the classical ways for STR is to extract visual features based on CNN, use RNN to
+perform sequence labeling, and adopt Connectionist Temporal Classiﬁcation (CTC) [9] as
+a loss function [12, 32]. Recently, GTC [14] optimized the CTC-based method by using a
+graph convolutional network (GCN) [21] to learn the local correlations of features. Some
+works attempt to rectify the irregular text images [33, 41, 44]. For example, ASTER [33]
+adopts Thin-Plate-Spline (TPS) [5] transformation, and ScRN [41] adds symmetrical con-
+straints in addition to the TPS. Recent works [4, 16, 22, 27, 31, 40] brought insightful ideas
+in dealing with challenging scenarios (occlusion, noise, etc.) by building language-aware
+models.
+Language-aware methods. Some methods [8, 17, 27, 42] rely on external language
+models to extract the semantics. For example, SRN [42] builds a global semantic reasoning
+module, which learns semantics based on the predicted text from the visual model. This
+method is upgraded in ABINet [8], which develops a bidirectional cloze network to make
+better use of bidirectional linguistic information, and utilizes an iterative correction for the
+language model. Some other works [7, 35, 39] implicitly learn semantics without using lan-
+guage models. For example, SVTR [7] recognizes both the characters and the inter-character
+long-term dependence in a single visual model by using local and global mixing blocks. VST
+[35] extracts semantics from a visual feature map and performs a visual-semantic interaction
+using an alignment module. Most recently, some language-aware models explore more pos-
+sibilities to boost the performance by considering spatial context [13], adding real-world
+images to train the model in a semi-supervised way [1], or developing a re-ranking method
+to get a better candidate output [30], while our work takes a step by extracting both the
+explicit and the implicit semantics.
+Transformer-based STR. Recently, Transformer has shown its effectiveness in STR
+models [8, 28, 31, 39, 40, 42]. For instance, PIMNet [28] builds a bi-directional Transformer-
+based parallel decoder to iteratively capture context information. Lately, based on ViT struc-
+ture [6], ViTSTR [2] uses a ViT encoder to perform STR without using the decoder. Addi-
+tionally, ViTSTR is initialized by pretrained parameters of DeiT [36]. We also apply a ViT
+encoder in our model. However, unlike ViTSTR, we take the decoder into our architecture
+and propose a new pretraining method to better ﬁt the STR task.
+
+3
+Methodology
+
+Our proposed MVLT is trained with two stages, including a pretraining stage, as shown in
+Figure 1, and a ﬁne-tuning stage, as shown in Figure 2 (a). In addition, we harness the
+unlabeled data to enhance the training of the model, as shown in Figure 2 (b) and (c).
+
+3.1
+Preliminary
+
+image patches
+
+i
+d
+
+…
+
+…
+
+share parameters
+
+encoder
+
+<mask>
+
+<mask>
+
+<mask>
+
+…
+
+drive
+decoder2
+
+…
+
+…
+
+Figure 1: An illustration of MVLT in the pretraining stage.
+
+the full set of image patches, xu is the set of unmasked patches, and xm is the set of masked
+patches. The encoder of MAE is a ViT, which only operates on xu to learn the visual feature
+embeddings:
+
+vu = encoder(xu),
+(1)
+
+where vu ∈RNu×D1 and D1 is the feature dimension in the encoder. The mask token vm is
+introduced after the encoder, constituting the input of the decoder, together with vu. The
+decoder reconstructs the image as follows:
+
+ˆvm, ˆvu = decoder(vm,vu),
+(2)
+
+where vm ∈RNu×D2 and D2 is the feature dimension in the decoder. ˆvm ∈RNm×(P2·C) and
+ˆvu ∈RNu×(P2·C). The Mean Squared Error (MSE) loss is used to optimize MAE model.
+
+3.2
+Pretraining Stage
+
+ˆvm, ˆvu, ˆtm, ˆtu = decoder(vm,vu,tm,tu),
+(3)
+
+where ˆvm ∈RNm×(P2·C), ˆvu ∈RNu×(P2·C), ˆtm ∈RLm×M, ˆtu ∈RLu×M, and M is the number of
+character’s category.
+Modeling explicit language semantics. We set the text mask ratio of decoder1 to 0.2. For
+instance, if the text label consists of 10 characters, we randomly mask 2 of them. The length
+of unmasked character embeddings Lu = 8, and the length of masked ones Lm = L −Lu.
+With the unmasked character embeddings tu serving as linguistic context, decoder1 explicitly
+learns textual semantics.
+Modeling implicit language semantics. For decoder2, we set the mask ratio of the
+character embeddings as 1.0. With this setting, the length of unmasked character embeddings
+Lu = 0, and the masked ones Lm = L. As the characters are totally masked, decoder2 only
+uses the visual information to reconstruct ˆvm and predicts the word-level text label ˆtm, which
+pushes it to learn implicit textual semantics from visual cues.
+Pretraining objective. We use the MSE loss to optimize the reconstructed image patches
+and use the Cross Entropy Loss to optimize textual prediction:
+
+Lpretraining = α ·Lv1 +β ·Lv2 +γ ·Lt1 +ε ·Lt2,
+(4)
+
+where {α,β,γ, ε} are trade-off parameters. For decoder1, Lv1 = MSE(ˆvm,ym), where ym ∈
+RNm×(P2·C) denotes the pixel values of the masked image patches. Lt1 = Cross-Entropy(ˆtm,yt),
+where yt ∈RL×1 is the ground-truth character index, and each element in yt ∈[1,M]. For
+decoder2, Lv2 = MSE(ˆvm,ym), and Lt2 = Cross-Entropy(ˆtm,yt).
+
+3.3
+Fine-tuning Stage
+
+We ﬁne-tune the above pre-trained encoder and decoder to further promote the performance
+of our model on the STR task. Motivated by the iterative strategy of ABINet [8], we design
+an iterative correction method that ﬁts the architecture of our model, as shown in Figure 2
+(a). This iterative correction method is an alternative during ﬁne-tuning.
+Encoder. The full set of image patches x ∈RN×(P2·C) is taken as the input of the encoder
+without utilizing the masking operation:
+
+v = encoder(x),
+(5)
+
+all patches
+
+,
+,
+
+predictions
+
+image patches
+
+…
+…
+
+dnlve
+
+encoder
+
+decoder
+
+...
+
+…
+…
+
+encoder
+
+without iteration
+
+dnive
+
+labeled images
+
+decoder
+
+d
+
+d
+
+<mask>
+
+(b)
+
+<mask>
+
+n
+
+n
+
+1st iteration
+
+i
+
+l
+
+<mask>
+
+drive
+
+v
+
+v
+
+<mask>
+
+ignore
+
+,
+,
+
+e
+
+e
+
+<mask>
+
+2nd iteration
+
+…
+…
+
+…
+
+…
+
+...
+
+...
+
+...
+
+<mask>
+
+<mask>
+
+<mask>
+
+decoder
+
+2nd
+iteration
+
+1st
+iteration
+
+without
+iteration
+
+encoder
+
+take as iterative input
+
+labeled images
+unlabeled images
+
+(c)
+
+(a)
+
+Figure 2: Sub-ﬁgure (a) shows our model in the ﬁne-tuning stage. Sub-ﬁgure (b) illustrates
+our model using labeled data in the pretraining stage. Sub-ﬁgure (c) illustrates our model
+using both labeled and unlabeled data in the pretraining stage.
+
+Different from the pretraining stage, where the output of the decoder consists of recon-
+structed image patches and the predicted text, during the ﬁne-tuning stage, the predicted
+image patches are ignored, and only the predicted text is kept because the STR task only fo-
+cuses on the text prediction. The input and output of the decoder are formalized as follows:
+
+ˆt = decoder(v,tm),
+(6)
+
+where ˆt ∈RL×M is the logits of predicted text.
+Iterative correction. We regard the output ˆt as a raw text prediction that will be corrected
+during iterations. The prediction probability of each character is computed based on ˆt. A
+linear projection layer takes the prediction probabilities as the input. It outputs a sequence of
+character-related feature representations, which is set as the new character embedding input
+at the current iteration. For example, we perform K times of iterative corrections by the
+follows: for the 1st iteration, we pass ˆtitr=0 = ˆt into a softmax layer and then a linear layer
+to get titr=1, which is taken as the new character embedding to replace the totally masked
+character embeddings tm in Eq. (6). Then, the k-th (k ∈[1,K]) iteration process is formalized
+as:
+
+probitr=k = softmax(ˆtitr=k-1),
+(7)
+
+titr=k = linear(probitr=k),
+(8)
+ˆtitr=k = decoder(v,titr=k),
+(9)
+
+The output of the K-th iteration is regarded as the ﬁnal corrected text prediction.
+Fine-tuning objective. Different from the pretraining objective, we only focus on opti-
+mizing the textual prediction by leveraging the Cross Entropy Loss:
+
+Our pretraining objective includes: (a) reconstructing the masked image patches; and (b)
+recognizing the scene texts. Since (b) requires leveraging labeled scene text to attain su-
+pervised training, we use labeled synthetic datasets for training. However, there is a mass
+of real-world data, which is unlabeled and costs much to label. Fortunately, we ﬁnd it
+easy to use unlabeled data to enhance learning features during pretraining. Speciﬁcally,
+as shown in Figure 2 (c), we concatenate the unlabeled image data and the labeled image
+data along the batch dimension as a new input batch. For a batch of output O = {Osyn,Our},
+Osyn = {(ˆvm, ˆvu, ˆtm, ˆtu)1,...,(ˆvm, ˆvu, ˆtm, ˆtu)N1} is the output corresponding to the labeled syn-
+thetic datasets, and Our = {( ˆv′m, ˆv′u, ˆt′m, ˆt′u)1,...,( ˆv′m, ˆv′u, ˆt′m, ˆt′u)N2} is the output corre-
+sponding to the unlabeled real datasets, where N1 is the number of labeled synthetic data
+in the batch, and N2 is the number of unlabeled real data in the batch. Osyn is optimized on
+the loss function of Eq. (4), while Our is optimized only on a MSE loss Lur = MSE( ˆv′m,y′
+m),
+ˆv′m is the output corresponding to the masked patches of the real data, and y′
+m is the tar-
+get pixels of the real data. Through this semi-supervised pretraining process, we can learn
+real-world domain knowledge, thus reducing the gap between the pretraining data and the
+real-world scenario.
+
+4
+Experiment
+
+Method
+Datasets
+Regular Text
+Irregular Text
+IC13
+SVT
+IIIT
+IC15
+SVTP
+CUTE
+
+ASTER [33]
+MJ+ST
+91.8
+89.5
+93.4
+76.1
+78.5
+79.5
+ESIR [44]
+MJ+ST
+91.3
+90.2
+93.3
+76.9
+79.6
+83.3
+ScRN [41]
+MJ+ST
+93.9
+88.9
+94.4
+78.7
+80.8
+87.5
+PIMNet [28]
+MJ+ST
+93.4
+91.2
+95.2
+81.0
+84.3
+84.4
+SAR [22]
+MJ+ST
+94.0
+91.2
+95.0
+78.8
+86.4
+89.6
+SRN [42]
+MJ+ST
+95.5
+91.5
+94.8
+82.7
+85.1
+87.8
+GTC [14]
+MJ+ST
+94.3
+92.9
+95.5
+82.5
+86.2
+92.3
+VisionLAN [39]
+MJ+ST
+95.7
+91.7
+95.8
+83.7
+90.7
+88.5
+PREN2D [40]
+MJ+ST
+96.4
+94.0
+95.6
+83.0
+87.6
+91.7
+S-GTR [13]
+MJ+ST
+96.8
+94.1
+95.8
+84.6
+87.9
+92.3
+ABINet [8]
+MJ+ST
+97.4
+93.5
+96.2
+86.0
+89.3
+89.2
+
+MVLT
+MJ+ST
+97.3
+94.7
+96.8
+87.2
+90.9
+91.3
+MVLT∗
+MJ+ST+UR
+98.0
+96.3
+97.4
+89.0
+92.7
+95.8
+
+iterations, with 8,000 warm-up iterations.The optimizer momentum is set to β1=0.9 and
+β2=0.999. The grad clip is set to 2.0. The layer-wise learning rate decay is set to 0.75.
+We perform 3 times of iterative corrections in ﬁne-tuning the model and 3 times of iterative
+corrections in testing the model. We use 8 NVIDIA RTX A6000 GPUs, with 48GB memory,
+to conduct the experiments, and use gradient accumulation to maintain a large effective batch
+size. The pretraining stage takes around 3.5 days, and the ﬁne-tuning stage takes around 5
+hours.
+Data augmentation. In the pretraining stage, we apply RandomResizedCrop to augment
+data, which is similar to MAE. Speciﬁcally, we set the scale to (0.85, 1.0) and the ratio to
+(3.5, 5.0). In the ﬁne-tuning stage, we use the same data augmentation method as ABINet,
+including rotation, afﬁne, and perspective.
+
+4.1
+Performance Analysis
+
+Testing Iteration 0
+Testing Iteration 1
+Testing Iteration 2
+Testing Iteration 3
+Testing Iteration 4
+Testing Iteration 5
+
+Average Accuracy
+
+93.4
+
+93.2
+
+93.0
+
+1
+2
+3
+Training Iteration
+
+(b) With unlabeled datasets.
+Figure 3: Accuracy of iterative correction in the training and testing process.
+
+(a) Without unlabeled datasets.
+
+tuning stage, as well as testing. Figure 3 shows the results with different settings of the iterate
+times, which suggests that the iterative correction method can help obtain higher accuracy.
+
+4.2
+Ablation Study
+
+Table 2: The results of ablation study. "Iter" represents using iterative correction method in
+training the model in the ﬁne-tuning stage, and in testing on the test datasets.
+
+Lv1
+Lt1
+Lv2
+Lt2
+Iter
+Regular Text
+Irregular Text
+Total
+IC13
+SVT
+IIIT
+IC15
+SVTP
+CUTE
+√
+√
+√
+√
+√
+97.3
+94.7
+96.8
+87.2
+90.9
+91.3
+93.5
+√
+√
+√
+√
+97.0
+94.1
+96.8
+86.6
+89.6
+90.6
+93.2
+√
+√
+√
+96.8
+94.4
+96.3
+87.0
+89.9
+90.6
+93.1
+√
+√
+96.7
+94.6
+96.3
+86.7
+90.2
+91.0
+93.1
+√
+√
+√
+96.4
+92.4
+96.4
+86.7
+89.3
+91.0
+92.8
+√
+√
+95.9
+92.7
+96.0
+86.3
+88.7
+89.6
+92.4
+√
+96.4
+91.3
+96.5
+85.5
+88.8
+89.9
+92.3
+
+The statistics in Table 2 show that: 1) Using only the visual-related loss Lv1 is not as
+effective as using both the visual-related and the textual-related losses. 2) Losing either the
+loss related to learning explicit semantics or the loss related to learning implicit semantics
+will result in a decrease in accuracy. 3) Learning the implicit textual semantics leads to a
+higher leap in accuracy than learning the explicit semantics. 4) The iterative correction is
+especially useful when the model is trained with explicit textual semantics.
+
+4.3
+Visualization and Analysis
+
+Input:
+w<mask>ldcats
+Predict: i
+
+Input:
+<mask><mask>...<mask>
+Predict: wildcats
+
+Ground-truth: wildcats
+
+Input:
+<mask>estauran<mask>
+Predict: r, t
+
+Input:
+<mask><mask>...<mask>
+Predict: restaurant
+
+Ground-truth: restaurant
+
+Figure 4: Visualization of pretrained MVLT. For each example, we show the masked image
+(left), our image reconstruction and text prediction from decoder1 (mid-left) and decoder2
+(mid-right), and the ground-truth (right).
+
+pioneer
+christmas
+everything
+promod
+
+christmas
+tagine
+orscar
+fashion
+
+important
+hepp
+water
+start
+
+athletic
+finish
+salmon
+optimum
+
+Figure 5: Visualization of ﬁne-tuned MVLT. We show successfully recognized difﬁcult ex-
+amples with occlusion (1st row), complex font styles (2nd row), blur (3rd row), and defor-
+mation (4th row).
+
+5
+Conclusion
+
+We propose a Masked Vision-Language Transformers (MVLT) for STR, getting superior
+results compared to the state-of-the-art models. For pretraining the model, we design a
+masking strategy to lead the model in learning both the explicit and implicit textual seman-
+tics. Experiment results have proved the effectiveness of our model in capturing semantics
+and the usefulness of both kinds of semantics. During training and testing our model in the
+ﬁne-tuning stage, we apply an iterative correction method, which boosts the performance of
+STR. Furthermore, the use of unlabeled real data improves the applicability of our model in
+real-world scenarios.
+
+References
+
+[1] Aviad Aberdam, Roy Ganz, Shai Mazor, and Ron Litman. Multimodal semi-supervised
+learning for text recognition. arXiv preprint arXiv:2205.03873, 2022.
+
+[3] Jeonghun Baek, Yusuke Matsui, and Kiyoharu Aizawa.
+What if we only use real
+datasets for scene text recognition? toward scene text recognition with fewer labels.
+In IEEE Conference on Computer Vision and Pattern Recognition, CVPR 2021, vir-
+tual, June 19-25, 2021, pages 3113–3122. Computer Vision Foundation / IEEE, 2021.
+
+[4] Ayan Kumar Bhunia, Aneeshan Sain, Amandeep Kumar, Shuvozit Ghose, Pinaki Nath
+Chowdhury, and Yi-Zhe Song. Joint visual semantic reasoning: Multi-stage decoder
+for text recognition. In 2021 IEEE/CVF International Conference on Computer Vision,
+ICCV 2021, Montreal, QC, Canada, October 10-17, 2021, pages 14920–14929. IEEE,
+2021.
+
+[5] Fred L. Bookstein. Principal warps: Thin-plate splines and the decomposition of de-
+formations. IEEE Trans. Pattern Anal. Mach. Intell., 11(6):567–585, 1989.
+
+[6] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua
+Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. In 9th International Conference on Learning
+Representations, ICLR 2021, Virtual Event, Austria, May 3-7, 2021. OpenReview.net,
+2021.
+
+[7] Yongkun Du, Zhineng Chen, Caiyan Jia, Xiaoting Yin, Tianlun Zheng, Chenxia Li,
+Yuning Du, and Yu-Gang Jiang. SVTR: scene text recognition with a single visual
+model. In Luc De Raedt, editor, Proceedings of the Thirty-First International Joint
+Conference on Artiﬁcial Intelligence, IJCAI 2022, Vienna, Austria, 23-29 July 2022,
+pages 884–890. ijcai.org, 2022.
+
+[8] Shancheng Fang, Hongtao Xie, Yuxin Wang, Zhendong Mao, and Yongdong Zhang.
+Read like humans: Autonomous, bidirectional and iterative language modeling for
+scene text recognition. In IEEE Conference on Computer Vision and Pattern Recog-
+nition, CVPR 2021, virtual, June 19-25, 2021, pages 7098–7107. Computer Vision
+Foundation / IEEE, 2021.
+
+[9] Alex Graves, Santiago Fernández, Faustino J. Gomez, and Jürgen Schmidhuber. Con-
+nectionist temporal classiﬁcation: labelling unsegmented sequence data with recur-
+rent neural networks. In William W. Cohen and Andrew W. Moore, editors, Machine
+Learning, Proceedings of the Twenty-Third International Conference (ICML 2006),
+Pittsburgh, Pennsylvania, USA, June 25-29, 2006, volume 148 of ACM International
+Conference Proceeding Series, pages 369–376. ACM, 2006.
+
+[10] Ankush Gupta, Andrea Vedaldi, and Andrew Zisserman. Synthetic data for text local-
+isation in natural images. In 2016 IEEE Conference on Computer Vision and Pattern
+Recognition, CVPR 2016, Las Vegas, NV, USA, June 27-30, 2016, pages 2315–2324.
+IEEE Computer Society, 2016.
+
+[13] Yue He, Chen Chen, Jing Zhang, Juhua Liu, Fengxiang He, Chaoyue Wang, and Bo Du.
+Visual semantics allow for textual reasoning better in scene text recognition. In Thirty-
+Sixth AAAI Conference on Artiﬁcial Intelligence, AAAI 2022, Thirty-Fourth Conference
+on Innovative Applications of Artiﬁcial Intelligence, IAAI 2022, The Twelveth Sym-
+posium on Educational Advances in Artiﬁcial Intelligence, EAAI 2022 Virtual Event,
+February 22 - March 1, 2022, pages 888–896. AAAI Press, 2022.
+
+[14] Wenyang Hu, Xiaocong Cai, Jun Hou, Shuai Yi, and Zhiping Lin. GTC: guided train-
+ing of CTC towards efﬁcient and accurate scene text recognition. In The Thirty-Fourth
+AAAI Conference on Artiﬁcial Intelligence, AAAI 2020, The Thirty-Second Innovative
+Applications of Artiﬁcial Intelligence Conference, IAAI 2020, The Tenth AAAI Sym-
+posium on Educational Advances in Artiﬁcial Intelligence, EAAI 2020, New York, NY,
+USA, February 7-12, 2020, pages 11005–11012. AAAI Press, 2020.
+
+[15] Max Jaderberg, Karen Simonyan, Andrea Vedaldi, and Andrew Zisserman. Synthetic
+data and artiﬁcial neural networks for natural scene text recognition. In Workshop on
+Deep Learning, NIPS, 2014.
+
+[16] Max Jaderberg, Andrea Vedaldi, and Andrew Zisserman. Deep features for text spot-
+ting. In David J. Fleet, Tomás Pajdla, Bernt Schiele, and Tinne Tuytelaars, editors,
+Computer Vision - ECCV 2014 - 13th European Conference, Zurich, Switzerland,
+September 6-12, 2014, Proceedings, Part IV, volume 8692 of Lecture Notes in Com-
+puter Science, pages 512–528. Springer, 2014.
+
+[17] Max Jaderberg, Karen Simonyan, Andrea Vedaldi, and Andrew Zisserman.
+Deep
+structured output learning for unconstrained text recognition. In Yoshua Bengio and
+Yann LeCun, editors, 3rd International Conference on Learning Representations, ICLR
+2015, San Diego, CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
+
+[18] Max Jaderberg, Karen Simonyan, Andrea Vedaldi, and Andrew Zisserman. Reading
+text in the wild with convolutional neural networks. International journal of computer
+vision, 116(1):1–20, 2016.
+
+[19] Dimosthenis
+Karatzas,
+Faisal
+Shafait,
+Seiichi
+Uchida,
+Masakazu
+Iwamura,
+Lluis Gomez i Bigorda, Sergi Robles Mestre, Joan Mas, David Fernández Mota, Jon
+Almazán, and Lluís-Pere de las Heras. ICDAR 2013 robust reading competition. In
+12th International Conference on Document Analysis and Recognition, ICDAR 2013,
+Washington, DC, USA, August 25-28, 2013, pages 1484–1493. IEEE Computer Soci-
+ety, 2013.
+
+[22] Hui Li, Peng Wang, Chunhua Shen, and Guyu Zhang. Show, attend and read: A simple
+and strong baseline for irregular text recognition. In The Thirty-Third AAAI Conference
+on Artiﬁcial Intelligence, AAAI 2019, The Thirty-First Innovative Applications of Arti-
+ﬁcial Intelligence Conference, IAAI 2019, The Ninth AAAI Symposium on Educational
+Advances in Artiﬁcial Intelligence, EAAI 2019, Honolulu, Hawaii, USA, January 27 -
+February 1, 2019, pages 8610–8617. AAAI Press, 2019.
+
+[23] Liunian Harold Li, Mark Yatskar, Da Yin, Cho-Jui Hsieh, and Kai-Wei Chang. Vi-
+sualbert: A simple and performant baseline for vision and language. arXiv preprint
+arXiv:1908.03557, 2019.
+
+[24] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In Interna-
+tional Conference on Learning Representations, 2018.
+
+[25] Anand Mishra, Karteek Alahari, and C. V. Jawahar. Scene text recognition using higher
+order language priors. In Richard Bowden, John P. Collomosse, and Krystian Mikola-
+jczyk, editors, British Machine Vision Conference, BMVC 2012, Surrey, UK, September
+3-7, 2012, pages 1–11. BMVA Press, 2012.
+
+[26] Trung Quy Phan, Palaiahnakote Shivakumara, Shangxuan Tian, and Chew Lim Tan.
+Recognizing text with perspective distortion in natural scenes. In IEEE International
+Conference on Computer Vision, ICCV 2013, Sydney, Australia, December 1-8, 2013,
+pages 569–576. IEEE Computer Society, 2013.
+
+[27] Zhi Qiao, Yu Zhou, Dongbao Yang, Yucan Zhou, and Weiping Wang. SEED: semantics
+enhanced encoder-decoder framework for scene text recognition. In 2020 IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, CVPR 2020, Seattle, WA,
+USA, June 13-19, 2020, pages 13525–13534. Computer Vision Foundation / IEEE,
+2020.
+
+[28] Zhi Qiao, Yu Zhou, Jin Wei, Wei Wang, Yuan Zhang, Ning Jiang, Hongbin Wang,
+and Weiping Wang. Pimnet: A parallel, iterative and mimicking network for scene
+text recognition.
+In Heng Tao Shen, Yueting Zhuang, John R. Smith, Yang Yang,
+Pablo Cesar, Florian Metze, and Balakrishnan Prabhakaran, editors, MM ’21: ACM
+Multimedia Conference, Virtual Event, China, October 20 - 24, 2021, pages 2046–
+2055. ACM, 2021.
+
+[29] Anhar Risnumawan, Palaiahnakote Shivakumara, Chee Seng Chan, and Chew Lim Tan.
+A robust arbitrary text detection system for natural scene images. Expert Syst. Appl.,
+41(18):8027–8048, 2014.
+
+[32] Baoguang Shi, Xiang Bai, and Cong Yao. An end-to-end trainable neural network for
+image-based sequence recognition and its application to scene text recognition. IEEE
+Trans. Pattern Anal. Mach. Intell., 39(11):2298–2304, 2017.
+
+[33] Baoguang Shi, Mingkun Yang, Xinggang Wang, Pengyuan Lyu, Cong Yao, and Xiang
+Bai. ASTER: an attentional scene text recognizer with ﬂexible rectiﬁcation. IEEE
+Trans. Pattern Anal. Mach. Intell., 41(9):2035–2048, 2019.
+
+[34] Weijie Su, Xizhou Zhu, Yue Cao, Bin Li, Lewei Lu, Furu Wei, and Jifeng Dai. VL-ERT:
+pre-training of generic visual-linguistic representations. In 8th International Confer-
+ence on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30,
+2020. OpenReview.net, 2020.
+
+[35] Xin Tang, Yongquan Lai, Ying Liu, Yuanyuan Fu, and Rui Fang. Visual-semantic
+transformer for scene text recognition. arXiv preprint arXiv:2112.00948, 2021.
+
+[36] Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco Massa, Alexandre Sablay-
+rolles, and Hervé Jégou.
+Training data-efﬁcient image transformers & distillation
+through attention. In Marina Meila and Tong Zhang, editors, Proceedings of the 38th
+International Conference on Machine Learning, ICML 2021, 18-24 July 2021, Vir-
+tual Event, volume 139 of Proceedings of Machine Learning Research, pages 10347–
+10357. PMLR, 2021.
+
+[37] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N.
+Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Isabelle
+Guyon, Ulrike von Luxburg, Samy Bengio, Hanna M. Wallach, Rob Fergus, S. V. N.
+Vishwanathan, and Roman Garnett, editors, Advances in Neural Information Process-
+ing Systems 30: Annual Conference on Neural Information Processing Systems 2017,
+December 4-9, 2017, Long Beach, CA, USA, pages 5998–6008, 2017.
+
+[38] Kai Wang, Boris Babenko, and Serge J. Belongie. End-to-end scene text recognition.
+In Dimitris N. Metaxas, Long Quan, Alberto Sanfeliu, and Luc Van Gool, editors,
+IEEE International Conference on Computer Vision, ICCV 2011, Barcelona, Spain,
+November 6-13, 2011, pages 1457–1464. IEEE Computer Society, 2011.
+
+[39] Yuxin Wang, Hongtao Xie, Shancheng Fang, Jing Wang, Shenggao Zhu, and Yongdong
+Zhang. From two to one: A new scene text recognizer with visual language modeling
+network.
+In 2021 IEEE/CVF International Conference on Computer Vision, ICCV
+2021, Montreal, QC, Canada, October 10-17, 2021, pages 14174–14183. IEEE, 2021.
+
+[42] Deli Yu, Xuan Li, Chengquan Zhang, Tao Liu, Junyu Han, Jingtuo Liu, and Errui
+Ding. Towards accurate scene text recognition with semantic reasoning networks. In
+2020 IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2020,
+Seattle, WA, USA, June 13-19, 2020, pages 12110–12119. Computer Vision Foundation
+/ IEEE, 2020.
+
+[43] Fei Yu, Jiji Tang, Weichong Yin, Yu Sun, Hao Tian, Hua Wu, and Haifeng Wang. Ernie-
+vil: Knowledge enhanced vision-language representations through scene graphs. In
+Thirty-Fifth AAAI Conference on Artiﬁcial Intelligence, AAAI 2021, Thirty-Third Con-
+ference on Innovative Applications of Artiﬁcial Intelligence, IAAI 2021, The Eleventh
+Symposium on Educational Advances in Artiﬁcial Intelligence, EAAI 2021, Virtual
+Event, February 2-9, 2021, pages 3208–3216. AAAI Press, 2021.
+
+[44] Fangneng Zhan and Shijian Lu. ESIR: end-to-end scene text recognition via iterative
+image rectiﬁcation. In IEEE Conference on Computer Vision and Pattern Recognition,
+CVPR 2019, Long Beach, CA, USA, June 16-20, 2019, pages 2059–2068. Computer
+Vision Foundation / IEEE, 2019.

@@ -1,0 +1,2721 @@
+Christina Giannoula†‡ Nandita Vijaykumar*‡ Nikela Papadopoulou† Vasileios Karakostas† Ivan Fernandez§‡
+
+s
+Juan Gómez-Luna‡
+Lois Orosa‡
+Nectarios Koziris†
+Georgios Goumas†
+Onur Mutlu‡
+
+†National Technical University of Athens
+‡ETH Zürich
+*University of Toronto
+§University of Malaga
+
+Near-Data-Processing (NDP) architectures present a
+promising way to alleviate data movement costs and can pro-
+vide signiﬁcant performance and energy beneﬁts to parallel
+applications. Typically, NDP architectures support several
+NDP units, each including multiple simple cores placed close
+to memory. To fully leverage the beneﬁts of NDP and achieve
+high performance for parallel workloads, efﬁcient synchro-
+nization among the NDP cores of a system is necessary. How-
+ever, supporting synchronization in many NDP systems is
+challenging because they lack shared caches and hardware
+cache coherence support, which are commonly used for syn-
+chronization in multicore systems, and communication across
+different NDP units can be expensive.
+This paper comprehensively examines the synchronization
+problem in NDP systems, and proposes SynCron, an end-to-
+end synchronization solution for NDP systems. SynCron adds
+low-cost hardware support near memory for synchronization
+acceleration, and avoids the need for hardware cache coher-
+ence support. SynCron has three components: 1) a special-
+ized cache memory structure to avoid memory accesses for
+synchronization and minimize latency overheads, 2) a hierar-
+chical message-passing communication protocol to minimize
+expensive communication across NDP units of the system, and
+3) a hardware-only overﬂow management scheme to avoid
+performance degradation when hardware resources for syn-
+chronization tracking are exceeded.
+
+cache locality [15,16,33,50,133], which make them suitable
+for NDP.
+Prior works discuss the need for efﬁcient synchronization
+primitives in NDP systems, such as locks [25,99] and barri-
+ers [8, 43, 155, 158]. Synchronization primitives are widely
+used by multithreaded applications [39,40,48,69,70,90,136–
+138, 140], and must be carefully designed to ﬁt the under-
+lying hardware requirements to achieve high performance.
+Therefore, to fully leverage the beneﬁts of NDP for parallel
+applications, an effective synchronization solution for NDP
+systems is necessary.
+Approaches to support synchronization are typically of two
+types [63,64]. First, synchronization primitives can be built
+through shared memory, most commonly using the atomic
+read-modify-write (rmw) operations provided by hardware.
+In CPU systems, atomic rmw operations are typically im-
+plemented upon the underlying hardware cache coherence
+protocols, but many NDP systems do not support hardware
+cache coherence (e.g., [8, 46, 143, 155, 158]). In GPUs and
+Massively Parallel Processing systems (MPPs), atomic rmw
+operations can be implemented in dedicated hardware atomic
+units, known as remote atomics. However, synchronization
+using remote atomics has been shown to be inefﬁcient, since
+sending every update to a ﬁxed location creates high global
+trafﬁc and hotspots [41,96,108,147,153]. Second, synchro-
+nization can be implemented via a message-passing scheme,
+where cores exchange messages to reach an agreement. Some
+recent NDP works (e.g., [8, 43, 55, 158]) propose message-
+passing barrier primitives among NDP cores of the system.
+However, these synchronization schemes are still inefﬁcient,
+as we demonstrate in Section 6, and also lack support for lock,
+semaphore and condition variable synchronization primitives.
+
+arXiv:2101.07557v3 [cs.AR] 13 Feb 2021
+
+We evaluate SynCron using a variety of parallel workloads,
+covering various contention scenarios. SynCron improves
+performance by 1.27× on average (up to 1.78×) under high-
+contention scenarios, and by 1.35× on average (up to 2.29×)
+under low-contention real applications, compared to state-of-
+the-art approaches. SynCron reduces system energy consump-
+tion by 2.08× on average (up to 4.25×).
+1. Introduction
+Recent advances in 3D-stacked memories [59, 72, 85, 92,
+93, 145] have renewed interest in Near-Data Processing
+(NDP) [8, 9, 17, 110]. NDP involves performing computa-
+tion close to where the application data resides. This al-
+leviates the expensive data movement between processors
+and memory, yielding signiﬁcant performance improvements
+and energy savings in parallel applications.
+Placing low-
+power cores or special-purpose accelerators (hereafter called
+NDP cores) close to the memory dies of high-bandwidth 3D-
+stacked memories is a commonly-proposed design for NDP
+systems [8,9,19–21,23,38,42–46,49,66,67,82–84,98,105,
+110–113,117,119,131,132,143,155,158]. Typical NDP ar-
+chitectures support several NDP units connected to each other,
+with each unit comprising multiple NDP cores close to mem-
+ory [8,19,66,83,143,155,158]. Therefore, NDP architectures
+provide high levels of parallelism, low memory access latency,
+and large aggregate memory bandwidth.
+Recent research demonstrates the beneﬁts of NDP for par-
+allel applications, e.g., for genome analysis [23, 84], graph
+processing [8,9,20,21,112,155,158], databases [20,38], secu-
+rity [54], pointer-chasing workloads [25,60,67,99], and neural
+networks [19,45,82,98]. In general, these applications exhibit
+high parallelism, low operational intensity, and relatively low
+
+Hardware synchronization techniques that do not rely on
+hardware coherence protocols and atomic rmw operations have
+been proposed for multicore systems [1–3,94,97,116,146,157].
+However, such synchronization schemes are tailored for the
+speciﬁc architecture of each system, and are not efﬁcient or
+suitable for NDP systems (Section 7). For instance, CM5 [94]
+provides a barrier primitive via a dedicated physical network,
+which would incur high hardware cost to be supported in
+large-scale NDP systems. LCU [146] adds a control unit to
+each CPU core and a buffer to each memory controller, which
+would also incur high cost to implement in area-constrained
+NDP cores and controllers. SSB [157] includes a small buffer
+attached to each controller of the last level cache (LLC) and
+MiSAR [97] introduces an accelerator distributed at the LLC.
+Both schemes are built on the shared cache level in CPU
+systems, which most NDP systems do not have. Moreover, in
+NDP systems with non-uniform memory access times, most
+of these prior schemes would incur signiﬁcant performance
+overheads under high-contention scenarios. This is because
+they are oblivious to the non-uniformity of NDP, and thus
+would cause excessive trafﬁc across NDP units of the system
+upon contention (Section 6.7.1).
+
+Overall, NDP architectures have several important charac-
+teristics that necessitate a new approach to support efﬁcient
+synchronization. First, most NDP architectures [8,19,25,38,
+42–46,49,55,67,98,110,111,113,119,155,158] lack shared
+
+NDP
+Architecture
+NDP Unit
+
+Compute Die
+
+NDP Core
+
+Memory
+
+NDP Core
+
+Arrays
+
+...
+
+NDP Core
+
+Programmable
+
+Accelerator
+
+Cache
+
+Interconnection Link
+
+Figure 1: High-level organization of an NDP architecture.
+We focus on three characteristics of NDP architectures that
+are of particular importance in the synchronization context.
+First, NDP architectures typically do not have a shared level
+of cache memory [8,19,25,38,42–46,49,55,67,98,110,111,
+113,119,155,158], since the NDP-suited workloads usually
+
+do not beneﬁt from deep cache hierarchies due to their poor lo-
+cality [33,43,133,143]. Second, NDP architectures do not typ-
+ically support conventional hardware cache coherence proto-
+cols [8,19,25,38,42–45,49,55,67,82,98,111,119,155,158], be-
+cause they would add area and trafﬁc overheads [46,143], and
+would incur high complexity and latency [4], limiting the bene-
+ﬁts of NDP. Third, communication across NDP units is expen-
+sive, because NDP systems are non-uniform distributed archi-
+tectures. The energy and performance costs of inter-unit com-
+munication are typically orders of magnitude greater than the
+costs of intra-unit communication [8,20,21,38,43,83,155,158],
+and thus inter-unit communication may slow down the execu-
+tion of NDP cores [155].
+2.2. The Solution Space for Synchronization
+Approaches to support synchronization are typically either
+via shared memory or message-passing schemes.
+2.2.1. Synchronization via Shared Memory. In this case,
+cores coordinate via a consistent view of shared memory lo-
+cations, using atomic read/write operations or atomic read-
+modify-write (rmw) operations. If rmw operations are not
+supported by hardware, Lamport’s bakery algorithm [87] can
+provide synchronization to N participating cores, assuming se-
+quential consistency [86]. However, this scheme scales poorly,
+as a core accesses O(N) memory locations at each synchro-
+nization retry. In contrast, commodity systems (CPUs, GPUs,
+MPPs) typically support rmw operations in hardware.
+
+This paper makes the following contributions:
+• We investigate the challenges of providing efﬁcient synchro-
+nization in Near-Data-Processing architectures, and propose
+an end-to-end mechanism, SynCron, for such systems.
+• We design low-cost synchronization units that coordinate
+synchronization across NDP cores, and directly buffer syn-
+chronization variables to avoid costly memory accesses to
+them. We propose an efﬁcient message-passing synchroniza-
+tion approach that organizes the process hierarchically, and
+provide a hardware-only programmer-transparent overﬂow
+management scheme to alleviate performance overheads
+when hardware synchronization resources are exceeded.
+• We evaluate SynCron using a wide range of parallel work-
+loads and demonstrate that it signiﬁcantly outperforms prior
+approaches both in performance and energy consumption.
+SynCron also has low hardware area and power overheads.
+2. Background and Motivation
+2.1. Baseline Architecture
+Numerous works [8,9,19–21,25,38,43,45,54,55,67,73,82,
+99,112,128,143,155,158] show the potential beneﬁt of NDP
+for parallel, irregular applications. These proposals focus on
+
+GPUs and MPPs support rmw operations in specialized
+hardware units (known as remote atomics), located in each
+bank of the shared cache [58, 148], or the memory con-
+trollers [81,88]. Remote atomics are also supported by an NDP
+
+ideal-lock
+mesi-lock
+
+ideal-lock
+mesi-lock
+
+(a)
+
+(b)
+
+Slowdown
+
+Slowdown
+
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+
+0.0
+0.5
+1.0
+1.5
+2.0
+
+15
+30
+45
+60
+NDP cores
+
+1
+2
+3
+4
+NDP units
+
+Figure 2: Slowdown of a stack data structure using a coherence-
+based lock over using an ideal zero-cost lock, when varying (a)
+the NDP cores within a single NDP unit and (b) the number of
+NDP units while keeping core count constant at 60.
+2.2.2. Message-passing Synchronization. In this approach,
+cores coordinate with each other by exchanging messages
+(either in software or hardware) in order to reach an agree-
+ment. For instance, a recent NDP work [8] implements a
+barrier primitive via hardware message-passing communica-
+tion among NDP cores, i.e., one core of the system works
+as a master core to collect the synchronization status of the
+rest. To improve system performance in non-uniform HMC-
+based NDP systems, Gao et al. [43] propose a tree-style bar-
+rier primitive, where cores exchange messages to ﬁrst syn-
+chronize within a vault, then across the vaults of an HMC
+cube, and ﬁnally across HMC cubes. In general, optimized
+message-passing synchronization schemes proposed in the
+literature [2,43,53,62,64,141] aim to minimize (i) the number
+of messages sent among cores, and (ii) expensive network traf-
+ﬁc. To avoid the major issues of synchronization via shared
+memory described above, we design our approach building on
+the message-passing synchronization concept.
+3. SynCron: Overview
+SynCron is an end-to-end solution for synchronization in
+NDP architectures that improves performance, has low cost,
+eases programmability, and supports multiple synchronization
+primitives. SynCron relies on the following key techniques:
+1.
+Hardware support for synchronization acceleration:
+We design low-cost hardware units, called Synchronization
+Engines (SEs), to coordinate the synchronization among NDP
+cores of the system. SEs eliminate the need for complex cache
+coherence protocols and expensive rmw operations, and incur
+modest hardware cost.
+2. Direct buffering of synchronization variables: We add a
+specialized cache structure, the Synchronization Table (ST),
+inside an SE to keep synchronization information. Such direct
+buffering avoids costly memory accesses for synchronization,
+and enables high performance under low-contention scenarios.
+3. Hierarchical message-passing communication: We or-
+ganize the communication hierarchically, with each NDP unit
+including an SE. NDP cores communicate with their local
+SE that is located in the same NDP unit. SEs communicate
+with each other to coordinate synchronization at a global level.
+Hierarchical communication minimizes expensive communi-
+cation across NDP units, and achieves high performance under
+high-contention scenarios.
+4. Integrated hardware-only overﬂow management: We
+incorporate a hardware-only overﬂow management scheme to
+efﬁciently handle scenarios when ST is fully occupied. This
+programmer-transparent technique effectively limits perfor-
+mance degradation under overﬂow scenarios.
+3.1. Overview of SynCron
+Figure 3 provides an overview of our approach. SynCron ex-
+poses a simple programming interface such that programmers
+can easily use a variety of synchronization primitives in their
+
+We validate these observations on both a real CPU and our
+simulated NDP system. On an Intel Xeon Gold server, we
+evaluate the operation throughput achieved by two coherence-
+based lock algorithms (Table 1), i.e., TTAS [122] and Hier-
+archical Ticket Lock (HTL) [103], using a microbenchmark
+taken from the libslock library [30]. When increasing the num-
+ber of threads from 1 to 14 within a single socket, throughput
+drops by 3.91× and 2.77× for TTAS and HTL, respectively.
+Moreover, when pinning two threads on different NUMA sock-
+ets, throughput drops by up to 2.29× over when pinning them
+on the same socket, due to non-uniform memory access times
+of lock variables.
+
+Million Operations
+1 thread
+14 threads
+2 threads
+2 threads
+per Second
+single-socket
+single-socket
+same-socket
+different-socket
+
+TTAS lock [122]
+8.92
+2.28
+9.91
+4.32
+Hierarchical Ticket lock [103]
+8.06
+2.91
+9.01
+6.79
+Table 1: Throughput of two coherence-based lock algorithms on
+an Intel Xeon Gold server using the libslock library [30].
+
+In our simulated NDP system, we evaluate the performance
+achieved by a stack data structure protected with a coarse-
+grained lock. Figure 2 shows the slowdown of the stack when
+using a coherence-based lock [63] (mesi-lock), implemented
+upon a MESI directory coherence protocol, over using an ideal
+lock with zero cost for synchronization (ideal-lock). First, we
+observe that the high contention for the cache line containing
+the mesi-lock and the resulting coherence trafﬁc inside the net-
+work signiﬁcantly limit scalability of the stack as the number
+of cores increases. With 60 NDP cores within a single NDP
+unit (Figure 2a), the stack with mesi-lock incurs 2.03× slow-
+down over ideal-lock. Second, we notice that the non-uniform
+memory accesses to the cache line containing the mesi-lock
+also impact the scalability of the stack. When increasing the
+number of NDP units while keeping total core count constant
+at 60 (Figure 2b), the slowdown of the stack with mesi-lock
+increases to 2.66× (using 4 NDP units) over ideal-lock. In
+
+NDP Unit 0
+NDP Unit 1
+
+SynCron’s
+Programming
+
+NDP Core 0
+
+NDP Core 0
+
+NDP Core 0
+
+Compute Die
+
+Compute Die
+
+Compute Die
+
+Compute Die
+
+Interface
+
+NDP Core 1
+
+NDP Core 1
+
+1
+
+1
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+Memory
+
+Memory
+
+Memory
+
+Memory
+
+1
+
+Memory
+
+Memory
+
+Memory
+
+Memory
+
+1
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+Arrays
+
+Arrays
+
+Arrays
+
+Arrays
+
+SynCron’s
+ISA Extensions
+
+3
+4
+6
+7
+
+Arrays
+
+Arrays
+
+Arrays
+
+Arrays
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+NDP Core
+
+syncronVar
+
+SE
+
+SE
+
+SE
+
+SE
+
+SE
+syncronVar
+
+SE
+
+SE
+
+SE
+
+9
+
+2
+
+Master SE
+ST
+SE
+
+5
+
+Master SE
+
+8
+
+Figure 4: An example execution scenario for a lock requested by
+all NDP cores.
+
+Figure 3: High-level overview of SynCron.
+We add one SE in the compute die of each NDP unit. For a
+particular synchronization variable allocated in an NDP unit,
+the SE that is physically located in the same NDP unit is
+considered the Master SE. In other words, the Master SE is
+deﬁned by the address of the synchronization variable. It is
+responsible for the global coordination of synchronization on
+that variable, i.e., among all SEs of the system. All other SEs
+are responsible only for the local coordination of synchroniza-
+tion among the cores in the same NDP unit with them.
+NDP cores act as clients that send requests to SEs via hard-
+ware message-passing. SEs act as servers that process synchro-
+nization requests. In the proposed hierarchical communication,
+NDP cores send requests to their local SEs, while SEs of differ-
+ent NDP units communicate with the Master SE of the speciﬁc
+variable, to coordinate the process at a global level, i.e., among
+all NDP units.
+When an SE receives a request from an NDP core for a
+synchronization variable, it directly buffers the variable in its
+ST, keeping all the information needed for synchronization in
+the ST. If the ST is full, we use the main memory as a fallback
+solution. To hierarchically coordinate synchronization via
+main memory in ST overﬂow cases, we design (i) a generic
+structure, called syncronVar, to keep track of required synchro-
+nization information, and (ii) specialized overﬂow messages to
+be sent among SEs. The hierarchical communication among
+SEs is implemented via corresponding support in message
+encoding, the ST, and syncronVar structure.
+3.2. SynCron’s Operation
+SynCron supports locks, barriers, semaphores, and condi-
+tion variables. Here, we present SynCron’s operation for locks.
+SynCron has similar behavior for the other three primitives.
+Lock Synchronization Primitive: Figure 4 shows a system
+composed of two NDP units with two NDP cores each. In
+this example, all cores request and compete for the same lock.
+First, all NDP cores send local lock acquire messages to their
+SEs 1 . After receiving these messages, each SE keeps track
+of its requesting cores by reserving one new entry in its ST,
+i.e., directly buffering the lock variable in ST. Each ST entry
+includes a local waiting list (i.e., a hardware bit queue with one
+bit for each local NDP core), and a global waiting list (i.e., a bit
+queue with one bit for each SE of the system). To keep track of
+the requesting cores, each SE sets the bits corresponding to the
+requesting cores in the local waiting list of the ST entry. When
+the local SE receives a request for a synchronization variable
+for the ﬁrst time, it sends a global lock acquire message to the
+Master SE 2 , which in turn sets the corresponding bit in the
+global waiting list in its ST. This way, the Master SE keeps
+track of all requests to a particular variable coming from an SE,
+and can arbitrate between different SEs. The local SE can then
+serve successive local requests to the same variable until there
+are no other local requests. By using the proposed hierarchical
+communication protocol, the cores send local messages to
+
+The Master SE ﬁrst prioritizes the local waiting list, granting
+the lock to its own local NDP cores in sequence (e.g., to NDP
+Core 0 ﬁrst 3 , and to NDP Core 1 next 4 in Figure 4). At the
+end of the critical section, each local lock owner sends a lock
+release message to its SE in order to release the lock. When
+there are no other local requests, the Master SE transfers the
+control of the lock to the SE of another NDP unit based on
+its global waiting list 5 . Then, the local SE grants the lock
+to its local NDP cores in sequence (e.g., 6 , 7 ). After all
+local cores release the lock, the SE sends an aggregated global
+lock release message to the Master SE 8 and releases its ST
+entry. When the message arrives at the Master SE, if there
+are no other pending requests to the same variable, the Master
+SE releases its ST entry. In this example, SEs directly buffer
+the lock variable in their STs. If an ST is full, the Master SE
+globally coordinates synchronization by keeping track of all
+required information in main memory 9 , via our proposed
+overﬂow management scheme (Section 4.3).
+4. SynCron: Detailed Design
+SynCron leverages the key observation that all synchro-
+nization primitives fundamentally communicate the same in-
+formation, i.e., a waiting list of cores that participate in the
+synchronization process, and a condition to be met to notify
+one or more cores. Based on this observation, we design
+SynCron to cover the four most widely used synchronization
+primitives. Without loss of generality, we assume that each
+NDP core represents a hardware thread context with a unique
+ID. To support multiple hardware thread contexts per NDP
+core, the corresponding hardware structures of SynCron need
+to be augmented to include 1-bit per hardware thread context.
+4.1. Programming Interface and ISA Extensions
+SynCron provides lock, barrier, semaphore and condition
+variable synchronization primitives, supporting two types of
+barriers: within cores of the same NDP unit and within cores
+across different NDP units of the system. SynCron’s pro-
+gramming interface (Table 2) implements the synchronization
+semantics with two new ISA instructions, which are rich and
+general enough to express all supported primitives. NDP cores
+use these instructions to assemble messages for synchroniza-
+tion requests, which are issued through the network to SEs.
+
+SynCron Programming Interface
+
+syncronVar *create_syncvar ();
+void destroy_syncvar (syncronVar *svar);
+void lock_acquire (syncronVar *lock);
+void lock_release (syncronVar *lock);
+void barrier_wait_within_unit (syncronVar *bar, int initialCores);
+void barrier_wait_across_units (syncronVar *bar, int initialCores);
+void sem_wait (syncronVar *sem, int initialResources);
+void sem_post (syncronVar *sem);
+void cond_wait (syncronVar *cond, syncronVar *lock);
+void cond_signal (syncronVar *cond);
+void cond_broadcast (syncronVar *cond);
+Table 2: SynCron’s Programming Interface (i.e., API).
+
+Primitives
+SynCron Message Opcodes
+
+Locks
+lock_acquire_global, lock_acquire_local, lock_release_global
+lock_release_local, lock_grant_global, lock_grant_local
+lock_acquire_overﬂow, lock_release_overﬂow, lock_grant_overﬂow
+
+Barriers
+barrier_wait_global, barrier_wait_local_within_unit
+barrier_wait_local_across_units, barrier_depart_global, barrier_depart_local
+barrier_wait_overﬂow, barrier_departure_overﬂow
+
+Semaphores
+sem_wait_global, sem_wait_local, sem_grant_global
+sem_grant_local, sem_post_global, sem_post_local
+sem_wait_overﬂow, sem_grant_overﬂow, sem_post_overﬂow
+
+cond_wait_global, cond_wait_local, cond_signal_global
+cond_signal_local, cond_broad_global, cond_broad_local
+cond_grant_global, cond_grant_local, cond_wait_overﬂow
+cond_signal_overﬂow, cond_broad_overﬂow, cond_grant_overﬂow
+Other
+decrease_indexing_counter
+Table 3: Message opcodes of SynCron.
+4.2. Synchronization Engine (SE)
+Each SE module (Figure 6) is integrated into the compute
+die of each NDP unit. An SE consists of three components:
+4.2.1. Synchronization Processing Unit (SPU). The SPU is
+the logic that handles the messages, updates the ST, and issues
+requests to memory as needed. The SPU includes the control
+unit, a buffer, and a few registers. The buffer is a small SRAM
+queue for temporarily storing messages that arrive at the SE.
+The control unit implements custom logic with simple logical
+bitwise operators (and, or, xor, zero) and multiplexers.
+
+Condition
+Variables
+
+Network
+
+INDEX
+SE
+
+Registers
+SPU
+
+ENABLE
+
+ST
+
+READ/WRITE
+
+Control
+
+DATA
+
+Logic
+
+Buffer
+
+140 bits
+149 bits
+
+Indexing
+Counters
+
+Figure 6: The Synchronization Engine (SE).
+4.2.2. Synchronization Table (ST). ST keeps track of all the
+information needed to coordinate synchronization. Each ST
+has 64 entries. Figure 7 shows an ST entry, which includes: (i)
+the 64-bit address of a synchronization variable, (ii) the global
+waiting list used by the Master SE for global synchronization
+among SEs, i.e., a hardware bit queue including one bit for
+each SE of the system, (iii) the local waiting list used by all
+SEs for synchronization among the NDP cores of an NDP
+unit, i.e., a hardware bit queue including one bit for each NDP
+core within the unit, (iv) the state of the ST entry, which can
+be either free or occupied, and (v) a 64-bit ﬁeld (TableInfo)
+to track speciﬁc information needed for each synchronization
+primitive. For the lock primitive, the TableInfo ﬁeld is used
+to indicate the lock owner that is either an SE of an NDP unit
+(Global ID represented by the most signiﬁcant bits) or a local
+NDP core (Local ID represented by the least signiﬁcant bits).
+We assume that all NDP cores of an NDP unit have a unique
+local ID within the NDP unit, while all SEs of the system have
+a unique global ID within the system. The number of bits in
+the global and local waiting lists of Figure 7 is speciﬁc for
+the conﬁguration of our evaluated system (Section 5), which
+includes 16 NDP cores per NDP unit and 4 SEs (one per
+NDP unit), and has to be extended accordingly, if the system
+supports more NDP cores or SEs.
+
+Lock
+
+Lock
+
+Lock
+
+-
+
+-
+
+-
+
+64 bits
+6 bits
+6 bits
+64 bits
+
+64 bits
+6 bits
+6 bits
+64 bits
+
+64 bits
+6 bits
+6 bits
+64 bits
+
+Barrier
+
+Barrier
+
+Barrier
+
+Initial #Cores
+
+Initial #Cores
+
+Initial #Cores
+
+Address
+Opcode
+CoreID
+MessageInfo
+
+Address
+Opcode
+CoreID
+MessageInfo
+
+Address
+Opcode
+CoreID
+MessageInfo
+
+Semaphore
+
+Semaphore
+
+Semaphore
+
+Initial #Resources
+
+Initial #Resources
+
+Initial #Resources
+
+Message Encoding
+
+Message Encoding
+
+Lock Address
+Figure 5: Message encoding of SynCron.
+
+Condition Variable
+
+Condition Variable
+
+Condition Variable
+
+Lock Address
+
+Lock Address
+
+Hierarchical Message Opcodes. SynCron enables a hierar-
+chical scheme, where the SEs of NDP units communicate
+with each other to coordinate synchronization at a global level.
+Therefore, we support two types of messages (Table 3): (i)
+local, which are used by NDP cores to communicate with their
+local SE, and (ii) global, which are used by SEs to commu-
+nicate with the Master SE, and vice versa. Since we support
+two types of barriers (Table 2), we design two message op-
+codes for a local barrier_wait message sent by an NDP core to
+its local SE: (i) barrier_wait_local_within_unit is used when
+cores of a single NDP unit participate in the barrier, and (ii)
+barrier_wait_local_across_units is used when cores from dif-
+ferent NDP units participate in the barrier. In the latter case,
+if a smaller number of cores than the total available cores of
+the NDP system participate in the barrier, SynCron supports
+one-level communication: local SEs re-direct all messages
+(received from their local NDP cores) to the Master SE, which
+globally coordinates the barrier among all participating cores.
+This design choice is a trade-off between performance (more
+remote messages) and hardware/ISA complexity, since the
+
+Lock
+
+Lock
+
+Lock
+
+Global ID | Local ID
+
+Global ID | Local ID
+
+Global ID | Local ID
+
+64 bits
+4 bits
+16 bits
+1 bits
+64 bits
+
+64 bits
+4 bits
+16 bits
+1 bits
+64 bits
+
+64 bits
+4 bits
+16 bits
+1 bits
+64 bits
+
+Address
+Global
+Waitlist
+
+Address
+Global
+Waitlist
+
+Address
+Global
+Waitlist
+
+Local
+Waitlist
+State
+TableInfo
+
+Local
+Waitlist
+State
+TableInfo
+
+Local
+Waitlist
+State
+TableInfo
+
+Barrier
+
+Barrier
+
+Barrier
+
+Current #Cores
+
+Current #Cores
+
+Current #Cores
+
+Semaphore
+
+Semaphore
+
+Semaphore
+
+Available #Resources
+
+Available #Resources
+
+Available #Resources
+
+Synchronization Table Entry
+
+Synchronization Table Entry
+
+Lock Address
+Figure 7: Synchronization Table (ST) entry.
+4.2.3. Indexing Counters. If an ST is full, i.e., all its entries
+are in occupied state, SynCron cannot keep track of informa-
+tion for a new synchronization variable in ST. We use the
+main memory as a fallback solution for such ST overﬂow
+
+Condition Variable
+
+Condition Variable
+
+Condition Variable
+
+Lock Address
+
+Lock Address
+
+uint16_t Waitlist[4];
+uint64_t VarInfo;
+uint8_t OverflowInfo;
+}
+
+Semaphore
+
+Semaphore
+
+Semaphore
+
+Available #Resources
+
+Available #Resources
+
+Available #Resources
+
+Condition Variable
+
+Condition Variable
+
+Condition Variable
+
+Lock Address
+
+Lock Address
+
+Lock Address
+
+Lock
+
+Lock
+
+Lock
+
+Overflow IDs |Lock State
+
+Overflow IDs |Lock State
+
+Overflow IDs |Lock State
+
+Barrier
+
+Barrier
+
+Barrier
+
+Overflow IDs
+
+Overflow IDs
+
+Overflow IDs
+
+typedef struct syncronVar_t syncronVar;
+
+Semaphore
+
+Semaphore
+
+Semaphore
+
+Overflow IDs
+
+Overflow IDs
+
+Overflow IDs
+
+SynCron’s Synchronization Variable
+
+Overflow IDs
+Figure 9: Synchronization variable of SynCron (syncronVar).
+NDP unit, and two additional ﬁelds (VarInfo, OverﬂowInfo)
+needed to hierarchically handle ST overﬂows for all primitives.
+4.3.2. Communication Protocol between SEs. To ensure
+correctness, only the Master SE updates the syncronVar vari-
+able: in ST overﬂow, the SPU of the Master SE issues read
+or write requests to its local memory to globally coordinate
+synchronization via the syncronVar variable. In our proposed
+hierarchical design, there are two overﬂow scenarios: (i) the
+ST of the Master SE overﬂows, and (ii) the ST of a local SE
+overﬂows or STs of multiple local SEs overﬂow.
+The ST of the Master SE overﬂows. The other SEs of the
+system have not overﬂowed for a speciﬁc synchronization vari-
+able. Thus, they can still directly buffer this variable in their
+local STs, and serve their local cores themselves, implement-
+ing a hierarchical (two-level) communication with Master SE.
+The Master SE receives global messages from SEs, and serves
+a local SE of an NDP unit using all bits in the waiting list of
+the syncronVar variable associated with that local SE. Speciﬁ-
+cally, when it receives a global acquire-type message from a
+local SE, it sets all bits in the corresponding waiting list of the
+syncronVar variable. When it receives a global release-type
+message from a local SE, it resets all bits in the corresponding
+waiting list of the syncronVar variable.
+The ST of a local SE overﬂows. In this scenario, there are
+local SEs that have overﬂowed for a speciﬁc variable, and
+local SEs that have not overﬂowed. Without loss of generality,
+we assume that only one SE of the system has overﬂowed.
+The local SEs that have not overﬂowed serve their local
+cores themselves via their STs, implementing a hierarchical
+(two-level) communication with Master SE. When the Master
+SE receives a global message from a local SE (that has not
+overﬂowed), it (i) sets (or resets) all bits in the waiting list
+of the syncronVar variable associated with that SE, and (ii)
+responds with a global message to the local SE, if needed.
+The overﬂowed SE needs to notify the Master SE to han-
+dle local synchronization requests of NDP cores located at
+another NDP unit via main memory. We design overﬂow mes-
+sage opcodes (Table 3) to be sent from the local overﬂowed
+SE to the Master SE and back. The overﬂowed SE re-directs
+all messages (sent from its local NDP cores) for a speciﬁc
+variable to the Master SE using the overﬂow message opcodes,
+and both the overﬂowed SE and the Master SE increase their
+corresponding indexing counters to indicate that this variable
+is currently serviced via memory. When the Master SE re-
+ceives an overﬂow message, it (i) sets (or resets) in the waiting
+list (associated with the overﬂowed SE) of the syncronVar
+variable, the bit that corresponds to the local ID of the NDP
+core within the NDP unit, (ii) sets (or resets) in the Overﬂow-
+Info ﬁeld of the syncronVar variable the bit that corresponds
+to the global ID of the overﬂowed SE to keep track of which
+SE (or SEs) of the system has overﬂowed, and (iii) responds
+with an overﬂow message to that SE, if needed. The local ID
+of the NDP core, and the global ID of the overﬂowed SE are
+encoded in the CoreID ﬁeld of the message (Figure 5). When
+all bits in the waiting lists of the syncronVar variable become
+zero (upon receiving a release-type message), the Master SE
+decrements the corresponding indexing counter. Then, it sends
+a decrease_index_counter message (Table 3) to the overﬂowed
+SE (based on the set bit that is tracked in the OverﬂowInfo
+ﬁeld), which decrements its corresponding indexing counter.
+
+Condition Variable
+
+Condition Variable
+
+Condition Variable
+
+Overflow IDs
+
+Overflow IDs
+
+2c , processes the waiting lists 3 , updates the variable in main
+memory 4b , and encodes return message(s) 5 , if needed. If
+the SE is not the Master SE for the speciﬁc variable, it encodes
+an overﬂow message to the Master SE 2d to handle overﬂow.
+
+Decode
+Message
+
+Found
+Access ST
+Update ST
+Encode Return
+
+Process
+Waiting Lists
+ST Entry
+Not Found
+Zero Counter
+&& ST Not-Full
+Non-Zero Counter
+
+ST Entry
+
+3
+4a
+
+5
+
+1
+2a
+
+Message(s)
+
+Read Local
+
+Memory
+Read Local
+
+Process
+Waiting Lists
+
+Write Local
+
+Write Local
+
+3
+
+2c
+
+4b
+
+Memory
+
+Memory
+
+Memory
+
+Access Indexing
+
+Encode Overflow
+
+|| ST Full
+
+Counters
+
+2b
+
+2d
+
+Overflow
+
+Message
+
+Figure 8: Control flow in SE.
+4.3. Overﬂow Management
+SynCron integrates a hardware-only overﬂow management
+scheme that provides very modest performance degradation
+(Section 6.7.3) and is programmer-transparent. To handle ST
+overﬂow cases, we need to address two issues: (i) where to
+keep track of required information to coordinate synchroniza-
+tion, and (ii) how to coordinate ST overﬂow cases between
+SEs. For the former issue, we design a generic structure al-
+located in main memory. For the latter issue, we propose a
+hierarchical overﬂow communication protocol between SEs.
+4.3.1. SynCron’s Synchronization Variable. We design a
+generic structure (Figure 9), called syncronVar, which is used
+to coordinate synchronization for all supported primitives in
+ST overﬂow cases. syncronVar is deﬁned in the driver of the
+NDP system, which handles the allocation of the synchroniza-
+tion variables: programmers use create_syncvar() (Table 2)
+to create a new synchronization variable, the driver allocates
+the bytes needed for syncronVar in main memory, and returns
+an opaque pointer that points to the address of the variable.
+Programmers should not de-reference the opaque pointer and
+its content can only be accessed via SynCron’s API (Table 2).
+
+syncronVar structure includes one waiting list for each SE
+of the system, which has one bit for each NDP core within the
+
+SSB [157]
+LCU [146]
+MiSAR [97]
+SynCron
+
+Supported Primitives
+1
+1
+3
+4
+ISA Extensions
+2
+2
+7
+2
+Spin-Wait Approach
+yes
+yes
+no
+no
+Direct Notiﬁcation
+no
+yes
+yes
+yes
+Target System
+uniform
+uniform
+uniform
+non-uniform
+Overﬂow
+partially
+partially
+handled by
+fully
+Management
+integrated
+integrated
+programmer
+integrated
+Table 4: Comparison of SynCron with prior mechanisms.
+4.6. Use of SynCron in Conventional Systems
+The baseline NDP architecture [8, 43, 143, 155, 158] we
+assume in this work shares key design principles with con-
+ventional NUMA systems. However, unlike NDP systems,
+NUMA CPU systems (i) have a shared level of cache (within a
+NUMA socket and/or across NUMA sockets), (ii) run multiple
+multi-threaded applications, i.e., a high number of software
+threads executed in hardware thread contexts, and (iii) the
+OS migrates software threads between hardware thread con-
+texts to improve system performance. Therefore, although
+SynCron could be implemented in such commodity systems,
+our proposed hardware design would need extensions. First,
+SynCron could exploit the low-cost accesses to shared caches
+in conventional CPUs, e.g., including an additional level in
+SynCron’s hierarchical design to use the shared cache for efﬁ-
+cient synchronization within a NUMA socket, and/or handling
+overﬂow scenarios by falling back to the low-latency cache
+instead of main memory. Second, SynCron needs to support
+use cases (ii) and (iii) listed above in such systems, i.e., in-
+cluding larger STs and waiting lists to satisfy the needs of
+multiple multithreaded applications, handling the OS thread
+migration scenarios across hardware thread contexts, and han-
+dling multiple synchronization requests sent from different
+software threads with the same hardware ID to SEs, when
+different software threads are executed on the same hardware
+thread context. We leave the optimization of SynCron’s design
+for conventional systems to future work.
+5. Methodology
+Simulation Methodology. We use an in-house simulator that
+integrates ZSim [125] and Ramulator [85]. We model 4 NDP
+units (Table 5), each with 16 in-order cores. The cores issue a
+memory operation after the previous one has completed, i.e.,
+there are no overlapping operations issued by the same core.
+Any write operation is completed (and the latency is accounted
+for in our simulations) before executing the next instruction.
+To ensure memory consistency, compiler support [123] guar-
+antees that there is no reordering around the sync instructions
+and a read is inserted after a write inside a critical section.
+
+SSB and LCU handle overﬂow in hardware synchronization
+resources using a pre-allocated table in main memory, and
+if it overﬂows, they switch to software exception handlers
+(handled by the programmer), which typically incur large
+overheads (due to OS intervention) when overﬂows happen
+at a non-negligible frequency. To avoid falling back to main
+memory, which has high latency, and using expensive soft-
+ware exception handlers, MiSAR requires the programmer to
+handle overﬂow scenarios using alternative software synchro-
+nization libraries (e.g., pthread library provided by the OS).
+This approach can provide performance beneﬁts in CPU sys-
+tems, since alternative synchronization solutions can exploit
+low-cost accesses to caches and hardware cache coherence.
+However, in NDP systems alternative solutions would by de-
+fault use main memory due to the absence of shared caches
+and hardware cache coherence support. Moreover, when over-
+ﬂow occurs, MiSAR’s accelerator sends abort messages to
+all participating CPU cores notifying them to use the alter-
+native solution, and when the cores ﬁnish synchronizing via
+the alternative solution, they notify MiSAR’s accelerator to
+switch back to hardware synchronization. This scheme intro-
+duces additional hardware/ISA complexity, and communica-
+tion between the cores and the accelerator, thus incurring high
+network trafﬁc and communication costs, as we show in Sec-
+tion 6.7.3. In contrast, SynCron directly falls back to memory
+via a fully-integrated hardware-only overﬂow scheme, which
+provides graceful performance degradation (Section 6.7.3),
+and is completely transparent to the programmer: program-
+
+NDP Cores
+16 in-order cores @2.5 GHz per NDP unit
+L1 Data + Inst. Cache
+private, 16KB, 2-way, 4-cycle; 64 B line; 23/47 pJ per hit/miss [109]
+NDP Unit
+buffered crossbar network with packet ﬂow control; 1-cycle arbiter;
+Local Network
+1-cycle per hop [6]; 0.4 pJ/bit per hop [149];
+M/D/1 model [18] for queueing latency;
+
+DRAM HBM
+4 stacks; 4GB HBM 1.0 [92,93]; 500MHz with 8 channels;
+nRCDR/nRCDW/nRAS/nWR 7/6/17/8 ns [47,85]; 7 pJ/bit [151]
+
+DRAM HMC
+4 stacks; 4GB HMC 2.1; 1250MHz; 32 vaults per stack;
+nRCD/nRAS/nWR 17/34/19 ns [47,85]
+
+DRAM DDR4
+4 DIMMs; 4GB each DIMM DDR4 2400MHz;
+nRCD/nRAS/nWR 16/39/18 ns [47,85]
+Interconnection Links
+12.8GB/s per direction; 40 ns per cache line;
+Across NDP Units
+20-cycle; 4 pJ/bit
+Synchronization
+SPU @1GHz clock frequency [129]; 8× 64-bit registers;
+Engine
+buffer: 280B; ST: 1192B, 64 entries, 1-cycle [109];
+indexing counters: 2304B, 256 entries (8 LSB of the address), 2-cycle [109]
+Table 5: Conﬁguration of our simulated system.
+We evaluate three NDP conﬁgurations for different mem-
+ory technologies, namely 2D, 2.5D, 3D NDP. The 2D NDP
+conﬁguration uses a DDR4 memory model and resembles
+recent 2D NDP systems [34, 50, 89, 144]. In the 2.5D NDP
+
+Stack [31]
+100K - 100% push
+Queue [31,104]
+100K - 100% pop
+Array Map [31,56]
+10 - 100% lookup
+Priority Queue [11,31,118]
+20K - 100% deleteMin
+Skip List [31,118]
+5K - 100% deletion
+Hash Table [31,63]
+1K - 100% lookup
+Linked List [31,63]
+20K - 100% lookup
+Binary Search Tree Fine-Grained (BST_FG) [130]
+20K - 100% lookup
+Binary Search Tree Drachsler (BST_Drachsler) [31,37]
+10K - 100% deletion
+
+Real Application
+Locks
+Barriers
+
+Real Application
+Input Data Set
+
+Breadth First Search (bfs) [7]
+✓
+✓
+Connected Components (cc) [7]
+✓
+✓
+Single Source Shortest Paths (sssp) [7]
+✓
+✓
+Pagerank (pr) [7]
+✓
+✓
+Teenage Followers (tf) [65]
+✓
+-
+Triangle Counting (tc) [7]
+✓
+✓
+
+We model a crossbar network within each NDP unit, sim-
+ulating queuing latency using the M/D/1 model [18]. We
+count in ZSim-Ramulator all events for caches, i.e., num-
+ber of hits/misses, network, i.e., number of bits transferred
+inside/across NDP units, and memory, i.e., number of total
+memory accesses, and use CACTI [109] and parameters re-
+ported in prior works [143,149,151] to calculate energy. To
+estimate the latency in SE, we use CACTI for ST and indexing
+counters, and Aladdin [129] for the SPU with 1GHz at 40nm.
+Each message is served in 12 cycles, corresponding to the
+message (barrier_depart_global) that takes the longest time.
+Workloads. We evaluate workloads with both (i) coarse-
+grained synchronization, i.e., including only a few synchro-
+nization variables to protect shared data, leading to cores
+highly contending for them (high-contention), and (ii) ﬁne-
+grained synchronization, i.e., including a large number of syn-
+chronization variables, each of them protecting a small granu-
+larity of shared data, leading to cores not frequently contend-
+ing for the same variables at the same time (low-contention).
+We use the term synchronization intensity to refer to the ratio
+of synchronization operations over other computation in the
+workload. As this ratio increases, synchronization latency
+affects the total execution time of the workload more.
+We study three classes of applications (Table 6), all well
+suited for NDP. First, we evaluate pointer chasing workloads,
+i.e., lock-based concurrent data structures from the ASCYLIB
+library [31], used as key-value sets. In ASCYLIB’s Binary
+Search Tree (BST) [37], the lock memory requests are only
+0.1% of the total memory requests, so we also evaluate an
+external ﬁne-grained locking BST from [130]. Data structures
+are initialized with a ﬁxed size and statically partitioned across
+NDP units, except for BSTs, which are distributed randomly.
+In these benchmarks, each core performs a ﬁxed number of
+operations. We use lookup operations for data structures that
+support it, deletion for the rest, and push and pop operations
+for stack and queue. Second, we evaluate graph applications
+with ﬁne-grained synchronization from Crono [7, 65] (push
+version), where the output array has read-write data. All real-
+world graphs [32] used are undirected and statically partitioned
+across NDP units, where the vertex data is equally distributed
+across cores. Third, we evaluate time series analysis [142],
+using SCRIMP, and real data sets from Matrix Proﬁle [152].
+We replicate the input data in each NDP unit and partition the
+output array (read-write data) across NDP units.
+Comparison Points.
+We compare SynCron with three
+schemes: (i) Central: a message-passing scheme that supports
+all primitives by extending the barrier primitive of Tesser-
+act [8], i.e., one dedicated NDP core in the entire NDP system
+acts as server and coordinates synchronization among all NDP
+cores of the system by issuing memory requests to synchro-
+nization variables via its memory hierarchy, while the remain-
+ing client cores communicate with it via hardware message-
+passing; (ii) Hier: a hierarchical message-passing scheme that
+supports all primitives, similar to the barrier primitive of [43]
+(or hierarchical lock of [141]), i.e., one NDP core per NDP
+unit acts as server and coordinates synchronization by issuing
+memory requests to synchronization variables via its memory
+hierarchy (including caches), and communicates with other
+
+wikipedia
+-20051105 (wk)
+bfs, cc, sssp,
+soc-LiveJournal1 (sl)
+pr, tf, tc
+sx-stackoverﬂow (sx)
+com-Orkut (co)
+
+ts
+air quality (air)
+energy consumption (pow)
+Table 6: Summary of all workloads used in our evaluation.
+servers and local client cores (located at the same NDP unit
+with it) via hardware message-passing; (iii) Ideal: an ideal
+scheme with zero performance overhead for synchronization.
+In our evaluation, each NDP core runs one thread. For fair
+comparison, we use the same number of client cores, i.e., 15
+per NDP unit, that execute the main workload for all schemes.
+For synchronization, we add one server core for the entire sys-
+tem in Central, one server core per NDP unit for Hier, and one
+SE per NDP unit for SynCron. For SynCron, we disable one
+core per NDP unit to match the same number of client cores
+as the previous schemes. Maintaining the same thread-level
+parallelism for executing the main kernel is consistent with
+prior works on message-passing synchronization [97,141].
+6. Evaluation
+6.1. Performance
+6.1.1. Synchronization Primitives. Figure 10 evaluates all
+supported primitives using 60 cores, varying the interval (in
+terms of instructions) between two synchronization points.
+We devise simple benchmarks, where cores repeatedly re-
+quest a single synchronization variable. For lock, the crit-
+ical section is empty, i.e., it does not include any instruc-
+tion.
+For semaphore and condition variable, half of the
+cores execute sem_wait/cond_wait, while the rest execute
+sem_post/cond_signal, respectively. As the interval between
+synchronization points becomes smaller, SynCron’s perfor-
+mance beneﬁt increases. For an interval of 200 instructions,
+SynCron outperforms Central and Hier by 3.05× and 1.40×
+respectively, averaged across all primitives. SynCron outper-
+forms Hier due to directly buffering synchronization variables
+in low-latency STs, and achieves the highest beneﬁts in the
+condition variable primitive (by 1.61×), since this benchmark
+has higher synchronization intensity compared to the rest:
+cores coordinate for both the condition variable and the lock
+associated with it. When the interval between synchronization
+operations becomes larger, synchronization requests become
+less dominant in the main workload, and thus all schemes per-
+form similarly. Overall, SynCron outperforms prior schemes
+for all different synchronization primitives.
+
+Time Series Analysis (ts) [152]
+✓
+✓
+
+Central
+Hier
+SynCron
+Ideal
+
+0
+1
+2
+3
+4
+5
+
+8
+
+Lock
+
+Barrier
+
+Speedup
+
+Speedup
+
+6
+
+4
+
+2
+
+0
+
+50
+100
+200
+400
+1K
+2K
+5K
+Instructions between
+
+20
+50
+100
+200
+500
+1K
+2K
+Instructions between
+barrier synchronization
+
+critical sections
+
+3
+
+0
+3
+6
+9
+12
+15
+
+Condition Variable
+
+Semaphore
+
+Speedup
+
+Speedup
+
+2
+
+1
+
+0
+
+100
+200
+400
+1K
+2K
+5K
+10K
+Instructions between
+semaphore synchronization
+
+200
+400
+1K
+2K
+5K
+10K
+50K
+Instructions between
+condition variable synchronization
+
+Figure 10: Speedup of different synchronization primitives.
+
+Central
+Hier
+SynCron
+Ideal
+
+Stack
+
+Queue
+
+Array Map
+
+Operations/ s
+
+12.5
+
+15
+
+7
+
+10
+
+10
+
+6
+
+7.5
+
+15
+30
+45
+60
+5
+
+15
+30
+45
+60
+5
+
+15
+30
+45
+60
+5
+
+Number of NDP cores
+
+Priority Queue
+
+Skip List
+
+30
+Hash Table
+
+24
+
+15
+30
+45
+60
+4
+5
+6
+7
+8
+9
+10
+
+Operations/ s
+
+25
+
+20
+
+20
+
+16
+
+15
+
+12
+
+10
+
+8
+
+15
+30
+45
+60
+4
+
+15
+30
+45
+60
+5
+
+Number of NDP cores
+
+Linked List
+
+10
+BST_FG
+
+BST_Drachsler
+
+25
+
+12
+
+Operations/ms
+
+8
+
+20
+
+9
+
+6
+
+15
+
+6
+
+4
+
+10
+
+15
+30
+45
+60
+3
+
+15
+30
+45
+60
+2
+
+15
+30
+45
+60
+5
+
+Number of NDP cores
+Figure 11: Throughput of pointer chasing using data structures.
+
+We observe four different patterns. First, stack, queue,
+array map, and priority queue incur high contention, as all
+cores heavily contend for a few variables. Array map has
+the lowest scalability due to a larger critical section. In high-
+contention scenarios, hierarchical schemes (Hier, SynCron)
+perform better by reducing the expensive trafﬁc across NDP
+units. SynCron outperforms Hier, since the latency cost of
+using SEs that update small STs is lower than using NDP cores
+as servers that update larger caches. Second, skip list and hash
+table incur medium contention, as different cores may work on
+different parts of the data structure. For these data structures,
+hierarchical schemes perform better, as they minimize the
+expensive trafﬁc, and multiple server cores concurrently serve
+requests to their local memory. SynCron retains most of the
+performance beneﬁts of Ideal, incurring only 19.9% overhead
+with 60 cores, and outperforms Hier by 9.8%. Third, linked list
+and BST_FG exhibit low contention and high synchronization
+demand, as each core requests multiple locks concurrently.
+These data structures cause higher synchronization-related
+trafﬁc inside the network compared to skip list and hash table,
+and thus SynCron further outperforms Hier by 1.19× due to
+directly buffering synchronization variables in STs. Fourth,
+in BST_Drachsler lock requests constitute only 0.1% of the
+total requests, and all schemes perform similarly. Overall, we
+conclude that SynCron achieves higher throughput than prior
+mechanisms under different scenarios with diverse conditions.
+
+1 NDP unit
+2 NDP units
+3 NDP units
+4 NDP units
+
+bfs.sl
+cc.sx
+sssp.co
+pr.wk
+tf.sl
+tc.sx
+ts.air
+ts.pow
+AVG
+1.0
+1.5
+2.0
+2.5
+3.0
+
+Speedup
+
+Figure 13: Scalability of real applications using SynCron.
+6.2. Energy Consumption
+Figure 14 shows the energy breakdown for cache, network,
+and memory in our real applications when using all cores.
+SynCron reduces the network and memory energy thanks to its
+hierarchical design and direct buffering. On average, SynCron
+reduces energy consumption by 2.22× over Central and 1.94×
+over Hier, and incurs only 6.2% energy overhead over Ideal.
+
+We observe that 1) cache energy consumption constitutes
+a small portion of the total energy, since these applications
+have irregular access patterns. NDP cores that act as servers
+
+2.15
+
+2.87
+
+2.29
+
+2.62
+
+Central
+Hier
+SynCron
+Ideal
+
+0.8
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+
+Speedup
+
+tf.wk
+
+tf.co
+
+pr.wk
+
+pr.co
+
+AVG
+
+sssp.wk
+
+sssp.co
+
+cc.wk
+
+cc.co
+
+tf.sl
+
+tf.sx
+
+pr.sl
+
+pr.sx
+
+tc.wk
+
+tc.co
+
+bfs.wk
+
+bfs.co
+
+ts.air
+
+sssp.sl
+
+sssp.sx
+
+cc.sl
+
+cc.sx
+
+ts.pow
+
+tc.sl
+
+tc.sx
+
+bfs.sl
+
+bs.sx
+
+Figure 12: Speedup in real applications normalized to Central.
+
+Priority Queue
+Central
+Hier
+SynCron
+Ideal
+
+Stack
+
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+
+0
+2
+4
+6
+8
+10
+12
+14
+
+0
+2
+4
+6
+8
+10
+12
+
+Operations/ s
+
+Operations/ s
+
+Figure 14: Energy breakdown in real applications for C: Central,
+H: Hier, SC: SynCron and I: Ideal.
+for Central and Hier increase the cache energy only by 5.1%
+and 4.8% over Ideal. 2) Central generates a larger amount
+of expensive trafﬁc across NDP units compared to hierarchi-
+cal schemes, resulting in 2.68× higher network energy over
+SynCron. SynCron also has less network energy (1.21×) than
+Hier, because it avoids transferring synchronization variables
+from memory to SEs due to directly buffering them. 3) Hier
+and Central have approximately the same memory energy con-
+sumption, because they issue a similar number of requests to
+memory. In contrast, SynCron’s memory energy consumption
+is similar to that of Ideal. We note that SynCron provides
+higher energy reductions in applications with high synchro-
+nization intensity, such as time series analysis, since it avoids
+a higher number of memory accesses for synchronization due
+to its direct buffering capability.
+6.3. Data Movement
+Figure 15 shows normalized data movement, i.e., bytes
+transferred between NDP cores and memory, for all schemes
+using four NDP units. SynCron reduces data movement across
+all workloads by 2.08× and 2.04× over Central and Hier,
+respectively, on average, and incurs only 13.8% more data
+movement than Ideal. Central generates high data movement
+across NDP units, particularly when running time series anal-
+ysis that has high synchronization intensity. Hier reduces the
+trafﬁc across NDP units; however, it may increase the trafﬁc
+inside an NDP unit, occasionally leading to slightly higher to-
+tal data movement (e.g., ts.air). This is because when an NDP
+core requests a synchronization variable that is physically lo-
+cated in another NDP unit, it ﬁrst sends a message inside the
+NDP unit to its local server, which in turns sends a message
+to the global server. In contrast, SynCron reduces the trafﬁc
+inside an NDP unit due to directly buffering synchronization
+variables, and across NDP units due to its hierarchical design.
+
+0.040.1 0.2 0.5
+1
+2
+4.5
+9
+Transfer latency ( s)
+
+0.040.1 0.2 0.5
+1
+2
+4.5
+9
+Transfer latency ( s)
+
+Figure 16: Performance sensitivity to the transfer latency of the
+interconnection links used to connect the NDP units.
+
+6.4.2. Low Contention. We also study the effect of intercon-
+nection links used across the NDP units in a low-contention
+graph application (Figure 17). Observing Ideal, with 500 ns
+transfer latency per cache line, we note that the workload ex-
+periences 2.46× slowdown over the default latency of 40 ns,
+as 24.1% of its memory accesses are to remote NDP units.
+As the transfer latency increases, Central incurs signiﬁcant
+slowdown over Ideal, since all NDP cores of the system com-
+municate with one single server, generating expensive trafﬁc
+across NDP units. In contrast, the slowdown of hierarchi-
+cal schemes over Ideal is smaller, as these schemes generate
+less remote trafﬁc by distributing the synchronization requests
+across multiple local servers. SynCron outperforms Hier due
+to its direct buffering capabilities. Overall, SynCron outper-
+forms prior high-performance schemes even when the network
+delay across NDP units is large.
+
+2.67
+pr.wk
+
+Slowdown
+
+Ideal
+SynCron
+Hier
+Central
+1.07
+1.11
+1.15
+1.17
+1.29
+1.33
+1.36
+1.37
+1.61
+
+40
+100
+200
+500
+1.0
+1.5
+2.0
+2.5
+
+2.23
+
+1.87
+
+Transfer latency in ns for each cache line
+Figure 17: Performance sensitivity to the transfer latency of the
+interconnection links used to connect the NDP units. All data is
+normalized to Ideal (lower is better).
+6.5. Memory Technologies
+We study three memory technologies, which provide differ-
+ent memory access latencies and bandwidth. We evaluate (i)
+2.5D NDP using HBM, (ii) 3D NDP using HMC, and (iii) 2D
+NDP using DDR4. Figure 18 shows the performance of all
+schemes normalized to Central of each memory. The reported
+values show the speedup of SynCron over Central and Hier.
+SynCron’s beneﬁt is independent of the memory used: its per-
+formance versus Ideal only slightly varies (±1.4%) across dif-
+ferent memory technologies, since STs never overﬂow. More-
+over, SynCron’s performance improvement over prior schemes
+increases as the memory access latency becomes higher thanks
+to direct buffering, which avoids expensive memory accesses
+for synchronization. For example, in ts.pow, SynCron out-
+performs Hier by 1.41× and 2.49× with HBM and DDR4,
+respectively, as the latter incurs higher access latency. Overall,
+SynCron is orthogonal to the memory technology used.
+
+inside NDP units
+across NDP units
+
+Data Movement
+
+bfs.sl
+cc.sx sssp.co pr.wk
+tf.sl
+tc.sx
+ts.air ts.pow AVG
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+C HSCI
+
+Figure 15: Data movement in real applications for C: Central,
+H: Hier, SC: SynCron and I: Ideal.
+6.4. Non-Uniformity of NDP Systems
+6.4.1. High Contention. Hierarchical schemes provide high
+beneﬁt under high contention, as they prioritize local requests
+inside each NDP unit. We study their performance beneﬁt in
+stack and priority queue (Figure 16) when varying the transfer
+latency of the interconnection links used across four NDP units.
+Central is signiﬁcantly affected by the interconnect latency
+across NDP units, as it is oblivious to the non-uniform nature
+of the NDP system. Observing Ideal, which reﬂects the actual
+behavior of the main workload, we notice that after a certain
+point (vertical line), the cost of remote memory accesses across
+NDP units become high enough to dominate performance.
+SynCron and Hier tend to follow the actual behavior of the
+workload, as local synchronization messages within NDP units
+
+Central
+Hier
+SynCron
+Ideal
+
+2.49
+
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+
+2.98
+
+Speedup
+
+1.55
+
+1.41
+
+2.31
+
+2.29
+
+1.53
+1.59
+
+1.31
+1.32
+
+1.21
+1.21
+
+1.68
+1.76
+
+1.52
+1.58
+
+1.48
+1.49
+
+HBM
+HBM
+HBM
+HMC
+HMC
+HMC
+DDR4
+DDR4
+DDR4
+
+cc.wk
+pr.wk
+ts.pow
+
+Figure 18: Speedup with different memory technologies.
+
+2.29
+
+2.71
+
+3.32
+
+3.53
+
+Central
+Hier
+SynCron
+Ideal
+
+pr.wk
+pr.sl
+pr.sx
+pr.co
+0.8
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+
+40 ns
+100 ns
+200 ns
+500 ns
+
+Speedup
+
+Queue.30cores
+Queue.60cores
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+2.2
+
+ts.air
+ts.pow
+0.80
+0.85
+0.90
+0.95
+1.00
+
+(b)
+
+(a)
+
+Speedup
+
+Speedup
+
+No Metis
+No Metis
+No Metis
+No Metis
+Metis
+Metis
+Metis
+Metis
+
+Figure 21: Speedup of SynCron normalized to ﬂat, as we vary
+the transfer latency of the interconnection links used to con-
+nect NDP units, under (a) a low-contention and synchronization-
+intensive scenario using 4 NDP units, and (b) a high-contention
+scenario using 2 and 4 NDP units.
+High-contention. Figure 21b evaluates this scenario using a
+queue data structure with four different link latency values
+between NDP units, for 30 and 60 NDP cores. SynCron with
+30 NDP cores outperforms ﬂat from 1.23× to 1.76×, as the
+inter-NDP-unit latency increases from 40 ns to 500 ns (i.e.,
+with increasing non-uniformity in the system). In a scenario
+with high non-uniformity in the system and large number of
+contended cores, e.g., using a 500 ns inter-NDP-unit latency
+and 60 NDP cores, SynCron’s beneﬁt increases to a 2.14×
+speedup over ﬂat. We conclude that SynCron performs signiﬁ-
+cantly better than ﬂat under high-contention.
+Overall, we conclude that in non-uniform, distributed NDP
+systems, only a hierarchical hardware synchronization design
+can achieve high performance under all various scenarios.
+6.7.2. ST Size. We show the effectiveness of the proposed 64-
+entry ST (per NDP unit) using real applications. Table 7 shows
+the measured occupancy across all STs. Figure 22 shows the
+performance sensitivity to ST size. In graph applications,
+the average ST occupancy is low (2.8%), and the 64-entry
+ST never overﬂows: maximum occupancy is 63% (cc.wk).
+In contrast, time series analysis has higher ST occupancy
+(reaching up to 89% in ts.pow) due to the high synchronization
+intensity, but there are no ST overﬂows. Even a 48-entry ST
+overﬂows for only 0.01% of synchronization requests, and
+incurs 2.1% slowdown over a 64-entry ST. We conclude that
+the proposed 64-entry ST meets the needs of applications that
+have high synchronization intensity.
+
+Max ST Occupancy (%)
+pr.wk
+pr.sl
+pr.sx
+pr.co
+
+No Metis
+62
+51
+53
+48
+Metis
+39
+29
+38
+34
+Figure 19: Performance sensitivity to a better graph partitioning
+and maximum ST occupancy of SynCron.
+We make three observations. First, Ideal, which reﬂects the
+actual behavior of the main kernel (i.e., with zero synchroniza-
+tion overhead), improves performance by 1.47× across the
+four graphs. Second, with a better graph partitioning, SynCron
+still outperforms both Central and Hier. Third, we ﬁnd that
+ST occupancy is lower with a better graph partitioning. When
+a local SE receives a request for a synchronization variable
+of another NDP unit, both the local SE and the Master SE
+reserve a new entry in their STs. With a better graph parti-
+tioning, NDP cores send requests to their local SE, which is
+also the Master SE for the requested variable. Thus, only one
+SE of the system reserves a new entry, resulting in a lower
+ST occupancy. We conclude that, with better data placement
+SynCron still performs the best while achieving even lower ST
+occupancy.
+6.7. SynCron’s Design Choices
+6.7.1. Hierarchical Design. To demonstrate the effectiveness
+of SynCron’s hierarchical design in non-uniform NDP systems,
+we compare it with SynCron’s ﬂat variant. Each core in ﬂat
+directly sends all its synchronization requests to the Master
+SE of each variable. In contrast, each core in SynCron sends
+all its synchronization requests to the local SE. If the local SE
+is not the Master SE for the requested variable, the local SE
+sends a message across NDP units to the Master SE.
+
+We evaluate three synchronization scenarios:
+(i) low-
+contention and synchronization non-intensive (e.g., graph ap-
+plications), (ii) low-contention and synchronization-intensive
+(e.g., time series analysis), and (iii) high-contention (e.g.,
+queue data structure).
+Low-contention and synchronization non-intensive. Fig-
+ure 20 evaluates this scenario using several graph process-
+ing workloads with 40 ns link latency between NDP units.
+SynCron is 1.1% worse than ﬂat, on average. We conclude
+that SynCron performs only slightly worse than ﬂat for low-
+contention and synchronization non-intensive scenarios.
+
+ST Occupancy
+Max (%)
+Avg (%)
+
+ST Occupancy
+Max (%)
+Avg (%)
+
+pr.sl
+51
+2.27
+pr.sx
+53
+2.46
+pr.co
+48
+4.72
+tf.wk
+62
+1.44
+tf.sl
+53
+2.21
+tf.sx
+50
+2.99
+tf.co
+48
+4.61
+tc.wk
+62
+1.26
+tc.sl
+48
+2.08
+tc.sx
+50
+2.77
+tc.co
+51
+4.52
+ts.air
+84
+44.20
+ts.pow
+89
+43.51
+Table 7: ST occupancy in real applications.
+
+bfs.wk
+51
+1.33
+bfs.sl
+59
+1.49
+bfs.sx
+51
+3.24
+bfs.co
+55
+6.09
+cc.wk
+63
+1.27
+cc.sl
+61
+2.16
+cc.sx
+48
+2.43
+cc.co
+46
+4.53
+sssp.wk
+62
+1.18
+sssp.sl
+54
+2.08
+sssp.sx
+50
+2.20
+sssp.co
+48
+5.23
+pr.wk
+62
+4.27
+
+Speedup
+
+1.0
+
+ST_64
+ST_48
+ST_32
+ST_16
+ST_8
+
+0.9
+
+tf.wk
+
+tf.co
+
+pr.wk
+
+pr.co
+
+AVG
+
+sssp.wk
+
+sssp.co
+
+cc.wk
+
+cc.co
+
+tf.sl
+
+pr.sl
+
+tf.sx
+
+tc.wk
+
+pr.sx
+
+tc.co
+
+bfs.wk
+
+bfs.co
+
+sssp.sl
+
+sssp.sx
+
+cc.sl
+
+cc.sx
+
+tc.sl
+
+tc.sx
+
+bfs.sl
+
+bs.sx
+
+83.0%
+
+cc.wk
+pr.wk
+ts.air
+ts.pow
+0.8
+0.9
+1.0
+1.1
+1.2
+1.3
+1.4
+
+Slowdown
+
+57.5%
+
+58.1%83.7%
+
+37.5%
+
+36.9%
+37.5%
+8.1%
+
+Figure 20: Speedup of SynCron normalized to ﬂat with 40 ns link
+latency between NDP units, under a low-contention and synchro-
+nization non-intensive scenario.
+Low-contention and synchronization-intensive. Figure 21a
+evaluates this scenario using time series analysis with four
+
+Figure 22: Slowdown with varying ST size (normalized to 64-
+entry ST). Numbers on top of bars show the percentage of over-
+ﬂowed requests.
+
+BST_FG
+
+2.3%
+0%
+
+Operations/ms
+
+8.0
+
+41.6%
+30.5%
+
+SynCron
+SynCron_CentralOvrfl
+SynCron_DistribOvrfl
+
+57.1%
+
+7.5
+
+77.4%
+
+7.0
+
+6.5
+
+ST_16
+ST_32
+ST_48
+ST_64
+ST_128
+ST_256
+6.0
+
+Figure 23: Throughput achieved by BST_FG using different
+overﬂow schemes and varying the ST size. The reported num-
+bers show to the percentage of overﬂowed requests.
+6.8. SynCron’s Area and Power Overhead
+Table 8 compares an SE with the ARM Cortex A7 core [14].
+We estimate the SPU using Aladdin [129], and the ST and
+indexing counters using CACTI [109]. We conclude that our
+proposed hardware unit incurs very modest area and power
+costs to be integrated into the compute die of an NDP unit.
+
+Synchronization on GPUs. GPUs support remote atomic
+units at the shared cache and hardware barriers among threads
+of the same block [114], while inter-block barrier synchroniza-
+tion is inefﬁciently implemented via the host CPU [114]. The
+closest work to ours is HQL [153], which modiﬁes the tag
+arrays of L1 and L2 caches to support the lock primitive. This
+scheme incurs high area cost [41], and is tailored to the GPU
+architecture that includes a shared L2 cache, while most NDP
+systems do not have shared caches.
+Synchronization on MPPs. The Cray T3D/T3E [81,127],
+SGI Origin [88], and AMOs [154] include remote atomics at
+the memory controller, while NYU Ultracomputer [52] pro-
+vides fetch&and remote atomics in each network switch. As
+discussed in Section 2, synchronization via remote atomics
+incurs high performance overheads due to high global traf-
+ﬁc [41, 108, 147, 153]. Cray T3E supports a barrier using
+physical wires, but it is designed speciﬁcally for 3D torus
+interconnect.
+Tera MTA [12], HEP [71, 134], J- and M-
+machines [29,78], and Alewife [5] provide synchronization
+
+SE (Synchronization Engine)
+ARM Cortex A7 [14]
+
+Technology
+40nm
+28nm
+
+Area
+SPU: 0.0141mm2, ST: 0.0112mm2
+32KB L1 Cache
+Indexing Counters: 0.0208mm2
+
+Total: 0.0461mm2
+Total: 0.45mm2
+Power
+2.7 mW
+100mW
+Table 8: Comparison of SE with a simple general-purpose in-
+order core, ARM Cortex A7.
+7. Related Work
+To our knowledge, our work is the ﬁrst one to (i) compre-
+hensively analyze and evaluate synchronization primitives in
+NDP systems, and (ii) propose an end-to-end hardware-based
+synchronization mechanism for efﬁcient execution of such
+primitives. We brieﬂy discuss prior work.
+
+Synchronization on NDP. Ahn et al. [8] include a message-
+passing barrier similar to our Central baseline. Gao et al. [43]
+implement a hierarchical tree-based barrier for HMC [59],
+where cores ﬁrst synchronize inside the vault, then across
+
+[1] S. Abadal, A. Cabellos-Aparicio, E. Alarcon, and J. Torrellas, “WiSync: An Ar-
+chitecture for Fast Synchronization through On-Chip Wireless Communication,”
+in ASPLOS, 2016.
+[2] J. L. Abellán, J. Fernández, and M. E. Acacio, “A g-line-based Network for Fast
+and Efﬁcient Barrier Synchronization in Many-Core CMPs,” in ICPP, 2010.
+[3] J. L. Abellán, J. Fernández, M. E. Acacio et al., “Glocks: Efﬁcient Support for
+Highly-Contended Locks in Many-Core CMPs,” in IPDPS, 2011.
+[4] M. Abeydeera and D. Sanchez, “Chronos: Efﬁcient Speculative Parallelism for
+Accelerators,” in ASPLOS, 2020.
+[5] A. Agarwal, R. Bianchini, D. Chaiken, K. L. Johnson et al., “The MIT Alewife
+Machine: Architecture and Performance,” in ISCA, 1998.
+[6] N. Agarwal, T. Krishna, L.-S. Peh, and N. K. Jha, “GARNET: A Detailed on Chip
+Network Model inside a Full-System Simulator,” in ISPASS, 2009.
+[7] M. Ahmad, F. Hijaz, Q. Shi, and O. Khan, “CRONO: A Benchmark Suite for
+Multithreaded Graph Algorithms Executing on Futuristic Multicores,” in IISWC,
+2015.
+[8] J. Ahn, S. Hong, S. Yoo, and O. Mutlu, “A Scalable Processing-in-Memory Ac-
+celerator for Parallel Graph Processing,” in ISCA, 2015.
+[9] J. Ahn, S. Yoo, O. Mutlu, and K. Choi, “PIM-Enabled Instructions: A Low-
+overhead, Locality-Aware Processing-in-Memory Architecture,” in ISCA, 2015.
+[10] B. S. Akgul, J. Lee, and V. J. Mooney, “A System-on-a-Chip Lock Cache with
+Task Preemption Support,” in CASES, 2001.
+[11] D. Alistarh, J. Kopinsky, J. Li, and N. Shavit, “The SprayList: A Scalable Relaxed
+Priority Queue,” in PPoPP, 2015.
+[12] R. Alverson, D. Callahan, D. Cummings, B. Koblenz et al., “The Tera Computer
+System,” ICS, 1990.
+[13] T. Anderson, “The Performance Implications of Spin-Waiting Alternatives for
+Shared-Memory Multiprocessors,” in ICPP, 1989.
+[14] ARM, “Cortex-A7 Technical Reference Manual,” 2009.
+[15] A. Awan, M. Brorsson, V. Vlassov, and E. Ayguade, “Performance Characteriza-
+tion of In-Memory Data Analytics on a Modern Cloud Server,” in BDCC, 2015.
+[16] A. J. Awan, V. Vlassov, M. Brorsson, and E. Ayguade, “Node Architecture Impli-
+cations for In-Memory Data Analytics on Scale-in Clusters,” in BDCAT, 2016.
+[17] R. Balasubramonian, J. Chang, T. Manning, J. H. Moreno et al., “Near-Data Pro-
+cessing: Insights from a MICRO-46 Workshop,” IEEE Micro, 2014.
+[18] U. N. Bhat, An Introduction to Queueing Theory: Modeling and Analysis in Ap-
+plications, 2nd ed.
+Birkhäuser Basel, 2015.
+[19] A. Boroumand, S. Ghose, Y. Kim, R. Ausavarungnirun et al., “Google Workloads
+for Consumer Devices: Mitigating Data Movement Bottlenecks,” in ASPLOS,
+2018.
+
+[111] O. Mutlu, S. Ghose, J. Gómez-Luna, and R. Ausavarungnirun, “Processing Data
+Where It Makes Sense: Enabling In-Memory Computation,” MICPRO, 2019.
+[112] L. Nai, R. Hadidi, J. Sim, H. Kim et al., “GraphPIM: Enabling Instruction-Level
+PIM Ofﬂoading in Graph Computing Frameworks,” in HPCA, 2017.
+[113] R. Nair, S. F. Antao, C. Bertolli, P. Bose et al., “Active Memory Cube: A
+Processing-in-Memory Architecture for Exascale Systems,” IBM JRD, 2015.
+[114] NVIDIA, “NVIDIA Tesla V100 GPU Architecture,” White Paper, 2017.
+[115] NVIDIA, “ONTAP AI–NVIDIA DGX-2 POD with NetApp AFF A800,” White
+Paper, 2019.
+[116] J. Oh, M. Prvulovic, and A. Zajic, “TLSync: Support for Multiple Fast Barriers
+Using On-Chip Transmission Lines,” in ISCA, 2011.
+[117] A. Pattnaik, X. Tang, A. Jog, O. Kayiran et al., “Scheduling Techniques for GPU
+Architectures with Processing-In-Memory Capabilities,” in PACT, 2016.
+[118] W. Pugh, “Concurrent Maintenance of Skip Lists,” Tech. Rep., 1990.
+[119] S. Pugsley, J. Jestes, H. Zhang, R. Balasubramonian et al., “NDC: Analyzing the
+Impact of 3D-stacked Memory+Logic Devices on MapReduce Workloads,” in
+ISPASS, 2014.
+[120] A. Ros and S. Kaxiras, “Callback: Efﬁcient Synchronization without Invalidation
+with a Directory just for Spin-Waiting,” in ISCA, 2015.
+[121] A. Ros and S. Kaxiras, “Complexity-Effective Multicore Coherence,” PACT
+2012.
+[122] L. Rudolph and Z. Segall, Dynamic Decentralized Cache Schemes for MIMD
+Parallel Processors, 1984.
+[123] J. Rutgers, M. Bekooij, and G. Smit, “Portable Memory Consistency for Software
+Managed Distributed Memory in Many-Core SoC,” in IPDPSW, 2013.
+[124] J. Sampson, R. Gonzalez, J.-F. Collard, N. Jouppi et al., “Exploiting Fine-Grained
+Data Parallelism with Chip Multiprocessors and Fast Barriers,” in MICRO, 2006.
+[125] D. Sanchez and C. Kozyrakis, “ZSim: Fast and Accurate Microarchitectural Sim-
+ulation of Thousand-Core Systems,” in ISCA, 2013.
+[126] M. L. Scott, “Non-Blocking Timeout in Scalable Queue-based Spin Locks,” in
+PODC, 2002.
+[127] S. L. Scott, “Synchronization and Communication in the T3E Multiprocessor,” in
+ASPLOS, 1996.
+[128] V. Seshadri, D. Lee, T. Mullins, H. Hassan et al., “Ambit: In-Memory Accelerator
+for Bulk Bitwise Operations Using Commodity DRAM Technology,” in MICRO,
+2017.
+[129] Y. S. Shao, S. L. Xi, V. Srinivasan, G.-Y. Wei et al., “Co-Designing Accelerators
+and SoC Interfaces using gem5-Aladdin,” in MICRO, 2016.
+[130] D.
+Siakavaras,
+K.
+Nikas,
+G.
+Goumas,
+and
+N.
+Koziris,
+“RCU-HTM:
+Combining
+RCU
+with
+HTM
+to
+Implement
+Highly
+Efﬁcient
+Concurrent
+Binary
+Search
+Trees,”
+PACT
+2017.
+
+[131] G. Singh, D. Diamantopoulos, C. Hagleitner, J. Gomez-Luna et al., “NERO: A
+Near High-Bandwidth Memory Stencil Accelerator for Weather Prediction Mod-
+eling,” in FPL, 2020.
+[132] G. Singh, J. Gómez-Luna, G. Mariani, G. F. Oliveira et al., “NAPEL: Near-
+Memory Computing Application Performance Prediction via Ensemble Learn-
+ing,” in DAC, 2019.
+[133] G. Singh, L. Chelini, S. Corda, A. J. Awan et al., “Near-Memory Computing:
+Past, Present, and Future,” MICPRO, 2019.
+[134] B. J. Smith, “A Pipelined, Shared Resource MIMD Computer,” ICPP, 1978.
+[135] D. J. Sorin, M. D. Hill, and D. A. Wood, A Primer on Memory Consistency and
+Cache Coherence.
+Morgan & Claypool Publishers, 2011.
+[136] F. Strati, C. Giannoula, D. Siakavaras, G. Goumas et al., “An Adaptive Concur-
+rent Priority Queue for NUMA Architectures,” in CF, 2019.
+[137] M. A. Suleman, O. Mutlu, J. A. Joao, Khubaib et al., “Data Marshaling for Multi-
+Core Architectures,” in ISCA, 2010.
+[138] M. A. Suleman, O. Mutlu, M. Qureshi, and Y. Patt, “Accelerating Critical Section
+Execution with Asymmetric Multi-Core Architectures,” in ASPLOS, 2009.
+[139] H. Sung, R. Komuravelli, and S. V. Adve, “DeNovoND: Efﬁcient Hardware Sup-
+port for Disciplined Non-Determinism,” ASPLOS, 2013.
+[140] N. R. Tallent, J. M. Mellor-Crummey, and A. Porterﬁeld, “Analyzing Lock Con-
+tention in Multithreaded Applications,” in PPoPP, 2010.
+[141] X. Tang, J. Zhai, X. Qian, and W. Chen, “pLock: A Fast Lock for Architectures
+with Explicit Inter-core Message Passing,” in ASPLOS, 2019.
+[142] S. Torkamani and V. Lohweg, “Survey on Time Series Motif Discovery,” Wiley
+Interdis. Rev.: Data Mining and Knowledge Discovery, 2017.
+[143] P.-A. Tsai, C. Chen, and D. Sanchez, “Adaptive Scheduling for Systems with
+Asymmetric Memory Hierarchies,” in MICRO, 2018.
+[144] UPMEM, “
+[145] hybridmemorycube.org, “Hybrid Memory Cube Speciﬁcation rev. 2.1,” Hybrid
+Memory Cube Consortium, 2015.
+[146] E. Vallejo, R. Beivide, A. Cristal, T. Harris et al., “Architectural Support for Fair
+Reader-Writer Locking,” in MICRO, 2010.
+[147] K. Wang, D. Fussell, and C. Lin, “Fast Fine-Grained Global Synchronization on
+GPUs,” in ASPLOS, 2019.
+[148] C. Wittenbrink, E. Kilgariff, and A. Prabhu, “Fermi GF100 GPU Architecture,”
+IEEE Micro, 2011.
+[149] P. T. Wolkotte, G. J. M. Smit, N. Kavaldjiev, J. E. Becker et al., “Energy Model
+of Networks-on-Chip and a Bus,” in SOCC, 2005.
+[150] Xilinx, “Virtex UltraScale+ HBM FPGA,” 2019.
+[151] M. Yan, X. Hu, S. Li, A. Basak et al., “Alleviating Irregularity in Graph Analytics
+Acceleration: A Hardware/Software Co-Design Approach,” in MICRO, 2019.
+[152] C.-C. M. Yeh, Y. Zhu, L. Ulanova, N. Begum et al., “Matrix Proﬁle I: All Pairs
+Similarity Joins for Time Series: A Unifying View that Includes Motifs, Discords
+and Shapelets,” in ICDM, 2016.
+[153] A. Yilmazer and D. Kaeli, “HQL: A Scalable Synchronization Mechanism for
+GPUs,” in IPDPS, 2013.
+[154] L. Zhang, Z. Fang, and J. B. Carter, “Highly Efﬁcient Synchronization based on
+Active Memory Operations,” in IPDPS, 2004.
+[155] M. Zhang, Y. Zhuo, C. Wang, M. Gao et al., “GraphP: Reducing Communication
+for PIM-Based Graph Processing with Efﬁcient Data Partition,” in HPCA, 2018.
+[156] M. Zhang, H. Chen, L. Cheng, F. C. M. Lau et al., “Scalable Adaptive NUMA-
+Aware Lock,” TPDS, 2017.
+[157] W. Zhu, V. C. Sreedhar, Z. Hu, and G. R. Gao, “Synchronization State Buffer:
+Supporting Efﬁcient Fine-grain Synchronization on Many-Core Architectures,”
+in ISCA, 2007.
+[158] Y. Zhuo, C. Wang, M. Zhang, R. Wang et al., “GraphQ: Scalable PIM-Based
+Graph Processing,” in MICRO, 2019.

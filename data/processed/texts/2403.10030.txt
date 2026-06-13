@@ -1,0 +1,2037 @@
+Multi-criteria Token Fusion with One-step-ahead Attention
+for Efficient Vision Transformers
+
+Sanghyeok Lee*
+Joonmyung Choi*
+Hyunwoo J. Kim†
+
+Department of Computer Science and Engineering, Korea University
+
+{cat0626, pizard,
+
+arXiv:2403.10030v3 [cs.CV] 1 Apr 2024
+
+Abstract
+
+built only with self-attention and MLP, provide great flexi-
+bility and impressive performance compared to conventional
+approaches, e.g., convolutional neural networks (CNNs).
+However, despite these advantages, the quadratic computa-
+tional complexity of self-attention with respect to the number
+of tokens is the major bottleneck for Transformers. This lim-
+itation becomes more substantial with the growing interest
+in large-scale foundation models such as CLIP [27]. To
+this end, several works [3, 17, 32, 37] have proposed effi-
+cient self-attention mechanisms including local self-attention
+within predefined windows [1, 9, 21].
+More recently, there has been increasing interest in token-
+reduction methods for optimizing ViTs without altering their
+architecture. Earlier works [13, 25, 26, 28, 40] primarily
+focused on pruning the uninformative tokens to reduce the
+number of tokens. Another line of works [4, 18, 19, 22, 24]
+attempted to fuse the tokens instead of discarding them
+to minimize the information loss. However, performance
+degradation is still commonly observed in most token fusion
+methods. We notice that the token fusion methods usually
+consider only one criterion, such as the similarity or infor-
+mativeness of tokens, leading to suboptimal token matching.
+For instance, similarity-based token fusion is prone to com-
+bine the foreground tokens, whereas informativeness-based
+fusion often merges substantially dissimilar tokens, result-
+ing in collapsed representations. Furthermore, if too many
+tokens are fused into one token, then information loss is
+inevitable.
+To address the problems, we introduce Multi-Criteria Token
+Fusion (MCTF) that optimizes vision transformers by fusing
+tokens based on multi-criteria. Unlike previous works that
+consider a single criterion for token fusion, MCTF measures
+the relationship between the tokens with multi-criteria as
+follows; (1) similarity to fuse the redundant tokens, (2) infor-
+mativeness to reduce the uninformative tokens, (3) the size of
+the tokens to prevent the large-sized tokens that boost the loss
+of information. Also, to tackle the inconsistency between at-
+tention maps of consecutive layers, we adopt one-step-ahead
+attention, which explicitly estimates the informativeness of
+
+Vision Transformer (ViT) has emerged as a prominent
+backbone for computer vision. For more efficient ViTs, re-
+cent works lessen the quadratic cost of the self-attention
+layer by pruning or fusing the redundant tokens. How-
+ever, these works faced the speed-accuracy trade-off caused
+by the loss of information. Here, we argue that token fu-
+sion needs to consider diverse relations between tokens
+to minimize information loss. In this paper, we propose
+a Multi-criteria Token Fusion (MCTF), that gradually fuses
+the tokens based on multi-criteria (i.e., similarity, informa-
+tiveness, and size of fused tokens). Further, we utilize the
+one-step-ahead attention, which is the improved approach
+to capture the informativeness of the tokens. By training
+the model equipped with MCTF using a token reduction
+consistency, we achieve the best speed-accuracy trade-off
+in the image classification (ImageNet1K). Experimental re-
+sults prove that MCTF consistently surpasses the previous
+reduction methods with and without training. Specifically,
+DeiT-T and DeiT-S with MCTF reduce FLOPs by about
+44% while improving the performance (+0.5%, and +0.3%)
+over the base model, respectively. We also demonstrate
+the applicability of MCTF in various Vision Transformers
+(e.g., T2T-ViT, LV-ViT), achieving at least 31% speedup
+without performance degradation. Code is available at
+
+1. Introduction
+
+Vision Transformer [12] (ViT) has been proposed to tackle
+the vision tasks with self-attention, originally developed for
+natural language processing tasks. With the advent of ViT,
+Transformers are the prevalent architectures for a wide range
+of vision tasks, e.g., classification [12, 21, 30, 31, 33], object
+detection [5, 33, 46], segmentation [21, 29, 35], etc. ViTs,
+
+*Equal contribution.
+†Corresponding author.
+
+Figure 1. Comparison of the token reduction methods with DeiT-T (left), and DeiT-S (right). Given a base model marked as blue circle,
+previous token reduction methods accelerate the speed with the trade-off between accuracy and computational cost. Our MCTF, marked as a
+star, even brings performance improvements while lessening the complexity of DeiT. Note that after only one finetuning with the specific
+reduced number of tokens marked as red star, we simply evaluate it with the diverse FLOPs by adjusting the reduced numbers.
+
+the tokens in the next layer. Finally, by introducing a token
+reduction consistency for finetuning the model, we achieve
+superior performance to the existing works as in Figure 1.
+Surprisingly, our MCTF even performs better than the ‘full’
+base model (red dotted line) with a reduced computational
+complexity. Specifically, it brings a 0.5%, and 0.3% gain
+while reducing FLOPs by about 44% in DeiT-T, and DeiT-
+S [30], respectively. We have observed a similar speed-up
+(31%) in T2T-ViT [42], and LV-ViT [16] without any perfor-
+mance degradation.
+Our contributions are summarized in fourfold.
+• We propose Multi-criteria Token Fusion, a novel token
+fusion method that considers multi-criteria, e.g., similarity,
+informativeness, and size, to capture the complex relation-
+ship of tokens and minimize information loss.
+• For measuring the informativeness of the tokens, we utilize
+one-step-ahead attention to retain the attentive tokens in
+the following layers.
+• We propose a new fine-tuning scheme with token reduction
+consistency to boost the generalization performance of
+transformers equipped with MCTF.
+• The extensive experiments demonstrate that MCTF
+achieves the best speed-accuracy trade-off in diverse ViTs,
+surpassing all previous token reduction methods.
+
+line of works that boosts the vanilla ViT by scaling [31, 44]
+or self-supervised learning [2, 14, 34]. Despite the promis-
+ing results of these works, the quadratic complexity of
+ViTs is still the major constraint for scaling the model.
+For the sake of mitigating the complexity, Reformer [17]
+lessens the quadratic complexity to O(N log N) through the
+hashing function, and Linformer [32], performer [8], and
+Nystr¨omformer [37] achieve the linear cost with the approxi-
+mated linear attention. Also, several works [1, 9, 11, 21] uti-
+lize sparse attention with the reduced key or query. Swin [21]
+and Twins [9] utilize the local attention within the fixed size
+of the window to mitigate the complexity.
+
+Token reduction in ViTs.
+Most of the computational
+burden in ViTs arises from the self-attention.
+To re-
+duce the quadratic cost in the number of tokens, recent
+works [4, 13, 18, 19, 22, 24–26, 28, 40] have an interest in
+reducing the token itself. These works have the advantage of
+utilizing the original ViTs architecture without modification.
+In earlier works [13, 25, 26, 28, 40], the uninformative to-
+kens are simply dropped during the forward process, leading
+to the information loss. To compensate for this, SPViT [18]
+and EViT [19] first split the tokens into informative and un-
+informative token sets based on attention scores, then fuse
+these uninformative token sets into a single token. In parallel,
+token pooling [24] and ToMe [4] combine the semantically
+similar tokens to reduce redundancies. A more recent study
+BAT [22] first split the tokens based on informativeness then
+fuse the tokens considering the diversity of the tokens. De-
+spite the advantage of each criterion, successful integration
+of multi-criteria is still less explored.
+
+2. Related works
+
+Vision Transformers.
+Vision Transformer [12] is intro-
+duced to tackle the vision tasks.
+Later, DeiT [30] and
+CaiT [31] are proposed to handle the data efficiency and scal-
+ability of ViT, respectively. Recent works [6, 11, 15, 21, 33]
+tried to insert the inductive biases of CNNs on ViT, such as
+the locality or pyramid-architecture. In parallel, there is a
+
+(a) Origin
+(b) Wsim
+(c) Wsim&Winfo
+(d) Wsim&Winfo&Wsize
+
+Figure 2. Visualization of the fused tokens. Given (a) the leftmost image, (b) fusing the tokens with a single criterion Wsim often results
+in the excessive fusion of the foreground object. (c) Then considering both similarity and informativeness (Wsim&Winfo), tokens in the
+foreground objects are less fused while the tokens in the background are largely fused. (d) Finally, MCTF helps retain the information of
+each component in the image by preventing the large-size token with the multi-criteria (Wsim&Winfo&Wsize).
+
+3. Method
+
+tokens through bidirectional bipartite soft matching.
+Multi-criteria attraction function. We first define an at-
+traction function W based on multiple criteria as
+
+We first review the self-attention and token reduction ap-
+proaches (Section 3.1). Then, we present our multi-criteria
+token fusion (Section 3.2) that leverages one-step-ahead at-
+tention (Section 3.3). Lastly, we introduce a training strategy
+with token reduction consistency in Section 3.4.
+
+W(xi, xj) = ΠM
+k=1(Wk(xi, xj))τk,
+(2)
+
+where Wk : RC × RC →R+ is an attraction function
+computed by k-th criterion, and τ k ∈R+ is the temperature
+parameter to adjust the influence of k-th criterion. The higher
+attraction score between two tokens indicates a higher chance
+of being fused. In this work, we consider the following three
+criteria: similarity, informativeness, and size.
+Similarity. The first criterion is the similarity of tokens to
+reduce redundant information. Akin to the previous works [4,
+24] requiring the proximity of tokens, we leverage the cosine
+similarity between the set of tokens for
+
+3.1. Preliminaries
+
+In Transformers, tokens X ∈RN×C are processed by self-
+attention defined as
+
+QK⊤
+
+!
+
+√
+
+SA(X) = softmax
+
+V,
+(1)
+
+C
+
+where Q, K, V = XWQ, XWK, XWV, and WQ, WK,
+WV ∈RC×C are learnable weight matrices. Despite its
+outstanding expressive power, the self-attention does not
+scale well with the number of tokens N due to its quadratic
+time complexity O(N 2C + NC2). To address this problem,
+a line of works [13, 25, 26, 28, 40] reduces the number
+of tokens simply by pruning uninformative tokens. These
+approaches often cause significant performance degradation
+due to the loss of information. Thus, another line of works [4,
+18, 19, 22, 24] fuses the uninformative or redundant tokens
+ˆX ⊂X into a new token ˆx = δ( ˆX), where X is the set of
+original tokens, and δ denotes a merging function, e.g., max-
+pooling or averaging. In this work, we also adopt ‘token
+fusion’ rather than ‘token pruning’ with multiple criteria to
+minimize the loss of information by token reduction.
+
+xi · xj
+
+∥xi∥∥xj∥+ 1
+
+.
+(3)
+
+Wsim(xi, xj) = 1
+
+2
+
+Token fusion with similarity effectively eliminates the redun-
+dant tokens, yet it often excessively combines the informa-
+tive tokens as in Figure 2b, causing the loss of information.
+Informativeness. To minimize the information loss, we in-
+troduce informativeness to avoid the fusion of informative
+tokens. To quantify the informativeness, we measure the
+averaged attention scores a ∈[0, 1]N in the self-attention
+layer, which indicates the impact of each token on others:
+
+aj =
+1
+N
+PN
+i Aij, where Aij = softmax
+
+QiKT
+j
+√
+
+
+. When
+
+C
+
+ai →0, there’s no influence from xi to other tokens. With
+the informativeness scores, we define an informativeness-
+based attraction function as
+
+3.2. Multi-criteria token fusion
+
+Given a set of input tokens X ∈RN×C, the goal of MCTF
+is to fuse the tokens into output tokens ˆX ∈R(N−r)×C,
+where r is the number of fused tokens. To minimize the
+information loss, we first evaluate the relations between the
+tokens based on multi-criteria, then group and merge the
+
+Winfo(xi, xj) =
+1
+aiaj
+,
+(4)
+
+where ai, aj are the informative scores of xi, xj, respec-
+tively. When both tokens are uninformative (ai, aj →0),
+
+Figure 3. Bidirectional bipartite soft matching. The set of tokens X is split into two groups Xα, Xβ, and bidirectional bipartite soft
+matching are conducted through Step 1-4. The intensity of the lines indicates the multi-criteria weights Wt.
+
+the weight gets higher (Winfo(xi, xj) →∞), making two
+tokens prone to be fused. In Figure 2c, with the weights com-
+bined with the similarity and informativeness, the tokens in
+the foreground object are less fused.
+Size. The last criterion is the size of the tokens, which indi-
+cates the number of fused tokens. Although tokens are not
+dropped but merged via a merging function, e.g., averaging
+pooling or max pooling, it is difficult to preserve all the in-
+formation as the number of constituent tokens increases. So,
+the fusion between smaller tokens is preferred. To this end,
+we initially set the size s ∈NN of tokens X as 1 and track
+the number of constituent (fused) tokens of each token, and
+define a size-based attraction function as
+
+where
+
+(
+wij
+if j ̸= arg maxj′ wij′
+0
+otherwise
+,
+(8)
+
+w′
+ij =
+
+eij indicates the presence of the edge between i, j-th token
+of Xα, Xβ, and , wij = W(xα
+i , xβ
+j ). This optimization
+problem can be solved by two simple steps: 1) find the best
+edge that maximizes wij for each i, and 2) choose the top-r
+edges with the largest attraction scores. Then, based on the
+soft matching result E∗, we group the tokens as
+
+Xα→β
+j
+= {xα
+i ∈Xα | eij = 1} ∪{xβ
+j },
+(9)
+
+where Xα→β
+i
+indicates the set of tokens matched with xβ
+i .
+Finally, the results of the fusion ˜X are obtained as
+
+Wsize(xi, xj) =
+1
+sisj
+.
+(5)
+
+˜X = ˜Xα ∪˜Xβ,
+(10)
+
+In Figure 2d, tokens are merged based on the multi-criteria:
+similarity, informativeness, and size. We observed that the
+fusion happens between similar tokens and the fusion of
+foreground tokens or large tokens is properly suppressed.
+
+where ˜Xα = Xα −
+[N′
+
+i Xα→β
+i
+,
+(11)
+
+˜Xβ =
+[N′
+
+i {δ(Xα→β
+i
+)},
+(12)
+
+δ(X) = δ({xi}i) = P
+i
+aisixi
+P
+
+i′ ai′si′ is the pooling operation
+considering the attention scores a and the size s of the tokens.
+Still, as shown in Step2 of Figure 3, the number of target
+tokens Xβ cannot be reduced. To handle this issue, MCTF
+performs bidirectional bipartite soft matching by conducting
+the matching in the opposite direction with the updated token
+sets ˜Xα, and ˜Xβ as in Step 3, 4 of Figure 3. The final output
+tokens ˆX = ˆXα ∪ˆXβ are defined with the following.
+
+Bidirectional bipartite soft matching.
+Given the multi-
+criteria-based attraction function W, our MCTF performs
+a relaxed bidirectional bipartite matching called bipartite
+soft matching [4]. One advantage of bipartite matching is
+that it alleviates the quadratic cost of similarity computation
+between tokens, i.e., O(N 2) →O(N ′2), where N ′ = ⌊N
+
+2 ⌋.
+In addition, by relaxing the one-to-one correspondence con-
+straints, the solution can be obtained by an efficient algo-
+rithm. In this relaxed matching problem, the set of tokens
+X is first split into the source and target Xα, Xβ ∈RN ′×C
+
+ˆXα =
+[N ′−r
+
+i
+{δ( ˜Xβ→α
+i
+)},
+(13)
+
+as in Step 1 of Figure 3. Given a set of binary decision
+variables, i.e., the edge matrix E ∈{0, 1}N′×N′ between
+Xα, and Xβ, bipartite soft matching is formulated as
+
+ˆXβ = ˜Xβ −
+[N ′−r
+
+i
+˜Xβ→α
+i
+.
+(14)
+
+Note that calculating the pairwise weights with updated
+two sets of tokens ˜wij = W(˜xβ
+i , ˜xα
+j ) introduces the ad-
+ditional computational costs of O(N ′(N ′ −r)). To avoid
+this overhead, we approximate the attraction function by the
+attraction scores before fusion. In short, we just reuse the
+
+X
+
+E∗= arg max
+E
+
+ijw′
+ijeij
+(6)
+
+subject to
+X
+
+ijeij = r,
+X
+
+jeij ≤1 ∀i,
+(7)
+
+Figure 4. Visualization of attentiveness in consecutive layers.
+
+Figure 6. Illustration of training with token reduction consis-
+tency. During training, we forward the input x as f(x; r), and
+f(x; r′), respectively. To obtain the augmented representation, r′
+
+is randomly selected in every step, and the model is updated with
+supervisory signals LCE, and consistency loss LMSE.
+
+Figure 5. Illustration of attention map in the consecutive layers
+and approximated attention. (Left) The attention score Al is
+the past influence of the tokens to generate Xl. If we fuse the
+tokens Xl based on Al, x1 is prone to be fused despite the highest
+informativeness score in the following attention. So, we instead
+leverage the informativeness based on the one-step-ahead attention
+Al+1. (Right) After the fusion, we also aggregate the Al+1 to
+approximate the attention map ˆAl+1 for updating fused tokens ˆXl.
+
+scores for queries, we use simple sum for δ to guarantee
+∀i
+P
+
+j ˆAl+1
+ij
+= 1.
+
+3.4. Token reduction consistency
+
+We here propose a new fine-tuning scheme to further im-
+prove the performance of vision Transformer fθ(·; r) with
+MCTF. We observe that a different number of reduced tokens
+per layer, denoted as r, may lead to different representations
+of samples. By training Transformers with different r and
+encouraging the consistency between them, namely, token re-
+duction consistency, we achieve the additional performance
+gain. The objective function of our method is given as
+
+pre-calculated weights since ˜Xα is the subset of Xα. This
+allows MCTF to efficiently reduce tokens considering bidi-
+rectional relations between two subsets with negligible extra
+costs compared to uni-directional bipartite soft matching.
+
+3.3. One-step-ahead attention for informativeness
+
+In assessing informativeness, prior works [18, 19, 22]
+have leveraged the attention scores from the previous self-
+attention layer.
+As illustrated in Figure 5, previous ap-
+proaches use the attention Al from the previous layer to
+fuse tokens Xl. This technique allows efficient assessment
+under the assumption that the attention maps in consecutive
+layers are similar. However, we observed that the attention
+maps often substantially differ, as shown in Figure 4, and
+the attention from a previous layer may lead to suboptimal
+token fusion. Thus, we proposed one-step-ahead atten-
+tion, which measures the informativeness of tokens based
+on the attention map in the next layer, i.e., Al+1. Then,
+the informativeness scores a in Equation (4) is calculated
+with Al+1 ∈RN×N. This simple remedy provides a con-
+siderable improvement; see Figure 7b in Section 4.2. Af-
+ter token fusion, we efficiently compute the attention map
+ˆAl+1 ∈R(N−r)×(N−r) of fused tokens ˆXl ∈R(N−r)×C
+
+L = LCE(fθ(x; r), y) + LCE(fθ(x; r′), y)
+
++ λLMSE(xcls
+r , xcls
+r′ ),
+(15)
+
+where (x, y) is a supervised sample, r, r′ is the fixed and
+dynamic reduced token numbers, λ is the coefficient for con-
+sistency loss, and xcls
+r , xcls
+r′ are the class tokens in the last
+layer of models fθ(x; r), fθ(x; r′). In this objective, we first
+calculate the cross-entropy loss LCE(fθ(x; r), y) with fixed
+r, which is the target reduction number that will be used in
+the evaluation. At the same time, we generate another rep-
+resentation of the input x with smaller but randomly drawn
+r′ ∼uniform(0, r), and calculate the loss LCE(fθ(x; r′), y).
+Then, we impose the token consistency loss LMSE(xcls
+r , xcls
+r′ )
+on the class tokens, to retain the consistent representation
+across the diverse reduced token numbers r′. The proposed
+method can be viewed as a new type of token-level data
+augmentation [7, 20] and consistency regularization. Our
+token reduction consistency encourages the representation
+xcls
+r obtained by the target reduction number r to mimic the
+slightly augmented representation xcls
+r′ , which is more similar
+to ones with no token reduction since r′ < r.
+
+by simply aggregating Al+1 ∈RN×N without recomput-
+ing the dot-product self-attention. To be specific, when the
+tokens are fused as δ({xi}i) during Equations (10) to (14),
+their corresponding one-step-ahead attention scores are also
+fused as δ({Al+1
+i
+}i) in both query and key direction. Note
+that when fusing attention scores for queries we use sim-
+ple sum for δ,i.e., ∀i
+P
+
+j ˆAl+1
+ij
+= 1. For fusing attention
+
+Table 1. Image classification results
+
+Table 2. Comparison with other Vision Transformers
+
+Method
+FLOPs Params Top-1 Acc
+(G)
+(M)
+(%)
+
+Models
+FLOPs Params
+Acc
+(G)
+(M)
+(%)
+
+DeiT-T [30]
+1.2
+5
+72.2 (-)
++EvoViT[AAAI ’22] [39]
+0.8
+5
+72.0 (-0.2)
++A-ViT[CVPR ’22] [40]
+0.8
+5
+71.0 (-1.2)
++SPViT[ECCV ’22] [18]
+0.9
+5
+72.1 (-0.1)
++ToMe[ICLR ’23] [4]
+0.7
+5
+71.3 (-0.9)
++BAT[CVPR ’23] [22]
+0.8
+5
+72.3 (+0.1)
+
+PVT-Small[33]
+3.8
+24.5
+79.8
+PVT-Medium [33]
+6.7
+44.2
+81.2
+CoaT Mini [38]
+6.8
+10.0
+80.8
+CoaT-Lite Small [38]
+4.0
+20.0
+81.9
+Swin-T [21]
+4.5
+29.0
+81.3
+Swin-S [21]
+8.7
+50.0
+83.0
+PoolFormer-S36 [41]
+5.0
+31.0
+81.4
+PoolFormer-M48 [41]
+11.6
+73.0
+82.5
+
++MCTFr=16
+0.7
+5
+72.7 (+0.5)
+
+DeiT-S [30]
+4.6
+22
+79.8 (-)
++IA-RED2[NeurIPS ’21] [26]
+3.2
+22
+79.1 (-0.7)
++DynamicViT[NeurIPS ’21] [28]
+2.9
+23
+79.3 (-0.5)
++EvoViT[AAAI ’22] [39]
+3.0
+22
+79.4 (-0.4)
++EViT[ICLR ’22] [19]
+3.0
+22
+79.5 (-0.3)
++A-ViT[CVPR ’22] [40]
+3.6
+22
+78.6 (-1.2)
++ATS[ECCV ’22] [13]
+2.9
+22
+79.7 (-0.1)
++SPViT[ECCV ’22] [18]
+2.6
+22
+79.3 (-0.5)
++ToMe[ICLR ’23] [4]
+2.7
+22
+79.4 (-0.4)
++BAT[CVPR ’23] [22]
+3.0
+22
+79.6 (-0.2)
+
+T2T-ViTt-14 [42]
+6.1
+21.5
+81.7
++MCTFr=13
+4.2
+21.5
+81.8 (↑)
+T2T-ViTt-19 [42]
+9.8
+39.2
+82.4
++MCTFr=9
+6.4
+39.2
+82.4 (-)
+
+LV-ViT-S [16]
+6.6
+26.2
+83.3
++EViT[ICLR ’22] [19]
+4.7
+26.2
+83.0 (↓)
++BAT[CVPR ’23] [22]
+4.7
+26.2
+83.1 (↓)
++DynamicViT[NeurIPS ’21] [28]
+4.6
+26.9
+83.0 (↓)
++SPViT[ECCV ’22] [18]
+4.3
+26.2
+83.1 (↓)
++MCTFr=12
+4.2
+26.2
+83.4 (↑)
+
++MCTFr=16
+2.6
+22
+80.1 (+0.3)
+
+FLOPs. Similarly, we observe a gain of +0.3% with DeiT-
+S while boosting the FLOPs by -2.0 (G). We believe that
+multi-criteria with one-step-ahead attention helps the model
+to minimize the loss of information; further consistency loss
+on the class token through the token reduction improves the
+generalizability of the model.
+MCTF with other Vision Transformers. To validate the ap-
+plicability of MCTF in various ViTs, we demonstrate MCTF
+with other transformer architectures in Table 2. Following
+previous works [18, 19, 22, 28], we apply MCTF with LV-
+ViT. Also, we present the results of MCTF with T2T-ViT. As
+presented in the table, our experimental results are promis-
+ing. MCTF in these architectures gets at least 31% speedup
+without performance degradation. Further, MCTF combined
+with LV-ViT outperforms all other Transformers and token
+reduction methods regarding FLOPs, and accuracy. Espe-
+cially, it is worth noting that all token reduction methods
+except for MCTF bring the performance degradation in LV-
+ViT. These results reveal that MCTF is the efficient token
+reduction method for the diverse Vision Transformers.
+Token reduction without training. Similar to ToMe [4],
+MCTF is applicable with pre-trained ViTs without any addi-
+tional training since MCTF does not require any learnable
+parameters. We here apply the two reduction methods to the
+pre-trained DeiT without finetuning and provide the results
+in Table 3. Regardless of the reduced number of tokens r
+in each layer, MCTF consistently surpasses ToMe. Espe-
+cially, in the most sparse setting r = 20, the performance
+gap is significant (+7.0% in DeiT-T, +3.8% in DeiT-S). Note
+
+4. Experiments
+
+Baselines. To validate the effectiveness of the proposed
+methods, we compare MCTF with the previous token
+reduction methods.
+For comparison, we opt the token
+pruning methods (A-ViT [40], IA-RED2 [26], Dynam-
+icViT [28], EvoViT [39], ATS [13]) and token fusion meth-
+ods (SPViT [18], EViT [19], ToMe [4], BAT [22]) in
+DeiT [30], and report the efficiency (FLOPs (G)) and the
+performance (Top-1 Acc (%)) of each method. Further, to
+validate MCTF on other Vision Transformers (T2T-ViT [42],
+LV-ViT [16]), we report the results of MCTF and compare
+it with the official number of existing works. We denote
+the number of reduced tokens per layer r with the subscript
+in Tables 1 and 2. The gray color in the table indicates the
+base model, and the green and red color indicates the im-
+provements and degradations of the performance compared
+to the base model, respectively.
+
+4.1. Experimental Results
+
+Comparison of the token reduction methods. The compar-
+ison with existing token reduction methods is summarized
+in Table 1. We demonstrate that our MCTF achieves the best
+performance with the lowest FLOPs in DeiT [30] surpassing
+all previous works. Further, it is worth noting that MCTF is
+the only work that avoids performance degradation with the
+lowest FLOPs in both DeiT-T and DeiT-S. Through Finetun-
+ing DeiT-T for 30 epochs, MCTF brings a significant gain
+of +0.5% in accuracy over the base model with nearly half
+
+(a)
+(b)
+Figure 7. Ablations on (a) multi-criteria, (b) one-step-ahead-attention, and token reduction consistency. Each marker indicates the
+model with r ∈[1, 20], and we highlight r ∈{5, 10, 15, 20} as bordered circle. We also denote the model as star when r = 16, which is
+used for finetuning the model.
+
+Table 3. Image classification results without training
+
+three criteria (sim. & info. & size). These performance gaps
+get larger as r increases, which proves the importance of the
+multi-criteria for token fusion.
+One-step-ahead attention and token reduction consis-
+tency. To show the validity of one-step-ahead attention and
+token reduction consistency, we also provide the results of
+MCTF with and without each component in Figure 7b. When
+eliminating either one-step-ahead attention or token reduc-
+tion consistency, the accuracies are dropped in every FLOP.
+This significant drop indicates that both approaches matter
+for MCTF. In short, by adopting one-step-ahead attention
+and token reduction consistency, MCTF effectively mitigates
+the performance degradation in a wide range of FLOPs.
+Comparison of design choices. The ablations on design
+choices are presented in Table 4. First, our bidirectional
+bipartite matching, which enables capturing the bidirectional
+relation in two sets, enhances the accuracy compared to one-
+way bipartite matching. Next, for pooling operation δ, the
+weighted sum considering the size s and attentiveness a is a
+better choice than others like max-pool or average. Lastly,
+we compare the results with the precise and approximated
+attention for ˆAl. For precise attention, we just conduct the
+similarity calculation for one-step-ahead attention and the
+attention in the self-attention layer after fusion, separately.
+Otherwise, we approximate it with one-step-ahead attention
+as described in Section 3.3. As presented in the table, our
+approximated attention maintains the performance with the
+substantial improvement in efficiency (-0.4 (G) FLOPs).
+
+Method
+r
+Base
+1
+2
+4
+8
+12
+16
+20
+
+DeiT-T
+ToMe [4] 72.2 72.1 72.0 72.0 71.6 70.8 68.7 61.5
+MCTF
+72.2 72.2 72.1 72.1 72.0 71.7 71.0 68.5
+
+DeiT-S
+ToMe [4] 79.8 79.8 79.7 79.7 79.4 79.0 77.9 74.2
+MCTF
+79.8 79.8 79.8 79.8 79.8 79.6 79.2 78.0
+
+that without any additional training, our MCTFr=16 with
+pre-trained DeiT-S still shows a competitive performance
+of 79.2% compared to reduction methods requiring training
+(e.g., 78.6% of A-ViT, 79.1% of IA-RED2, and 79.3% of
+DynamicViT, and SPViT in Table 1).
+
+4.2. Ablation studies on MCTF
+
+We provide ablation studies to validate each component of
+MCTF. Unless otherwise stated, we conduct whole exper-
+iments with DeiT-S finetuned with MCTF (r = 16). We
+provide the FLOPs-Accuracy graph by adjusting the reduced
+number of tokens per layer r ∈[1, 20].
+Multi-criteria. We explore the effectiveness of multi-criteria
+in Figure 7a. First, regarding the multi-criteria, we utilize
+three criteria for MCTF, i.e., similarity (sim.), informative-
+ness (info.), and size. Each single criterion of similarity
+and informativeness shows a relatively inferior performance
+compared to dual (sim. & info.) and multi-criteria (sim. &
+info. & size). Specifically, when r = 16, the performance
+of a single criterion is 79.7%, and 79.4% with similarity and
+informativeness, respectively. Then, adopting dual criteria
+(sim. & info.), MCTF achieves 79.8%. Finally, we get an
+accuracy of 80.1% with a gain of +0.3% by respecting all
+
+4.3. Analyse of MCTF
+
+Qualitative results. For a better understanding of MCTF,
+we provide the qualitative results of MCTF in Figure 8. We
+visualize the fused tokens at the last block of DeiT-S on
+ImageNet-1K and denote the fused tokens by the same bor-
+der color. As shown in the figure, since the tokens are merged
+
+Figure 8. Visualization of the fused tokens with MCTF. Given the input images of ImageNet-1K (Top), the qualitative results of MCTF
+with DeiT-S are provided at the bottom. The same border color of the patches indicates the fused tokens.
+
+Table 4. Ablations of the design choices.
+
+Method
+FLOPs ↓
+Acc ↑
+(G)
+(%)
+
+DeiT-S
+4.6
+79.8
+
+bipartite soft matching
+One-way
+2.6
+80.0
+Bidirectional
+2.6
+80.1
+
+pooling function δ
+average
+2.6
+80.0
+max
+2.6
+79.8
+weighted average
+2.6
+80.1
+
+Figure 9. Histogram of the size of tokens after reduction.
+
+ity inherent in ViTs while mitigating performance degra-
+dation. MCTF effectively discerns the relation of tokens
+based on multiple criteria, including similarity, informative-
+ness, and the size of the tokens. Our comprehensive ablation
+studies and detailed analyses demonstrate the efficacy of
+MCTF particularly with our innovative one-step-ahead atten-
+tion and token reduction consistency. Remarkably, DeiT-T
+and DeiT-S with MCTF achieve considerable improvements,
+with +0.5%, and +0.3% increase in Top-1 Accuracy over the
+vanilla models, accompanied by about 44% fewer FLOPs,
+respectively. We also observe that our MCTF outperforms
+all of the previous token reduction methods in diverse vision
+Transformers with and without training.
+
+approximation of attention map
+precise attention
+3.0
+80.1
+approximated attention
+2.6
+80.1
+
+with multi-criteria (e.g., similarity, informativeness, size),
+we maintain the more diverse tokens in the informative fore-
+ground object. For instance, in the third image of the hamster,
+while the background patches including the hand are fused
+into one token, the foreground tokens are less fused while
+maintaining the details like the eye, ear, and face of the ham-
+ster. In short, compared to the background, the foreground
+tokens are less fused with the moderate size retaining the
+information of the main content.
+Soundness of size criterion. Figure 9 presents the histogram
+of sizes of tokens after token reduction with and without size
+criterion. Specifically, we measure the size of the largest
+token at the last block and provide the histogram. With our
+size criterion, the merged tokens tend to have smaller sizes s
+showing the average size of 39.3/49.2 with and without the
+Size criterion, respectively. As intended, MCTF successfully
+suppresses the large-sized tokens, which are a source of
+information loss, leading to performance improvement.
+
+Acknowledgments
+
+This work was supported by ICT Creative Consilience Pro-
+gram through the Institute of Information & Communi-
+cations Technology Planning & Evaluation (IITP) grant
+funded by the Korea government (MSIT)(IITP-2024-2020-
+0-01819), the National Research Foundation of Korea
+(NRF) grant funded by the Korea government (MSIT)(NRF-
+2023R1A2C2005373), and a grant of the Korea Health Tech-
+nology R&D Project through the Korea Health Industry
+Development Institute (KHIDI) funded by the Ministry of
+Health & Welfare Republic of Korea (HR20C0021).
+
+5. Conclusion
+
+In this work, we introduced the Multi-Criteria Token Fusion
+(MCTF), a novel strategy aimed at reducing the complex-
+
+References
+
+[17] Nikita Kitaev, Lukasz Kaiser, and Anselm Levskaya. Re-
+former: The efficient transformer. In ICLR, 2020. 1, 2
+[18] Zhenglun Kong, Peiyan Dong, Xiaolong Ma, Xin Meng, Wei
+Niu, Mengshu Sun, Xuan Shen, Geng Yuan, Bin Ren, Hao
+Tang, et al. Spvit: Enabling faster vision transformers via
+latency-aware soft token pruning. In ECCV, 2022. 1, 2, 3, 5,
+6, 11
+[19] Youwei Liang, Chongjian Ge, Zhan Tong, Yibing Song, Jue
+Wang, and Pengtao Xie. Not all patches are what you need:
+Expediting vision transformers via token reorganizations.
+ICLR, 2022. 1, 2, 3, 5, 6
+[20] Jihao Liu, Boxiao Liu, Hang Zhou, Hongsheng Li, and Yu Liu.
+Tokenmix: Rethinking image mixing for data augmentation
+in vision transformers. In ECCV, 2023. 5
+[21] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng
+Zhang, Stephen Lin, and Baining Guo. Swin transformer:
+Hierarchical vision transformer using shifted windows. In
+ICCV, 2021. 1, 2, 6
+[22] Sifan Long, Zhen Zhao, Jimin Pi, Shengsheng Wang, and
+Jingdong Wang. Beyond attentive tokens: Incorporating token
+importance and diversity for efficient vision transformers. In
+CVPR, 2023. 1, 2, 3, 5, 6
+[23] Ilya Loshchilov and Frank Hutter. Sgdr: Stochastic gradient
+descent with warm restarts. ICLR, 2017. 11
+[24] Dmitrii Marin, Jen-Hao Rick Chang, Anurag Ranjan, Anish
+Prabhu, Mohammad Rastegari, and Oncel Tuzel. Token pool-
+ing in vision transformers for image classification. In WACV,
+2023. 1, 2, 3
+[25] Lingchen Meng, Hengduo Li, Bor-Chun Chen, Shiyi Lan,
+Zuxuan Wu, Yu-Gang Jiang, and Ser-Nam Lim.
+Adavit:
+Adaptive vision transformers for efficient image recognition.
+In CVPR, 2022. 1, 2, 3
+[26] Bowen Pan, Rameswar Panda, Yifan Jiang, Zhangyang Wang,
+Rogerio Feris, and Aude Oliva. IA-RED2: Interpretability-
+aware redundancy reduction for vision transformers. NeurIPS,
+2021. 1, 2, 3, 6
+[27] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning
+transferable visual models from natural language supervision.
+In ICML, 2021. 1
+[28] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie
+Zhou, and Cho-Jui Hsieh. Dynamicvit: Efficient vision trans-
+formers with dynamic token sparsification. NeurIPS, 2021. 1,
+2, 3, 6, 11
+[29] Robin Strudel, Ricardo Garcia, Ivan Laptev, and Cordelia
+Schmid. Segmenter: Transformer for semantic segmentation.
+In ICCV, 2021. 1
+[30] Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco
+Massa, Alexandre Sablayrolles, and Herv´e J´egou. Training
+data-efficient image transformers & distillation through atten-
+tion. In ICML, 2021. 1, 2, 6, 11, 14
+[31] Hugo Touvron, Matthieu Cord, Alexandre Sablayrolles,
+Gabriel Synnaeve, and Herv´e J´egou.
+Going deeper with
+image transformers. In ICCV, 2021. 1, 2
+[32] Sinong Wang, Belinda Z Li, Madian Khabsa, Han Fang, and
+Hao Ma. Linformer: Self-attention with linear complexity.
+arXiv:2006.04768, 2020. 1, 2
+
+[1] Moab Arar, Ariel Shamir, and Amit H Bermano. Learned
+queries for efficient local attention. In CVPR, 2022. 1, 2
+[2] Roman Bachmann, David Mizrahi, Andrei Atanov, and Amir
+Zamir. Multimae: Multi-modal multi-task masked autoen-
+coders. In ECCV, 2022. 2
+[3] Iz Beltagy, Matthew E. Peters, and Arman Cohan. Long-
+former: The long-document transformer. arXiv:2004.05150,
+2020. 1
+[4] Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang,
+Christoph Feichtenhofer, and Judy Hoffman. Token merging:
+Your vit but faster. ICLR, 2022. 1, 2, 3, 4, 6, 7, 11
+[5] Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nicolas
+Usunier, Alexander Kirillov, and Sergey Zagoruyko. End-
+to-end object detection with transformers. In ECCV, 2020.
+1
+[6] Chun-Fu Richard Chen, Quanfu Fan, and Rameswar Panda.
+Crossvit: Cross-attention multi-scale vision transformer for
+image classification. In ICCV, 2021. 2
+[7] Hyeong Kyu Choi, Joonmyung Choi, and Hyunwoo J. Kim.
+Tokenmixup: Efficient attention-guided token-level data aug-
+mentation for transformers. In NeurIPS, 2022. 5
+[8] Krzysztof Choromanski, Valerii Likhosherstov, David Dohan,
+Xingyou Song, Andreea Gane, Tamas Sarlos, Peter Hawkins,
+Jared Davis, Afroz Mohiuddin, Lukasz Kaiser, et al. Rethink-
+ing attention with performers. ICLR, 2021. 2
+[9] Xiangxiang Chu, Zhi Tian, Yuqing Wang, Bo Zhang, Haibing
+Ren, Xiaolin Wei, Huaxia Xia, and Chunhua Shen. Twins: Re-
+visiting the design of spatial attention in vision transformers.
+NeurIPS, 2021. 1, 2
+[10] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li
+Fei-Fei. Imagenet: A large-scale hierarchical image database.
+In CVPR, 2009. 11, 14
+[11] Xiaoyi Dong, Jianmin Bao, Dongdong Chen, Weiming Zhang,
+Nenghai Yu, Lu Yuan, Dong Chen, and Baining Guo. Cswin
+transformer: A general vision transformer backbone with
+cross-shaped windows. In CVPR, 2022. 2
+[12] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, et al. An image is worth 16x16 words: Transform-
+ers for image recognition at scale. ICLR, 2020. 1, 2
+[13] Mohsen
+Fayyaz,
+Soroush
+Abbasi
+Koohpayegani,
+Farnoush
+Rezaei
+Jafari,
+Sunando
+Sengupta,
+Hamid
+Reza Vaezi Joze, Eric Sommerlade, Hamed Pirsiavash, and
+J¨urgen Gall. Adaptive token sampling for efficient vision
+transformers. In ECCV, 2022. 1, 2, 3, 6
+[14] Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr
+Doll´ar, and Ross Girshick. Masked autoencoders are scalable
+vision learners. In CVPR, 2022. 2
+[15] Byeongho Heo, Sangdoo Yun, Dongyoon Han, Sanghyuk
+Chun, Junsuk Choe, and Seong Joon Oh. Rethinking spatial
+dimensions of vision transformers. In ICCV, 2021. 2
+[16] Zi-Hang Jiang, Qibin Hou, Li Yuan, Daquan Zhou, Yujun
+Shi, Xiaojie Jin, Anran Wang, and Jiashi Feng. All tokens
+matter: Token labeling for training better vision transformers.
+NeurIPS, 2021. 2, 6, 11, 16
+
+[33] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao
+Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao. Pyra-
+mid vision transformer: A versatile backbone for dense predic-
+tion without convolutions. In Proceedings of the IEEE/CVF
+international conference on computer vision, 2021. 1, 2, 6
+[34] QuanLin Wu, Hang Ye, Yuntian Gu, Huishuai Zhang, Liwei
+Wang, and Di He.
+Denoising masked autoencoders help
+robust classification. In ICLR, 2023. 2
+[35] Enze Xie, Wenhai Wang, Zhiding Yu, Anima Anandkumar,
+Jose M Alvarez, and Ping Luo.
+Segformer: Simple and
+efficient design for semantic segmentation with transformers.
+NeurIPS, 2021. 1
+[36] Qizhe Xie, Zihang Dai, Eduard Hovy, Thang Luong, and
+Quoc Le. Unsupervised data augmentation for consistency
+training. NeurIPS, 2020. 11
+[37] Yunyang Xiong, Zhanpeng Zeng, Rudrasis Chakraborty,
+Mingxing Tan, Glenn Fung, Yin Li, and Vikas Singh.
+Nystr¨omformer: A nystr¨om-based algorithm for approximat-
+ing self-attention. In AAAI, 2021. 1, 2
+[38] Weijian Xu, Yifan Xu, Tyler Chang, and Zhuowen Tu. Co-
+scale conv-attentional image transformers. In ICCV, 2021.
+6
+[39] Yifan Xu, Zhijie Zhang, Mengdan Zhang, Kekai Sheng, Ke
+Li, Weiming Dong, Liqing Zhang, Changsheng Xu, and Xing
+Sun. Evo-vit: Slow-fast token evolution for dynamic vision
+transformer. In AAAI, 2022. 6
+[40] Hongxu Yin, Arash Vahdat, Jose M Alvarez, Arun Mallya,
+Jan Kautz, and Pavlo Molchanov. A-vit: Adaptive tokens for
+efficient vision transformer. In CVPR, 2022. 1, 2, 3, 6, 11
+[41] Weihao Yu, Mi Luo, Pan Zhou, Chenyang Si, Yichen Zhou,
+Xinchao Wang, Jiashi Feng, and Shuicheng Yan. Metaformer
+is actually what you need for vision. In CVPR, 2022. 6
+[42] Li Yuan, Yunpeng Chen, Tao Wang, Weihao Yu, Yujun Shi,
+Zi-Hang Jiang, Francis EH Tay, Jiashi Feng, and Shuicheng
+Yan. Tokens-to-token vit: Training vision transformers from
+scratch on imagenet. In ICCV, 2021. 2, 6, 11, 16
+[43] Sangdoo Yun, Dongyoon Han, Seong Joon Oh, Sanghyuk
+Chun, Junsuk Choe, and Youngjoon Yoo. Cutmix: Regu-
+larization strategy to train strong classifiers with localizable
+features. In ICCV, 2019. 11
+[44] Xiaohua Zhai, Alexander Kolesnikov, Neil Houlsby, and Lu-
+cas Beyer. Scaling vision transformers. In CVPR, 2022. 2
+[45] Hongyi Zhang, Moustapha Ciss´e, Yann N. Dauphin, and
+David Lopez-Paz. mixup: Beyond empirical risk minimiza-
+tion. In ICLR, 2018. 11
+[46] Xizhou Zhu, Weijie Su, Lewei Lu, Bin Li, Xiaogang Wang,
+and Jifeng Dai. Deformable detr: Deformable transformers
+for end-to-end object detection. ICLR, 2021. 1
+
+A. Implementation details
+
+For a comparison with previous works, we first evaluate MCTF with DeiT [30] on ImageNet-1K [10]. Following [18, 28, 40],
+we finetune the model with the pre-trained weights for 30 epochs with the batch size of 1,024 under 8 RTX3090 GPUs. We
+opt for the least epochs among previous works (e.g., 30 for DynamicViT [28], 60 for SPViT [18], 100 for A-ViT [40]). For
+finetuning, the learning rate is initially set to 3e-5 and decreases to 1e-6 by the cosine annealing [23] with a cooldown of 10
+epochs. Also, we finetune the T2T-ViT [42] and LV-ViT [16] with the initial learning rate of 5e-6, 1e-5 decreasing to 5e-7, 2e-6
+for 30 epochs followed by 10 cooldown epochs, respectively. We do not use mixup-based augmentation [43, 45] to prevent the
+corrupted representation in fused tokens caused by the token fusion between different samples. Since we already track the size
+of the tokens, we also adopt proportional attention of ToMe [4] which simply update the attention scores with the size of the
+tokens s as A = softmax
+
+QK⊤
+
+C + log s
+
+. Regarding hyper-parameters for MCTF, we use [τ info, τ sim, τ size] = [1, 1/20, 1/40]
+for the temperature parameters. And, We opt λ = 1 for DeiT-T and T2T-ViT, and λ = 3 for DeiT-S and LV-ViT for the
+coefficient of consistency loss. Similar to UDA [36], the consistency loss is calculated only with the sample that has a
+confidence score higher than β = 0.4. We also set the safeguard for excessive fusion by maintaining at least 10 tokens. For
+measuring the efficiency, we use fvcore and report the FLOPs of the model.
+
+√
+
+B. Analyses on MCTF
+
+B.1. Sensitivity analysis on hyper-parameters of MCTF
+
+To analyze the sensitivity of the hyper-parameters in MCTF, we compare the accuracy according to the temperature parameter τ
+in Table A. While evaluating each parameter, other hyper-parameters are set to default values mentioned in the implementation
+details. We run the experiments with DeiT-S equipped with MCTF (r = 16). The default settings for each hyper-parameter are
+highlighted.
+
+Table A. Sensitivity analysis on the hyper-parameters.
+
+τsim
+1
+1/5
+1/10
+1/20
+1/40
+1/100
+
+acc.
+80.1
+79.6
+79.2
+78.6
+78.1
+77.5
+
+τinfo
+1
+1/5
+1/10
+1/20
+1/40
+1/100
+
+acc.
+78.7
+79.8
+80.0
+80.1
+80.0
+79.8
+
+τsize
+1
+1/5
+1/10
+1/20
+1/40
+1/100
+
+acc.
+79.5
+79.8
+80.0
+80.0
+80.1
+80.0
+
+B.2. Loss of information
+
+In this subsection, we measure the loss of information to validate the efficacy of MCTF. For this, we consider the cosine
+similarity between the class tokens with and without MCTF (r = 16) as a metric to measure the loss of information, which
+indicates the changes in the class tokens. In other words, if the similarity between class tokens is low, we infer that the fused
+tokens significantly affect the class token’s representation while losing the information of original contents. The differences
+between the class tokens at each block are reported in Table B. As shown in the table, at the early stage of the Transformer
+(e.g., [1-6]-th block), there is no big gap among the diverse criteria. However, as the number of fused tokens increases
+through consecutive blocks, there are substantial changes in the class tokens. Specifically, when we consider a single criterion,
+similarity is the best option for mitigating the loss of information compared to informativeness and size. Then, adopting the
+dual criterion composed of similarity and informativeness, we further lessen the changes between the class tokens showing the
+high similarity even in the rear block (e.g., [7-12]-th block). At last, MCTF with all three criteria shows better similarity than
+dual-criteria. We believe that this minimization of information loss by adopting multi-criteria leads to consistent improvements
+compared to other single and dual criteria in image classification.
+
+Table B. Cosine similarity between the class tokens with and without MCTF per block.
+
+Criteria
+Block index
+Wsim Winfo Wsize
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+
+✓
+1.0000 1.0000 1.0000 1.0000 0.9999 0.9996 0.9988 0.9973 0.9933 0.9870 0.9837 0.9695
+✓
+1.0000 1.0000 0.9999 0.9996 0.9992 0.9976 0.9939 0.9887 0.9750 0.9550 0.9470 0.9153
+✓
+1.0000 1.0000 0.9998 0.9996 0.9991 0.9968 0.9913 0.9812 0.9575 0.9141 0.9040 0.8546
+✓
+✓
+1.0000 1.0000 1.0000 1.0000 0.9999 0.9997 0.9992 0.9982 0.9958 0.9925 0.9907 0.9833
+✓
+✓
+✓
+1.0000 1.0000 1.0000 1.0000 0.9999 0.9997 0.9992 0.9984 0.9961 0.9929 0.9914 0.9844
+
+B.3. Qualitative comparison for one-step-ahead attention
+
+In MCTF, the attention map ˆAl+1 of the fused tokens ˆXl is approximated by aggregating the one-step-ahead attention
+Al+1, which is the attention before token fusion. In Section 4.2, we shows that this approximation brings substantial speed
+improvements without any performance degradation by avoiding the re-computation of self-attention. In parallel, we here
+provide a qualitative comparison to show the soundness of our approaches. The visualization of the attention map in the
+[3,6,9,12]-th layer is provided in Figure A.
+
+Figure A. Comparison of approximated and precise attention map for ˆAl+1. Given the left image, we visualize the (Top) approximated
+attention map and (Bottom) precise attention map.
+
+C. Detailed results
+
+In this section, we provide more detailed results of MCTF with the Vision Transformers in ImageNet-1K [10].
+
+C.1. Full results with DeiT [30].
+
+As the settings in the ablations studies, we first finetune the model with r = 16 for the number of reduced tokens per layer and
+report the flops and accuracies with varying r. We highlight the row used for finetuning. Also, we present the detailed results
+of MCTF without any additional training. Full results with and without finetuning are summarized in Table C and Table D,
+respectively.
+
+Table C. Detailed results of MCTF with DeiT after finetuning with r = 16.
+
+DeiT-T
+DeiT-S
+FLOPs
+Top-1 Acc
+FLOPs
+Top-1 Acc
+(G)
+↓(%)
+(%)
+∆
+(G)
+↓(%)
+(%)
+∆
+
+r
+
+Base
+1.26
+-
+72.2
+-
+4.61
+-
+79.8
+-
+
+1
+1.24
+1.59
+72.92
++0.72
+4.52
+1.95
+80.06
++0.26
+2
+1.20
+4.76
+72.91
++0.71
+4.39
+4.77
+80.07
++0.27
+3
+1.17
+7.14
+72.92
++0.72
+4.25
+7.81
+80.04
++0.24
+4
+1.13
+10.32
+72.91
++0.71
+4.12
+10.63
+80.02
++0.22
+5
+1.09
+13.49
+72.92
++0.72
+3.99
+13.45
+80.03
++0.23
+6
+1.06
+15.87
+72.92
++0.72
+3.86
+16.27
+80.04
++0.24
+7
+1.02
+19.05
+72.91
++0.71
+3.73
+19.09
+80.03
++0.23
+8
+0.98
+22.22
+72.94
++0.74
+3.60
+21.91
+80.03
++0.23
+9
+0.95
+24.60
+72.86
++0.66
+3.48
+24.51
+80.04
++0.24
+10
+0.91
+27.78
+72.77
++0.57
+3.35
+27.33
+80.01
++0.21
+11
+0.88
+30.16
+72.81
++0.61
+3.22
+30.15
+80.03
++0.23
+12
+0.84
+33.33
+72.76
++0.56
+3.10
+32.75
+80.02
++0.22
+13
+0.81
+35.71
+72.73
++0.53
+2.97
+35.57
+80.04
++0.24
+14
+0.78
+38.10
+72.71
++0.51
+2.85
+38.18
+80.02
++0.22
+15
+0.74
+41.27
+72.72
++0.52
+2.72
+41.00
+80.02
++0.22
+16
+0.71
+43.65
+72.66
++0.46
+2.60
+43.60
+80.07
++0.27
+17
+0.68
+46.03
+72.38
++0.18
+2.49
+45.99
+79.93
++0.13
+18
+0.65
+48.41
+72.07
+-0.13
+2.38
+48.37
+79.87
++0.07
+19
+0.62
+50.79
+71.86
+-0.34
+2.28
+50.54
+79.81
++0.01
+20
+0.60
+52.38
+71.35
+-0.85
+2.19
+52.49
+79.54
+-0.26
+
+Table D. Detailed results of MCTF with DeiT without any addtional training.
+
+DeiT-T
+DeiT-S
+FLOPs
+Top-1 Acc
+FLOPs
+Top-1 Acc
+(G)
+↓(%)
+(%)
+∆
+(G)
+↓(%)
+(%)
+∆
+
+r
+
+Base
+1.26
+-
+72.2
+-
+4.61
+-
+79.8
+-
+
+1
+1.24
+1.59
+72.15
+-0.05
+4.52
+1.95
+79.78
+-0.02
+2
+1.20
+4.76
+72.09
+-0.11
+4.39
+4.77
+79.81
++0.01
+3
+1.17
+7.14
+72.06
+-0.14
+4.25
+7.81
+79.79
+-0.01
+4
+1.13
+10.32
+72.06
+-0.14
+4.12
+10.63
+79.83
++0.03
+5
+1.09
+13.49
+72.06
+-0.14
+3.99
+13.45
+79.81
++0.01
+6
+1.06
+15.87
+72.00
+-0.20
+3.86
+16.27
+79.74
+-0.06
+7
+1.02
+19.05
+72.00
+-0.20
+3.73
+19.09
+79.72
+-0.08
+8
+0.98
+22.22
+71.98
+-0.22
+3.60
+21.91
+79.76
+-0.04
+9
+0.95
+24.60
+71.92
+-0.28
+3.48
+24.51
+79.68
+-0.12
+10
+0.91
+27.78
+71.88
+-0.32
+3.35
+27.33
+79.64
+-0.16
+11
+0.88
+30.16
+71.82
+-0.38
+3.22
+30.15
+79.61
+-0.19
+12
+0.84
+33.33
+71.72
+-0.48
+3.10
+32.75
+79.62
+-0.18
+13
+0.81
+35.71
+71.61
+-0.59
+2.97
+35.57
+79.54
+-0.26
+14
+0.78
+38.10
+71.50
+-0.70
+2.85
+38.18
+79.41
+-0.39
+15
+0.74
+41.27
+71.28
+-0.92
+2.72
+41.00
+79.36
+-0.44
+16
+0.71
+43.65
+70.99
+-1.21
+2.60
+43.60
+79.21
+-0.59
+17
+0.68
+46.03
+70.62
+-1.58
+2.49
+45.99
+79.06
+-0.74
+18
+0.65
+48.41
+70.01
+-2.19
+2.38
+48.37
+78.80
+-1.00
+19
+0.62
+50.79
+69.41
+-2.79
+2.28
+50.54
+78.63
+-1.17
+20
+0.60
+52.38
+68.52
+-3.68
+2.19
+52.49
+78.06
+-1.74
+
+C.2. Full results with T2T-ViT [42] and LV-ViT [16].
+
+We also present the full results with T2T-ViT and LV-ViT in Table E. Note that, similar to DeiT-S, we report the FLOPs and
+accuracies in varying reduction ratios with the model finetuned with a specific reduction ratio, which is used for reporting the
+results in Table 2. We also highlight this reduction ratio in the table. It is worth noting that, although each model is finetuned
+with the specific r, MCTF shows promising performance within the range from 1 to r.
+
+Table E. Detailed results of MCTF with T2T-ViT and LV-ViT.
+
+T2T-ViTt-14
+T2T-ViTt-19
+LV-ViT-S
+FLOPs
+Top-1 Acc
+FLOPs
+Top-1 Acc
+FLOPs
+Top-1 Acc
+(G)
+↓(%)
+(%)
+∆
+(G)
+↓(%)
+(%)
+∆
+(G)
+↓(%)
+(%)
+∆
+
+r
+
+Base
+6.11
+-
+81.7
+-
+9.81
+-
+82.4
+-
+6.50
+-
+83.3
+-
+
+1
+6.00
+1.80
+81.84
++0.14
+9.50
+3.16
+82.42
++0.02
+6.34
+2.46
+83.51
++0.21
+2
+5.84
+4.42
+81.85
++0.15
+9.10
+7.24
+82.43
++0.03
+6.14
+5.54
+83.53
++0.23
+3
+5.69
+6.87
+81.82
++0.12
+8.71
+11.21
+82.40
+±0.00
+5.93
+8.87
+83.50
++0.20
+4
+5.53
+9.49
+81.83
++0.13
+8.32
+15.19
+82.43
++0.03
+5.73
+11.85
+83.51
++0.21
+5
+5.38
+11.95
+81.83
++0.13
+7.94
+19.06
+82.39
+-0.01
+5.52
+15.08
+83.48
++0.18
+6
+5.23
+14.40
+81.84
++0.14
+7.56
+22.94
+82.43
++0.03
+5.32
+18.15
+83.48
++0.18
+7
+5.07
+17.02
+81.84
++0.14
+7.18
+26.81
+82.41
++0.01
+5.12
+21.23
+83.52
++0.22
+8
+4.92
+19.48
+81.80
++0.10
+6.81
+30.58
+82.42
++0.02
+4.93
+24.15
+83.47
++0.17
+9
+4.78
+21.77
+81.81
++0.11
+6.44
+34.35
+82.39
+-0.01
+4.73
+27.23
+83.48
++0.18
+10
+4.63
+24.22
+81.76
++0.06
+6.08
+38.02
+82.27
+-0.13
+4.54
+30.15
+83.47
++0.17
+11
+4.48
+26.68
+81.81
++0.11
+5.74
+41.49
+82.25
+-0.15
+4.35
+33.08
+83.44
++0.14
+12
+4.34
+28.97
+81.80
++0.10
+5.45
+44.44
+82.02
+-0.38
+4.16
+36.00
+83.37
++0.07
+13
+4.19
+31.42
+81.76
++0.06
+5.21
+46.89
+81.86
+-0.54
+3.98
+38.77
+83.23
+-0.07
+14
+4.05
+33.72
+81.69
+-0.01
+5.00
+49.03
+81.38
+-1.02
+3.83
+41.08
+83.03
+-0.27
+15
+3.92
+35.84
+81.51
+-0.19
+4.82
+50.87
+80.85
+-1.55
+3.69
+43.23
+82.72
+-0.58
+16
+3.80
+37.81
+81.48
+-0.22
+4.67
+52.40
+80.46
+-1.94
+3.58
+44.92
+82.28
+-1.02
+17
+3.70
+39.44
+81.22
+-0.48
+4.53
+53.82
+80.29
+-2.11
+3.48
+46.46
+81.81
+-1.49
+18
+3.61
+40.92
+80.93
+-0.77
+4.41
+55.05
+79.58
+-2.82
+3.38
+48.00
+81.01
+-2.29
+19
+3.53
+42.23
+80.67
+-1.03
+4.30
+56.17
+79.29
+-3.11
+3.31
+49.08
+80.73
+-2.57
+20
+3.45
+43.54
+80.11
+-1.59
+4.20
+57.19
+78.41
+-3.99
+3.23
+50.31
+79.85
+-3.45

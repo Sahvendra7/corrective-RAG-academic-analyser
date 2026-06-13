@@ -1,0 +1,886 @@
+ANALYZING THE PERFORMANCE OF GRAPH NEURAL NETWORKS
+
+WITH PIPE PARALLELISM
+
+Matthew T. Dearing * 1 Xiaoyan (Angela) Wang * 1
+
+ABSTRACT
+Many interesting datasets ubiquitous in machine learning and deep learning can be described via graphs. As the
+scale and complexity of graph-structured datasets increase, such as in expansive social networks, protein folding,
+chemical interaction networks, and material phase transitions, improving the efﬁciency of the machine learning
+techniques applied to these is crucial. In this study, we focus on Graph Neural Networks (GNN) that have found
+great success in tasks such as node or edge classiﬁcation and link prediction. However, standard GNN models
+have scaling limits due to necessary recursive calculations performed through dense graph relationships that lead
+to memory and runtime bottlenecks. While new approaches for processing larger networks are needed to advance
+graph techniques, and several have been proposed, we study how GNNs could be parallelized using existing tools
+and frameworks that are known to be successful in the deep learning community. In particular, we investigate
+applying pipeline parallelism to GNN models with GPipe, introduced by Google in 2018.
+
+arXiv:2012.10840v2 [cs.LG] 5 Apr 2021
+
+1
+INTRODUCTION
+
+as a practical consideration, leveraging existing state-of-
+the-art tools and frameworks with demonstrated success at
+improving deep neural network performance is valuable to
+push these technologies forward. Therefore, to better under-
+stand how training and inference can be more efﬁcient for
+GNN models, we implement and analyze the performance of
+parallelized GNN models compared to their unparallelized
+counterparts when trained on a single CPU and GPU and
+multiple GPUs. As GNNs are executed sequentially, ei-
+ther layer-by-layer or stage-by-stage, the motivation for this
+study is to extend current techniques for improving perfor-
+mance by introducing pipeline parallelism into the GNN
+model architecture (Zhang et al., 2020).
+
+Traditional ﬂat or sequential data delivery cannot fully sat-
+isfy many of today’s demanding deep learning models,
+especially as more data structures of interest can be bet-
+ter represented as high-dimensional graphs instead of low-
+dimensional grids. Graph machine learning has demon-
+strated successful applications in domains such as chem-
+istry and drug design (Duvenaud et al., 2015; Mercado
+et al., 2020), natural language processing (Vashishth, 2019),
+spatio-temporal forecasting (Yu et al., 2017), security (Zhou
+et al., 2020), social networks (Zhou et al., 2020), knowledge
+graphs (Arora, 2020), recommender systems (Ying et al.,
+2018), protein design discovery (Strokach et al., 2020), and
+material phase transitions (Bapst et al., 2020). With its in-
+creased use, especially on large datasets, performance and
+scaling challenges with the Graph Neural Network (GNN)
+(Zhou et al., 2018) are becoming prevalent when using exist-
+ing machine learning frameworks and accelerators because
+of memory and data movement limitations (Auten et al.,
+2020)
+
+2
+GRAPH NEURAL NETWORKS
+
+The success of deep learning on traditional grid- or
+sequence-based inputs, such as images and sentences, can-
+not be overstated. Nevertheless, many datasets in the real-
+world cannot be expressed within a Euclidean coordinate
+system, and instead naturally take an arbitrary form of
+graphs or networks. Various studies exist on how to general-
+ize neural networks for the application to arbitrary irregular
+graphs (Bruna et al., 2013; Henaff et al., 2015; Duvenaud
+et al., 2015; Li et al., 2015; Defferrard et al., 2016; Kipf &
+Welling, 2016), and we follow the exposition of Kipf and
+Welling (Kipf & Welling, 2016) who ﬁrst introduced the
+notion of a convolution architecture for a graph.
+
+A variety of new solutions to address these issues have
+been proposed and are highlighted in Section 3. However,
+
+*Equal contribution 1Department of Computer Science, Univer-
+sity of Chicago, Chicago, Illinois. Correspondence to: Matthew
+T. Dearing Xiaoyan (Angela) Wang
+
+Proceedings of the First MLSys Workshop on Graph Neural Net-
+works and Systems (GNNSys’21), San Jose, CA, USA, 2021. Copy-
+right 2021 by the author(s).
+
+We consider the general scenario of node classiﬁcation in a
+graph. The input is a graph G = (V, E) where V is the set
+
+of vertices and E is the set of edges. Each node (or vertex)
+i in V has a set of features xi. Some pairs of nodes are
+connected, and the connections are called edges (or links)
+and form the set E. If n is the number of nodes and there
+are d features in each node, then the set of all features form
+a n × d matrix. Some nodes may have labels from a set of
+C classes. The task is to classify each node into C classes
+using the ingrained feature information through the edge
+connectivity between nodes across the graph.
+
+tures or spectral graph theory to make predictions. However,
+these algorithms are limited as they require prior knowledge
+of the graph structure, and the GNN model provides a uni-
+ﬁed approach that allows for studying the properties of a
+graph itself.
+
+The experiments presented in this paper are based on the
+Graph Attention Network (GAT), which is a novel GNN
+architecture that use attention layers on top of graph con-
+volutions (Veliˇckovi´c et al., 2017). By leveraging this self-
+attention mechanism, GAT can achieve state-of-the-art accu-
+racy results on several transductive and inductive graph
+benchmarks including the Cora, CiteSeer, and Pubmed
+datasets. We chose this model because it can be applied to
+graphs of different degrees by specifying arbitrary weights
+on the neighbors, making it useful for a wide variety of
+graph datasets. GAT is also applicable to inductive learn-
+ing problems and has generalization capabilities to unseen
+graph data. Through our experiments, it does not perform
+as efﬁciently as simpler Graph Convolutional Networks
+(GCN), such as those inspired by (Kipf & Welling, 2016),
+lending it to being an illustrative technique to inform us on
+parallelization benchmarks.
+
+Table 1. Comparisons of training dataset sizes used in this work
+and considered for future experimentation.
+
+Dataset
+Nodes
+Edges
+Classes
+Cora
+2,708
+5,429
+7
+CiteSeer
+3,312
+4,732
+6
+PubMed
+19,717
+44,338
+3
+Reddit
+233,000
+150,000,000
+50
+Amazon
+6,000,000
+180,000,000
+11
+
+For our analysis, we use the Cora, CiteSeer, and PubMed
+datasets which are well-established citation network datasets
+(Sen et al., 2008; Yang et al., 2016) often used in benchmark
+training. For comparison of these in Table 1, we also list the
+sizes of two larger datasets, the Reddit post dataset (Hamil-
+ton et al., 2017) and the Amazon data dump (McAuley et al.,
+2015). As the data sets used in this study are small and do
+not require the techniques explored here to provide training
+efﬁciency, they offer valuable benchmarks for GNNs and
+measuring the baseline efﬁciency of parallelized models.
+
+3
+RELATED WORK
+
+As described above, the core message-passing function of
+a GNN is the aggregation of features from the neighbor-
+hood of each node. Computing a gradient descent operation
+requires storing the entire graph as a single training batch.
+With increasing graph size or edge density, the time and
+memory complexity of this computation can grow expo-
+nentially and introduce an information bottleneck (Alon &
+Yahav, 2020). This effect limits the scalability of traditional
+GNNs, many of which, including GAT, do not address these
+concerns as their benchmark datasets were of a reasonable
+size for the available device capacities.
+
+A GNN approaches the node classiﬁcation problem by build-
+ing a neural network layer atop a simultaneous message pass-
+ing paradigm. Suppose there are L + 1 layers, H0, . . . , HL.
+Then, H0 = X, the input set of features. For each layer l,
+the set of output features Hl+1 depends only on the previous
+layer Hl and the input graph G. So, for some efﬁciently
+computable function f, we have Hl+1 = f(Hl, G). Imple-
+mentations of the GNN model considers different choices of
+f. By setting the output of the last layer to be a single neu-
+ron, the model computes the logits for each node, which is
+then used to classify the nodes. Assuming f is differentiable,
+this approach can be optimized by standard gradient descent
+algorithms. In most graph networks studied in the litera-
+ture, the features Hl+1(i) for node i depend on the original
+feature Hl(i) and the features of neighboring nodes Hl(j),
+where j being a neighbor of i connected by edge {i,j}. In
+some settings, these edges can be of different types, such
+as being directed or undirected, as well as include features,
+in which case the edge properties also contribute to the cal-
+culation of f. The message passing paradigm is designed
+by how the output features of a layer are simultaneously
+updated based on the input features of the layer, instead
+of through sequential updates. For many learning tasks
+on a graph, earlier approaches (Dijkstra, 1959; Cheriton &
+Tarjan, 1976) usually introduced problem-speciﬁc architec-
+
+GraphSAGE (Hamilton et al., 2017) was the ﬁrst attempt
+to address graph scalability by using a neighborhood sam-
+pling with mini-batch training to limit the number of nodes
+included in a batch. This approach can introduce redundant
+calculations as the same nodes may appear in multiple sam-
+pled batches and lead to ”neighbor explosion” (Zeng et al.,
+2020). Similar sampling techniques responded to this chal-
+lenge by batching sub-graphs instead of nodes, such as in
+(Chiang et al., 2019). However, graph clustering approaches
+are faced with the challenge of deﬁning sub-graphs that
+sufﬁciently preserve the edge topology that guides the node
+feature updates during training, which is an issue directly
+observed in the analysis of the present study. NeuGraph
+(Ma et al., 2019) introduced parallel computation to enable
+GNN scalability through a new graph-parallel abstraction of
+Scatter-ApplyEdge-Gather-ApplyVertex (SAGA-NN). This
+framework conveniently encapsulates almost all existing
+
+GNNs in the literature (Zhang et al., 2020), and serves as
+a foundation for studying parallelized GNN performance
+optimization. The authors explored the design of a GNN
+processing framework on top of a dataﬂow based deep learn-
+ing system, through which they optimized graph computa-
+tions, scheduling, and parallelism in a dataﬂow-based deep
+learning framework for graphs. Exploring computational
+efﬁciencies at the device level, G3 (Liu et al., 2020) is a
+GNN training framework that implements graph-structured
+parallel operations that leverage the architectural features
+on GPUs. By directly utilizing graph-aware components of
+the GPU, they demonstrated signiﬁcant speedups in train-
+ing times over standard implementations in PyTorch and
+TensorFlow. Finally, a recent approach that avoids graph
+sampling over nodes or sub-graphs is the Scalable Inception
+Graph Neural Network (SIGN) (Frasca et al., 2020). Here,
+graph convolutional ﬁlters of different sizes precompute
+intermediate node representations. This method enables its
+scaling to large graphs with classic mini-batching because it
+retains sufﬁcient expressiveness from the node relationships
+for effective learning.
+
+knowledge, this is the ﬁrst work to consider the idea of
+applying pipeline parallelism using existing libraries to po-
+tentially optimize the runtime of GNNs.
+
+5
+IMPLEMENTATION
+
+Experiments included training a GAT-based multi-layer se-
+quential neural network on the task of node classiﬁcation
+with the citation datasets described above. The PubMed set
+was solely used to compare performance with pipeline par-
+allelism and graph data batching. The forward propagation
+model structure remained consistent across all experiments
+designed with a drop-out layer (p = 0.6) followed by a GAT
+layer with eight heads (attention drop-out = 0.6), a leaky
+ReLU activation function, a second drop-out layer (p = 0.6),
+a second GAT layer (eight heads, attention drop-out = 0.6)
+where the outputs are averaged, and, ﬁnally, a log softmax
+function. The neural network model was implemented in
+PyTorch with the graph frameworks, PyTorch Geometric
+(PyG) (Fey & Lenssen, 2019), and Deep Graph Library
+(DGL) (Wang et al., 2019). Each framework was com-
+pared for performance on each device architecture. Pipeline
+and data parallelism through GPipe was only implemented
+through DGL. Trials included performance measures for
+a single CPU, single GPU, and pipe parallel distribution
+across four GPUs with and without micro-batching of the
+graph data. For the single device benchmarks, we used an
+Intel(R) Xeon(R) CPU @ 2.20GHz and NVIDIA Tesla T4
+GPU, and four NVIDIA Tesla V100-SXM2 GPUs (DGX)
+were used for the distributed pipeline parallel experiments.
+
+4
+PIPELINE PARALLELISM
+
+Google Brain introduced the scalable pipeline parallelism
+library GPipe (Huang et al., 2019) to enable the efﬁcient
+distributed training of large, memory-consuming deep learn-
+ing models on current accelerator architectures. According
+to their published results, GPipe increased training times
+of a 557 million-parameter model by 25 times using eight
+TPU devices and 3.5 times faster using four devices.
+
+GPipe was incorporated into the GNN models for each
+framework with the torchgpipe (Kim et al., 2020) library,
+an implementation of the GPipe framework in PyTorch.
+The deﬁned model is wrapped in a method that takes as
+parameters a deﬁned distribution of the model layers across
+the available GPUs as the number of micro-batches (called
+“chunks”) to be applied. A value of one corresponds to the
+data parallelism feature being disabled.
+
+GPipe conﬁgures a distribution of a sequentially-designed
+deep neural network across multiple devices. To maxi-
+mize these devices’ capability to calculate in parallel, it
+further splits the input mini-batch from the training samples
+into “micro-batches” to distribute across the devices. This
+micro-batching technique reduces the load for the available
+memory on the accelerators, resulting in effectively simul-
+taneous training of the same batch across all devices. This
+approach to pipeline parallelism is like a stacked combina-
+tion of model parallelism and small data parallelism. During
+the forward pass, when each partition ﬁnishes processing a
+micro-batch, it shifts the output to the next partition, then
+immediately begins work on the next micro-batch, enabling
+partitions can overlap across GPUs. During the backward
+pass, the gradients for each micro-batch are calculated using
+the same model parameters from the forward pass, and are
+consistently accumulated at the end into the mini-batch to
+update the model parameters. Therefore, the number of
+partitions separating the data does not affect model quality.
+
+In Listing 1, g contains the complete graph, numfeats
+represents the number of features per node, and nclasses
+is the number of classes in the classiﬁcation task. The
+customizable balance array speciﬁes how many layers
+from the sequence to distribute to each GPU. From this,
+GPipe automatically manages the necessary movements
+of the model and data across devices. An automated dis-
+tribution algorithm is also available to optimize this layer
+assignment. However, for the uniform analysis presented
+in this paper, we manually set the layer distribution across
+four devices to ensure consistency for all experiments. With
+chunks > 1, the complete dataset or batches from the
+training are split into micro-batches by GPipe to increase de-
+vice parallelism. After a partition completes its processing
+of a micro-batch, it passes the output to the next partition
+
+Although designed for deep neural networks, the GPipe
+workﬂow is applicable to GNNs, with some necessary adap-
+tations that we explore in this study. To the best of our
+
+6
+RESULTS
+
+and begins on the next incoming micro-batch in the pipeline.
+Through this approach, the multiple devices effectively pro-
+cess the same mini-batch (or entire dataset) simultaneously
+during a training epoch.
+
+Table 2. Benchmark results on multiple compute architectures and
+graph frameworks for the standard, small graph datasets.
+Compute
+Ave. epoch (ms) | Test accuracy
+Package
+Cora
+CiteSeer
+PubMed
+CPU – PyG
+104.4 | 0.717
+182.9 | 0.696
+798.5 | 0.718
+CPU – DGL
+71.3 | 0.785
+153.4 | 0.710
+338.6 | 0.723
+GPU – PyG
+7.7 | 0.796
+8.4 | 0.720
+10.9 | 0.718
+GPU – DGL
+13.3 | 0.721
+12.4 | 0.641
+12.5 | 0.682
+
+Listing 1. Illustrative GPipe implementation with torchgpipe.
+import torch.nn as nn
+from torchgpipe import GPipe
+
+# Define a sequential model
+model = nn.Sequential(
+nn.Dropout(0.6),
+GAT(g, numfeats, 8),
+nn.ELU(),
+nn.Dropout(0.6),
+GAT(g, 8 * 8, nclasses, take_mean = True),
+nn.LogSoftmax(1))
+
+All experimental training runs were performed for 300
+epochs on the same GNN model structure. This model was
+not optimized for best training performance but remained
+consistent for all scenarios so that direct comparisons fo-
+cusing on the graph frameworks, hardware, and parallelism
+approach could be observed independent of the model struc-
+ture.
+
+# Wrap the model for pipeline parallelism management
+model = GPipe(model, balance = [1, 2, 1, 2], chunks=4)
+
+A key challenge with this implementation for a GNN is that
+a sequential module is required for the network layers. A
+cascade of additional restrictions results, beginning with
+only a single input of features may be passed through the
+layers. However, the graph convolution layer expects as
+input the graph data object and its corresponding features.
+For our experiments that did not incorporate model paral-
+lelism across multiple GPUs, this condition did not pose
+an issue because we could simply include the full graph
+data object, g, into the GNN model deﬁnition and pass the
+single tensor of features. However, when model parallelism
+is activated, GPipe applies micro-batching to this feature
+tensor, and the corresponding subset of graph nodes must
+instead be presented to the graph convolution layer, instead
+of the full graph data object.
+
+6.1
+Benchmarks
+
+As a ﬁrst comparison benchmark, we trained the GNN
+model on single devices with the citation datasets of Cora,
+CiteSeer, and PubMed. The training time and test accuracy
+results are summarized in Table 2. As expected, training
+times, as measured by the average time per training epoch,
+on the GPU are faster for both graph frameworks across all
+datasets. Interestingly, DGL trained on average 35% faster
+than PyG on a CPU, while PyG trained on average 29%
+faster than DGL on a GPU. This outcome suggests, at least
+for our applied GNN model training on a single device, PyG
+may be better optimized for a GPU and DGL for a CPU.
+Training accuracy remained within a range of 15.5%, with
+PyG averaging 2.4% better than DGL over all datasets.
+
+As a workaround for enabling micro-batching, we exploited
+the option that the sequential module can pass a single
+tuple comprised of multiple tensors. Then, we pass the
+node indices of the graph as the ﬁrst tensor along with the
+corresponding features in a second tensor. GPipe applies
+its micro-batching to each tensor in the tuple, and a subset
+of graph nodes with the corresponding features are passed
+along the sequence of layers, as needed. When the graph
+convolution layer receives the passed tuple, our adapted
+code extracts the node tensor comprised of the sub-graph as
+determined by the micro-batch from GPipe. Both DGL and
+PyG graph frameworks include a method to re-build a graph
+structure from a subset of graph nodes, which requires the
+full graph data object, g, for the re-build. The output is then
+a sub-graph structure expected by the graph convolution
+layer. The second tensor of the passed tuple that includes the
+features is subsequently extracted in the graph convolution
+layer and used in the forward calculation. Upon completion,
+the two-tensor tuple is reformed with the original nodes of
+the sub-graph and the updated features to be passed along
+through the remaining layers of the sequence.
+
+Next, we compare the average training time per epoch on
+three compute architectures, including the single CPU and
+GPU, as previously measured, with the DGX system com-
+prised of four GPUs leveraging GPipe pipeline parallelism
+without micro-batching. In each case presented in Figure 1,
+the complete graph data object was included in the graph
+convolution layer during each training epoch. The compre-
+hensive benchmark report in Table 3 implements the GAT
+model on the PubMed dataset across combinations of frame-
+works and compute clusters for an expanded analysis and
+comparison of the runtimes and accuracy. We also include
+the duration of the ﬁrst epoch in the reported training times
+to provide a complete comparison of the graph frameworks
+and hardware, which varied slightly across graph frame-
+works and architectures. The remaining training epochs
+ran on the order of 80–100 times faster on the single GPU
+compared to the single CPU.
+
+Surprisingly, no signiﬁcant performance improvement in
+training time is observed in the four GPU system using
+
+Table 3. Benchmarks on different compute architectures and graph frameworks for the sequential GAT model with the PubMed dataset.
+*The full graph was deﬁned in the GNN model instead of being passed through as a subset of nodes to be re-built as a sub-graph.
+Framework
+Compute
+Epoch 1 (s)
+Epochs 2–300 (s)
+Ave. Epoch (s)
+Train Loss
+Train Acc.
+Val Acc.
+DGL
+Single CPU
+0.3555
+101.2
+0.3386
+0.2000
+0.9833
+0.7520
+DGL
+Single GPU
+0.2254
+3.736
+0.0125
+0.2030
+1.000
+0.7520
+PyG
+Single CPU
+0.7946
+238.7
+0.7985
+0.1567
+0.9833
+0.7910
+PyG
+Single GPU
+0.2509
+3.260
+0.0109
+0.2131
+1.000
+0.7920
+DGL
+DGX with GPipe Chunk = 1*
+6.985
+3.755
+0.0126
+0.1984
+1.000
+0.7660
+PyG
+DGX with GPipe Chunk = 1*
+7.312
+3.407
+0.0114
+0.2097
+1.000
+0.7840
+DGL
+DGX with GPipe Chunk = 1
+7.294
+15.62
+0.0522
+0.1879
+0.9500
+0.7780
+DGL
+DGX with GPipe Chunk = 2
+7.192
+12.30
+0.0411
+0.4283
+0.8333
+0.6000
+DGL
+DGX with GPipe Chunk = 3
+7.281
+15.29
+0.0511
+0.5204
+0.7667
+0.4920
+DGL
+DGX with GPipe Chunk = 4
+7.712
+18.06
+0.0604
+0.6016
+0.7500
+0.4580
+
+Figure 1. Benchmark training times for DGL and PyG on the
+PubMed dataset comparing the single devices to multiple devices
+with pipeline parallelism. Here, data parallelism is disabled.
+
+Figure 2. Training accuracy with the DGL and PyG frameworks
+with pipe parallelism across four GPUs with no graph data batch-
+ing.
+
+GPipe with a “chunk size” = 1 (i.e., no micro-batching)
+compared to a single GPU. The PubMed dataset used in
+these experiments is considered small compared to those
+that are intended to beneﬁt from pipeline parallelism. There-
+fore, the added cost of shifting data across the four GPUs
+may overtake the minimal speedup provided by GPipe. This
+may also suggest that the additional feature of data paral-
+lelism (via the data “chunks”) provided by GPipe is crucial
+to realizing meaningful performance improvements. We
+also measured the training accuracy resulting from both
+graph machine learning frameworks applied with GPipe
+across four GPUs, but without micro-batching, exactly as
+in the timing measurements. As plotted in Figure 2, each
+framework converged similarly in accuracy over 300 train-
+ing epochs in this conﬁguration.
+
+in Figure 3, the training times dramatically increase with
+micro-batching enabled at two, three, and four batches, as
+generated by GPipe.
+
+Our approach adapts the forward training to pass the graph
+information along with the features through a tuple of ten-
+sors into the sequential model. The GPipe micro-batching
+splits each tensor within the tuple so that only a subset
+of nodes is passed through, along with its corresponding
+set of features, as expected. The ﬁrst convolution layer
+receives this subset of nodes indices but still must have a
+complete graph structure as its input with the feature ten-
+sor. So, a re-build of a graph is ﬁrst performed with a DGL
+framework-delivered method. This sub-graph creation from
+the provided subset of nodes requires the full graph data
+object as a reference. However, DGL necessitates that the
+full graph, g, must remain on the CPU. To generate the
+sub-graph within the convolution layer, a copy of the subset
+node tensor must ﬁrst be moved from the GPU onto the
+
+6.2
+Increased training time
+
+To investigate the impact of data parallelism within GPipe,
+we activated micro-batching and ran the training with the
+DGL graph framework to compare total training times be-
+tween a single GPU and multiple distributed GPUs. As seen
+
+of the resulting sub-graph with their corresponding features.
+However, the edge relationships between the nodes are lost.
+Although edges are re-established during the sub-graph re-
+build in the convolution layers, the original graph structure
+is not expected to store its edges sequentially. Therefore,
+separating the graph this way during the micro-batching
+likely eliminates crucial node relationships that need aggre-
+gated during the graph convolution layer calculations. As
+expected from such a potential for signiﬁcant information
+loss during the GPipe micro-batching, as the number of
+batches generated increases, the training accuracy drops, as
+seen in Figure 4.
+
+Figure 3. Increased training time with GPipe applied pipeline par-
+allelism with an increasing number of graph micro-batches.
+
+CPU, then the sub-graph is built and moved back onto the
+GPU. This data ﬂow across devices was performed twice
+because our model includes two convolution layers. So, sig-
+niﬁcant overhead was added to the total time just to enable
+the basic training calculations. As the chunk size increased,
+more micro-batches were generated, resulting in even more
+sub-graph build steps. Fortunately, the feature tensor ex-
+tracted from the passed tuple could remain on the GPU.
+However, the updated values were still re-packaged into a
+tuple with the original sub-graph nodes to be returned into
+the forward pass of the model sequence.
+
+Figure 4. Accuracy drop-off with GPipe and graph micro-batching
+with comparisons to the previous training accuracy results without
+batching.
+
+7
+CONCLUSION AND FUTURE WORK
+
+6.3
+Degraded accuracy
+
+By analyzing the performance of GNNs using pipeline par-
+allelism via GPipe, our ﬁrst results suggest that although
+GPipe has demonstrated great success in optimizing deep
+neural networks, its ability to deliver efﬁciency for a graph
+neural network remains limited with the adapted implemen-
+tation presented here.
+
+We also observed that the training accuracy suffered severely
+with an increasing number of micro-batches. Although
+GPipe micro-batching can be disabled, as conﬁgured for our
+benchmark tests (Figures 1 and 2), the expected beneﬁt of
+pipeline parallelism requires micro-batching. We next ran
+the same DGL framework-based model with GPipe across
+four GPUs, sequentially distributed as before, to observe the
+effects of micro-batching in our adapted implementation.
+
+An immediate scope for future work is to determine how to
+customize the GPipe data parallelism to utilize intelligent
+graph batching instead of a sequential separation by index.
+Such an improvement is expected to increase accuracy to
+match the benchmark levels while beneﬁting from the paral-
+lelism in runtime efﬁciency. The SIGN technique described
+in Section 3 may be the best batching approach to consider
+for parallelizing GNNs with our implementation because it
+avoids the experienced pitfalls of node and graph sampling
+and instead provides precomputed node representations that
+may be straightforwardly mini-batched by GPipe.
+
+The intended design of the GPipe micro-batching through
+the torchgpipe library implementation is to separate the
+features tensor into uniform batches. This challenges our
+adaptation that passes a tuple containing both a node tensor
+and feature tensor, as we observed the micro-batching being
+applied to each tensor by sequentially selecting the tensor
+indices into a number of batches equal to the set chunk size
+parameter. This sequential separation preserves the nodes
+
+of the 25th ACM SIGKDD International Conference on
+Knowledge Discovery and Data Mining, pp. 257–266,
+2019.
+
+Pipeline parallelism is intended to beneﬁt neural network
+training on very large datasets, much greater in size than
+the PubMed set used here to establish our adapted imple-
+mentation without overburdening memory resources. We
+anticipate that runtime performance will increase for train-
+ing on extremely large graphs after memory bottlenecks or
+computational complexity overtake the capability offered
+by a single GPU. Extending the current implementation to
+massive datasets, on the scale of millions of nodes and a bil-
+lion edges, such as the Reddit post dataset (Hamilton et al.,
+2017), the Amazon data dump (McAuley et al., 2015), and
+others available with data loaders for DGL and PyG through
+the Open Graph Benchmark (OGB) (Hu et al., 2020), will
+better illustrate the impact of GPipe parallelism on GNNs,
+and provide a deeper understanding for potential enhance-
+ments to our current implementation for improving training
+performance with these existing tools and frameworks.
+
+Defferrard, M., Bresson, X., and Vandergheynst, P. Con-
+volutional neural networks on graphs with fast localized
+spectral ﬁltering. In Advances in neural information pro-
+cessing systems, pp. 3844–3852, 2016.
+
+Dijkstra, E. A note on two problems in connexion with
+graphs. Numerische Mathematik, 1:269–271, 1959.
+
+Duvenaud, D. K., Maclaurin, D., Iparraguirre, J., Bombarell,
+R., Hirzel, T., Aspuru-Guzik, A., and Adams, R. P. Con-
+volutional networks on graphs for learning molecular ﬁn-
+gerprints. In Advances in neural information processing
+systems, pp. 2224–2232, 2015.
+
+Fey, M. and Lenssen, J. E. Fast graph representation learning
+with pytorch geometric. arXiv preprint arXiv:1903.02428,
+2019.
+
+ACKNOWLEDGMENTS
+
+Thank you to Prof. Ian Foster, Prof. Rick Stevens, and
+Peng Ding for the guidance and feedback on this paper.
+We also thank the DGX team, Daniel Murphy-Olson and
+Ryan Aydelott, and the Computing, Environment, and Life
+Sciences directorate at Argonne National Laboratory.
+
+Frasca, F., Rossi, E., Eynard, D., Chamberlain, B., Bron-
+stein, M., and Monti, F. Sign: Scalable inception graph
+neural network. arXiv preprint arXiv:2004.11198, 2020.
+
+Hamilton, W., Ying, Z., and Leskovec, J. Inductive repre-
+sentation learning on large graphs. In Advances in neural
+information processing systems, pp. 1024–1034, 2017.
+
+REFERENCES
+
+Alon, U. and Yahav, E. On the bottleneck of graph neural
+networks and its practical implications. arXiv preprint
+arXiv:2006.05205, 2020.
+
+Henaff, M., Bruna, J., and LeCun, Y.
+Deep convolu-
+tional networks on graph-structured data. arXiv preprint
+arXiv:1506.05163, 2015.
+
+Arora, S. A survey on graph neural networks for knowledge
+graph completion, 2020.
+
+Hu, W., Fey, M., Zitnik, M., Dong, Y., Ren, H., Liu, B.,
+Catasta, M., and Leskovec, J. Open graph benchmark:
+Datasets for machine learning on graphs. arXiv preprint
+arXiv:2005.00687, 2020.
+
+Auten, A., Tomei, M., and Kumar, R. Hardware accelera-
+tion of graph neural networks. In 2020 57th ACM/IEEE
+Design Automation Conference (DAC), pp. 1–6. IEEE,
+2020.
+
+Huang, Y., Cheng, Y., Bapna, A., Firat, O., Chen, D., Chen,
+M., Lee, H., Ngiam, J., Le, Q. V., Wu, Y., et al. Gpipe:
+Efﬁcient training of giant neural networks using pipeline
+parallelism. In Advances in neural information process-
+ing systems, pp. 103–112, 2019.
+
+Bapst, V., Keck, T., Grabska-Barwi´nska, A., Donner, C.,
+Cubuk, E., Schoenholz, S., Obika, A., Nelson, A., Back,
+T., Hassabis, D., and Kohli, P. Unveiling the predic-
+tive power of static structure in glassy systems. Nature
+Physics, 16(4):448–454, 2020.
+
+Kim, C., Lee, H., Jeong, M., Baek, W., Yoon, B., Kim, I.,
+Lim, S., and Kim, S. torchgpipe: On-the-ﬂy pipeline
+parallelism for training giant models. 2020.
+
+Bruna, J., Zaremba, W., Szlam, A., and LeCun, Y. Spec-
+tral networks and locally connected networks on graphs.
+arXiv preprint arXiv:1312.6203, 2013.
+
+Kipf, T. N. and Welling, M. Semi-supervised classiﬁca-
+tion with graph convolutional networks. arXiv preprint
+arXiv:1609.02907, 2016.
+
+Cheriton, D. and Tarjan, R. Finding minimum spanning
+trees. SIAM Journal on Computing, 5(4):724–742, 1976.
+
+Li, Y., Tarlow, D., Brockschmidt, M., and Zemel, R.
+Gated graph sequence neural networks. arXiv preprint
+arXiv:1511.05493, 2015.
+
+Chiang, W.-L., Liu, X., Si, S., Li, Y., Bengio, S., and Hsieh,
+C.-J. Cluster-gcn: An efﬁcient algorithm for training deep
+and large graph convolutional networks. In Proceedings
+
+Liu, H., Lu, S., Chen, X., and He, B. G3: when graph
+neural networks meet parallel graph processing systems
+on gpus. Proceedings of the VLDB Endowment, 13(12):
+2813–2816, 2020.
+
+Yu, B., Yin, H., and Zhu, Z. Spatio-temporal graph convo-
+lutional neural network: A deep learning framework for
+trafﬁc forecasting. CoRR, abs/1709.04875, 2017. URL
+
+Ma, L., Yang, Z., Miao, Y., Xue, J., Wu, M., Zhou, L.,
+and Dai, Y. Neugraph: parallel deep neural network
+computation on large graphs. In 2019 {USENIX} Annual
+Technical Conference ({USENIX}{ATC} 19), pp. 443–
+458, 2019.
+
+Zeng, H., Zhou, H., Srivastava, A., Kannan, R., and
+Prasanna, V. Graphsaint: Graph sampling based inductive
+learning method. arXiv preprint arXiv:1907.04931, 2020.
+
+Zhang, Z., Leng, J., Ma, L., Miao, Y., Li, C., and Guo,
+M. Architectural implications of graph neural networks.
+IEEE Computer Architecture Letters, 19(1):59–62, 2020.
+
+McAuley, J., Targett, C., Shi, Q., and Van Den Hengel, A.
+Image-based recommendations on styles and substitutes.
+In Proceedings of the 38th international ACM SIGIR
+conference on research and development in information
+retrieval, pp. 43–52, 2015.
+
+Zhou, J., Cui, G., Zhang, Z., Yang, C., Liu, Z., Wang,
+L., Li, C., and Sun, M.
+Graph neural networks: A
+review of methods and applications.
+arXiv preprint
+arXiv:1812.08434, 2018.
+
+Mercado, R., Rastemo, T., Lindel¨of, E., Klambauer, G.,
+Engkvist, O., Chen, H., and Bjerrum, E. J.
+Graph
+Networks for Molecular Design.
+8 2020.
+doi:
+10.26434/chemrxiv.12843137.v1.
+URL
+
+//chemrxiv.org/articles/preprint/
+Graph_Networks_for_Molecular_Design/
+12843137.
+
+Zhou, J., Xu, Z., Rush, A. M., and Yu, M. Automating bot-
+net detection with graph neural networks. arXiv preprint
+arXiv:2003.06344, 2020.
+
+Sen, P., Namata, G., Bilgic, M., Getoor, L., Galligher, B.,
+and Eliassi-Rad, T. Collective classiﬁcation in network
+data. AI magazine, 29(3):93–93, 2008.
+
+Strokach, A., Becerra, D., Corbi-Verge, C., Perez-Riba, A.,
+and Kim, P. Fast and ﬂexible protein design using deep
+graph neural network. Cell Systems, 11(4):402–411.e4,
+2020.
+
+Vashishth, S. Neural graph embedding methods for natural
+language processing. CoRR, abs/1911.03042, 2019. URL
+
+Veliˇckovi´c, P., Cucurull, G., Casanova, A., Romero, A.,
+Lio, P., and Bengio, Y. Graph attention networks. arXiv
+preprint arXiv:1710.10903, 2017.
+
+Wang, M., Zheng, D., Ye, Z., Gan, Q., Li, M., Song, X.,
+Zhou, J., Ma, C., Yu, L., Gai, Y., Xiao, T., He, T., Karypis,
+G., Li, J., and Zhang, Z. Deep graph library: A graph-
+centric, highly-performant package for graph neural net-
+works. arXiv preprint arXiv:1909.01315, 2019.
+
+Yang, Z., Cohen, W., and Salakhudinov, R.
+Revisiting
+semi-supervised learning with graph embeddings. In
+International conference on machine learning, pp. 40–48.
+PMLR, 2016.
+
+Ying, R., He, R., Chen, K., Eksombatchai, P., Hamilton,
+W. L., and Leskovec, J.
+Graph convolutional neural
+networks for web-scale recommender systems. CoRR,
+abs/1806.01973, 2018. URL
+abs/1806.01973.

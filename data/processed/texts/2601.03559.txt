@@ -1,0 +1,2196 @@
+DIFFCOT: Diffusion-styled Chain-of-Thought Reasoning in LLMs
+
+Shidong Cao1, Hongzhan Lin1, Yuxuan Gu2, Ziyang Luo1, Jing Ma1*
+
+1Hong Kong Baptist University
+2Harbin Institute of Technology
+
+Abstract
+
+Chain-of-Thought (CoT) reasoning improves
+multi-step mathematical problem solving in
+large language models but remains vulnerable
+to exposure bias and error accumulation, as
+early mistakes propagate irreversibly through
+autoregressive decoding. In this work, we pro-
+pose DIFFCOT, a diffusion-styled CoT frame-
+work that reformulates CoT reasoning as an it-
+erative denoising process. DIFFCOT integrates
+diffusion principles at the reasoning-step level
+via a sliding-window mechanism, enabling uni-
+fied generation and retrospective correction
+of intermediate steps while preserving token-
+level autoregression. To maintain causal con-
+sistency, we further introduce a causal diffu-
+sion noise schedule that respects the temporal
+structure of reasoning chains. Extensive ex-
+periments on three multi-step CoT reasoning
+benchmarks across diverse model backbones
+demonstrate that DIFFCOT consistently out-
+performs existing CoT preference optimization
+methods, yielding improved robustness and
+error-correction capability in CoT reasoning.
+
+arXiv:2601.03559v2 [cs.CL] 19 Apr 2026
+
+1
+Introduction
+
+Large Language Models (LLMs) (Brown et al.,
+2020; Achiam et al., 2023; Guo et al., 2025) have
+marked a major breakthrough in natural language
+processing, achieving competitive performance
+across a wide range of mathematical reasoning
+tasks. A widely adopted technique in LLMs, Chain-
+of-Thought (CoT) reasoning (Wei et al., 2022; Ko-
+jima et al., 2022), enhances mathematical problem-
+solving by decomposing tasks into step-by-step
+intermediate reasoning. However, CoT reasoning
+is highly sensitive to potential errors, where mis-
+takes introduced in the early stages can propagate
+through later steps, often leading to incorrect fi-
+nal answers (Wang et al., 2023; Lyu et al., 2023).
+This highlights a central research challenge: reduc-
+
+(a) Existing Methods for CoT
+
+(b) DiffCoT
+
+Question：Mrs. Snyder used to spend 40% of her monthly
+income on rent and utilities. Her salary was recently increased by
+$600 so now her rent and utilities only amount to 25% of her
+monthly income. How much was her previous monthly income?
+
+Input
+
+Input
+
+1
+
+1
+
+1
+
+Step 1：Let the previous monthly income be x. The increased
+income is x + 600.
+
+1
+1
+1
+
+Step 2： 25% of x + 600 is the rent and utilities now. 25% of x
++ 600 = 0.25(x + 600)
+
+2
+
+2
+
+2
+
+2
+
+Existing Methods for CoT：
+
+2
+2
+2
+2
+
+Step 3： 0.4x = 25% of x + 600. Subtract 25% of x
+from both sides to get 0.15x = 600.
+Step 4： Rearrange the equation to get x = 4000.
+
+3
+3
+Diffusion
+
+3
+
+DiffCoT：
+
+3
+3
+3
+3
+
+correct
+
+Step 3： 0.4x = 25% of x + 600. Subtract 25% of x
+from both sides to get 0.15x = 600.
+Step 4： Rearrange the equation to get x = 4000.
+
+4
+
+4
+
+AR
+
+4
+4
+4
+4
+
+Refined Step 3： 0.25(x + 600) = 0.4x. Solve for x
+Refined Step 4： 0.15x = 150. Solve for x.
+
+Refined
+response
+
+Initial
+response
+
+Final
+response
+
+Rejected
+response
+Chosen
+response
+
+Error
+response
+
+Refined Step 4： 0.15x = 150. Divide both sides by
+0.15. x = 1000
+
+Figure 1: Comparison of our proposed DIFFCOT with existing CoT reasoning approaches: (a) Existing step-by-step
+CoT Reasoning methods adopt teacher-forcing training, where each step depends on the ground-truth output of the
+previous one. At inference time, this assumption breaks, causing exposure bias and leading to error accumulation.
+(b) DIFFCOT performs CoT reasoning along both the noise (diffusion) and temporal (autoregressive) dimensions,
+enabling iterative correction of prior mistakes and effectively mitigating exposure bias.
+
+progressively refining corrupted trajectories into
+coherent chains of thought, which captures the dis-
+tributional evolution of reasoning errors to enable
+recovery from diverse and compounding mistakes.
+Altogether, DIFFCOT could establish a unified and
+adaptive paradigm to CoT reasoning in LLMs.
+Our contributions are summarized as follows:
+• We propose DIFFCOT, a novel diffusion-styled
+CoT framework that reformulates multi-step rea-
+soning as an iterative denoising process, effec-
+tively mitigating exposure bias and error accumu-
+lation in autoregressive CoT reasoning.1
+
+• We introduce a step-level diffusion-based learn-
+ing strategy that unifies generation and revision
+through a sliding-window mechanism, enabling
+retrospective correction of earlier reasoning steps
+while preserving token-level autoregression.
+• We design a causal noise schedule that explicitly
+encodes the temporal dependency of reasoning
+steps, balancing global error correction with the
+causal structure required for coherent reasoning.
+• Extensive experiments on three public mathemat-
+ical reasoning benchmarks demonstrate that DIF-
+
+FCOT outperforms State-of-The-Art (SoTA) PO
+methods, yielding robust gains and substantially
+improved error-correction capability in CoT.
+
+2
+Preliminaries
+
+3
+Methodology
+
+During CoT reasoning, LLMs are typically trained
+only on correct trajectories (Wei et al., 2022), while
+at inference time they may condition on erroneous
+intermediate steps (Lyu et al., 2023). Moreover,
+step-wise optimization focuses on local alignment
+and ignores future signals within the reasoning tra-
+jectory, limiting global consistency (Zhang et al.,
+2024). Together, these issues lead to error accu-
+mulation (Yoon et al., 2025; Chen et al., 2024a),
+motivating a rethinking of CoT reasoning under
+preference optimization. To address these issues,
+we argue that effective CoT reasoning requires
+trajectory-level revision to enforce global consis-
+tency and recover from corrupted intermediate
+steps. As error accumulation leads to noisy rea-
+soning chains at inference time, a mechanism for
+global recovery becomes essential (Lyu et al., 2023;
+Wang et al., 2023). Unlike autoregressive decoding
+that commits to each step irrevocably, diffusion op-
+erates through iterative denoising over the entire se-
+quence, enabling global revision and correction of
+intermediate errors. This property naturally aligns
+with the need for trajectory-level recovery in CoT
+reasoning. Motivated by the robustness of diffu-
+sion models in reconstructing structured data from
+noise (Ho et al., 2020; Li et al., 2022), we aim to
+develop a diffusion-styled preference optimization
+paradigm to reformulate CoT reasoning.
+To this end, we propose Diffusion-styled Chain
+of Thought (DIFFCOT), which models CoT rea-
+soning in a diffusion-styled framework. We first
+present a step-level forward noising process for
+CoT using reward-ranked candidates (§3.1), and
+then apply a diffusion sliding window to itera-
+tively denoise past steps while generating new ones
+(§3.2). We further introduce causal diffusion noise
+to strengthen causal consistency across reasoning
+steps (§3.3). An overview is shown in Figure 2.
+
+Chain-of-Thought Reasoning
+Given a question
+prompt p, the CoT paradigm (Wei et al., 2022)
+explicitly unfolds the reasoning process into a se-
+quence of reasoning steps s1:K whose final element
+sK corresponds to the answer a. The conditional
+distribution of a complete reasoning trace can be
+expressed as:
+
+K
+Y
+
+pθ(s1:K | p) =
+
+t=1
+πθ(sk | p, s<k),
+(1)
+
+where sk denotes the k-th reasoning step, k ≤K
+is the step budget, and πθ is the Auto-Regressive
+(AR) policy, i.e., the conditional distribution over
+the next step given the prompt p and the previously
+generated steps.
+
+On annotated CoT data (p, s1:K), the model is
+trained by maximizing the conditional likelihood:
+
+K
+X
+
+LCoT = −
+
+k=1
+log πθ(sk | p, s<k).
+(2)
+
+Diffusion Models
+Diffusion models (Dhariwal
+and Nichol, 2021) define a generative framework
+where data samples are gradually corrupted into
+a tractable noise distribution through a forward
+process, and a model is trained to approximate the
+corresponding reverse process. Let x0 ∼φ(x0)
+denote a data sample from real data distribution φ.
+The forward process produces a sequence {xt}T
+t=1
+by applying a noise operator O at each step:
+
+xt = D(xt−1, ηt),
+t = 1, . . . , T,
+(3)
+where t denotes the diffusion step index, ηt is
+a noise variable. O could be a deterministic or
+structured corruption operator.
+
+The generative process is defined by learning
+a parameterized reverse transition pθ(xt−1 | xt)
+that reconstructs the original sample through step-
+wise denoising. Training minimizes the discrep-
+ancy between the predicted ˆxt−1 = fθ(xt, t) and
+the ground-truth corrupted data xt−1 obtained from
+the forward process:
+LDiffusion =
+
+3.1
+Diffusion-Styled Noising for CoT
+
+Ex0∼φ(x0), t∼{1,...,T}
+h
+ℓ
+
+fθ(xt, t), xt−1
+i
+,
+(4)
+
+didates are treated as lower-noise reasoning states,
+while lower-reward candidates correspond to pro-
+gressively higher-noise states in the forward pro-
+cess. This ranking forms a progression from clean
+to corrupted reasoning states under diffusion-styled
+noise, enabling distribution-aware modeling of rea-
+soning steps.
+
+Specifically, we implement forward noising by
+first collecting CoT reasoning trajectories for each
+question to construct the training set D. As shown
+in Figure 2(a), given a question prompt p, we fol-
+low the standard CoT data generation process by
+employing MCTS (Browne et al., 2012), to grad-
+ually build a search tree for step-by-step solution
+exploration. The root corresponds to p, and each
+child node represents an intermediate step s. A
+complete path from the root to a terminal node sK
+yields a trajectory tra = p ⊕s1 ⊕s2 ⊕· · · ⊕sK,
+where each step sk is annotated with its reward
+r(sk).
+
+Figure 2: DIFFCOT Framework and Training Data
+Construction: (a) Step-level forward noising: MCTS-
+based data generation defines step-level noise by reward-
+ranking multiple candidates, yielding states ranging
+from clean to corrupted. (b) Sliding-window denois-
+ing: a diffusion sliding window refines previously gen-
+erated CoT steps while producing the next step in an
+autoregressive manner. (c) Causal diffusion noise: a
+step-dependent schedule assigns stronger noise to later
+steps to encode the causal order of the reasoning chain.
+
+In contrast to conventional CoT trajectory con-
+struction (Zhang et al., 2024), at each step k we col-
+lect several candidate responses. These responses
+are scored using either an external reward model
+or rollout-based success rates. In our forward nois-
+ing view, the candidate with the highest reward,
+denoted as sσ0=w
+k
+, is regarded as the lowest-noise
+state for step k, and the remaining candidates are
+ordered by their rewards to form {sσ1:T
+k
+}, which we
+interpret as states with gradually increasing noise.
+Step-level noise is thus measured by the deviation
+of lower-reward responses from this best trajectory,
+indicating the corruption level at the step granular-
+ity. This design ensures that the final generation
+remains coherent while providing a set of forward
+diffusion states for subsequent denoising and pref-
+erence optimization.
+
+3.2
+Reformulating CoT Reasoning as
+Denoising
+
+where s:k+1 denotes the subsequence sk−m:k+1,
+ϕ(·) denotes the sigmoid function, and β is a factor
+controlling the strength of the preference signal.
+
+diffusion to thought chains while integrating gen-
+eration with self-correction, the model maintains
+a diffusion sliding window of size m and stride
+n. At denoising iteration t, the window containing
+previously generated CoT steps {sσ
+k−m, . . . , sσ
+k} is
+updated to a lower-noise version {sσ′
+k−m, . . . , sσ′
+k },
+
+Note that our conditional prefix sσ
+1:k−1 differs
+from that used in standard DPO: instead of be-
+ing composed exclusively of preferred (i.e., clean)
+steps, it combines clean steps from 1 to k −m
+with noisy steps within the sliding window. In
+this manner, the hybrid construction could alle-
+viate the exposure bias by training the model to
+make preference-consistent updates even when con-
+ditioned on partially corrupted reasoning prefixes.
+
+where σ = σ(t)
+k
+is defined as a function of the step
+index k and the denoising iteration t, while σ and
+σ′ denote the noise levels before and after refine-
+ment, respectively. Simultaneously, as the window
+shifts forward by one step, the model predicts the
+next step sσ
+k+1, initialized at a high-noise state. It-
+erating this denoising process eventually yields a
+clean trajectory sσ0
+1:K:
+
+3.3
+Causal Diffusion Noise
+
+πθ
+
+p, s σ
+1:k
+
+7→
+s σ′
+k−m:k
+| {z }
+refined past
+
+⊕
+s σ
+k+1
+|{z}
+predicted future
+
+.
+(5)
+
+Modeling CoT reasoning with diffusion poses a
+significant challenge to causality. Conventional
+full-sequence diffusion models are inherently non-
+causal (Ho et al., 2020; Dhariwal and Nichol, 2021),
+which contrasts sharply with the causal nature of
+CoT reasoning. While our backbone π retains an
+AR token-level generation process, prior studies on
+diffusion models indicate that relying solely on the
+model’s ability to capture causality is inadequate,
+especially when reasoning must be performed over
+noisy or perturbed data (Li et al., 2022).
+
+An illustration of the denoising process is shown
+in Figure 2(b). In sequence modeling, teacher-
+forcing next-token prediction can be viewed as
+masking along the reasoning-step axis s, whereas
+diffusion corresponds to masking along the noise
+axis σ, where σT approaches pure white noise after
+T iterations. To unify both views, we denote sσ
+k as
+the k-th CoT step under noise level σ, where σ is
+instantiated as σt
+k, i.e., the diffusion noise strength
+assigned to the k-th step at denoising iteration t.
+Building on the above reasoning process, we
+now introduce the training objective in DIFFCOT.
+Our goal is to optimize a model πθ that takes the
+question prompt p together with the preceding rea-
+soning steps s1:k as input.
+We construct the win sequence sw
+k−m:k+1 by
+combining the denoised steps {sσ′
+k−m, . . . , sσ′
+k }
+
+Inspired by Diffusion Forcing (Chen et al.,
+2024a), as shown in Figure 2(c), we leverage noise
+as a mechanism to inject causal priors into diffu-
+sion sliding window.In conventional full-sequence
+diffusion, the noise strength σ(t) depends solely on
+the denoising iteration t and is shared across all
+tokens. Such uniform noise injection is ill-suited
+for CoT reasoning, as it limits the model’s ability
+to capture step-wise causal dependencies. To over-
+come this, we redefine the noise schedule as σt
+k,
+a joint function of reasoning step k and iteration
+t (see §3.2). Within the diffusion sliding window,
+σt
+k follows a progressive schedule, where earlier
+steps are perturbed with weaker noise, while later
+steps are perturbed with stronger noise. The noise
+schedule is formally defined as follows:
+F(sj−m+1, . . . , sj; j) =
+
+sσ0
+j−m+1, sσ1
+j−m+2, . . . , sσT
+j
+
+,
+(7)
+
+with a lower-noise variant of s
+σ′
+k+1
+k+1 . In practice, fol-
+lowing DiffPO (Chen et al., 2025), we use the best
+sample sσ0 as the winning target and consistently
+align all intermediate generations to this target.
+Similarly, the lose sequence sl
+k−m:k+1 is formed
+by combining the unrefined steps {sσ
+k−m, . . . , sσ
+k}
+with the highest-noise variant of sσk+1
+k+1 . The pre-
+fix condition is the past text s1:k−1. To optimize
+the LLM on this preference pair, we adopt the Di-
+rect Preference Optimization (DPO) loss (Rafailov
+et al., 2023):
+
+Li(πθ; πref) = −log ϕ
+
+β log πθ(sw
+:k+1 | p, s1:k)
+πref(sw
+:k+1 | p, s1:k)
+
+−β log πθ(sl
+:k+1 | p, s1:k)
+
+
+,
+
+πref(sl
+:k+1 | p, s1:k)
+
+Model
+Llama3-8B
+Qwen3-4B
+
+CoT
+TSFT
+CPO
+ToT
+Step
+FStep
+DIFFCOT
+CoT
+TSFT
+CPO
+ToT
+Step
+FStep
+DIFFCOT
+
+GSM8K
+62.5
+62.7
+61.6
+61.7
+63.0
+63.2
+64.4
+84.7
+84.5
+85.7
+85.4
+87.5
+87.2
+88.5
+SVAMP
+72.2
+73.8
+73.3
+73.0
+75.7
+76.2
+76.9
+86.8
+86.8
+87.2
+87.9
+88.3
+89.7
+90.2
+M-L1
+43.3
+39.1
+39.0
+39.5
+43.5
+39.6
+39.3
+59.3
+58.4
+60.1
+60.9
+61.9
+64.5
+75.0
+M-L2
+29.0
+28.4
+28.7
+29.3
+28.9
+29.7
+26.6
+35.0
+35.5
+35.8
+36.0
+34.1
+39.9
+48.7
+M-L3
+13.0
+13.6
+14.0
+13.5
+15.7
+14.8
+17.2
+21.6
+20.7
+21.5
+21.8
+24.5
+27.6
+33.1
+M-L4
+7.4
+7.8
+7.0
+7.4
+8.0
+7.8
+9.5
+10.5
+10.4
+11.3
+9.5
+12.3
+18.4
+24.4
+M-L5
+2.1
+1.7
+1.8
+1.4
+1.9
+2.2
+3.8
+3.9
+4.4
+4.3
+3.2
+5.0
+5.1
+13.2
+
+Model
+Qwen3-8B
+Ministral3-8B
+
+CoT
+TSFT
+CPO
+ToT
+Step
+FStep
+DIFFCOT
+CoT
+TSFT
+CPO
+ToT
+Step
+FStep
+DIFFCOT
+
+GSM8K
+87.3
+87.5
+88.0
+86.3
+86.4
+88.7
+91.5
+61.5
+61.8
+63.8
+61.5
+66.3
+65.9
+67.4
+SVAMP
+86.4
+87.0
+86.4
+86.7
+87.7
+87.9
+89.3
+82.6
+81.6
+82.5
+82.7
+79.1
+79.9
+83.9
+M-L1
+69.7
+69.9
+70.4
+70.0
+71.2
+74.3
+77.0
+50.8
+50.6
+50.3
+50.2
+57.2
+57.5
+63.0
+M-L2
+51.1
+51.7
+52.0
+51.5
+51.9
+53.2
+58.1
+30.2
+30.1
+29.8
+30.0
+37.0
+37.2
+39.6
+M-L3
+31.3
+30.3
+31.6
+30.5
+32.3
+35.4
+42.8
+22.9
+22.5
+22.5
+22.8
+24.7
+28.1
+31.9
+M-L4
+14.0
+14.3
+13.5
+14.7
+14.8
+18.8
+26.6
+6.1
+6.8
+7.1
+7.3
+14.5
+13.7
+11.5
+M-L5
+4.9
+4.3
+5.0
+4.6
+5.5
+7.1
+14.9
+2.4
+2.9
+2.7
+2.6
+5.3
+5.4
+7.0
+
+Table 1: Test reasoning accuracy (%) on GSM8K, SVAMP, and MATH. M-L1 to M-L5 denote different difficulty
+levels in the MATH dataset, where L1 is the easiest and L5 is the most challenging, while Step denotes Step-DPO
+and FStep denotes Full-Step-DPO. The best results are in bold.
+
+4
+Experiment
+
+et al., 2025): further generalizes step-wise opti-
+mization to the entire reasoning trajectory. More
+implementation details regarding model training
+and data construction are provided in Appendix §B.
+
+4.1
+Settings
+
+Models and Datasets
+We conduct experiments
+on four representative backbone models: Llama3-
+8B (Touvron et al., 2023), Qwen3-8B (Yang et al.,
+2025), Ministral3-8B (Liu et al., 2026) and Qwen3-
+4B (Yang et al., 2025). We primarily evaluate
+our DIFFCOT on three public mathematical rea-
+soning benchmarks, specifically GSM8K (Cobbe
+et al., 2021), SVAMP (Patel et al., 2021), and
+MATH (Hendrycks et al., 2021). The MATH is
+divided into five difficulty levels, as defined in the
+original dataset. More data statistics and prepara-
+tion are provided in Appendix §A.
+
+4.2
+Main Results
+
+timization may not be sufficient to ensure stable
+reasoning behavior across diverse evaluation sce-
+narios. 3) Overall, DIFFCOT outperforms existing
+PO approaches on most benchmarks and evaluation
+settings, although it does not achieve the single best
+result in every case. For example, on MATH-L1
+with the Llama3-8B backbone, Step-DPO attains
+slightly higher accuracy. Beyond this overall trend,
+we observe that the gains of DIFFCOT are more pro-
+nounced on stronger backbones, such as Qwen3-8B
+and Qwen3-4B, suggesting that its more complex
+reasoning trajectories are better utilized by models
+with stronger instruction following and reasoning
+capabilities. We also find that DIFFCOT brings
+larger improvements on harder problems, such as
+MATH-L4 and MATH-L5, where correct reasoning
+paths are sparser. This highlights that DIFFCOT en-
+ables the model to leverage information across dif-
+ferent solution paths, making broader exploration
+more effective, whereas for easier problems, stan-
+dard CoT-style depth search is often sufficient.
+
+Model
+GSM8K (%)
+SVAMP (%)
+
+Llama3-8B
+64.4
+76.9
+- window size, stride=1
+62.9 -1.5
+75.8 -1.1
+- window size, stride=K
+55.4 -9.0
+68.5 -8.4
+- causal noise
+62.6 -1.8
+75.5 -1.4
+
+Qwen3-4B
+88.5
+90.2
+- window size, stride=1
+87.3 -1.2
+88.2 -2.0
+- window size, stride=K
+80.0 -8.5
+82.5 -7.7
+- causal noise
+86.7 -1.8
+87.7 -2.5
+
+Table 2: Ablative results on the general datasets GSM8K
+and SVAMP, where K is the number of reasoning steps.
+Numbers shown in the upper-right corner of each cell
+indicate the relative change in accuracy rate compared
+to the full DIFFCOT model.
+
+troduces noise: it disrupts the structural coherence
+of reasoning and prolonged denoising fluctuations
+undermine the causal nature of inference.
+We further conduct an ablation study to ver-
+ify the effectiveness of the causal diffusion noise.
+Specifically, we disrupt our proposed noise schedul-
+ing by randomly shuffling the data order used for
+noising, instead of following the accuracy-based
+progression. This modification effectively breaks
+the causal structure of the noise. Results in Ta-
+ble 2 show that this ablation leads to substantial
+performance degradation across different models
+and datasets, demonstrating that our causal noise
+scheduling is a critical component of DIFFCOT.
+
+4.3
+Ablation Study
+
+To validate the effectiveness of the proposed DIF-
+
+4.4
+Analysis
+
+ditioned on a perturbed prefix. Experiments are
+conducted on 300 GSM8K problems with multiple
+backbone models, comparing our approach against
+Full-Step-DPO. As shown in Figure 4, our method
+consistently achieves substantially higher correc-
+tion success rates across all settings, demonstrating
+a stronger ability to compensate for accumulated in-
+termediate noise and to maintain globally coherent
+reasoning, rather than brittle continuation of im-
+perfect early steps. In other words, our model can
+mitigate the impact of early-stage reasoning drift,
+rather than rigidly propagating locally coherent but
+globally suboptimal trajectories in CoT reasoning.
+
+5
+Related Work
+
+Preference Learning
+Preference learning has re-
+cently emerged as an effective paradigm for align-
+ing LLMs with human preferences by contrasting
+desirable and undesirable responses (Ouyang et al.,
+2022; Liu et al., 2025), with methods such as DPO
+showing strong performance on general language
+tasks (Rafailov et al., 2023). However, extend-
+ing these gains to mathematical reasoning remains
+challenging, largely due to the coarse granularity
+of solution-level supervision, which fails to local-
+ize and correct intermediate reasoning errors (Chen
+et al., 2024b). To address this limitation, recent
+work incorporates step-level preference signals to
+align intermediate reasoning processes (Lai et al.,
+2024; Lu et al., 2024), while Full-Step-DPO fur-
+ther optimizes entire reasoning trajectories using
+global objectives (Xu et al., 2025). Despite these
+advances, most existing step-wise methods adopt
+a teacher-forcing paradigm and reason exclusively
+over clean prefixes during training, leading to error
+accumulation and degraded robustness during in-
+ference. Accordingly, our work reconceptualizes
+CoT reasoning as a globally revisable trajectory, in
+which previously generated steps remain malleable
+to correction in light of future context.
+
+Figure 3: Example illustrating how DIFFCOT modifies
+early-stage reasoning shift steps. The steps highlighted
+in blue represent the diffusion sliding window.
+
+autoregressive models tend to propagate early se-
+mantic noise forward without revision, DIFFCOT
+leverages its denoising dynamics to refine the en-
+tire reasoning trajectory, including previously gen-
+erated steps, resulting in more robust and globally
+consistent reasoning behavior.
+
+Llama3-8B
+
+Qwen3-8B
+
+Qwen3-4B
+
+65
+
+100
+
+90
+
+60
+
+90
+
+80
+
+55
+
+80
+
+50
+
+70
+
+70
+
+Acc(%)
+
+Acc(%)
+
+Acc(%)
+
+45
+
+60
+
+40
+
+60
+
+35
+
+50
+
+50
+
+30
+
+40
+
+40
+
+25
+
+20
+
+30
+
+30
+
+0
+0.1
+0.2
+0.3
+0.4
+
+0
+0.1
+0.2
+0.3
+0.4
+
+0
+0.1
+0.2
+0.3
+0.4
+
+Noise Intensity Coefficient ω
+
+Noise Intensity Coefficient ω
+
+Noise Intensity Coefficient ω
+
+DiffCoT
+Full-Step DPO
+
+DiffCoT
+Full-Step DPO
+
+DiffCoT
+Full-Step DPO
+
+Figure 4: Correction success rate under stochastic prefix corruption, where noise is injected at the midpoint of the
+reasoning trajectory with probability ω.
+
+budgets, such as generating and reranking multi-
+ple solutions using outcome- or process-level re-
+wards, or adopting reward-guided decoding strate-
+gies (Guan et al., 2025; Wu et al., 2024; Wang
+et al., 2024). Recently, reinforcement learning and
+preference-based optimization have been explored
+to directly align reasoning behaviors via trajectory-
+or step-level supervision, aiming to improve robust-
+ness beyond supervised objectives alone (Pal et al.,
+2024; Wang et al., 2024). But they largely operate
+in a forward-only manner and lack mechanisms
+for revising corrupted intermediate reasoning, mo-
+tivating our diffusion-styled reformulation of CoT
+reasoning to enable effective error correction.
+
+the behavior policy and the training policy may in-
+troduce distribution shift, biased value estimation,
+and training instability, especially when scaling to
+more difficult datasets or longer reasoning chains.
+Second, similar to Diffusion Forcing, DIFFCOT
+breaks the local Markov property of prefix con-
+ditioned generation by revisiting and modifying
+historical reasoning steps. While this violation
+enables stronger capabilities, it also increases the
+uncertainty and controllability challenges during
+generation, typically requiring more training itera-
+tions and larger amounts of data to achieve stable
+convergence.
+
+Acknowledgments
+
+6
+Conclusion and Future Work
+
+This work is partially supported by National Natu-
+ral Science Foundation of China Young Scientists
+Fund (No. 62206233) and RMGS (2025 First Pro-
+cessing Cycle).
+
+In this work, we proposed a novel DIFFCOT frame-
+work to enhance mathematical reasoning and alle-
+viate error accumulation by integrating diffusion
+steps into autoregressive generation. Our method
+utilizes a sliding diffusion window with causal
+noise to refine intermediate steps while maintaining
+consistent reasoning chains. Extensive experiments
+confirm that our proposed DIFFCOT outperforms
+existing CoT methods, offering a robust solution
+for multi-step CoT reasoning. Future work will
+explore the scalability of our paradigm across more
+backbone models and broader reasoning domains.
+
+References
+
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama
+Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altenschmidt, Sam Altman,
+Shyamal Anadkat, and 1 others. 2023. Gpt-4 techni-
+cal report. arXiv preprint arXiv:2303.08774.
+
+Zhangir Azerbayev, Hailey Schoelkopf, Keiran Paster,
+Marco Dos Santos, Stephen McAleer, Albert Q.
+Jiang, Jia Deng, Stella Biderman, and Sean Welleck.
+2023. Llemma: An open language model for mathe-
+matics. arXiv preprint arXiv:2310.06786.
+
+Limitations
+
+Samy Bengio, Oriol Vinyals, Navdeep Jaitly, and Noam
+Shazeer. 2015. Scheduled sampling for sequence
+prediction with recurrent neural networks. Advances
+in neural information processing systems, 28.
+
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao
+Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shi-
+rong Ma, Peiyi Wang, Xiao Bi, and 1 others. 2025.
+Deepseek-r1: Incentivizing reasoning capability in
+llms via reinforcement learning.
+arXiv preprint
+arXiv:2501.12948.
+
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, and 1 others. 2020. Language models are few-
+shot learners. In Advances in Neural Information
+Processing Systems (NeurIPS).
+
+Cameron B Browne, Edward Powley, Daniel White-
+house, Simon M Lucas, Peter I Cowling, Philipp
+Rohlfshagen, Stephen Tavener, Diego Perez, Spyri-
+don Samothrakis, and Simon Colton. 2012. A survey
+of monte carlo tree search methods. IEEE Transac-
+tions on Computational Intelligence and AI in games,
+4(1):1–43.
+
+Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul
+Arora, Steven Basart, Eric Tang, Dawn Song, and Ja-
+cob Steinhardt. 2021. Measuring mathematical prob-
+lem solving with the math dataset. arXiv preprint
+arXiv:2103.03874.
+
+Boyuan Chen, Diego Martí Monsó, Yilun Du, Max
+Simchowitz, Russ Tedrake, and Vincent Sitzmann.
+2024a.
+Diffusion forcing: Next-token prediction
+meets full-sequence diffusion. Advances in Neural
+Information Processing Systems, 37:24081–24125.
+
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. De-
+noising diffusion probabilistic models. In Advances
+in Neural Information Processing Systems (NeurIPS).
+
+Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan
+Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang,
+Weizhu Chen, and 1 others. 2022. Lora: Low-rank
+adaptation of large language models. ICLR, 1(2):3.
+
+Guoxin Chen, Minpeng Liao, Chengxi Li, and Kai Fan.
+2024b. Step-level value preference optimization for
+mathematical reasoning. In Findings of the Associ-
+ation for Computational Linguistics: EMNLP 2024,
+pages 7889–7903, Miami, Florida, USA. Association
+for Computational Linguistics.
+
+Takeshi Kojima, Shixiang Gu, Machel Reid, Yutaka
+Matsuo, and Yusuke Iwasawa. 2022.
+Large lan-
+guage models are zero-shot reasoners.
+Preprint,
+arXiv:2205.11916.
+
+Ruizhe Chen, Wenhao Chai, Zhifei Yang, Xiaotian
+Zhang, Ziyang Wang, Tony Quek, Joey Tianyi Zhou,
+Soujanya Poria, and Zuozhu Liu. 2025.
+DiffPO:
+Diffusion-styled preference optimization for infer-
+ence time alignment of large language models. In
+Proceedings of the 63rd Annual Meeting of the As-
+sociation for Computational Linguistics (Volume 1:
+Long Papers), pages 18910–18925, Vienna, Austria.
+Association for Computational Linguistics.
+
+Xin Lai, Zhuotao Tian, Yukang Chen, Senqiao Yang, Xi-
+angru Peng, and Jiaya Jia. 2024. Step-dpo: Step-wise
+preference optimization for long-chain reasoning of
+llms. arXiv preprint arXiv:2406.18629.
+
+Xin Lai, Zhuotao Tian, Yukang Chen, Senqiao Yang,
+Xiangru Peng, and Jiaya Jia. 2025. Step-DPO: Step-
+wise preference optimization for long-chain reason-
+ing of LLMs.
+
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian,
+Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias
+Plappert, Jerry Tworek, Jacob Hilton, Reiichiro
+Nakano, and 1 others. 2021.
+Training verifiers
+to solve math word problems.
+arXiv preprint
+arXiv:2110.14168.
+
+Xiang Lisa Li, Tianyu Gong, Tian He, Dan Jurafsky,
+Percy Liang, and Steven CH Zhao. 2022. Diffusion-
+lm improves controllable text generation.
+In Ad-
+vances in Neural Information Processing Systems
+(NeurIPS).
+
+Prafulla Dhariwal and Alexander Quinn Nichol. 2021.
+Diffusion models beat gans on image synthesis. In
+Advances in Neural Information Processing Systems
+(NeurIPS).
+
+Yanhong Li, Chenghao Yang, and Allyson Ettinger.
+2024. When hindsight is not 20/20: Testing lim-
+its on reflective thinking in large language models.
+In Findings of the Association for Computational
+Linguistics: NAACL 2024, pages 3741–3753.
+
+Xidong Feng, Ziyu Wan, Muning Wen, Stephen Marcus
+McAleer, Ying Wen, Weinan Zhang, and Jun Wang.
+2023. Alphazero-like tree-search can guide large lan-
+guage model decoding and training. arXiv preprint
+arXiv:2309.17179.
+
+Alexander H Liu, Kartik Khandelwal, Sandeep Sub-
+ramanian, Victor Jouault, Abhinav Rastogi, Adrien
+Sadé, Alan Jeffares, Albert Jiang, Alexandre Cahill,
+Alexandre Gavaudan, and 1 others. 2026. Ministral
+3. arXiv preprint arXiv:2601.08584.
+
+Zeyu Gan, Yun Liao, and Yong Liu. 2025. Rethinking
+external slow-thinking: From snowball errors to prob-
+ability of correct reasoning. In International Confer-
+ence on Machine Learning, pages 18170–18188.
+
+Xinyu Guan, Li Lyna Zhang, Yifei Liu, Ning Shang,
+Youran Sun, Yi Zhu, Fan Yang, and Mao Yang. 2025.
+
+Ilya Loshchilov and Frank Hutter. 2017.
+Decou-
+pled weight decay regularization.
+arXiv preprint
+arXiv:1711.05101.
+
+Yuchen Tian, Ruiyuan Huang, Xuanwu Wang, Jing
+Ma, Zengfeng Huang, Ziyang Luo, Hongzhan Lin,
+Da Zheng, and Lun Du. 2025a. Evolprover: Advanc-
+ing automated theorem proving by evolving formal-
+ized problems via symmetry and difficulty. arXiv
+preprint arXiv:2510.00732.
+
+Zimu Lu, Aojun Zhou, Ke Wang, Houxing Ren,
+Weikang Shi, Junting Pan, Mingjie Zhan, and Hong-
+sheng Li. 2024. Step-controlled dpo: Leveraging
+stepwise error for enhanced mathematical reasoning.
+CoRR.
+
+Yuchen Tian, Weixiang Yan, Qian Yang, Xuandong
+Zhao, Qian Chen, Wen Wang, Ziyang Luo, Lei Ma,
+and Dawn Song. 2025b. Codehalu: Investigating
+code hallucinations in llms via execution-based ver-
+ification. In Proceedings of the AAAI Conference
+on Artificial Intelligence, volume 39, pages 25300–
+25308.
+
+Qing Lyu, Tongshuang Wu, Fei Sha, and Graham
+Neubig. 2023. Faithful chain-of-thought reasoning.
+Preprint, arXiv:2301.13379.
+
+Mathematical Association of America. 2025. Ameri-
+can invitational mathematics examination.
+//maa.org/.
+
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Al-
+bert, Amjad Almahairi, Yasmine Babaei, Nikolay
+Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti
+Bhosale, and 1 others. 2023. Llama 2: Open foun-
+dation and fine-tuned chat models. arXiv preprint
+arXiv:2307.09288.
+
+Arindam Mitra, Hamed Khanpour, Corby Rosset, and
+Ahmed Awadallah. 2024. Orca-math: Unlocking
+the potential of slms in grade school math. Preprint,
+arXiv:2402.14830.
+
+Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai
+Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui.
+2024. Math-shepherd: Verify and reinforce LLMs
+step-by-step without human annotations. In Proceed-
+ings of the 62nd Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), pages 9426–9439, Bangkok, Thailand. Associ-
+ation for Computational Linguistics.
+
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida,
+Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, and 1
+others. 2022. Training language models to follow in-
+structions with human feedback. Advances in neural
+information processing systems, 35:27730–27744.
+
+Arka Pal, Deep Karkhanis, Samuel Dooley, Man-
+ley Roberts, Siddartha Naidu, and Colin White.
+2024.
+Smaug:
+Fixing failure modes of prefer-
+ence optimisation with dpo-positive. arXiv preprint
+arXiv:2402.13228.
+
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le,
+Ed Chi, Sharan Narang, Aakanksha Chowdhery, and
+Denny Zhou. 2023. Self-consistency improves chain
+of thought reasoning in language models. In Inter-
+national Conference on Learning Representations
+(ICLR).
+
+Arkil Patel, Satwik Bhattamishra, and Navin Goyal.
+2021.
+Are nlp models really able to solve
+simple math word problems?
+arXiv preprint
+arXiv:2103.07191.
+
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+and 1 others. 2022. Chain-of-thought prompting elic-
+its reasoning in large language models. Advances
+in neural information processing systems, 35:24824–
+24837.
+
+Yiwei Qin, Xuefeng Li, Haoyang Zou, Yixiu Liu, Shijie
+Xia, Zhen Huang, Yixin Ye, Weizhe Yuan, Hector
+Liu, Yuanzhi Li, and 1 others. 2024. O1 replication
+journey: A strategic progress report–part 1. arXiv
+preprint arXiv:2410.18982.
+
+Zhenyu Wu, Qingkai Zeng, Zhihan Zhang, Zhaoxuan
+Tan, Chao Shen, and Meng Jiang. 2024. Enhancing
+mathematical reasoning in llms by stepwise correc-
+tion. Preprint, arXiv:2410.12934.
+
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Christo-
+pher D Manning, Stefano Ermon, and Chelsea Finn.
+2023. Direct preference optimization: Your language
+model is secretly a reward model. In Thirty-seventh
+Conference on Neural Information Processing Sys-
+tems.
+
+Zhiheng Xi, Dingwen Yang, Jixuan Huang, Jiafu Tang,
+Guanyu Li, Yiwen Ding, Wei He, Boyang Hong,
+Shihan Do, Wenyu Zhan, and 1 others. 2024. En-
+hancing llm reasoning via critique models with test-
+time and training-time supervision. arXiv preprint
+arXiv:2411.16579.
+
+Stéphane Ross, Geoffrey Gordon, and Drew Bagnell.
+2011. A reduction of imitation learning and struc-
+tured prediction to no-regret online learning. In Pro-
+ceedings of the fourteenth international conference
+on artificial intelligence and statistics, pages 627–
+635. JMLR Workshop and Conference Proceedings.
+
+A
+Data Statistics
+
+Yifan Xu, Xiao Liu, Xinghan Liu, Zhenyu Hou, Yueyan
+Li, Xiaohan Zhang, Zihan Wang, Aohan Zeng,
+Zhengxiao Du, Zhao Wenyi, Jie Tang, and Yux-
+iao Dong. 2024. ChatGLM-math: Improving math
+problem-solving in large language models with a
+self-critique pipeline. In Findings of the Association
+for Computational Linguistics: EMNLP 2024, pages
+9733–9760, Miami, Florida, USA. Association for
+Computational Linguistics.
+
+We primarily evaluate our DIFFCOT on math-
+ematical
+reasoning
+benchmarks,
+specifically
+SVAMP (Patel et al., 2021), MATH (Hendrycks
+et al., 2021) and GSM8K (Cobbe et al., 2021). The
+MATH is divided into five difficulty levels, as de-
+fined in the original dataset. To reduce randomness
+and better showcase the experimental results, we
+sample test instances separately from each of five
+levels. To maintain a reasonable computational
+budget, particularly given the high cost of Tree-of-
+Thought (Yao et al., 2023) search, we restrict each
+dataset to at most 300 test samples through random
+sampling. For training, we similarly sample 300
+instances from each dataset to construct the train-
+ing set. For a fair comparison, all baseline methods
+use the same dataset configuration. We provide the
+detailed data statistics in Table 3.
+
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui,
+Bo Zheng,
+Bowen Yu,
+Chang
+Gao, Chengen Huang, Chenxu Lv, and 1 others.
+2025.
+Qwen3 technical report.
+arXiv preprint
+arXiv:2505.09388.
+
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran,
+Tom Griffiths, Yuan Cao, and Karthik Narasimhan.
+2023. Tree of thoughts: Deliberate problem solving
+with large language models.
+Advances in neural
+information processing systems, 36:11809–11822.
+
+Jaesik Yoon, Hyeonseo Cho, Doojin Baek, Yoshua Ben-
+gio, and Sungjin Ahn. 2025. Monte carlo tree diffu-
+sion for system 2 planning. In Forty-second Interna-
+tional Conference on Machine Learning.
+
+Dataset
+#Train
+#Test
+#Step K
+#window
+
+GSM8K
+7473
+1319
+5
+2
+SVAMP
+794
+206
+3
+2
+MATH-L1
+564
+437
+3
+2
+MATH-L2
+1348
+894
+4
+2
+MATH-L3
+1592
+1131
+5
+2
+MATH-L4
+1690
+1214
+6
+3
+MATH-L5
+2304
+1324
+6
+3
+
+Xuan Zhang, Chao Dut, Tianyu Pang, Qian Liu, Wei
+Gao, and Min Lin. 2024. Chain of preference opti-
+mization: improving chain-of-thought reasoning in
+llms. In Proceedings of the 38th International Con-
+ference on Neural Information Processing Systems,
+pages 333–356.
+
+Shao Zhihong, Wang Peiyi, Zhu Qihao, Xu Runxin,
+Song Junxiao, Zhang Mingchuan, Y. K. Li, Y. Wu,
+and Guo Daya. 2024. Deepseekmath: Pushing the
+limits of mathematical reasoning in open language
+models.
+
+Table 3: Dataset-specific configurations for the reason-
+ing experiments. #Train and #Test denote the num-
+bers of training and test samples, respectively. #Step K
+denotes the maximum number of reasoning steps, while
+#window denotes the number of reasoning windows.
+
+B
+Implementation Details
+
+to obtain a final answer. We then compute the
+empirical success rate as the fraction of rollouts
+that yield the correct answer.
+We continue the search by greedily selecting the
+candidate with the highest success rate, appending
+it to the prefix, and repeating the above procedure
+until the reasoning process terminates. We pro-
+vide a detailed example with step-wise reasoning
+annotations in Figure 5.
+
+serve as substitutes for PRM outputs in the global
+loss.
+Moreover, for CPO and ToT baselines, we fol-
+low the implementation described in the CPO pa-
+per, where preference pairs are constructed via
+LLM self-evaluation of intermediate reasoning
+steps. This design choice highlights the fundamen-
+tal distinction between CPO-style self-judgment-
+based supervision and Step-DPO-style supervision
+derived from execution or outcome feedback.
+
+Model Training
+For efficient fine-tuning, we em-
+ploy Low-Rank Adaptation (LoRA) (Hu et al.,
+2022) with a rank of 8 and α = 16, where
+LoRA adapters are inserted into the q_proj and
+v_proj linear projections of every self-attention
+layer.
+Model training is conducted using the
+DPO (Rafailov et al., 2023) loss with a regu-
+larization coefficient of β = 0.1, optimized by
+AdamW (Loshchilov and Hutter, 2017) with a co-
+sine learning rate schedule.We train for only one
+epoch. For the MATH dataset, we use a learn-
+ing rate of 1 × 10−5 for Qwen3-8B, 2 × 10−5
+
+C
+Discussion with Reinforcement
+Learning
+
+PO methods generally follow a paradigm: tra-
+jectory generation followed by trajectory-level
+reweighting. The model first expands a full rea-
+soning path via longitudinal generation. Align-
+ment is then applied horizontally across completed
+trajectories using either reinforcement learning or
+preference optimization, discouraging low-reward
+reasoning paths and favoring high-reward ones.
+While this paradigm of vertical generation fol-
+lowed by horizontal RL-based refinement has
+achieved broad empirical success, it inevitably suf-
+fers from error accumulation (Gan et al., 2025;
+Tian et al., 2025b; Sun et al., 2026), as early mis-
+takes in the generated trajectory can propagate and
+constrain subsequent optimization.
+
+for Qwen3-4B, 1.5 × 10−5 for Llama3-8B, and
+2.5×10−5 for Ministral. For SVAMP and GSM8K,
+we use a learning rate of 2 × 10−5. We set the
+warm-up ratio to 0.05 and the global batch size to
+8. During decoding, the temperature is fixed at 0.
+Compared results (p < 0.05 under t-test) are aver-
+aged over three random runs. All experiments are
+conducted on NVIDIA A100 GPUs 80GB. Train-
+ing and inference on 300 GSM8K samples require
+approximately 11 GPU-hours in total.
+
+Chen et al. (2025) theoretically showed that the
+denoising process of diffusion models, which grad-
+ually transforms low-quality samples into high-
+quality ones, is equivalent to preference optimiza-
+tion. Building on this insight, DIFFCOT introduces
+a diffusion sliding window, tightly coupling longi-
+tudinal reasoning generation with horizontal pref-
+erence optimization within a unified framework.
+From this perspective, we believe that future
+extensions of our method can naturally integrate
+reinforcement learning, leveraging RL to directly
+optimize the denoising dynamics of the diffusion
+sliding window.
+
+Baseline Implementation
+The instruction-tuned
+backbone models are implemented by adopting
+the ‘Meta-Llama-3-8B-Instruct2’, ‘Qwen3-8B3’,
+‘Ministral3-8B-Instruct-25124’ and ‘Qwen3-4B-
+Instruct-25075’ versions.
+For Full-Step-DPO, we do not retrain the Pro-
+cess Reward Model (PRM) introduced in Full-Step-
+DPO. In our implementation, we retain the pro-
+posed global step-wise loss formulation, but re-
+place the PRM-based step rewards with empirical
+success rates estimated from Monte-Carlo rollouts.
+Specifically, we collect extra complete reasoning
+trajectories from rollouts and use their final out-
+comes to compute success-based step scores, which
+
+D
+Additional Experiments
+
+2
+Meta-Llama-3-8B-Instruct
+
+3
+4
+Ministral-3-8B-Instruct-2512-BF16
+
+D.1
+Sensitivity Analysis of Parameter β
+
+As shown in Table 5, our model achieves the best
+performance on most model–dataset combinations.
+In particular, on the Qwen models with MATH-L4,
+it substantially outperforms previous methods.
+
+We analyze the sensitivity of the β parameter in the
+DPO loss, which controls the difference between
+the new and old policies. Specifically, we conduct
+this experiment with Qwen3-4B and Llama3-8B
+on the SVAMP and MATH-L4 benchmarks.
+As shown in Table 4, the results show that our
+method remains stable within a reasonable varia-
+tion range, without suffering a sharp performance
+drop, which demonstrates its robustness.
+
+D.3
+Results under Different Evaluation
+Protocols
+
+To further assess the generation quality of DIF-
+
+FCOT, we evaluate it under multiple evaluation
+protocols. In the main paper, we adopt a strict crite-
+rion, where a prediction is counted as correct only
+if the model outputs the correct numerical answer
+in the required format. To better reflect the actual
+reasoning ability of DIFFCOT, we further consider
+two additional protocols: format_agnostic, which
+ignores the formatting requirement and extracts the
+last occurring number in the output as the predicted
+answer, and contains_gt, which checks whether
+the generated text contains the ground-truth answer
+anywhere in the response.
+
+Model
+SVAMP (%)
+MATH-L4 (%)
+
+Llama3-8B
+
+- β = 0.05
+75.0 -1.9
+8.3 -1.2
+- β = 0.1
+76.9
+9.5
+- β = 0.15
+76.5 -0.4
+9.0 -0.5
+- β = 0.2
+74.7 -1.8
+8.7 -0.8
+
+Qwen3-4B
+
+- β = 0.05
+87.2 -3.0
+22.1 -2.3
+- β = 0.1
+90.2
+24.4
+- β = 0.15
+89.9 -0.3
+24.2 -0.2
+- β = 0.2
+88.8 -1.4
+22.9 -1.5
+
+Table 4: Sensitivity Analysis of Parameter β. The best
+results are highlighted in bold. Numbers shown in
+the upper-right corner of each cell indicate the relative
+change in accuracy rate compared to the default β = 0.1
+setting.
+
+Method
+Strict (%)
+Agnostic(%)
+Contain (%)
+
+GSM8K
+
+CoT
+84.7
+86.1
+88.7
+Step-DPO
+87.5
+88.9
+90.7
+FStep
+87.2
+88.4
+89.1
+DIFFCOT
+88.5
+90.8
+91.6
+
+SVAMP
+
+D.2
+Results on the Full Test Set
+
+CoT
+86.8
+87.8
+89.2
+Step-DPO
+88.3
+89.3
+94.7
+FStep
+89.7
+90.2
+92.0
+DIFFCOT
+90.2
+90.8
+92.2
+
+To mitigate the potential impact of dataset splitting,
+we additionally evaluate our method on the full test
+sets. Specifically, we use Llama3-8B, Qwen3-4B,
+and Qwen3-8B for evaluation on the full SVAMP
+test set and the full MATH-L4 test set.
+
+MATH-L1
+
+CoT
+59.3
+62.7
+88.3
+Step-DPO
+61.9
+66.3
+89.0
+FStep
+64.5
+67.1
+88.7
+DIFFCOT
+75.0
+88.0
+91.7
+
+MATH-L2
+
+Method
+SVAMP (%)
+MATH-L4 (%)
+
+CoT
+35.0
+38.9
+75.6
+Step-DPO
+34.1
+38.8
+75.4
+FStep
+39.9
+41.7
+76.0
+DIFFCOT
+48.7
+77.0
+87.7
+
+Llama3-8B
+
+CoT
+74.7
+6.0
+Step-DPO
+75.8
+8.6
+Full-Step-DPO
+75.9
+7.4
+DIFFCOT
+77.1
+7.8
+
+MATH-L3
+
+CoT
+21.6
+26.2
+71.7
+Step-DPO
+24.5
+25.6
+75.4
+FStep
+27.6
+29.1
+77.0
+DIFFCOT
+33.1
+73.8
+86.3
+
+Qwen3-4B
+
+CoT
+80.5
+8.2
+Step-DPO
+88.5
+9.4
+Full-Step-DPO
+87.3
+15.6
+DIFFCOT
+90.2
+22.6
+
+MATH-L4
+
+CoT
+10.5
+11.6
+59.6
+Step-DPO
+12.3
+13.0
+59.4
+FStep
+18.4
+17.6
+62.1
+DIFFCOT
+24.4
+62.9
+78.3
+
+Qwen3-8B
+
+CoT
+85.7
+12.6
+Step-DPO
+85.9
+12.8
+Full-Step-DPO
+87.1
+17.0
+DIFFCOT
+89.3
+23.2
+
+MATH-L5
+
+CoT
+3.9
+6.8
+48.0
+Step-DPO
+5.0
+7.3
+51.7
+FStep
+5.1
+8.4
+58.9
+DIFFCOT
+13.2
+37.3
+61.9
+
+experiments.
+However, since the base reasoning abilities of
+Llama3-8B and Ministral3-8B are too weak, both
+models achieve zero correct answers on AIME
+1983–2025. As a result, even with multiple rollouts,
+they produce only a very limited number of correct
+response samples, which makes preference opti-
+mization training infeasible. Therefore, we only
+report the results of Qwen3-4B and Qwen3-8B.
+As shown in Table 8, our method remains com-
+petitive on this benchmark and achieves strong per-
+formance across different backbones. These results
+further demonstrate that our method generalizes
+well to harder mathematical reasoning benchmarks
+beyond SVAMP and MATH.
+
+The results of Qwen3-4B and Qwen3-8B on dif-
+ferent datasets under these evaluation protocols are
+shown in Table 6 and Table 7. As can be seen, DIF-
+
+FCOT consistently achieves clear improvements
+under all three evaluation protocols. This indicates
+that the gains of our method do not merely come
+from better instruction following or answer format-
+ting, but reflect a real enhancement in the model’s
+underlying reasoning capability.
+
+Method
+Strict (%)
+Agnostic(%)
+Contain (%)
+
+GSM8K
+
+CoT
+87.3
+88.1
+90.8
+Step-DPO
+86.4
+87.6
+93.4
+FStep
+88.7
+89.0
+93.3
+DIFFCOT
+91.3
+91.4
+92.9
+
+SVAMP
+
+CoT
+86.4
+88.3
+91.7
+Step-DPO
+87.7
+88.9
+92.1
+FStep
+87.9
+89.4
+92.3
+DIFFCOT
+89.3
+89.8
+93.6
+
+Method
+Strict (%)
+Agnostic(%)
+Contain (%)
+
+Qwen3-4B
+
+CoT
+5.5
+6.6
+23.3
+Step-DPO
+10.0
+10.0
+28.8
+FStep
+12.2
+13.3
+30.0
+DIFFCOT
+30.0
+32.2
+35.5
+
+MATH-L1
+
+CoT
+69.7
+75.6
+87.0
+Step-DPO
+71.2
+76.7
+88.0
+FStep
+74.3
+78.5
+88.3
+DIFFCOT
+77.0
+79.9
+85.1
+
+Qwen3-8B
+
+CoT
+8.8
+10.0
+17.7
+Step-DPO
+14.4
+14.4
+24.4
+FStep
+12.2
+13.3
+20.0
+DIFFCOT
+20.0
+20.0
+26.6
+
+MATH-L2
+
+CoT
+51.1
+58.0
+81.3
+Step-DPO
+51.9
+59.4
+82.2
+FStep
+53.2
+61.7
+81.9
+DIFFCOT
+58.1
+74.3
+78.4
+
+Table 8: Result on AIME Benchmark. The best results
+are highlighted in bold, FStep denotes Full-Step-DPO.
+Agnostic denotes format_agnostic, and Contain denotes
+contains_gt.
+
+MATH-L3
+
+CoT
+31.3
+37.0
+77.8
+Step-DPO
+32.3
+37.2
+78.1
+FStep
+35.4
+38.0
+78.3
+DIFFCOT
+42.8
+71.5
+79.0
+
+E
+Generative AI Usage
+
+MATH-L4
+
+CoT
+14.0
+16.4
+62.4
+Step-DPO
+14.8
+16.5
+62.7
+FStep
+18.8
+19.4
+63.9
+DIFFCOT
+26.6
+43.9
+70.1
+
+AI assistants were used in a limited and supportive
+manner during the preparation of this manuscript,
+primarily for language polishing, formatting sug-
+gestions, and improving clarity of presentation.
+
+MATH-L5
+
+CoT
+4.9
+6.9
+51.2
+Step-DPO
+5.5
+7.4
+52.8
+FStep
+7.1
+8.6
+59.2
+DIFFCOT
+14.9
+49.0
+65.7
+
+Table 7: Qwen3-8B results under different evaluation
+protocols. The best results are highlighted in bold.
+FStep denotes Full-Step-DPO. Agnostic denotes for-
+mat_agnostic, and Contain denotes contains_gt.
+
+D.4
+Results on AIME
+
+Question. In a truck, there are 26 pink hard hats, 15 green hard hats, and 24 yellow hard hats. If Carl takes away 4 pink
+hard hats, and John takes away 6 pink hard hats and twice as many green hard hats as the number of pink hard hats that
+he removed, calculate the total number of hard hats that remained in the truck.
+
+Prompt. You are an expert math problem solver. You must reason step by step and avoid logical or arithmetic mistakes.
+Solve the following math problem. You MUST use exactly 5 reasoning steps. After the reasoning, output the final
+answer in the last line using the format: Answer: <final_answer>.
+
+Step 1.
+
+[0] 26 pink hard hats −4 pink hard hats = 22 pink hard hats
+success_rate=0.0
+
+[1] 26 −4 = ? (number of pink hats after Carl’s removal)
+success_rate=0.125
+
+[2] Initial total number of hard hats: 26 + 15 + 24 = 65.
+success_rate=0.5
+
+[3] Initial number of pink hard hats is 26.
+success_rate=0.5
+
+[4] We have 26 pink hard hats initially. Carl takes away 4 pink hard hats, leaving us with 26 −4 = 22 pink hard hats.
+success_rate=0.75
+
+Step 2.
+
+[0] John removed 6 pink hats and 6 green hats, leaving 15 −6 = 9 green hats.
+success_rate=0.0
+
+[1] John removes 6 pink hats, so he removes 6 green hats as well.
+Thus 15 −6
+=
+9 green remain.
+success_rate=0.125
+
+[2] Carl removes 4 pink hard hats: 26 −4 = 22.
+success_rate=0.5
+
+[3] 6 pink hats are removed by John, leaving 22 −6 = 16 pink hats.
+success_rate=0.625
+
+[4] John removes 6 pink hats: 22 −6 = 16 pink left. He removes twice as many green hats: 2 × 6 = 12,so
+15 −12 = 3 green left.
+success_rate=1.0
+
+Step 3.
+
+[0] 24 yellow hard hats remain in the truck
+success_rate=0.75
+
+[1] We still have 24 yellow hard hats.
+success_rate=0.75
+
+[2] Yellow hard hats remain unchanged, so we still have 24 yellow hard hats.
+success_rate=0.875
+
+[3] 24 yellow hard hats remain in the truck and are not affected by the removals.
+success_rate=0.875
+
+[4] 24 yellow hard hats remain unchanged.
+success_rate=1.0
+
+Step 4.
+
+[1] 19 pink, 3 green, and 24 yellow hard hats remain in the truck.
+success_rate=0.0
+
+[1] 16 pink, 3 green, and 24 yellow hard hats remain in the truck.
+success_rate=0.75
+
+[2] 16 pink and 3 green hard hats remain; 16 + 3 = 19.
+success_rate=0.875
+
+[3] Total remaining hats: 16 + 3 + 24 = 43.
+success_rate=0.875
+
+[4] 16 pink and 3 green hard hats remain, so 16 + 3 = 19 hats across these two colors.
+success_rate=1.0
+
+Step 5.
+
+[0] Total: 3 + 19 + 24 =?
+success_rate=0.0
+
+[1] Total remaining hats: 3 + 19 + 24 =?
+success_rate=0.0
+
+[2] Total: 19 + 24 = 43.
+success_rate=0.875
+
+[3] Combining 19 (pink+green) with 24 yellow gives 19 + 24 = 43.
+success_rate=1.0
+
+[4] Total remaining hats: 19 + 24 = 43.
+success_rate=1.0
+
+Figure 5: Representative dataset example with step-wise reasoning annotations.

@@ -1,0 +1,1789 @@
+Towards Fast Stochastic Sampling in Diffusion
+Generative Models
+
+Kushagra Pandey ∗
+Department of Computer Science
+University of California, Irvine
+
+Maja Rudolph
+Bosch Center for Artificial Intelligence
+
+arXiv:2402.07211v2 [cs.LG] 13 Feb 2024
+
+Stephan Mandt
+Department of Computer Science
+University of California, Irvine
+
+Abstract
+
+Diffusion models suffer from slow sample generation at inference time. Despite re-
+cent efforts, improving the sampling efficiency of stochastic samplers for diffusion
+models remains a promising direction. We propose Splitting Integrators for fast
+stochastic sampling in pre-trained diffusion models in augmented spaces. Com-
+monly used in molecular dynamics, splitting-based integrators attempt to improve
+sampling efficiency by cleverly alternating between numerical updates involving
+the data, auxiliary, or noise variables. However, we show that a naive application
+of splitting integrators is sub-optimal for fast sampling. Consequently, we propose
+several principled modifications to naive splitting samplers for improving sampling
+efficiency and denote the resulting samplers as Reduced Splitting Integrators. In
+the context of Phase Space Langevin Diffusion (PSLD) [Pandey & Mandt, 2023]
+on CIFAR-10, our stochastic sampler achieves an FID score of 2.36 in only 100
+network function evaluations (NFE) as compared to 2.63 for the best baselines.
+
+1
+Introduction
+
+Diffusion models [1–4] have demonstrated impressive performance on various tasks, such as image
+and video synthesis [5–12], image super-resolution [13], and audio and speech synthesis [14, 15].
+However, we identify two problems with the current landscape for fast sampling in diffusion models.
+
+Firstly, while fast sample generation in diffusion models is an active area of research, recent advances
+have mostly focused on accelerating deterministic samplers [16–18]. However, the latter does not
+achieve optimal sample quality even with a large NFE budget and may require specialized training
+improvements [19]. In contrast, stochastic samplers usually achieve better sample quality but require
+a larger sampling budget than their deterministic counterparts.
+
+Secondly, most efforts to improve diffusion model sampling have focused on a specific family of
+models that perform diffusion in the data space [4, 19]. However, recent work [20–22] indicates that
+performing diffusion in a joint space, where the data space is augmented with auxiliary variables, can
+improve sample quality and likelihood over data-space-only diffusion models. However, improving
+the sampling efficiency for augmented diffusion models is still underexplored but a promising avenue
+for further improvements. Therefore, a generic framework is required for faster sampling from a
+broader class of diffusion models.
+
+∗Work partially done during an internship at Bosch Center for Artificial Intelligence
+
+Problem Statement: Efficient Stochastic Sampling during Inference. Our goal is to develop
+efficient stochastic samplers that are applicable to sampling from a broader class of diffusion models
+(for instance, augmented diffusion models like PSLD [21]) and achieve high-fidelity samples, even
+when the NFE budget is greatly reduced, e.g., from 1000 to 100 or even 50. We evaluate the
+effectiveness of the proposed samplers in the context of PSLD [21] due to its strong empirical
+performance. However, the presented techniques are also applicable to other diffusion models.
+
+Contributions. Taking inspiration from molecular dynamics [23], we present Splitting Integrators
+for efficient sampling in diffusion models. However, we show that their naive application can be
+sub-optimal for sampling efficiency. Therefore, based on local error analysis for numerical solvers
+[24], we present several improvements to our naive schemes to achieve improved sample efficiency.
+We denote the resulting samplers as Reduced Splitting Integrators.
+
+2
+Background
+
+We provide relevant background on diffusion models and their augmented versions. Specifically,
+diffusion models assume that a continuous-time forward process (with affine drift),
+
+dzt = Ftzt dt + Gt dwt,
+t ∈[0, T],
+(1)
+
+with a standard Wiener process wt, time-dependent matrix F : [0, T] →Rd×d, and diffusion
+coefficient G: [0, T] →Rd×d, converts data z0 ∈Rd into noise. A reverse SDE specifies how data
+is generated from noise [4, 25],
+
+dzt =
+
+Ftzt −GtG⊤
+t ∇xt log pt(zt)
+
+dt + Gtd ¯wt,
+(2)
+
+which involves the score (∇zt log pt(zt)) of the marginal distribution over zt at time t. The score
+is intractable to compute and is approximated using a parametric estimator sθ(zt, t), trained using
+denoising score matching [2, 4, 26]. Once the score has been learned, generating new data samples
+involves sampling noise from the stationary distribution of Eqn. 1 (typically an isotropic Gaussian)
+and numerically integrating Eqn. 2, resulting in a stochastic sampler. Next, we highlight two classes
+of diffusion models.
+
+Non-Augmented Diffusions. Many existing diffusion models are formulated purely in data space,
+i.e., zt = xt ∈Rd. One popular example is the Variance Preserving (VP)-SDE [4] with Ft =
+−1
+
+2βtId, Gt = √βtId. Recently, Karras et al. [19] instead propose a re-scaled process, with
+Ft = 0d, Gt = √2 ˙σtσtId ,which allows for faster sampling during generation. Here βt, σt ∈R
+define the noise schedule in their respective diffusion processes.
+
+Augmented Diffusions. For augmented diffusions, the data (or position) space, xt, is coupled with
+auxiliary (a.k.a momentum) variables, mt, and diffusion is performed in the joint space. For instance,
+Pandey and Mandt [21] propose PSLD, where zt = [xt, mt]T ∈R2d. Moreover,
+
+
+,
+Gt =
+√Γβ
+0
+0
+√Mνβ
+
+
+−Γ
+M −1
+−1
+−ν
+
+
+⊗Id
+
+
+,
+(3)
+
+Ft =
+β
+
+
+⊗Id
+
+2
+
+where {β, Γ, ν, M −1} ∈R are the SDE hyperparameters. Augmented diffusions have been shown to
+exhibit better sample quality with a faster generation process [20, 21], and better likelihood estimation
+[22] over their non-augmented counterparts. In this work, we focus on sample quality and, therefore,
+study the efficient samplers we develop in the PSLD setting.
+
+3
+Splitting Integrators for Fast Stochastic Sampling
+
+Splitting integrators are commonly used to design symplectic numerical solvers for molecular
+dynamics systems [23]. However, their application for fast diffusion sampling is still underexplored
+[20]. The main intuition behind splitting integrators is to split an ODE/SDE into subcomponents,
+which are then independently solved numerically (or analytically). The resulting updates are then
+composed in a specific order to obtain the final solution. We briefly introduce splitting integrators
+in Appendix A.1 and refer interested readers to Leimkuhler [23] for a detailed discussion. Splitting
+integrators are particularly suited for augmented diffusion models since they can leverage the split into
+position and momentum variables for faster sampling. However, their application for fast sampling in
+position-space-only diffusion models [4, 19] remains an interesting direction for future work.
+
+(a)
+(b)
+(c)
+(d)
+
+Figure 1: Splitting integrators for fast stochastic sampling in diffusion models. a) Sample quality
+comparisons between naive splitting schemes and the EM Sampler. (b-d) Reduced Splitting schemes
+outperform their naive counterparts by a large margin. (Left to Right) Comparisons between the naive
+splitting schemes and their reduced counterparts for the OBA, BAO, and OBAB samplers.
+
+Naive Stochastic Splitting Integrators. We apply splitting integrators to the PSLD Reverse SDE
+and use the following splitting scheme.
+
+d¯xt
+d ¯mt
+
+
+2Γ¯xt −M −1 ¯mt + 2Γsx
+θ(¯zt, t)
+0
+
+
+dt
+|
+{z
+}
+A
+
+
+= β
+
+
+dt
+|
+{z
+}
+B
+
+
+0
+¯xt + 2ν ¯mt + 2Mνsm
+θ (¯zt, t)
+
++O + β
+
+.
+
+2
+
+2
+
+where ¯xt = xT −t, ¯mt = mT −t, sx
+θ and sm
+θ denote the score components in the data and momentum
+
+2 ¯xtdt + √βΓd ¯wt
+−βν
+
+space, respectively, and O =
+
+−βΓ
+
+
+represents the Ornstein-Uhlenbeck pro-
+
+2 ¯mtdt + √Mνβd ¯wt
+
+cess in the joint space. Given step size h, we further denote the Euler updates for the components
+A, B and O as LA
+h , LB
+h and LO
+h , respectively. These updates can be composed differently to yield
+a valid stochastic sampler. Among several possible composition schemes, we find OBA, BAO,
+and OBAB to work particularly well (See Appendix A.2 for complete numerical updates). We
+refer to these schemes as Naive Splitting Integrators. Consequently, we denote these samplers as
+NOBA, NBAO, and NOBAB, respectively. For an empirical evaluation, we utilize a PSLD model
+[21] (Γ = 0.01, ν = 4.01) pre-trained on CIFAR-10. We measure sampling efficiency via network
+function evaluations (NFE) and measure sample quality using FID [27]. Our proposed naive samplers
+outperform the baseline Euler-Maruyama (EM) sampler (Fig. 1a). This is intuitive since, unlike EM,
+the proposed naive samplers alternate between updates in the momentum and the position space, thus
+exploiting the coupling between the data and the momentum variables. Next, we propose several
+modifications to the naive schemes to further improve sampling efficiency.
+
+Reduced Stochastic Splitting Integrators. While the proposed naive schemes perform well, Fig. 1a
+also suggests scope for improvement, especially at low NFE budgets. This suggests the need for a
+deeper insight into the error analysis for the naive schemes. Therefore, based on local error analysis
+for SDEs, we propose the following modifications to our naive samplers.
+
+• Firstly, we reuse the score function evaluation between the first consecutive position and the
+momentum updates.
+
+• Secondly, for sampling schemes involving half-steps (i.e. with step-size h/2 like NOBAB), we
+evaluate the score in the last step with a timestep embedding of T −(t + h) instead of T −t.
+
+• Lastly, similar to Karras et al. [19], we introduce a parameter λs in the position space update
+for LO to control the amount of noise injected in the position space. However, adding a similar
+parameter in the momentum space led to unstable behavior. Therefore, we restrict this adjustment
+to the position space. For a given sampling budget, we explicitly adjust λs for optimal sample
+quality via a simple grid search during inference. We include more details in Appendix A.2.2
+
+Applying these modifications to naive splitting integrators yields Reduced Splitting Integrators.
+Consequently, we denote these samplers as ROBA, RBAO, and ROBAB, respectively (See Appendix
+A.2.3 for complete numerical updates). Figures 1b-1d compare the performance of our reduced
+samplers with their naive counterparts. Empirically, our modifications significantly improve sample
+quality for all three samplers (Fig. 1b-1d). This is because our proposed modifications serve the
+following benefits.
+
+(a)
+(b)
+(c)
+
+Figure 2: Comparison with state-of-the-art methods. a) Reduced OBA outperforms other reduced
+splitting schemes. (b, c) SPS outperforms competing baseline methods for stochastic sampling for
+the CIFAR-10 and CelebA-64 datasets, respectively.
+
+• First, re-using the score function evaluation between the first consecutive updates in the data and
+the momentum space reduces the number of NFEs per update step by one for all reduced samplers,
+which enables smaller step sizes for the same compute budget during sampling and hence largely
+reduces numerical discretization errors.
+
+• Secondly, re-using the score function evaluation leads to canceling certain error terms arising from
+numerical discretization, which is especially helpful for low NFE budgets.
+
+• Lastly, as also noted in recent works [19, 28], the choice of the variance of the noise injected during
+stochastic sampling can largely affect sample quality.
+
+4
+Additional Experimental Results
+
+Datasets and Evaluation Metrics. We use the CIFAR-10 and the CelebA-64 [29] datasets for
+comparisons. Unless specified otherwise, we report FID for 50k generated samples for all datasets
+and quantify sampling efficiency using NFE. We use the pre-trained models from PSLD [21] and use
+a last-step denoising step [30, 4] when sampling from the proposed samplers.
+
+Baselines and setup. While the techniques presented in this work are generally applicable to other
+types of diffusion models, we compare our best-performing reduced splitting integrator, ROBA (see
+Fig. 2a), with recent work on fast stochastic sampling in diffusion models including SA-Solver [31],
+SEEDS [32], EDM [19] and Analytic DPM [28]. We also compare with another splitting-based
+sampler, SSCS [20], applied to the PSLD reverse SDE. We denote our best-performing sampler as
+Splitting-based PSLD Sampler (SPS) for notational convenience.
+
+Empirical Results. For CIFAR-10, our SDE sampler outperforms all other baselines for different
+compute budgets (Fig. 2b). We make similar observations for the CelebA-64 dataset, where our
+proposed samplers can obtain significant gains over prior methods (see Fig. 2c). More specifically,
+our SDE sampler achieves an FID score of 2.36 and 2.64 for the CIFAR-10 and CelebA-64 datasets,
+respectively, in just 100 network function evaluations. We include additional results in Appendix C.
+
+5
+Conclusion
+
+We present a splitting integrator for fast stochastic sampling from a broader class of diffusion models.
+We show that a naive application of splitting integrators can be sub-optimal for sample quality. To
+this end, we propose a few modifications to our naive samplers and denote the resulting sampler
+as Reduced Splitting Integrators, which outperform existing baselines for fast stochastic sampling.
+Empirically, we find that controlling the amount of stochasticity injected in the data space during
+sampling can largely affect sample quality for the proposed splitting integrators. Therefore, further
+investigation into the theoretical aspects of optimal noise injection in stochastic sampling can be an
+interesting direction for future work. We also believe that exploring similar splitting samplers for
+position-space-only diffusion models like Stable-Diffusion [7] could also be an interesting direction
+for further work.
+
+References
+
+[1] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsuper-
+vised learning using nonequilibrium thermodynamics. In International Conference on Machine
+Learning, pages 2256–2265. PMLR, 2015.
+
+[2] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data
+distribution. Advances in neural information processing systems, 32, 2019.
+
+[3] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances
+in Neural Information Processing Systems, 33:6840–6851, 2020.
+
+[4] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and
+Ben Poole. Score-based generative modeling through stochastic differential equations. In
+International Conference on Learning Representations, 2020.
+
+[5] Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis.
+Advances in Neural Information Processing Systems, 34:8780–8794, 2021.
+
+[6] Jonathan Ho, Chitwan Saharia, William Chan, David J Fleet, Mohammad Norouzi, and Tim
+Salimans. Cascaded diffusion models for high fidelity image generation. J. Mach. Learn. Res.,
+23(47):1–33, 2022.
+
+[7] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pages 10684–10695, 2022.
+
+[8] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen. Hierarchical
+text-conditional image generation with clip latents, 2022. URL
+2204.06125.
+
+[9] Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily L Denton, Kamyar
+Ghasemipour, Raphael Gontijo Lopes, Burcu Karagol Ayan, Tim Salimans, et al. Photorealistic
+text-to-image diffusion models with deep language understanding. volume 35, pages 36479–
+36494, 2022.
+
+[10] Ruihan Yang, Prakhar Srivastava, and Stephan Mandt. Diffusion probabilistic modeling for
+video generation, 2022. URL
+
+[11] Jonathan Ho, Tim Salimans, Alexey A. Gritsenko, William Chan, Mohammad Norouzi, and
+David J. Fleet. Video diffusion models. In ICLR Workshop on Deep Generative Models for
+Highly Structured Data, 2022. URL
+
+[12] William Harvey, Saeid Naderiparizi, Vaden Masrani, Christian Weilbach, and Frank Wood.
+Flexible diffusion modeling of long videos. Advances in Neural Information Processing Systems,
+35:27953–27965, 2022.
+
+[13] Chitwan Saharia, Jonathan Ho, William Chan, Tim Salimans, David J Fleet, and Mohammad
+Norouzi. Image super-resolution via iterative refinement. IEEE Transactions on Pattern Analysis
+and Machine Intelligence, 2022.
+
+[14] Nanxin Chen, Yu Zhang, Heiga Zen, Ron J Weiss, Mohammad Norouzi, and William Chan.
+Wavegrad: Estimating gradients for waveform generation. In International Conference on Learn-
+ing Representations, 2021. URL
+
+[15] Max WY Lam, Jun Wang, Dan Su, and Dong Yu. Bddm: Bilateral denoising diffusion
+models for fast and high-quality speech synthesis. In International Conference on Learning
+Representations, 2021.
+
+[16] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In
+International Conference on Learning Representations, 2021. URL
+net/forum?id=St1giarCHLP.
+
+[17] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver:
+A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in
+Neural Information Processing Systems, 35:5775–5787, 2022.
+
+[18] Qinsheng Zhang and Yongxin Chen. Fast sampling of diffusion models with exponential
+integrator. In The Eleventh International Conference on Learning Representations, 2023. URL
+
+[19] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of
+diffusion-based generative models. Advances in Neural Information Processing Systems, 35:
+26565–26577, 2022.
+
+[20] Tim Dockhorn, Arash Vahdat, and Karsten Kreis. Score-based generative modeling with
+critically-damped langevin diffusion. In International Conference on Learning Representations,
+2022. URL
+
+[21] Kushagra Pandey and Stephan Mandt. A complete recipe for diffusion generative models. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pages
+4261–4272, October 2023.
+
+[22] Raghav Singhal, Mark Goldstein, and Rajesh Ranganath. Where to diffuse, how to diffuse, and
+how to get back: Automated learning for multivariate diffusions. In The Eleventh International
+Conference on Learning Representations, 2023. URL
+id=osei3IzUia.
+
+[23] B. Leimkuhler. Molecular dynamics : with deterministic and stochastic numerical methods /
+Ben Leimkuhler, Charles Matthews. Interdisciplinary applied mathematics, 39. Springer, Cham,
+2015. ISBN 3319163744.
+
+[24] E. Hairer, S. P. Nørsett, and G. Wanner. Solving Ordinary Differential Equations I (2nd Revised.
+Ed.): Nonstiff Problems. Springer-Verlag, Berlin, Heidelberg, 1993. ISBN 0387566708.
+
+[25] Brian D.O. Anderson. Reverse-time diffusion equation models. Stochastic Processes and
+their Applications, 12(3):313–326, 1982. ISSN 0304-4149. doi:
+0304-4149(82)90051-5.
+URL
+pii/0304414982900515.
+
+[26] Pascal Vincent. A connection between score matching and denoising autoencoders. Neural
+Computation, 23(7):1661–1674, 2011. doi: 10.1162/NECO_a_00142.
+
+[27] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter.
+Gans trained by a two time-scale update rule converge to a local nash equilibrium. Advances in
+neural information processing systems, 30, 2017.
+
+[28] Fan Bao, Chongxuan Li, Jun Zhu, and Bo Zhang. Analytic-DPM: an analytic estimate of the opti-
+mal reverse variance in diffusion probabilistic models. In International Conference on Learning
+Representations, 2022. URL
+
+[29] Ziwei Liu, Ping Luo, Xiaogang Wang, and Xiaoou Tang. Deep learning face attributes in the
+wild. In Proceedings of International Conference on Computer Vision (ICCV), December 2015.
+
+[30] Alexia Jolicoeur-Martineau, Rémi Piché-Taillefer, Ioannis Mitliagkas, and Remi Tachet des
+Combes. Adversarial score matching and improved sampling for image generation. In Inter-
+national Conference on Learning Representations, 2021. URL
+forum?id=eLfqMl3z3lq.
+
+[31] Shuchen Xue, Mingyang Yi, Weijian Luo, Shifeng Zhang, Jiacheng Sun, Zhenguo Li, and
+Zhi-Ming Ma. Sa-solver: Stochastic adams solver for fast sampling of diffusion models, 2023.
+
+[32] Martin Gonzalez, Nelson Fernandez, Thuy Tran, Elies Gherbi, Hatem Hajri, and Nader Mas-
+moudi. Seeds: Exponential sde solvers for fast high-quality sampling from diffusion models,
+2023.
+
+[33] Peter E. Kloeden and Eckhard Platen. Numerical Solution of Stochastic Differential Equations.
+Springer Berlin Heidelberg, 1992. doi: 10.1007/978-3-662-12616-5. URL
+org/10.1007/978-3-662-12616-5.
+
+[34] Alex Krizhevsky. Learning multiple layers of features from tiny images. pages 32–33, 2009.
+URL
+
+[35] Anton Obukhov, Maximilian Seitzer, Po-Wei Wu, Semen Zhydenko, Jonathan Kyl, and Elvis Yu-
+Jing Lin. High-fidelity performance metrics for generative models in pytorch, 2020. URL
+//github.com/toshas/torch-fidelity. Version: 0.3.0, DOI: 10.5281/zenodo.4957738.
+
+A
+Splitting Integrators
+
+A.1
+Introduction to Splitting Integrators
+
+Here, we provide a brief introduction to splitting integrators. For a detailed account of splitting
+integrators for designing symplectic numerical methods, we refer interested readers to Leimkuhler
+[23]. As discussed in the main text, the main idea behind splitting integrators is to split the vector
+field of an ODE or the drift and the diffusion components of an SDE into independent subcomponents,
+which are then solved independently using a numerical scheme (or analytically). The solutions to
+independent sub-components are then composed in a specific order to obtain the final solution. Thus,
+three key steps in designing a splitting integrator are split, solve, and compose. We illustrate these
+steps with an example of a deterministic dynamical system. However, the concept is generic and can
+be applied to systems with stochastic dynamics as well.
+
+Consider a dynamical system specified by the following ODE:
+
+dxt
+dmt
+
+
+=
+
+f(xt, mt)
+g(xt, mt)
+
+
+dt
+(4)
+
+We start by choosing a scheme to split the vector field for the ODE in Eqn. 4. While different types
+of splitting schemes can be possible, we choose the following scheme for this example,
+
+dxt
+dmt
+
+
+=
+
+f(xt, mt)
+0
+
+
+dt
+|
+{z
+}
+A
+
++
+
+0
+g(xt, mt)
+
+
+dt
+|
+{z
+}
+B
+
+(5)
+
+where we denote the individual components by A and B. Next, we solve each of these components
+independently, i.e., we compute solutions for the following ODEs independently.
+
+dxt
+dmt
+
+
+=
+
+f(xt, mt)
+0
+
+
+dt,
+
+dxt
+dmt
+
+
+=
+
+0
+g(xt, mt)
+
+
+dt
+(6)
+
+While any numerical scheme can be used to approximate the solution for the splitting components,
+we use Euler throughout this work. Therefore, applying an Euler approximation, with a step size h,
+to each of these splitting components yields the solutions LA
+h and LB
+h , as follows,
+
+LA
+h =
+xt+h = xt + hf(xt, mt)
+mt+h = mt
+,
+LB
+h =
+xt+h = xt
+mt+h = mt + hg(xt, mt)
+(7)
+
+In the final step, we compose the solutions to the independent components in a specific order. For
+instance, for the composition scheme AB, the final solution L[AB]
+h
+= LB
+h ◦LA
+h . Therefore,
+
+L[AB]
+h
+=
+xt+h = xt + hf(xt, mt)
+mt+h = mt + hg(xt+h, mt)
+(8)
+
+is the required solution. It is worth noting that the final solution depends on the chosen composition
+scheme, and often it is not clear beforehand which composition scheme might work best.
+
+A.2
+Stochastic Splitting Integrators
+
+We split the Reverse Diffusion SDE for PSLD using the following splitting scheme.
+
+d¯xt
+d ¯mt
+
+
+2Γ¯xt −M −1 ¯mt + 2Γsx
+θ(¯zt, t)
+0
+
+
+= β
+
+
+dt
+|
+{z
+}
+A
+
+
+dt
+|
+{z
+}
+B
+(9)
+
+
+0
+¯xt + 2ν ¯mt + 2Mνsm
+θ (¯zt, t)
+
++O + β
+
+2
+
+2
+
+2 ¯xtdt + √βΓd ¯wt
+−βν
+
+where O =
+
+−βΓ
+
+
+is the Ornstein-Uhlenbeck component which injects
+
+2 ¯mtdt + √Mνβd ¯wt
+
+stochasticity during sampling. Similar to the deterministic case, ¯xt = xT −t, ¯mt = mT −t, sx
+θ
+and sm
+θ denote the score components in the data and momentum space, respectively. We approximate
+the solution for splits A and B using a simple Euler-based numerical approximation. Formally,
+we denote the Euler approximation for the splits A and B by LA and LB, respectively, with their
+corresponding numerical updates specified as:
+
+2
+h
+2Γ¯xt −M −1 ¯mt + 2Γsx
+θ(¯xt, ¯mt, T −t)
+i
+
+(
+¯xt+h
+= ¯xt + hβ
+
+LA :
+
+¯mt+h
+= ¯mt
+(10)
+
+(
+¯xt+h
+= ¯xt
+¯mt+h
+= ¯mt + hβ
+
+LB :
+
+2
+h
+¯xt + 2ν ¯mt + 2Mνsm
+θ (¯xt, ¯mt, T −t)
+i
+(11)
+
+It is worth noting that the solution to the OU component can be computed analytically:
+
+
+
+
+2
+
+¯xt +
+p
+
+¯xt+h
+= exp
+
+−hβΓ
+
+1 −exp (−hβΓ)ϵx,
+ϵx ∼N(0d, Id)
+
+LO :
+
+1 −exp (−hβν)ϵm,
+ϵm ∼N(0d, Id)
+(12)
+
+2
+
+¯mt +
+√
+
+¯mt+h
+= exp
+
+−hβν
+
+M
+p
+
+
+
+Next, we highlight the numerical update equations for the Naive OBA, BAO, and OBAB samplers
+and their corresponding reduced analogues.
+
+A.2.1
+Naive Splitting Samplers
+
+Naive OBA: In this scheme, for a given step size h, the solutions to the splitting pieces LA
+h , LB
+h and
+LO
+h are composed as L[OBA]
+h
+= LA
+h ◦LB
+h ◦LO
+h . Consequently, one numerical update step for this
+integrator can be defined as,
+
+¯xt+h = exp
+−hβΓ
+
+
+¯xt +
+p
+
+1 −exp (−hβΓ)ϵx
+(13)
+
+2
+
+
+¯mt +
+√
+
+¯mt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(14)
+
+2
+
+ˆmt+h = ¯mt+h + hβ
+
+2 [¯xt+h + 2ν ¯mt+h + 2Mνsm
+θ (¯xt+h, ¯mt+h, T −t)]
+(15)
+
+ˆxt+h = ¯xt+h + hβ
+
+2
+
+2Γ¯xt+h −M −1 ˆmt+h + 2Γsx
+θ(¯xt+h, ˆmt+h, T −t)
+
+(16)
+
+where ϵx, ϵm ∼N(0d, Id). Therefore, one update step for Naive OBA requires two NFEs.
+
+Naive BAO: Given a step size h, the solutions to the splitting pieces LA
+h , LB
+h and LO
+h are composed
+as L[BAO]
+h
+= LO
+h ◦LA
+h ◦LB
+h . Consequently, one numerical update step for this integrator can be
+defined as,
+
+¯mt+h = ¯mt + hβ
+
+2 [¯xt + 2ν ¯mt + 2Mνsm
+θ (¯xt, ¯mt, T −t)]
+(17)
+
+¯xt+h = ¯xt + hβ
+
+2
+
+2Γ¯xt −M −1 ¯mt+h + 2Γsx
+θ(¯xt, ¯mt+h, T −t)
+
+(18)
+
+
+¯xt+h +
+p
+
+ˆxt+h = exp
+−hβΓ
+
+1 −exp (−hβΓ)ϵx
+(19)
+
+2
+
+
+¯mt+h +
+√
+
+ˆmt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(20)
+
+2
+
+where ϵx, ϵm ∼N(0d, Id). Therefore, one update step for Naive BAO requires two NFEs.
+
+Naive OBAB: Given a step size h, the solutions to the splitting pieces LA
+h , LB
+h and LO
+h are composed
+as L[OBAB]
+h
+= LB
+h/2 ◦LA
+h ◦LB
+h/2 ◦LO
+h . Consequently, one numerical update step for this integrator
+can be defined as,
+
+¯xt+h = exp
+−hβΓ
+
+
+¯xt +
+p
+
+1 −exp (−hβΓ)ϵx
+(21)
+
+2
+
+
+¯mt +
+√
+
+¯mt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(22)
+
+2
+
+ˆmt+h/2 = ¯mt+h + hβ
+
+4 [¯xt+h + 2ν ¯mt+h + 2Mνsm
+θ (¯xt+h, ¯mt+h, T −t)]
+(23)
+
+ˆxt+h = ¯xt+h + hβ
+
+2
+
+2Γ¯xt+h −M −1 ˆmt+h/2 + 2Γsx
+θ(¯xt+h, ˆmt+h/2, T −t)
+
+(24)
+
+ˆmt+h = ˆmt+h/2 + hβ
+
+4
+ˆxt+h + 2ν ˆmt+h/2 + 2Mνsm
+θ (ˆxt+h, ˆmt+h/2, T −t)
+
+(25)
+
+where ϵx, ϵm ∼N(0d, Id). Therefore, one update step for Naive OBAB requires three NFEs.
+
+A.2.2
+Effects of controlling stochasticity
+
+Similar to Karras et al. [19], we introduce a parameter λs in the position space update for LO to
+control the amount of noise injected in the position space. More specifically, we modify the numerical
+update equations for the Ornstein-Uhlenbeck process in the position space as follows:
+
+¯xt+h = exp
+−hβΓ
+
+
+¯xt +
+p
+
+1 −exp (−¯tλsβΓ)ϵx,
+ϵx ∼N(0d, Id)
+(26)
+
+2
+
+where ¯t = (T −t)+(T −t−h)
+
+2
+, i.e., the mid-point for two consecutive time steps during sampling. Our
+choice of ¯t is primarily based on empirical results. Moreover, we also choose λs empirically and
+tune it for a given step size h during inference. We also found that adding a similar noise scaling
+parameter in the momentum space led to unstable sampling. Therefore, we restrict this adjustment to
+only the position space.
+
+A.2.3
+Reduced Splitting Schemes
+
+We obtain the Reduced Splitting schemes by sharing the score function evaluation between the first
+consecutive position and momentum updates for all samplers. Additionally, for half-step updates (as
+in the OBAB scheme), we condition the score function with the timestep embedding of T −(t + h)
+instead of T −t. Moreover, we make the adjustments as described in Appendix A.2.2. The changes
+in red indicate the differences between the naive and the reduced samplers.
+
+Reduced OBA: The numerical updates for this scheme are as follows (the terms in red denote the
+changes from the Naive OBA scheme),
+
+
+¯xt +
+
+¯xt+h = exp
+−hβΓ
+
+p
+
+1 −exp (−¯tλsβΓ)ϵx
+(27)
+
+2
+
+
+¯mt +
+√
+
+¯mt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(28)
+
+2
+
+ˆmt+h = ¯mt+h + hβ
+
+2 [¯xt+h + 2ν ¯mt+h + 2Mνsm
+θ (¯xt+h, ¯mt+h, T −t)]
+(29)
+
+ˆxt+h = ¯xt+h + hβ
+
+2
+
+2Γ¯xt+h −M −1 ˆmt+h + 2Γsx
+θ(¯xt+h, ¯mt+h, T −t)
+
+
+(30)
+
+where ϵx, ϵm ∼N(0d, Id). It is worth noting that Reduced OBA requires only one NFE per update
+step since a single score evaluation is re-used in both the momentum and the position updates.
+
+Reduced BAO: The numerical updates for this scheme are as follows,
+
+¯mt+h = ¯mt + hβ
+
+2 [¯xt + 2ν ¯mt + 2Mνsm
+θ (¯xt, ¯mt, T −t)]
+(31)
+
+¯xt+h = ¯xt + hβ
+
+2
+
+2Γ¯xt −M −1 ¯mt+h + 2Γsx
+θ(¯xt, ¯mt, T −t)
+
+
+(32)
+
+ˆxt+h = exp
+−hβΓ
+
+
+¯xt+h +
+
+p
+
+1 −exp (−¯tλsβΓ)ϵx
+(33)
+
+2
+
+
+¯mt+h +
+√
+
+ˆmt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(34)
+
+2
+
+where ϵx, ϵm ∼N(0d, Id). Similar to the Reduced OBA scheme, Reduced BAO also requires only
+one NFE per update step since a single score evaluation is re-used in both the momentum and the
+position updates.
+
+Reduced OBAB: The numerical updates for this scheme are as follows,
+
+¯xt+h = exp
+−hβΓ
+
+
+¯xt +
+
+p
+
+1 −exp (−¯tλsβΓ)ϵx
+(35)
+
+2
+
+
+¯mt +
+√
+
+¯mt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(36)
+
+2
+
+ˆmt+h/2 = ¯mt+h + hβ
+
+4 [¯xt+h + 2ν ¯mt+h + 2Mνsm
+θ (¯xt+h, ¯mt+h, T −t)]
+(37)
+
+ˆxt+h = ¯xt+h + hβ
+
+2
+
+2Γ¯xt+h −M −1 ˆmt+h/2 + 2Γsx
+θ(¯xt+h, ¯mt+h, T −t)
+
+
+(38)
+
+ˆmt+h = ˆmt+h/2 + hβ
+
+4
+ˆxt+h + 2ν ˆmt+h/2 + 2Mνsm
+θ (ˆxt+h, ˆmt+h/2, T −(t + h))
+
+
+(39)
+
+where ϵx, ϵm ∼N(0d, Id). It is worth noting that, in contrast to the Reduced OBA and BAO
+schemes, Reduced OBAB requires two NFE per update step.
+
+B
+Local Error Analysis and Justification for design choices
+
+We now analyze the naive and reduced splitting samplers proposed in this work from the lens of local
+error analysis for SDE solvers. The probability flow SDE for PSLD is defined as,
+
+d¯xt
+d ¯mt
+
+
+Γ¯xt −M −1 ¯mt + 2Γsx
+θ(¯zt, T −t)
+¯xt + ν ¯mt + 2Mνsm
+θ (¯zt, T −t)
+
+
+= β
+
+
+dt,
+t ∈[0, T]
+(40)
+
+2
+
+We denote the proposed numerical discretization schemes by Gh and the underlying ground-truth
+trajectory for the reverse SDE as Fh where h > 0 is the step-size for numerical integration. Formally,
+we analyze the growth of ∥E[¯z(t+h)]−E[¯zt+h]∥where ¯zt+h = zT −(t+h) = Gh(¯zt) and ¯z(t+h) =
+z(T −(t + h)) = Fh(¯z(t)) are the approximated and ground-truth solutions at time T −(t + h).
+This implies that we analyze convergence in a weak sense. However, this analysis is sufficient to
+present a justification for the proposed design choices for Reduced Splitting integrators. Furthermore,
+we have,
+
+¯eT −(t+h) = ∥E[Fh(¯z(t))] −E[Gh(¯zt)]∥
+(41)
+
+= ∥E[Fh(¯z(t))] −E[Gh(¯z(t))] + E[Gh(¯z(t))] −E[Gh(¯zt)]∥
+(42)
+≤∥E[Fh(¯z(t))] −E[Gh(¯z(t))]∥+ ∥E[Gh(¯z(t))] −E[Gh(¯zt)]∥
+(43)
+
+In a weak sense, the first term on the right-hand side of the above error bound is referred to as the
+local truncation error. Intuitively, it gives an estimate of the numerical error introduced in the mean
+of the solution trajectory (E[Fh(¯z(t))]) due to our numerical scheme given the ground truth solution
+till the previous time step t. The second term in the error bound can be understood as the stability of
+the numerical scheme. Intuitively, it gives an estimate of how much divergence is introduced by our
+numerical scheme given two nearby solution trajectories such that ∥E[z(t)] −E[zt]∥< δ for some
+δ > 0. Here, we only deal with the local truncation error in the position and the momentum space
+
+and leave stability analysis to future work. To this end, we first state the analytical form of the term
+E[Fh(z(t))].
+
+Computation of E[Fh(z(t))]: Using the Ito-Taylor expansion, it can be shown that the following
+results hold in the position and momentum space.
+
+!
+
+"
+
+"
+
++ h2β2
+
+¯x(t) + hβ
+
+Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ
+
+Γ
+
+Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ
+
+
+E[¯x(t + h)] = E
+
+2
+
+8
+
+(44)
+
+−M −1 (¯x(t) + ν ¯m(t) + 2Mνsm
+θ ) + 2Γ
+
+sxx
+θ (Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ)+
+(45)
+
+#
+
+#
+
+sxm
+θ (¯x(t) + ν ¯m(t) + 2Mνsm
+θ ) + ∂sx
+θ
+∂t
+
++ O(h3)
+
+(46)
+
+"
+
+!
+
+"
+
+Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ
+
+
++ h2β2
+
+¯m(t) + hβ
+
+E[ ¯m(t + h)] = E
+
+¯x(t) + ν ¯m(t) + 2Mνsm
+θ
+
+2
+
+8
+
+(47)
+
++ ν (¯x(t) + ν ¯m(t) + 2Mνsm
+θ ) + 2Mν
+
+smx
+θ (Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ)+
+(48)
+
+#
+
+#
+
+smm
+θ
+(¯x(t) + ν ¯m(t) + 2Mνsm
+θ ) + ∂sm
+θ
+∂t
+
++ O(h3)
+
+(49)
+
+where sx
+θ, sm
+θ denote the score components in the position and momentum space respectively. More-
+over, sxx
+θ , sxm
+θ , smx
+θ
+and smm
+θ
+denote the partial derivatives ∂sx
+θ
+∂x , ∂sx
+θ
+∂m , ∂sm
+θ
+∂x and ∂sm
+θ
+∂m , respectively.
+
+We now illustrate the local truncation error (in a weak sense) for the NBAO sampler.
+
+B.1
+Error Analysis: Naive BAO (NBAO)
+
+The NBAO sampler has the following update rules:
+
+¯mt+h = ¯mt + hβ
+
+2 [¯xt + 2ν ¯mt + 2Mνsm
+θ (¯xt, ¯mt, T −t)]
+(50)
+
+¯xt+h = ¯xt + hβ
+
+2
+
+2Γ¯xt −M −1 ¯mt+h + 2Γsx
+θ(¯xt, ¯mt+h, T −t)
+
+(51)
+
+ˆxt+h = exp
+−hβΓ
+
+
+¯xt+h +
+p
+
+1 −exp (−hβΓ)ϵx
+(52)
+
+2
+
+
+¯mt+h +
+√
+
+ˆmt+h = exp
+−hβν
+
+M
+p
+
+1 −exp (−hβν)ϵm
+(53)
+
+2
+
+We compute the local truncation error for the NBAO sampler in both the position and the momentum
+space as follows.
+
+NBAO local truncation error in the position space: From the update equations,
+
+¯x(t + h) = ¯x(t) + hβ
+
+2
+
+2Γ¯x(t) −M −1 ¯m(t + h) + 2Γsx
+θ(¯x(t), ¯m(t + h), T −t)
+
+(54)
+
+"
+
+= ¯x(t) + hβ
+
+2Γ¯x(t) −M −1
+¯m(t) + hβ
+
+h
+¯x(t) + 2ν ¯m(t) + 2Mνsm
+θ (¯x(t), ¯m(t), T −t)
+i
+
+2
+
+2
+
+(55)
+
+#
+
++ 2Γsx
+θ(¯x(t), ˆm(t + h), T −t)
+
+"
+
+#
+
+¯x(t + h) = ¯x(t) + hβ
+
+2Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ(¯x(t), ˆm(t + h), T −t)
+
+(56)
+
+2
+
+−M −1h2β2
+
+h
+¯x(t) + 2ν ¯m(t) + 2Mνsm
+θ (¯x(t), ¯m(t), T −t)
+i
+(57)
+
+4
+
+Lastly, we have the OU update in the position space, as follows:
+
+ˆx(t + h) = exp
+−hβΓ
+
+
+¯x(t + h) +
+p
+
+1 −exp (−hβΓ)ϵx
+(58)
+
+2
+
+We further approximate ˆx(t + h) from the update Eqn. 52 as follows,
+
+#
+
+#
+
+""
+
+2
++ Γ2β2h2
+
+1 −Γβh
+
+E[ˆx(t + h)] = E
+
+¯x(t + h) + O(h3)
+
+(59)
+
+8
+
+Substituting the expression in Eqn. 57 in the above approximation and ignoring higher order terms
+O(h3), we have:
+
+"
+
+2
+¯x(t + h) + Γ2β2h2
+
+¯x(t + h) −Γβh
+
+E[ˆx(t + h)] = E
+
+8
+¯x(t + h) + O(h3)
+
+#
+
+"
+
+= ¯x(t) + hβ
+
+2Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ(¯x(t), ¯m(t + h), T −t)
+
+2
+
+#
+
+"
+
+−h2β2M −1
+
+−hβΓ
+
+¯x(t) + 2ν ¯m(t) + 2Mνsm
+θ (¯x(t), ¯m(t), T −t)
+
+2
+¯x(t)
+
+4
+
+#
+
+#
+
+"
+
+−h2β2Γ
+
++ h2β2Γ2
+
+2Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ(¯x(t), ¯m(t + h), T −t)
+
+8
+¯x(t) + O(h3)
+
+4
+
+(60)
+
+"
+
+"
+
+#
+
+¯x(t) + hβ
+
+Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ(¯x(t), ¯m(t + h), T −t)
+
+E[ˆx(t + h)] = E
+
+2
+
+#
+
+"
+
+−h2β2M −1
+
+¯x(t) + 2ν ¯m(t) + 2Mνsm
+θ (¯x(t), ¯m(t), T −t)
+
+4
+
+#
+
+"
+
+#
+
+−h2β2Γ
+
++ h2β2Γ2
+
+2Γ¯x(t) −M −1 ¯m(t) + 2Γsx
+θ(¯x(t), ¯m(t + h), T −t)
+
+8
+¯x(t) + O(h3)
+
+4
+
+(61)
+
+From Eqns. 46 and 61, it follows that:
+
+
+
+
+
+E[Fh(¯z(t))]−E[Gh(¯z(t))]
+
+=
+
+hβΓE
+h
+sx
+θ(¯x(t), ¯m(t + h), T −t) −sx
+θ(¯x(t), ¯m(t), T −t)
+i
+
+(62)
+
++O(h2)
+
+In the above equation, the error induced (in the position space) by the blue term can be non-negligible,
+especially in the low step-size regimes (i.e. where the NFE is very small). Therefore, naive splitting
+integrators perform poorly in this case. A straightforward way to alleviate this problem is to re-use
+the score function evaluation sθ(¯xt, ¯mt, T −t) between consecutive updates for the position and the
+momentum space which leads to cancellation of this term, thereby preventing extra error terms from
+accumulating during sampling. This is precisely our first design choice in the formulation of reduced
+splitting integrators.
+
+Similarly, our second choice of using timestep conditioning T −(t + h) in the last step for the
+Reduced OBAB sampler is based on the error analysis in the momentum space for the NOBAB
+sampler. However, we omit the derivation here for simplicity.
+
+Steps
+EM SDE
+NOBA
+NBAO
+NOBAB
+
+50
+30.81
+36.87
+26.05
+39.01
+70
+15.63
+24.23
+16.98
+17.2
+100
+7.83
+15.18
+10.39
+7.58
+150
+4.26
+9.68
+6.44
+3.71
+200
+3.27
+7.09
+4.81
+2.77
+250
+2.75
+5.56
+4.15
+2.64
+500
+2.3
+3.41
+2.85
+2.3
+1000
+2.27
+2.76
+2.56
+2.24
+Table 1: Extended Results for Figure 1a: Sample quality comparison between the Euler-Maruyama
+(EM) and Naive Splitting samplers on the CIFAR-10 dataset for different sampling budgets. FID
+(lower is better) reported on 50k samples.
+
+Steps
+OBA
+BAO
+OBAB
+
+NOBA
+ROBA (λs)
+NBAO
+RBAO (λs)
+NOBAB
+ROBAB (λs)
+
+50
+36.87
+2.76 (1.16)
+26.05
+3.33 (0.7)
+39.01
+6.86 (0.2)
+70
+24.23
+2.51 (0.66)
+16.98
+2.59 (0.44)
+17.2
+4.66 (0.16)
+100
+15.18
+2.36 (0.37)
+10.39
+2.65 (0.3)
+7.58
+3.54 (0.14)
+150
+9.68
+2.40 (0.2)
+6.44
+2.60 (0.18)
+3.71
+2.96 (0.12)
+200
+7.09
+2.38 (0.13)
+4.81
+2.43 (0.1)
+2.77
+2.67 (0.1)
+Table 2: Extended Results for Figures 1b-1d: Sample quality comparison between naive and reduced
+splitting samplers on the CIFAR-10 dataset. Reduced versions outperform their naive counterparts
+for any given splitting scheme. The numbers in parentheses indicate the value of λs used during
+sampling for the reduced integrators. FID (lower is better) reported on 50k samples.
+
+Lastly, our choice of controlling the amount of noise injected in the position space is primarily
+inspired by EDM [19]. However, a theoretical analysis of this choice remains an interesting direction
+for future work.
+
+C
+Extended Results
+
+C.1
+Extended Results for Figure 1
+
+We present detailed results for the plots in Figure 1 in Tables 1 and 2.
+
+C.2
+Additional Comparisons with SOTA SDE Solvers
+
+We present additional comparisons with state-of-the-art SDE solvers on CIFAR-10 in Table 3. Our
+proposed solver SPS (a.k.a Reduced OBA) outperforms competing baselines on similar compute
+budgets.
+
+NFE ↓)
+
+Method
+Description
+Diffusion
+50
+100
+
+(Ours) SPS
+Splitting Integrator based PSLD Sampler
+PSLD
+2.76
+2.36
+SA-Solver [31]
+Stochastic Adams Solver applied to reverse SDEs
+VE
+2.92
+2.63
+SEEDS-2 [32]
+Exponential Integrators for SDEs (order=2)
+DDPM
+11.10
+3.19
+EDM [19]
+Custom stochastic sampler with churn
+VP
+3.19
+2.71
+A-DDPM [28]
+Analytic variance estimation in reverse diffusion
+DDPM
+5.50
+4.45
+SSCS [20]
+Symmetric Splitting CLD Sampler
+PSLD
+18.83
+4.83
+EM [33]
+Euler Maruyama SDE sampler
+PSLD
+30.81
+7.83
+Table 3: Our proposed stochastic samplers perform comparably or outperform prior methods for
+CIFAR-10. Diffusion: (VP,VE) [4], CLD [20], DDPM [3], PSLD [21]. Entries in bold indicate the
+best stochastic sampler for a given compute budget.
+
+D
+Implementation Details
+
+Here, we present complete implementation details for all the samplers presented in this work.
+
+D.1
+Datasets and Preprocessing
+
+We use the CIFAR-10 [34] (50k images) and CelebA-64 (downsampled to 64 x 64 resolution, ≈200k
+images) [29] datasets for both quantitative and qualitative analysis. During training, all datasets are
+preprocessed to a numerical range of [-1, 1]. Following prior work, we use random horizontal flips to
+train all new models across datasets as a data augmentation strategy. During inference, we re-scale
+all generated samples between the range [0, 1].
+
+D.2
+Pre-trained Models
+
+For all ablation results in Section 3 in the main text, we use pre-trained PSLD [21] models for CIFAR-
+10 with SDE hyperparameters Γ = 0.01, ν = 4.01 and β = 8.0. The resulting model consists of
+approximately 97M parameters. Similarly, we use a pre-trained PSLD model for CelebA-64 for
+state-of-the-art comparisons in Section 4. For more details on the score network architecture and
+training protocol, refer to Pandey and Mandt [21].
+
+SDE Hyperparameters: Similar to Pandey and Mandt [21], we set β = 8.0, M −1 = 4 and γ = 0.04
+for all datasets. For CIFAR-10, we set Γ = 0.01 and ν = 4.01, corresponding to the best settings in
+PSLD. Similarly, for CelebA-64, we set Γ = 0.005 and ν = 4.005. Similar to Pandey and Mandt
+[21], we add a stabilizing numerical epsilon value of 1e−9 in the diagonal entries of the Cholesky
+decomposition of Σt when sampling from the perturbation kernel p(zt|x0) during training.
+
+D.3
+Evaluation
+
+Unless specified otherwise, we report the FID [27] score on 50k samples for assessing sample quality.
+Similarly, we use the network function evaluations (NFE) to assess sampling efficiency. In practice,
+we use the torch-fidelity[35] package for computing all FID reported in this work.
+
+Timestep Selection during Sampling: We use quadratic striding for timestep discretization proposed
+in Dockhorn et al. [20] during sampling, which ensures more number of score function evaluations
+in the lower timestep regime (i.e., t, which is close to the data). This kind of timestep selection is
+particularly useful when the NFE budget is limited. We also explored the timestep discretization
+proposed in Karras et al. [19] but noticed a degradation in sample quality.
+
+Last-Step Denoising: It is common to add an Euler-based denoising step from a cutoff ϵ to zero to
+optimize for sample quality [4, 20, 30] at the expense of another sampling step. For deterministic
+samplers presented in this work, we omit this heuristic due to observed degradation in sample quality.
+However, for stochastic samplers, we find that using last-step denoising leads to improvements
+in sample quality (especially when adjusting the amount of stochasticity as in Reduced Splitting
+Integrators). Formally, we perform the following update as a last denoising step for stochastic
+samplers:
+
+x0
+m0
+
+
+Γxϵ −M −1mϵ + 2Γsθ(zϵ, ϵ)|0:d
+xϵ + νmϵ + 2Mνsθ(zϵ, ϵ)|d:2d)
+
+
++ βtϵ
+
+
+=
+
+xϵ
+mϵ
+
+
+(63)
+
+2
+
+Similar to PSLD, we set ϵ = 1e −3 during sampling for all experiments. Though recent works
+[17, 18] have found lower cutoffs to work better for a certain NFE budget, we leave this exploration
+in the context of PSLD to future work.

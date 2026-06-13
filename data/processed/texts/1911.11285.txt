@@ -1,0 +1,1184 @@
+Biologically inspired architectures for sample-efﬁcient
+deep reinforcement learning
+
+Pierre H. Richemond
+Imperial College London
+
+Arinbjörn Kolbeinsson
+Imperial College London
+
+Yike Guo
+Imperial College London
+
+arXiv:1911.11285v1 [cs.LG] 25 Nov 2019
+
+Abstract
+
+Deep reinforcement learning requires a heavy price in terms of sample efﬁciency
+and overparameterization in the neural networks used for function approximation.
+In this work, we use tensor factorization in order to learn more compact representa-
+tion for reinforcement learning policies. We show empirically that in the low-data
+regime, it is possible to learn online policies with 2 to 10 times less total coefﬁ-
+cients, with little to no loss of performance. We also leverage progress in second
+order optimization, and use the theory of wavelet scattering to further reduce the
+number of learned coefﬁcients, by foregoing learning the topmost convolutional
+layer ﬁlters altogether. We evaluate our results on the Atari suite against recent
+baseline algorithms that represent the state-of-the-art in data efﬁciency, and get
+comparable results with an order of magnitude gain in weight parsimony.
+
+1
+Introduction & Related Work
+
+The successes of deep reinforcement learning (thereafter ’RL’) come at a heavy computational price.
+It is well known that achieving human-level performance in domains such as Atari [1, 2, 3] requires
+hundreds of millions of frames of environment interaction. As such, the problem of sample efﬁciency
+in reinforcement learning is of critical importance. Several tracks of concurrent research are being
+investigated, and have reduced by orders of magnitude the number of environment interactions
+required for good performance beyond the previous benchmark of biologically-inspired episodic
+control methods [4, 5] to a couple hours of human gameplay time [6, 7].
+
+However, while the data-efﬁciency of RL methods has seen recent drastic performance, their function
+approximators still use millions of learned weights, potentially still leaving them heavily overpa-
+rameterized. Independently motivated by biological facts like the behavioural readiness of newborn
+animals, several authors [8, 9, 10] have recently looked at doing away with learning so many weights
+for RL tasks. Smaller networks not only train faster, but may yet offer another avenue for gains in the
+form of better generalization [11]. Very recent work from [8] studies the effect of inductive bias of
+neural architectures in reinforcement learning ; they forego training altogether, but transfer networks
+that only obtain ’better than chance performance on MNIST’. In similar fashion, [10] investigate
+the effect of random projections in the restricted setting of imitation learning. Finally, [9] manage
+human-level performance on the Atari suite using a separate dictionary learning procedure for their
+features, bypassing the usual end-to-end learning paradigm. The perspective of neural architecture
+search applied to RL appears difﬁcult, if not computationally inextricable.
+
+Concurrently, the study of biologically-inspired models of learning has exhibited two mathematical
+characterizations that might be critical in explaining how biological learning takes place so efﬁciently.
+First, the low-rank properties of learned perceptual manifolds [12, 13] are giving rise to a rich theory
+borrowing from statistical physics. Second, another well known line of work has identiﬁed Gabor
+ﬁlters (and more generally wavelet ﬁlter-like structures) in the actual visual cortex of animals [14],
+and linked those to sparsity-promoting methods and dictionary learning [15, 16, 17]. But these
+
+breakthroughs have not, so far, been reﬂected as inductive priors in the shape of modiﬁcations in deep
+RL neural networks architectures, which remain fairly ﬁxed on the Atari domain.
+
+Therefore the following questions remain: how parsimonious do function approximators in rein-
+forcement learning need to be, in order to maintain good performance? And can we be at once
+sample-efﬁcient and weight-efﬁcient ? In this work, we turn to the mathematical theories of tensor
+factorization [18], second-order optimization [19, 20] and wavelet scattering [21] to answer this
+question positively and empirically, in a model-free setting. To the best of our knowledge, this is the
+ﬁrst time those ﬁelds have been combined together in this context, and that tensor factorization is
+applied to deep RL.
+
+2
+Background
+
+2.1
+Deep Reinforcement Learning
+
+We consider the standard Markov Decision Process framework as in [1]). This setting is characterised
+by a tuple ⟨S, A, T, R, γ⟩, where S is a set of states, A a set of actions, R a reward function that
+is the immediate, intrinsic desirability of a certain state, T a transition dynamics and γ ∈[0, 1] a
+discount factor. The purpose of the RL problem is to to ﬁnd a policy π, which represents a mapping
+from states to a probability distribution over actions, that is optimal, i.e., that maximizes the expected
+cumulative discounted return P∞
+k=0 γkRt+k+1 at each state st ∈S. In Q-learning, the policy is given
+implicitly by acting greedily or ϵ-greedily with respect to learned action-value functions qπ(s, a),
+that are learned following the Bellman equation. In deep Q-learning, qθ becomes parameterized by
+the weights θ of a neural network and one minimizes the expected Bellman loss :
+
+E
+
+Rt+1 + γt+1 max
+a′ qθ (St+1, a′) −qθ (St, At)
+2
+
+In practice, this is implemented stochastically via uniform sampling of transitions in an experience
+replay buffer, as is done in the seminal paper [2]. Several algorithmic reﬁnements to that approach
+exist. First, Double Q-learning [22] proposes to decouple learning between two networks in order to
+alleviate the Q-value overestimation problem. Second, dueling Q-networks [23] explicitly decompose
+the learning of an action-value function qθ(s, a) as the sum of an action-independent state-value,
+much like what is traditionally done in policy gradient methods [1], implemented via a two-headed
+neural network architecture. Finally, prioritized RL [24] proposes to replace the uniform sampling of
+transitions in the experience replay buffer with importance sampling, by prioritizing those transitions
+that present the most Bellman error (those transitions that are deemed the most ’surprising’ by the
+agent). [25] uses extra weights to learn the variance of the exploration noise in a granular fashion,
+while [26] proposes to learn a full distribution of action-values for each action and state. Combined,
+those methods form the basis of the Rainbow algorithm in [3].
+
+2.2
+Tensor factorization
+
+Here we introduce notations and concepts from the tensor factorization literature. An intuition is
+that the two main decompositions below, CP and Tucker decompositions, can be understood as
+multilinear algebra analogues of SVD or eigendecomposition.
+
+CP decomposition. A tensor X ∈RI1×I2×···×IN , can be decomposed into a sum of R rank-1 tensors,
+known as the Canonical-Polyadic decomposition, where R is as the rank of the decomposition. The
+objective is to ﬁnd the vectors u(1)
+k , u(2)
+k , · · · , u(N)
+k
+, for k = [1 . . . R], as well as a vector of weights
+λ ∈RR such that:
+
+R
+X
+
+k=1
+λku(1)
+k
+◦u(2)
+k
+◦· · · ◦u(N)
+k
+|
+{z
+}
+rank-1 components
+
+X =
+
+Tucker decomposition. A tensor X ∈RI1×I2×···×IN , can be decomposed into a low rank approxi-
+mation consisting of a core G ∈RR1×R2×···×RN and a set of projection factors U(0), · · · , U(N−1)
+,
+with U(k) ∈RRk,ˆIk, k ∈(0, · · · , N −1) that, when projected along the corresponding dimension of
+
+the core, reconstruct the full tensor X. The tensor in its decomposed form can then be written:
+
+X = G ×1 U(1) ×2 U(2) × · · · ×N U(N) =
+î
+G; U(1), · · · , U(N)ó
+
+Tensor regression layer.
+For two tensors X
+∈
+RK1×···×Kx×I1×···×IN and Y
+∈
+RI1×···×IN×L1×···×Ly, we denote by ⟨X, Y⟩N
+∈
+RK1×···×Kx×L1×···×Ly the contraction of
+X by Y along their N last modes; their generalized inner product is
+
+IN
+X
+
+I1
+X
+
+I2
+X
+
+in=1
+X...,i1,i2,...,inYi1,i2,...,in,...
+
+⟨X, Y⟩N =
+
+i2=1
+· · ·
+
+i1=1
+
+This enables us to deﬁne a tensor regression layer [27] that is differentiable and learnable end-to-end
+by gradient descent. Let us denote by X ∈RI1×I2×···×IN the input activation tensor for a sample
+and y ∈RIN the label vector. A tensor regression layer estimates the regression weight tensor
+W ∈RI1×I2×···×IN under a low-rank decomposition. In the case of a Tucker decomposition (as per
+our experiments) with ranks (R1, · · · , RN), we have :
+
+y = ⟨X, W⟩N + b
+with W = G ×1 U(1) ×2 U(2) · · · ×N U(N)
+
+as G ∈RR1×···×RN , U(k) ∈RIk×Rk for each k in [1 . . . N] and U(N) ∈R1×RN .
+
+[28, 27, 29] learn parsimonious deep learning fully-connected layers thanks to low-rank constraints.
+
+2.3
+Wavelet scattering
+
+The wavelet scattering transform was originally introduced by [21] and [30] as a non-linear extension
+to the classical wavelet ﬁlter bank decomposition [31]. Its principle is as follows. Denoting by
+x ⊛y[n] the 2-dimensional, circular convolution of two signals x[n] and y[n], let us assume that
+we have pre-deﬁned two wavelet ﬁlter banks available
+¶
+ψ(1)
+λ1 [n]
+©
+
+¶
+ψ(2)
+λ2 [n]
+©
+
+λ2∈Λ2 , with λ1
+and λ2 two frequency indices. These wavelet ﬁlters correspond to high frequencies, so we also give
+ourselves the data of a lowpass ﬁlter φJ[n]. Finally, and by opposition to traditional linear wavelet
+transforms, we also assume a given nonlinearity ρ(t). Then the scattering transform is given by
+coefﬁcients of order 0,1, and 2, respectively :
+
+λ1∈Λ1
+
+S0x[n] = x ⊛φJ[n]
+
+S1x [n, λ1] = ρ
+Ä
+x ⊛ψ(1)
+λ1
+ä
+⊛φJ[n]
+λ1 ∈Λ1
+
+S2x [n, λ1, λ2] = ρ
+Ä
+ρ
+Ä
+x ⊛ψ(1)
+λ1
+ä
+⊛ψ(2)
+λ2
+ä
+⊛φJ[n]
+λ1 ∈Λ1, λ2 ∈Λ2 (λ1)
+
+This can effectively be understood and implemented as a two-layer convolutional neural network
+whose weights are not learned but rather frozen and given by the coefﬁcients of wavelets ψ and φ
+(with Gabor ﬁlters as a special case [31]). The difference with traditional ﬁlter banks comes from
+the iterated modulus/nonlinear activation function applied at each stage, much like in traditional
+deep learning convolutional neural networks. In practice, the potential of scattering transforms to
+accelerate deep learning by providing ready-made convolutional layers weights has been investigated
+in [32, 33, 34].
+
+2.4
+Second order optimization with K-FAC
+
+While stochastic gradient descent is usually performed purely from gradient observations derived from
+auto-differentiation, faster, second order optimization methods ﬁrst multiply the weights’ θ gradient
+vector ∇θ by a preconditioning matrix, yielding the weight update θ ←θ −ηG−1∇θ. In the case of
+second order methods, the matrix G−1 is chosen to act as a tractable iterative approximation to the
+inverse Hessian or Empirical Fisher Information Matrix [19] of the neural network model in question.
+Kronecker-factored approximate curvature or K-FAC [20] enforces a Kronecker decomposition of
+the type G = A ⊗B, with A and B being smaller, architecture-dependent matrices. Unlike the
+above methods, K-FAC has been applied as a plug-in in the RL literature and been shown to promote
+convergence [35].
+
+3
+Methods & Experimental Results
+
+We do take as a baseline method the data-efﬁcient Rainbow of [6]. However, we change the
+architecture of the neural network function approximators used, in accordance with the principles
+described above, combining them to reﬂect inductive biases promoting fewer learnable parameters:
+
+• We replace the fully-connected, linear layers used in the Rainbow [3] and data-efﬁcient
+Rainbow [6] by tensor regression layers [27] in order to learn low-rank policies (ranks in
+appendix).
+
+• We use either the K-FAC [20] second order stochastic optimizer, or ADAM [36].
+
+• We combine the two methods with various rank and therefore weight compression ratios
+and evaluate those on the same subset of Atari games as [6, 7].
+
+• When possible, we replace the ﬁrst convolutional layer in the approximating neural network
+with a scattering layer for further gains in terms of learnable weights.
+
+For all our Atari experiments, we used OpenAI Gym [37], and a combination of PyTorch [38],
+TensorLy [39] and Kymatio [40] for auto-differentiation. We evaluated our agents in the low-data
+regime of 100,000 steps, on half the games, with 3 different random seeds for reproducibility [41].
+Our speciﬁc hyperparameters are described in appendix. We report our results in tables 1 and 2.
+
+Game
+SimPLe
+Rainbow
+Denoised
+TRL 2.5x
+TRL 5x
+TRL 10x
+
+alien
+405
+740
+684
+688
+454
+566
+amidar
+88
+189
+154
+118
+86
+84
+assault
+369
+431
+321
+543
+521
+513
+asterix
+1090
+471
+500
+459
+554
+363
+bank_heist
+8
+51
+77
+59
+134
+42
+battle_zone
+5184
+10125
+9378
+14466
+13466
+5744
+boxing
+9
+0.2
+1
+-2
+-2
+-5
+breakout
+13
+2
+3
+2
+2
+4
+chopper_command
+1247
+862
+1293
+1255
+1243
+1106
+crazy_climber
+39828
+16185
+9977
+3928
+4225
+2340
+demon_attack
+170
+508
+450
+362
+263
+175
+freeway
+20
+28
+28
+26
+25
+24
+frostbite
+255
+867
+1101
+659
+912
+231
+gopher
+771
+349
+391
+278
+255
+396
+hero
+1295
+6857
+3013
+5351
+3732
+3321
+jamesbond
+125
+302
+295
+215
+213
+218
+kangaroo
+323
+779
+1002
+804
+715
+400
+krull
+4540
+2852
+2656
+2333
+2275
+2308
+kung_fu_master
+17257
+14346
+4037
+9392
+4764
+4031
+ms_pacman
+763
+1204
+1053
+818
+838
+517
+pong
+5
+-19
+-20
+-20
+-19
+-21
+private_eye
+58
+98
+100
+51
+100
+1128
+qbert
+560
+1153
+672
+697
+581
+733
+road_runner
+5169.4
+9600
+5426
+6965
+3914
+1319
+seaquest
+371
+354
+387
+345
+350
+287
+up_n_down
+2153
+2877
+5123
+2197
+2302
+2179
+Average (vs. Rainbow)
+100%
+118%
+96%
+90%
+71%
+
+Table 1: Mean episode returns as reported in SimPLe [7] and data-efﬁcient Rainbow [6], versus
+our agents, on 26 Atari games. ’Denoised’ is the NoisyNet ablation of Rainbow; ’TRL’ shows the
+performance of the data-efﬁcient Rainbow with tensor regression layers substituted for linear ones.
+
+Table 1 shows proof of concept of the online learning of low-rank policies, with a loss of ﬁnal
+performance varying in proportion to the compression in the low-rank linear layers, very much like in
+the deep learning literature [28, 27]. The number of coefﬁcients in the original data-efﬁcient Rainbow
+
+is of the order of magnitude of 1M and varies depending on the environment and its action-space size.
+The corresponding tensor regression layer ranks are in appendix, and chosen to target 400k, 200k and
+100k coefﬁcients respectively. While individual game results tend to decrease monotonously with
+increasing compression, we observe that they are noisy as per the nature of exploration in RL, and
+average scores reported correspond with the intuition that performance seems to decrease fast after a
+certain overparameterization threshold is crossed. To take this noisy character into account, we take
+care to be conservative and report the average of the ﬁnal three episodes of the learned policy after
+80000, 90000 and 100000 steps, respectively. Also, so as to not muddy the discussion and provide
+fair baselines, we do report on the NoisyNet [25] ablation of Rainbow (’Denoised’ columns), as the
+NoisyLinear layer doubles up the number of coefﬁcients required and actually performs worse in our
+experiments. Interestingly, the approximation error in tensor factorization seems to play a role akin
+to promoting exploration noise.
+
+We then proceed to assess the impact of second-order optimization to our architecture by substituting
+ADAM optimization for K-FAC, and introducing scattering, in table 2 (only a handful results being
+available with scattering, due to computational limitations). In spite of our conservative reporting, the
+efﬁciency boost from using a second order scheme more than makes up for low-rank approximation
+error with ﬁve times less coefﬁcients than [6], suggesting that learning with a full order of magnitude
+less coefﬁcients is well within reach of our techniques.
+
+Game
+KFAC+Denoised
+KFAC+TRL5x
+KFAC+TRL10x
+Scattering
+
+alien
+996
+734
+643
+441
+amidar
+163
+101
+98
+84
+assault
+501
+491
+496
+434
+asterix
+537
+549
+526
+502
+bank_heist
+100
+73
+57
+29
+battle_zone
+8622
+15178
+6156
+4311
+boxing
+0
+-4
+-1
+-9
+breakout
+3
+3
+2
+2
+chopper_command
+692
+611
+1302
+441
+crazy_climber
+14242
+12377
+3546
+740
+demon_attack
+582
+434
+318
+692
+freeway
+26
+26
+24
+19
+frostbite
+1760
+718
+1483
+654
+gopher
+363
+341
+265
+172
+hero
+4188
+6284
+4206
+4127
+jamesbond
+263
+327
+217
+48
+kangaroo
+2085
+613
+588
+391
+krull
+2855
+3441
+3392
+772
+kung_fu_master
+8481
+10738
+7357
+233
+ms_pacman
+1137
+920
+867
+613
+pong
+-19.3
+-19
+-19
+-20
+private_eye
+56
+100
+100
+0
+qbert
+731
+520
+538
+475
+road_runner
+4516
+8493
+7224
+1278
+seaquest
+349
+317
+520
+213
+up_n_down
+2557
+2291
+2108
+993
+Average (vs. Rainbow)
+114%
+109%
+98%
+56%
+Table 2: Mean episode returns of our low-rank agents with second-order optimization and scattering.
+
+4
+Conclusion
+
+We have demonstrated that in the low-data regime, it is possible to leverage biologically plausible
+characterizations of experience data (namely low-rank properties and wavelet scattering separability)
+to exhibit architectures that learn policies with many times less weights than current baselines, in an
+online fashion. We do hope that this will lead to even further progress towards sample efﬁciency and
+speedy exploration methods. Further work will ﬁrst focus on thorough evaluation and research of
+scattering architectures in order to achieve further gains, and second investigate additional, orthogonal
+biologically-friendly research directions such as promoting sparsity.
+
+References
+
+[1] R. S. Sutton and A. G. Barto, Reinforcement Learning: An Introduction. The MIT Press, second ed., 2018.
+
+[2] V. Mnih, K. Kavukcuoglu, D. Silver, A. Graves, I. Antonoglou, D. Wierstra, and M. Riedmiller, “Playing
+Atari with Deep Reinforcement Learning,” arXiv e-prints, Dec. 2013.
+
+[3] M. Hessel, J. Modayil, H. van Hasselt, T. Schaul, G. Ostrovski, W. Dabney, D. Horgan, B. Piot, M. Azar,
+and D. Silver, “Rainbow: Combining Improvements in Deep Reinforcement Learning,” arXiv e-prints, Oct.
+2017.
+
+[4] C. Blundell, B. Uria, A. Pritzel, Y. Li, A. Ruderman, J. Z. Leibo, J. Rae, D. Wierstra, and D. Hassabis,
+“Model-Free Episodic Control,” arXiv e-prints, June 2016.
+
+[5] A. Pritzel, B. Uria, S. Srinivasan, A. Puigdomènech, O. Vinyals, D. Hassabis, D. Wierstra, and C. Blundell,
+“Neural Episodic Control,” arXiv e-prints, Mar. 2017.
+
+[6] H. van Hasselt, M. Hessel, and J. Aslanides, “When to use parametric models in reinforcement learning?,”
+arXiv e-prints, June 2019.
+
+[7] L. Kaiser, M. Babaeizadeh, P. Milos, B. Osinski, R. H. Campbell, K. Czechowski, D. Erhan, C. Finn,
+P. Kozakowski, S. Levine, A. Mohiuddin, R. Sepassi, G. Tucker, and H. Michalewski, “Model-Based
+Reinforcement Learning for Atari,” arXiv e-prints, Mar. 2019.
+
+[8] A. Gaier and D. Ha, “Weight Agnostic Neural Networks,” arXiv e-prints, June 2019.
+
+[9] G. Cuccu, J. Togelius, and P. Cudre-Mauroux, “Playing Atari with Six Neurons,” arXiv e-prints, June 2018.
+
+[10] R. Wang, C. Ciliberto, P. Amadori, and Y. Demiris, “Random Expert Distillation: Imitation Learning via
+Expert Policy Support Estimation,” arXiv e-prints, May 2019.
+
+[11] C. Zhang, S. Bengio, M. Hardt, B. Recht, and O. Vinyals, “Understanding deep learning requires rethinking
+generalization,” arXiv e-prints, Nov. 2016.
+
+[12] S. Chung, D. D. Lee, and H. Sompolinsky, “Classiﬁcation and Geometry of General Perceptual Manifolds,”
+Physical Review X, vol. 8, p. 031003, July 2018.
+
+[13] S. Chung, D. D. Lee, and H. Sompolinsky, “Linear readout of object manifolds.,” Physical review. E,
+vol. 93 6, p. 060301, 2016.
+
+[14] J. P. Jones and L. A. Palmer, “An evaluation of the two-dimensional gabor ﬁlter model of simple receptive
+ﬁelds in cat striate cortex.,” Journal of neurophysiology, vol. 58 6, pp. 1233–58, 1987.
+
+[15] B. A. Olshausen and D. J. Field, “Emergence of simple-cell receptive ﬁeld properties by learning a sparse
+code for natural images,” Nature, vol. 381, pp. 607–609, 1996.
+
+[16] B. A. Olshausen and D. J. Field, “Sparse coding with an overcomplete basis set: A strategy employed by
+v1?,” Vision Research, vol. 37, pp. 3311–3325, 1997.
+
+[17] A. Hyvärinen and P. O. Hoyer, “A two-layer sparse coding model learns simple and complex cell receptive
+ﬁelds and topography from natural images,” Vision Research, vol. 41, pp. 2413–2423, 2001.
+
+[18] A. Cichocki, R. Zdunek, A. H. Phan, and S. Amari, Nonnegative Matrix and Tensor Factorizations -
+Applications to Exploratory Multi-way Data Analysis and Blind Source Separation. Wiley, 2009.
+
+[19] S. ichi Amari, “Natural gradient works efﬁciently in learning,” Neural Computation, vol. 10, pp. 251–276,
+1998.
+
+[20] J. Martens and R. B. Grosse, “Optimizing neural networks with kronecker-factored approximate curvature,”
+ArXiv, vol. abs/1503.05671, 2015.
+
+[21] S. Mallat, “Group Invariant Scattering,” arXiv e-prints, Jan. 2011.
+
+[22] H. van Hasselt, A. Guez, and D. Silver, “Deep Reinforcement Learning with Double Q-learning,” arXiv
+e-prints, Sept. 2015.
+
+[23] Z. Wang, T. Schaul, M. Hessel, H. van Hasselt, M. Lanctot, and N. de Freitas, “Dueling Network
+Architectures for Deep Reinforcement Learning,” arXiv e-prints, Nov. 2015.
+
+[24] T. Schaul, J. Quan, I. Antonoglou, and D. Silver, “Prioritized Experience Replay,” arXiv e-prints, Nov.
+2015.
+
+[25] M. Fortunato, M. Gheshlaghi Azar, B. Piot, J. Menick, I. Osband, A. Graves, V. Mnih, R. Munos,
+D. Hassabis, O. Pietquin, C. Blundell, and S. Legg, “Noisy Networks for Exploration,” arXiv e-prints, June
+2017.
+
+[26] M. G. Bellemare, W. Dabney, and R. Munos, “A Distributional Perspective on Reinforcement Learning,”
+arXiv e-prints, July 2017.
+
+[27] J. Kossaiﬁ, Z. C. Lipton, A. Khanna, T. Furlanello, and A. Anandkumar, “Tensor Regression Networks,”
+arXiv e-prints, July 2017.
+
+[28] J. Kossaiﬁ, A. Khanna, Z. C. Lipton, T. Furlanello, and A. Anandkumar, “Tensor Contraction Layers for
+Parsimonious Deep Nets,” arXiv e-prints, June 2017.
+
+[29] X. Cao and G. Rabusseau, “Tensor Regression Networks with various Low-Rank Tensor Approximations,”
+arXiv e-prints, Dec. 2017.
+
+[30] J. Bruna and S. Mallat, “Invariant Scattering Convolution Networks,” arXiv e-prints, Mar. 2012.
+
+[31] S. Mallat, A Wavelet Tour of Signal Processing. Academic Press, 1998.
+
+[32] E. Oyallon, S. Mallat, and L. Sifre, “Generic Deep Networks with Wavelet Scattering,” arXiv e-prints, Dec.
+2013.
+
+[33] E. Oyallon, S. Zagoruyko, G. Huang, N. Komodakis, S. Lacoste-Julien, M. Blaschko, and E. Belilovsky,
+“Scattering Networks for Hybrid Representation Learning,” arXiv e-prints, Sept. 2018.
+
+[34] T. Angles and S. Mallat, “Generative networks as inverse problems with Scattering transforms,” arXiv
+e-prints, May 2018.
+
+[35] Y. Wu, E. Mansimov, S. Liao, R. Grosse, and J. Ba, “Scalable trust-region method for deep reinforcement
+learning using Kronecker-factored approximation,” arXiv e-prints, Aug. 2017.
+
+[36] D. P. Kingma and J. Ba, “Adam: A Method for Stochastic Optimization,” arXiv e-prints, Dec. 2014.
+
+[37] G. Brockman, V. Cheung, L. Pettersson, J. Schneider, J. Schulman, J. Tang, and W. Zaremba, “OpenAI
+Gym,” arXiv e-prints, June 2016.
+
+[38] A. Paszke, S. Gross, S. Chintala, G. Chanan, E. Yang, Z. DeVito, Z. Lin, A. Desmaison, L. Antiga, and
+A. Lerer, “Automatic differentiation in pytorch,” in OpenReview, 2017.
+
+[39] J. Kossaiﬁ, Y. Panagakis, A. Anandkumar, and M. Pantic, “TensorLy: Tensor Learning in Python,” arXiv
+e-prints, Oct. 2016.
+
+[40] M. Andreux, T. Angles, G. Exarchakis, R. Leonarduzzi, G. Rochette, L. Thiry, J. Zarka, S. Mallat, J. andén,
+E. Belilovsky, J. Bruna, V. Lostanlen, M. J. Hirn, E. Oyallon, S. Zhang, C. Cella, and M. Eickenberg,
+“Kymatio: Scattering Transforms in Python,” arXiv e-prints, Dec. 2018.
+
+[41] P. Henderson, R. Islam, P. Bachman, J. Pineau, D. Precup, and D. Meger, “Deep Reinforcement Learning
+that Matters,” arXiv e-prints, Sept. 2017.
+
+[42] M. Eickenberg, G. Exarchakis, M. J. Hirn, S. Mallat, and L. Thiry, “Solid harmonic wavelet scattering for
+predictions of molecule properties,” The Journal of chemical physics, vol. 148 24, p. 241732, 2018.
+
+Appendix
+
+Hyperparameters and Reproducibility
+
+Our codebase is available on request. Hyperparameters are as follows. First, our speciﬁc architecture-modiﬁed
+hyperparameters:
+
+Speciﬁc architecture hyperparameters
+Value
+
+Scattering maximum log-scale J
+3
+Scattering volume width M
+1
+Scattering tensor input shape
+(1,4,84,84)
+Scattering tensor output shape
+(1,16,11,11)
+Scattering type
+Harmonic 3D, see [40, 42]
+
+Hidden linear layer rank constraint, 2.5x compression
+128
+Final linear layer rank constraint, 2.5x compression
+48
+Hidden linear layer rank constraint, 5x compression
+32
+Final linear layer rank constraint, 5x compression
+48
+Hidden linear layer rank constraint, 10x compression
+16
+Final linear layer rank constraint, 10x compression
+10
+
+KFAC Tikhonov regularization parameter
+0.1
+KFAC Update frequency for inverses
+100
+
+Table 3: Our additional, architecture-speciﬁc hyperparameters.
+
+Furthermore, we mirror the Data-Efﬁcient Rainbow [6] baseline:
+
+Data-efﬁcient Rainbow hyperparameters
+Value
+
+Grey-scaling
+True
+Observation down-sampling
+(84, 84)
+Frames stacked
+4
+Action repetitions
+4
+Reward clipping
+[-1, 1]
+Terminal on loss of life
+True
+Max frames per episode
+108K
+Update
+Distributional Double Q
+Target network update period∗
+every 2000 updates
+Support of Q-distribution
+51 bins
+Discount factor
+0.99
+Minibatch size
+32
+Optimizer
+Adam
+Optimizer: ﬁrst moment decay
+0.9
+Optimizer: second moment decay
+0.999
+Optimizer: ϵ
+0.00015
+Max gradient norm
+10
+Priority exponent
+0.5
+Priority correction∗∗
+0.4 →1
+Hardware
+NVidia 1080Ti GPU
+Noisy nets parameter
+0.1
+Training frames
+400,000
+Min replay size for sampling
+1600
+Memory size
+unbounded
+Replay period every
+1 steps
+Multi-step return length
+20
+Q network: channels
+32, 64
+Q network: ﬁlter size
+5 x 5, 5 x 5
+Q network: stride
+5, 5
+Q network: hidden units
+256
+Optimizer: learning rate
+0.0001
+
+Table 4: Data-efﬁcient Rainbow agent hyperparameters, as per [6].
+
+Standard deviations for score runs
+
+Game
+Denoised
+TRL 2.5x
+TRL 10x
+
+alien
+684 ± 7
+688 ± 123
+566± 38
+amidar
+154 ± 21
+118 ± 12
+84± 15
+assault
+321 ± 224
+543 ± 94
+513± 64
+asterix
+500 ± 124
+459 ± 91
+363 ± 66
+bank_heist
+77 ± 23
+59 ± 22
+42 ± 2
+battle_zone
+9378 ± 2042
+14466 ± 2845
+5744 ± 575
+boxing
+1 ± 2
+-2 ± 1
+-5 ± 1
+breakout
+3 ± 1.5
+2 ± 1
+4 ± 0.3
+chopper_command
+1293 ± 445
+1255 ± 215
+1106 ± 124
+crazy_climber
+9977 ± 3744
+3928 ± 221
+2340 ± 595
+demon_attack
+450 ± 49
+362 ± 147
+175 ± 7
+freeway
+28 ± 0.6
+26 ± 0
+24 ± 0.5
+frostbite
+1101 ± 355
+659 ± 523
+231 ± 1
+gopher
+391 ± 46
+278 ± 39
+396 ± 24
+hero
+3013 ± 90
+5351 ± 1948
+3321 ± 598
+jamesbond
+295 ± 57
+215 ± 42
+218 ± 22
+kangaroo
+1002 ± 587
+804 ± 289
+400 ± 278
+krull
+2656 ± 180
+2333 ± 309
+2308 ± 268
+kung_fu_master
+4037 ± 2962
+9392 ± 6289
+4031 ± 3068
+ms_pacman
+1053 ± 193
+818 ± 94
+517 ± 38
+pong
+-20 ± 0.4
+-20 ± 0
+-21 ± 0.1
+private_eye
+100 ± 0
+51 ± 59
+1128 ± 1067
+qbert
+672 ± 144
+697 ± 78
+733 ± 291
+road_runner
+5426 ± 2830
+6965 ± 6569
+1319± 216
+seaquest
+387 ± 24
+345 ± 40
+287 ± 87
+up_n_down
+5123 ± 3146
+2197 ± 231
+2179 ± 178
+
+Table 5: Standard deviations across seeds for runs presented Table 1.
+
+Game
+KFAC+Denoised
+KFAC+TRL10x
+Scattering
+
+alien
+996 ± 180
+643 ± 51
+441 ± 90
+amidar
+163 ± 15
+98 ± 26
+84 ± 11
+assault
+501 ± 85
+496 ± 129
+434 ± 304
+asterix
+537 ± 96
+526 ± 64
+502 ± 91
+bank_heist
+100 ± 14
+57 ± 36
+29 ± 13
+battle_zone
+8622 ± 5358
+6156 ± 1951
+4311 ± 1517
+boxing
+0 ± 2
+-1 ± 3
+-9 ± 12
+breakout
+3 ± 1
+2 ± 2
+2 ± 0
+chopper_command
+692 ± 81
+1302 ± 328
+441 ± 80
+crazy_climber
+14242 ± 2936
+3546 ± 1231
+740 ± 291
+demon_attack
+582 ± 130
+318 ± 168
+692 ± 232
+freeway
+26 ± 0
+24 ± 0
+19 ± 1
+frostbite
+1760 ± 448
+1483 ± 466
+654 ± 709
+gopher
+363 ± 4
+265 ± 67
+172 ± 3
+hero
+4188 ± 1635
+4206 ± 1862
+4127 ± 1074
+jamesbond
+263 ± 22
+217 ± 68
+48 ± 10
+kangaroo
+2085 ± 2055
+588 ± 5
+391 ± 52
+krull
+2855 ± 156
+3392 ± 2205
+772± 560
+kung_fu_master
+8481 ± 8270
+7357 ± 9200
+233± 205
+ms_pacman
+1137 ± 180
+867 ± 128
+613 ± 159
+pong
+-19 ± 0.6
+-19 ± 1
+-20 ± 0
+private_eye
+56 ± 42
+100 ± 0
+0 ± 0
+qbert
+731 ± 256
+538 ± 114
+475 ± 161
+road_runner
+4516 ± 2869
+7224 ± 4598
+1278 ±463
+seaquest
+349 ± 63
+520 ± 97
+213 ± 96
+up_n_down
+2557 ± 641
+2108 ± 298
+993 ± 244
+Table 6: Standard deviations across seeds for runs presented Table 2.
+
+Further results and learning curves
+
+Learning curves As a simpler version of the experiments in the main text body, we show basic proof of
+concept on the simple Pong Atari game. Our experimental setup consists in using our own implementation of
+prioritized double DQN as a baseline, which combines algorithmic advances from [24] and [22]. We replaced
+the densely connected layer of the original DQN architecture with a tensor regression layer implementing Tucker
+decomposition for different Tucker ranks, yielding different network compression factors. (These curves average
+three different random seeds).
+
+Qualitative behaviour. First results, both in terms of learning performance and compression factor, can be
+seen in ﬁgure 1. The two main ﬁndings of this experiment are that ﬁrst, and overall, the ﬁnal performance of
+the agent remains unaffected by the tensor factorization, even with high compression rates nearing 10 times.
+Second, this obviously comes at the expense of stability during training - in tough compression regimes, learning
+curves are slightly delayed, and their plateauing phases contain occasional noisy drawdowns illustrating the
+increased difﬁculty of learning, as seen in ﬁgure 2. The extra pathwise noise, however, can be seen as promoting
+exploration.
+
+20
+
+15
+
+10
+
+5
+
+0
+
+Score
+
+5
+
+10
+
+Medium Tucker decomposition rank:
+
+12 (1.9x compression)
+10 (2.3x compression)
+8 (2.8x compression)
+6 (3.6x compression)
+4 (5.0x compression)
+
+15
+
+20
+
+0
+200
+400
+600
+800
+1000
+Number of Pong episodes, in thousands
+
+Figure 1: Prioritized tensorized DQN on Atari Pong. Original learning curve versus several learning
+curves for ﬁve different Tucker ranks factorizations and therefore parameter compression rates (3
+different random seeds each, with a 30 episodes moving average for legibility). Best viewed in colour.
+
+Figure 2: Focus on a typical single run of the tensorized DQN learning. The overall shape of the
+typical learning curve is preserved, but drawdowns in the plateauing phase do appear.

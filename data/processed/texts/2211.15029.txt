@@ -1,0 +1,1347 @@
+DiffusionBERT: Improving Generative Masked Language Models with
+Diffusion Models
+
+Zhengfu He∗Tianxiang Sun∗Kuanning Wang
+Xuanjing Huang
+Xipeng Qiu
+School of Computer Science, Fudan University
+Shanghai Key Laboratory of Intelligent Information Processing, Fudan University
+
+Abstract
+
+"[MASK] [MASK] [MASK]"
+"[MASK] world !"
+"Hello world !"
+pθ(xt−1|xt, t)
+
+xT
+· · ·
+xt
+xt−1
+· · ·
+x0
+
+We present DiffusionBERT, a new generative
+masked language model based on discrete dif-
+fusion models.
+Diffusion models and many
+pre-trained language models have a shared
+training objective, i.e., denoising, making it
+possible to combine the two powerful models
+and enjoy the best of both worlds. On the one
+hand, diffusion models offer a promising train-
+ing strategy that helps improve the generation
+quality. On the other hand, pre-trained denois-
+ing language models (e.g., BERT) can be used
+as a good initialization that accelerates conver-
+gence. We explore training BERT to learn the
+reverse process of a discrete diffusion process
+with an absorbing state and elucidate several
+designs to improve it. First, we propose a new
+noise schedule for the forward diffusion pro-
+cess that controls the degree of noise added at
+each step based on the information of each to-
+ken. Second, we investigate several designs of
+incorporating the time step into BERT. Experi-
+ments on unconditional text generation demon-
+strate that DiffusionBERT achieves signiﬁcant
+improvement over existing diffusion models
+for text (e.g., D3PM and Diffusion-LM) and
+previous generative masked language models
+in terms of perplexity and BLEU score.1
+
+q(xt|xt−1)
+
+arXiv:2211.15029v2 [cs.CL] 30 Nov 2022
+
+(a) Diffusion models for discrete data
+
+"[MASK] [MASK] [MASK]"
+"Hello [MASK] !"
+"Hello world !"
+pθ(xt−1|xt)
+
+xT
+· · ·
+xt
+xt−1
+· · ·
+x0
+
+q(xt|xt−1, x0)
+
+(b) Non-Markovian DiffusionBERT
+
+Figure 1: In contrast to conventional discrete diffusion
+models, DiffusionBERT uses BERT as its backbone to
+perform text generation. The main differences are high-
+lighted in color: (1) DiffusionBERT performs decoding
+without knowing the current time step while canonical
+diffusion models are conditioned on time step. (2) The
+diffusion process of DiffusionBERT is non-Markovian
+in that it generates noise samples xt conditioning not
+only on xt−1 but also on x0. Such a non-Markov pro-
+cess is due to our proposed noise schedule.
+
+nature of the text. A few prior works that explored
+using diffusion models on text data can be divided
+into two lines. The ﬁrst is to extend diffusion mod-
+els to discrete state spaces (Hoogeboom et al., 2021;
+Austin et al., 2021). The second is to perform
+the diffusion process and its reverse process in the
+continuous domain and bridge the continuous and
+the discrete domain through embedding and round-
+ing (Li et al., 2022; Gong et al., 2022). However,
+none of these works leveraged pre-trained language
+models (PLMs, Devlin et al. (2019); Lewis et al.
+(2020); Raffel et al. (2020); Brown et al. (2020);
+Qiu et al. (2020)), which are an unmissable treasure
+in the NLP community.
+
+1
+Introduction
+
+Diffusion models (Sohl-Dickstein et al., 2015;
+Ho et al., 2020; Song et al., 2021) have recently
+emerged as a new class of state-of-the-art gener-
+ative models, achieving high-quality synthesis re-
+sults on image data (Ramesh et al., 2022; Rom-
+bach et al., 2022; Saharia et al., 2022). Though
+these models captured widespread attention from
+not only the research community but also the pub-
+lic, applying diffusion models to text data is still
+challenging and under-explored due to the discrete
+
+This work, to our knowledge, is the ﬁrst attempt
+to combine diffusion models with PLMs. Such
+a combination is built upon a shared training ob-
+jective between diffusion models and PLMs, i.e.,
+denoising. Diffusion models consist of a forward
+process (data to noise) and a reverse process (noise
+
+∗Equal contribution.
+1Our code is publicly available at
+com/Hzfinfdu/Diffusion-BERT
+
+text generation (e.g., D3PM (Austin et al., 2021)
+and Diffusion-LM (Li et al., 2022)) and previous
+generative masked language models (e.g., BERT-
+Mouth (Wang and Cho, 2019)). The effectiveness
+of the proposed spindle schedule and time-agnostic
+decoding is conﬁrmed by ablation studies. In a
+nutshell, DiffusionBERT enjoys the best of both
+worlds.
+
+to data). In the forward process, a small amount of
+noise is gradually added to the data. Then, a neural
+network (pθ in Figure 1) is employed to learn the
+reverse process step by step, i.e., learn to denoise.
+Such a denoising neural network is naturally re-
+lated to a wide class of PLMs that are pre-trained
+with denoising objectives such as BERT (Devlin
+et al., 2019) and BART (Lewis et al., 2020). Hence,
+pre-trained denoising language models can serve as
+a good start point to learn the reverse diffusion pro-
+cess. On the other hand, diffusion models also offer
+a promising training strategy for generative PLMs.
+In contrast to commonly used generative PLMs
+(e.g., GPT (Brown et al., 2020)) that relies on an
+autoregressive factorization of the joint probability,
+diffusion models provide another way of factor-
+ization along the dimension of time and therefore
+allow the model to be not necessarily autoregres-
+sive. Thus, diffusion models can be combined with
+a variety of PLMs that may not be pre-trained for
+generation.
+
+2
+Background
+
+2.1
+Diffusion Models
+
+Diffusion models (Sohl-Dickstein et al., 2015; Ho
+et al., 2020) are a class of latent variable models
+that are originally designed for continuous domains.
+A diffusion model is consisting of a forward diffu-
+sion process and a reverse diffusion process. Given
+a sample x0 ∼q(x0), a Markov chain of latent
+variables x1, · · · , xT are produced in the forward
+process by progressively adding a small amount of
+Gaussian noise to the sample:
+
+q(xt|xt−1) = N(xt;
+p
+
+In the discrete domain, the forward diffusion
+process can be implemented by a chain of tran-
+sition matrices that gradually corrupt the clean
+text. As shown in Figure 1, the clean text "Hello
+world !" is gradually corrupted into "[MASK]
+[MASK] [MASK]" during the diffusion process.
+In this work, we explore using pre-trained denois-
+ing language models (e.g., BERT) to learn the re-
+verse diffusion process and demonstrate their ad-
+vantages in accelerating convergence and improv-
+ing generation quality. Further, we propose a new
+noise schedule of the forward process based on the
+principle of distributing the corrupted information
+uniformly across the forward process. The noise
+schedule, called spindle schedule, generates noise
+for xt conditioned not only on xt−1 but also on x0,
+making the forward process non-Markovian with-
+out changing the original training objective. Note
+that the denoising model takes as input xt and time
+step t to predict xt−1, where t is unseen during the
+pre-training of language models so we investigate
+several ways of incorporating the time step into
+PLMs. As a result, we ﬁnd that the best result is
+achieved by throwing away the time information,
+which we call time-agnostic decoding (TAD).
+
+1 −βtxt−1, βtI),
+(1)
+
+where {βt ∈(0, 1)}T
+t=1 is a noise schedule control-
+ling the step size of adding noise. Eventually xT
+becomes an isotropic Gaussian distribution. If βt
+is small enough, the reverse process q(xt−1|xt) is
+also a Gaussian, which is learned by a parameter-
+ized model
+
+pθ(xt−1|xt, t) = N(xt−1; µθ(xt, t), Σθ(xt, t)),
+(2)
+where µθ(·) and Σθ(·) can be implemented by a
+U-Net or a Transformer. When conditioning also
+on x0, q(xt−1|xt, x0) has a closed form so we can
+manage to minimize the variational lower bound to
+optimize log pθ(x0):
+
+Lvlb = Eq[DKL(q(xT |x0) ∥pθ(xT ))]
+
+T
+X
+
++ Eq[
+
+t=2
+DKL(q(xt−1|xt, x0) ∥pθ(xt−1|xt, t))]
+
+−log pθ(x0|x1),
+(3)
+
+where Eq(·) denotes the expectation over the joint
+distribution q(x0:T ).
+
+2.2
+Diffusion Models in Discrete Domain
+
+Experimental results on unconditional text gen-
+eration demonstrate the beneﬁt of combining dif-
+fusion models with PLMs:
+the proposed Dif-
+fusionBERT signiﬁcantly improves the genera-
+tion quality over existing diffusion models for
+
+t = 0
+[MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK]
+t = 8
+[MASK] of [MASK] five [MASK] remain [MASK] in [MASK] .
+t = 16
+two of [MASK] five structures remain [MASK] this location .
+t = 24
+five of [MASK] the windows remain at this location .
+t = 32
+most of even the windows stand still this day .
+
+BERT-Mouth
+
+t = 0
+[MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK]
+t = 8
+[MASK] [MASK] [MASK] [MASK] been [MASK] [MASK] [MASK] [MASK] .
+t = 16
+[MASK] [MASK] [MASK] [MASK] been [MASK] [MASK] the [MASK] .
+t = 24
+[MASK] [MASK] [MASK] also been [MASK] by the
+[MASK]
+.
+t = 32
+the man has also been arrested by the police .
+
+D3PM
+
+t = 0
+[MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK] [MASK]
+t = 8
+[MASK] , [MASK] [MASK] [MASK] [MASK] [MASK] that [MASK] .
+t = 16
+today , [MASK] will be [MASK] [MASK] that [MASK] .
+t = 24
+today , [MASK] will be remembered for that mistake .
+t = 32
+today , he will be remembered for that mistake .
+
+DiffusionBERT
+
+Table 1: Examples generated by three generative masked language models showing the difference of noise schedule
+and generation quality.
+
+process (§ 3.2). Then, we investigate several alter-
+natives of incorporating the time step into PLMs
+for predicting xt−1 given xt and t (§ 3.3).
+
+of adding noise can be written as
+
+q(xt|xt−1) = Cat(xt; p = xt−1Qt),
+(4)
+
+3.1
+Diffusion Models with a Discrete
+Absorbing State
+
+where Cat(·) is a category distribution and Qt is
+a transition matrix that is applied to each token
+in the sequence independently: [Qt]i,j = q(xt =
+j|xt−1 = i). It is easy to obtain that
+
+To be combined with pre-trained denoising lan-
+guage models, we incorporate an absorbing state,
+e.g., [MASK] for BERT, in the Markov process. In
+particular, each token in the sequence either stays
+the same or transitions to [MASK] with some prob-
+ability. Formally, each entry of the transition matrix
+at step t is as follows,
+
+q(xt−1|xt, x0) = q(xt|xt−1, x0)q(xt−1|x0)
+
+q(xt|x0)
+
+!
+
+xt−1; p = xtQ⊤
+t ⊙x0Qt−1
+x0Qtx⊤
+t
+
+= Cat
+
+,
+(5)
+
+
+
+
+
+1
+if i = j = [M],
+βt
+if j = [M], i ̸= [M],
+1 −βt
+if i = j ̸= [M],
+
+where Qt = Q1Q2 · · · Qt. Note that ⊙is element-
+wise multiplication and the division is row-wise.
+With q(xt−1|xt, x0) at hand, according to
+Eq.
+(3), we can use a parameterized model
+pθ(xt−1|xt, t) to learn the reverse diffusion pro-
+cess.
+
+[Qt]i,j =
+
+(6)
+
+
+
+
+where [M] is the abbreviation of [MASK]. Such a
+Markov process converges to a stationary distribu-
+tion q(xT ), which places all probability mass on a
+sequence with all [MASK] tokens.
+The t-step marginal q(xi
+t|xi
+0) can be easily ob-
+tained in a closed form,
+
+3
+DiffusionBERT
+
+In contrast to recently proposed diffusion models
+for text, e.g., Diffusion-LM (Li et al., 2022) and
+DiffuSeq (Gong et al., 2022), which are based on
+continuous diffusion models, we instead explore
+discrete diffusion models to integrate PLMs as the
+backbone. We ﬁrst introduce a speciﬁc instance
+of discrete diffusion models (Austin et al., 2021),
+which considers a transition matrix with an absorb-
+ing state for the sake of using PLMs (§ 3.1). Sec-
+ondly, we introduce a new noise schedule of the
+forward diffusion process, called spindle schedule,
+which is based on the principle of distributing the
+corrupted information uniformly across the forward
+
+(
+
+αt
+if xi
+t = xi
+0,
+1 −αt
+if xi
+t = [M],
+(7)
+
+q(xi
+t|xi
+0) =
+
+where αt = Qt
+i=1(1 −βi), xi
+t denotes the i-th
+token in the sequence at step t. Combining with
+Eq. (3) and (5), we can derive a training objective
+to optimize pθ(xt−1|xt, t) and generate a sample
+by performing the reverse diffusion process:
+
+T
+Y
+
+pθ(x0:T ) = p(xT )
+
+notes the i-th token in the sequence and n denotes
+the length of the sequence. According to Eq. (7),
+αi
+t = Qt
+j=1(1−βi
+j) denotes the probability that the
+i-th token remains the same at step t, i.e., xi
+t = xi
+0.
+We expect that αi
+t > αj
+t if H(xi
+t) < H(xj
+t) such
+that easy (low-information) tokens emerges earlier
+than hard (high-information) tokens during the re-
+verse process.
+Considering these aforementioned properties,
+we construct αi
+t as follows,
+
+3.2
+Spindle Noise Schedule
+
+The noise schedule in the continuous domain, such
+as the linear schedule (Ho et al., 2020) and the co-
+sine schedule (Nichol and Dhariwal, 2021a), has
+shown to be important to the performance of diffu-
+sion models.
+In contrast to the continuous domain where the
+noise can be easily controlled by the variance of
+the Gaussian, (1) it is less obvious how to control
+the degree of noise added at each step in the dis-
+crete domain. For the discrete domain, the noise
+schedule βt = (T −t + 1)−1 has been explored
+for the case of the uniform transition matrix (Sohl-
+Dickstein et al., 2015; Hoogeboom et al., 2021) and
+the absorbing-state transition matrix (Austin et al.,
+2021). However, (2) such a schedule assumes all
+tokens carry the same amount of information and
+does not consider the linguistic difference among
+the tokens in a sequence. Besides, (3) it violates
+the easy-ﬁrst-generation nature of denoising lan-
+guage models. That is, the model tends to generate
+tokens that are most frequently appearing (and is
+least surprising) in the training corpus to achieve a
+higher likelihood. As the context becomes richer,
+more details come up in the sequence.
+To address the above issues, we consider a noise
+schedule that (1) measures the added noise at
+each step by the corrupted information and en-
+courage the corrupted information to be uniformly
+distributed across the diffusion steps. Since the
+information is measured independently for each
+token, (2) different tokens in a sequence are as-
+signed different probabilities of transitioning to the
+[MASK] token. Moreover, inspired by the easy-
+ﬁrst-generation phenomenon, (3) we put the tokens
+in a sequence in descending order of their informa-
+tion and divide them into T buckets. Each bucket is
+ensured to contain the same amount of information.
+That is, we mask the most informative tokens at the
+start of the forward process and mask the least in-
+formative tokens at the end of the forward process
+such that the learnable reverse process follows an
+easy-ﬁrst generative behavior.
+In particular, distributing corrupted information
+uniformly across the forward steps can be formally
+described by
+
+αi
+t = 1 −t
+
+T −S(t) · ˜H(xi
+0),
+(10)
+
+S(t) = λ sin tπ
+
+T ,
+(11)
+
+Pn
+j=1 H(xj
+0)
+
+˜H(xi
+0) = 1 −
+
+nH(xi
+0)
+,
+(12)
+
+where S(t) is introduced to control the effect of
+the informativeness at time step t. It is designed
+to be sinusoidal to ensure S(0) = S(T) = 0 such
+that xt can retain all (zero) information when t = 0
+(t = T). The effect of S(t) is controlled by a hy-
+perparameter λ. When λ = 0, the noise schedule is
+degraded to βt = (T −t+1)−1 as in Sohl-Dickstein
+et al. (2015); Hoogeboom et al. (2021); Austin et al.
+(2021). Figure 2 shows how α progresses during
+the forward process. The schedule is named as
+spindle due to the shape of the probability curves.
+In our proposed schedule, the transition proba-
+bility at time step t depends not only on the current
+state but also on the original text, making the for-
+ward diffusion process non-Markovian. Neverthe-
+less, as revealed by Eq. (5), this does not change
+the original training objective.
+
+3.3
+The Design Space of Feeding Time Steps
+
+Typically, a diffusion model takes as input a
+noised sample and the time step to predict the
+denoised sample during the reverse process, i.e.,
+pθ(xt−1|xt, t). However, t is an additional vari-
+able that is unseen during the pre-training of lan-
+guage models and therefore it is less trivial how to
+feed the time information into the PLMs. Here we
+explore three design choices of feeding time steps.
+
+T =
+Pn
+i=1 H(xi
+t)
+Pn
+i=1 H(xi
+0) =
+Pn
+i=1 αi
+tH(xi
+0)
+Pn
+i=1 H(xi
+0) , (9)
+
+Layer-wise Time Embedding
+A straightfor-
+ward choice is to include the time step as the same
+way as positional encoding, i.e., using the Trans-
+former sinusoidal embedding or a learnable MLP
+in each Transformer layer. Note that this way is
+
+1 −t
+
+where H denotes the entropy, which measures the
+amount of information of a random variable, xi de-
+
+LM1B is a language corpus with about 30 million
+sentences and a vocabulary of about 793k. We
+use the standard train-test split and take 1% of
+the training set for validation. All text data are
+lower-cased to align with the settings of Austin
+et al. (2021).
+Our DiffusionBERT is based on BERT-BASE-
+UNCASED with about 110M parameters.
+We
+train DiffusionBERT using the AdamW opti-
+mizer (Loshchilov and Hutter, 2019) for 1.9 million
+steps with learning rate of 3e-6, dropout probability
+of 0.1, batch size of 32. For the ﬁrst 10K steps, we
+use a linear warmup schedule starting from learn-
+ing rate of 1e-8. All experiments are conducted
+on NVIDIA A100 Tensor Core GPUs. We use 4
+GPUs for training and a single GPU for sampling.
+
+Figure 2: Each token in a sequence has a speciﬁc noise
+schedule depending on how much information is lost
+when they are masked. For instance, in the sentence
+"Bella is sitting over there.", "Bella"
+is the most informative word. Thus it is encouraged to
+be masked at the early stage so that our model learns to
+recover it in the last place.
+
+4.2
+Baselines
+
+We conduct comparison on unconditional text gen-
+eration against several non-autoregressive (NAR)
+baselines: D3PM (Austin et al., 2021), Diffusion-
+LM (Li et al., 2022), and BERT-Mouth (Wang and
+Cho, 2019).2
+
+commonly adopted in previous work (Ho et al.,
+2020; Austin et al., 2021; Li et al., 2022).
+
+Preﬁx Time Embedding
+Prompting language
+models by prepending trainable soft tokens to the
+input sequence has shown promising results re-
+cently (Lester et al., 2021; Sun et al., 2022). Hence,
+we also explore including a time step token embed-
+ding v(t) as a preﬁx of the input token embeddings
+⟨v(x1
+t ), v(x2
+t ), · · · , v(xn
+t )⟩. In particular, the time
+step token is inserted in between the [CLS] token
+and the input sequence. These added time step
+token embeddings are trained along with the PLM.
+
+D3PM
+D3PM is a general framework of discrete
+diffusion models. We implement an instance of
+D3PM with the absorbing state and a layer-wise
+time embedding. Both DiffusionBERT and D3PM
+are implemented with a sequence length n = 128
+and diffusion steps T = 2048. During inference,
+we perform decoding with 16 time steps in each
+iteration. The total inference cost is 128 iterations,
+which is smaller than that chosen in existing dif-
+fusion or diffusion-like models for unconditional
+generation (Hoogeboom et al., 2021; Savinov et al.,
+2022). This has no impact on our conclusions since
+increasing the diffusion step does not bring sub-
+stantial improvement.
+
+Time-Agnostic Decoding
+Another alternative is
+not to explicitly incorporate the time step t because
+it can be implied by the noised sample xt. In con-
+trast to the image data, it is easier to implicitly in-
+fer the diffusion time step by counting the number
+of corrupted tokens (i.e., [MASK]) in the noised
+sequence. In this way, the PLM has to perform iter-
+ative decoding while being ignorant of the current
+time step, i.e., pθ(xt−1|xt).
+
+Diffusion-LM
+Diffusion-LM learns an embed-
+ding to map discrete text into the continuous space
+where it performs Gaussian diffusion process. A
+rounding step is required to map the continuous em-
+beddings into discrete texts. We re-implemented
+Diffusion-LM with the model architecture of BERT
+and diffusion steps T = 2000. Since the perfor-
+mance drop of Diffusion-LM is bigger than D3PM
+
+4
+Experiments
+
+4.1
+Experimental Setup
+
+We mainly focus on unconditional text generation
+in complex scenarios where the training data covers
+a wide range of topics and is composed of a large
+vocabulary. Experiments are conducted on the One
+Billion Word dataset (LM1B) (Chelba et al., 2014).
+
+2Another strong baseline of NAR text generation is SUN-
+DAE (Savinov et al., 2022) but unfortunately there is no public
+implementation available. We will include comparison with
+SUNDAE in later versions by directly using the results re-
+ported in the original paper and use the same settings to train
+DiffusionBERT for fair comparison.
+
+Method
+Pretrained
+Schedule
+Time Step
+PPL ↓
+BLEU ↑
+Self-BLEU ↓
+
+D3PM (Austin et al., 2021)
+%
+(T −t + 1)−1
+LTE
+82.34
+0.3897
+0.2347
+
+::::
+TAD
+125.15
+0.3390
+0.2720
+
+:::::::
+Spindle
+LTE
+77.50
+0.4241
+0.2288
+
+Diffusion-LM (Li et al., 2022)
+%
+Cosine
+LTE
+118.62
+0.3553
+0.2668
+
+!
+Cosine
+LTE
+132.12
+0.3562
+0.2798
+
+BERT-Mouth (Wang and Cho, 2019)
+!
+-
+-
+142.89
+0.2867
+0.1240
+
+::::::::::::::
+DiffusionBERT
+!
+(T −t + 1)−1
+LTE
+92.53
+0.3995
+0.2118
+
+::::
+PTE
+79.95
+0.3886
+0.2156
+
+::::
+TAD
+78.76
+0.4213
+0.2116
+
+:::::::
+Spindle
+::::
+TAD
+63.78
+0.4358
+0.2151
+
+Table 2: Main results on LM1B. The methods proposed in this work are marked with ::::
+wavy:::::
+lines. The best
+results are in bold and the second best results are underlined. LTE: layer-wise time embedding. PTE: preﬁx time
+embedding. TAD: time-agnostic decoding.
+
+and DiffusionBERT when we sample less steps
+during generation, we do not skip steps so the num-
+ber of inference is about 4 times that of Diffusion-
+BERT and the exact generation time comparison is
+reported in § 4.5.
+
+schedule is substantially higher. Evidence of lower
+bound is used as a proxy of the perplexities of Dif-
+fusionBERT and D3PM since the exact likelihood
+of diffusion models is intractable.
+
+DiffusionBERT vs.
+Other Generative BERT
+Models
+We compare DiffusionBERT
+with
+another representative generative masked lan-
+guage model, BERT-Mouth (Wang and Cho,
+2019). Experimental results show that Diffusion-
+BERT achieves better performance in terms of the
+perplexity and the BLEU score. We attribute the
+superior performance of DiffusionBERT to its one-
+time sampling of all tokens, which helps Diffusion-
+BERT generate more coherent text, especially in
+a long range. Although such decoding may face
+the problem of multimodality (Gu et al., 2018), in-
+appropriate phrases can be ﬁxed in the upcoming
+diffusion steps. The probabilistic modeling offers
+more ﬂexibility in that generated tokens with low
+probability are more likely to be masked and re-
+sampled. In BERT-Mouth, however, the tokens are
+ﬁxed once sampled. Wang and Cho (2019) also pro-
+posed to continue masking and predicting tokens
+after the whole sequence is complete, revising the
+sentence for higher quality. But such randomness
+in the selection and replacement of tokens results
+in low inference speed.
+
+BERT-Mouth
+BERT-Mouth samples text from
+BERT via order-agnostic autoregressive masked
+language modeling. Starting from a sequence of
+[MASK], BERT samples one token at each time
+step in random order. Another option is decod-
+ing from left to right, like autoregressive models.
+In our preliminary experiments, we ﬁnd that ran-
+dom position sampling performs better. We con-
+tinue pretraining BERT on LM1B to adapt BERT
+to downstream training corpus.
+
+4.3
+Main Results
+
+Our main results are included in Table 2.
+We
+choose BLEU-4 as the metric for generation qual-
+ity and diversity. For each method, we sample
+1K text for evaluating BLEU score and another
+1K for self-BLEU. Note that with different sam-
+pling strategy, the BLEU/self-BLEU results may
+vary. For fair comparison, the sentences sampled
+by D3PM and DiffusionBERT have a ﬁxed length
+n = 64 and are sampled by a top-K ﬁlter where
+K = 30. Diffusion-LM and BERT-Mouth are
+trained and sampled following their original im-
+plementation. Overall, DiffusionBERT achieves
+the best generation quality and diversity trade-off
+among the considered NAR methods. Besides, the
+perplexity of DiffusionBERT with the spindle noise
+
+Discrete vs.
+Continuous Diffusion Models
+We then focus on the comparison of discrete
+and continuous diffusion models for text gener-
+ation. To achieve this, we mainly compare Diffu-
+sionBERT with recently proposed Diffusion-LM,
+
+Figure 3: BLEU scores on the LM1B test set. Left is
+better, lower is better. For GPT and Transformer de-
+coder, we control quality-variation with sampling tem-
+perature. D3PM and DiffusionBERT are controlled by
+truncation sampling hyperparameter K.
+
+Figure 4: Curve of validation ELBO during training.
+
+DiffusionBERT to perform generation without ex-
+plicitly providing time information yet achieving
+better generation results. The resemblance between
+BERT pre-training objective and absorbing diffu-
+sion models makes it easier for DiffusionBERT to
+generalize to noisier scenarios while a Transformer
+encoder trained from scratch needs a speciﬁc time-
+aware module to model the reverse process.
+
+which is based on continuous diffusion models. As
+a result, despite of its outstanding controlling abil-
+ity, we show that the texts generated by Diffusion-
+LM have a lower quality than DiffusionBERT.
+Though both DiffusionBERT and Diffusion-LM
+adopt the same conﬁguration of Transformer, it
+is worth noting that the superior performance of
+DiffusionBERT may be contributed by not only
+the discrete diffusion models but also the use of
+pre-trained models. To disentangle the effect of
+pre-training and discrete/continuous diffusion mod-
+els, we also explore initializing Diffusion-LM with
+BERT. As shown in Table 2, training Diffusion-
+LM from BERT initialization performs even worse
+than training from scratch. We conjecture that the
+continuous nature of Diffusion-LM is not compat-
+ible with the initialization from BERT since the
+embedding learned by BERT may not be suitable
+for the Gaussian diffusion process. In contrast, the
+comparison of D3PM and DiffusionBERT shows
+that DiffusionBERT beneﬁts much from the BERT
+initialization due to its discrete diffusion process.
+
+Effect of the Spindle Noise Schedule
+We try
+our proposed spindle noise schedule on both Diffu-
+sionBERT and D3PM. The perplexity is improved
+by 18% and 19% for D3PM and DiffusionBERT, re-
+spectively. Besides, D3PM with the spindle sched-
+ule outperforms that with the standard (T −t+1)−1
+
+schedule in generation quality. The same trend
+holds for DiffusionBERT but with a smaller mar-
+gin.
+
+4.4
+Quality-Diversity Trade-off
+
+As shown in Figure 3, DiffusionBERT exhibits
+comparable generation ability with a Transformer
+decoder trained from scratch and pushes the Pareto
+front of NAR generation quality/diversity trade-off
+by a large margin. However, it still falls behind
+pretrained AR models of the same size.
+
+4.5
+Efﬁciency of Training and Generation
+
+One important feature of DiffusionBERT is that
+with time-agnostic decoding, all parameters are ini-
+tialized by pretrained models. Consequently, Dif-
+fusionBERT includes fewer parameters and is free
+from adapting new parameters, improving training
+and decoding efﬁciency.
+
+Faster Convergence
+DiffusionBERT converges
+remarkably faster than D3PM. Figure 4 demon-
+strates the curve of validation ELBO in the training
+
+(Ramesh et al., 2022; Kong et al., 2021; Nichol
+and Dhariwal, 2021b). Despite their great success
+and state-of-the-art sample quality in the above do-
+mains, diffusion models for text still struggle to
+match autoregressive models in various generation
+tasks. Since the Gaussian noise proposed in Sohl-
+Dickstein et al. (2015) cannot be directly applied
+to discrete data, they also introduced a discrete
+forward process with a Bernoulli transition kernel.
+Hoogeboom et al. (2021) made a step forward from
+Bernoulli to categorical distributions. A more gen-
+eral family of discrete diffusion processes was in-
+troduced in Austin et al. (2021); Hoogeboom et al.
+(2022), including absorbing kernels and combina-
+tions of absorbing and uniform transition kernels.
+Li et al. (2022) models text in the continuous em-
+bedding space, which is closer to the settings in
+earlier works of diffusion models and shows im-
+pressive performance in classiﬁer-controlled text
+generation. While the decoding and convergence
+speed are substantially slower and the generated
+text lacks coherence. Moreover, in scenarios where
+the vocabulary is large, the k-nearest-neighbor al-
+gorithm used in decoding holds up decoding even
+more severely.
+
+Method
+Steps
+Inference Time (secs)
+PPL
+
+2
+0.66
+313.57
+8
+1.39
+91.01
+16
+1.80
+75.66
+64
+4.25
+65.83
+128
+7.53
+63.78
+512
+27.48
+54.63
+
+DiffusionBERT
+
+Diffusion-LM
+2000
+83.67
+112.12
+
+BERT-Mouth
+64
+2.18
+142.89
+512
+14.39
+86.78
+
+GPT
+64
+1.55
+38.7
+
+Table 3: Comparison of inference time and perplexity
+among baselines and DiffusionBERT.
+
+process. Even if the training budget is cut to 30%
+(i.e. 0.5 million steps), DiffusionBERT is still able
+to match the performance reported in Table 2.
+
+Sampling Speed
+With the x0-parameterization
+proposed in Song et al. (2021) and Austin et al.
+(2021), DiffusionBERT is able to perform infer-
+ence with any given budget by controlling the step
+size in the reverse process. We also control the sam-
+pling time of BERT-Mouth by adjusting the max
+iteration count of its mask-predict process. We list
+the decoding speed and the corresponding perplex-
+ity on the LM1B test set in Table 3. Overall, Diffu-
+sionBERT exhibits competitive performance even
+when it reaches comparable speed to GPT and out-
+performs BERT-Mouth in efﬁciency-performance
+tradeoff.
+
+5.3
+Non-Autoregressive Text Generation
+
+Absorbing discrete diffusion models resembles
+conditional masked language models (CMLMs)
+(Ghazvininejad et al., 2019) in that both methods
+predict the whole sequence simultaneously and fol-
+lows a construct-destruct pattern to iteratively re-
+ﬁne the generated text. The main difference lies
+in the training objective: DiffusionBERT models
+a stochastic process and drives BERT to learn a
+group of distributions to gradually recover training
+data while CMLMs forces the neural network to
+deterministically recover the whole sequence in ev-
+ery iteration, thus it fails to explicitly model the
+denoising process. Savinov et al. (2022) proposed
+to approach the problem of non-autoregressive text
+modeling via unrolling the generation path to pre-
+pare the model for the partially corrupted sequences
+it will encounter during generation, which resem-
+bles the idea of diffusion models for unconditional
+text generation. Non-autoregressive models are
+also considered in translation but implemented in
+various ways, e.g., insertion/deletion (Gu et al.,
+2019) and iterative sequence alignment (Saharia
+et al., 2020).
+
+5
+Related Work
+
+5.1
+BERT for Text Generation
+
+It has been shown by Wang and Cho (2019) that
+the transfer-learning ability of BERT does not only
+helps to achieve impressive results in natural lan-
+guage understanding but also beneﬁts sequential
+sampling for text generation.
+However, its bi-
+directionality nature holds BERT from matching
+the decoder-only counterparts (Radford et al., 2018)
+in modeling text from left to right.
+
+5.2
+Diffusion Models for Text
+
+This work lies in the line of diffusion models, a
+latent variable generative framework proposed by
+Sohl-Dickstein et al. (2015). It has been architec-
+turally improved by Ho et al. (2020) and has gained
+broad attention for its impressive generation abil-
+ity in continuous domain (e. g. image and audio)
+
+6
+Conclusion
+
+Technologies, NAACL-HLT 2019, Minneapolis, MN,
+USA, June 2-7, 2019, Volume 1 (Long and Short Pa-
+pers), pages 4171–4186. Association for Computa-
+tional Linguistics.
+
+This work aims to approach the problem of un-
+conditional text generation for non-autoregressive
+models. To achieve this, we combine pretrained
+language models with absorbing-state discrete dif-
+fusion models for text. The training procedure of
+our proposed DiffusionBERT includes two main
+deviations from current discrete diffusion models,
+i.e., a new family of time step designs and the spin-
+dle noise schedule. The novel spindle noise as-
+signs a schedule for each token according to its
+frequency in the training corpus. Experimental re-
+sults demonstrate the success of DiffusionBERT in
+terms of perplexity. It also pushes the Pareto front
+of quality-variance tradeoff of NAR methods by a
+large margin, comparable to a Transformer decoder
+trained from scratch.
+
+Marjan Ghazvininejad, Omer Levy, Yinhan Liu, and
+Luke Zettlemoyer. 2019.
+Mask-predict: Parallel
+decoding of conditional masked language models.
+In Proceedings of the 2019 Conference on Empiri-
+cal Methods in Natural Language Processing and
+the 9th International Joint Conference on Natural
+Language Processing, EMNLP-IJCNLP 2019, Hong
+Kong, China, November 3-7, 2019, pages 6111–
+6120. Association for Computational Linguistics.
+
+Shansan Gong, Mukai Li, Jiangtao Feng, Zhiyong Wu,
+and Lingpeng Kong. 2022.
+Diffuseq: Sequence
+to sequence text generation with diffusion models.
+CoRR, abs/2210.08933.
+
+Jiatao Gu, James Bradbury, Caiming Xiong, Vic-
+tor O. K. Li, and Richard Socher. 2018.
+Non-
+autoregressive neural machine translation.
+In 6th
+International Conference on Learning Representa-
+tions, ICLR 2018, Vancouver, BC, Canada, April 30
+- May 3, 2018, Conference Track Proceedings. Open-
+Review.net.
+
+References
+
+Jacob Austin, Daniel D. Johnson, Jonathan Ho, Daniel
+Tarlow, and Rianne van den Berg. 2021. Structured
+denoising diffusion models in discrete state-spaces.
+In Advances in Neural Information Processing Sys-
+tems 34: Annual Conference on Neural Information
+Processing Systems 2021, NeurIPS 2021, December
+6-14, 2021, virtual, pages 17981–17993.
+
+Jiatao Gu, Changhan Wang, and Junbo Zhao. 2019.
+
+Levenshtein transformer.
+In Advances in Neural
+Information Processing Systems 32: Annual Con-
+ference on Neural Information Processing Systems
+2019, NeurIPS 2019, December 8-14, 2019, Vancou-
+ver, BC, Canada, pages 11179–11189.
+
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell,
+Sandhini Agarwal,
+Ariel Herbert-Voss,
+Gretchen Krueger, Tom Henighan, Rewon Child,
+Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu,
+Clemens Winter, Christopher Hesse, Mark Chen,
+Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin
+Chess, Jack Clark, Christopher Berner, Sam Mc-
+Candlish, Alec Radford, Ilya Sutskever, and Dario
+Amodei. 2020. Language models are few-shot learn-
+ers. In Advances in Neural Information Processing
+Systems 33: Annual Conference on Neural Informa-
+tion Processing Systems 2020, NeurIPS 2020, De-
+cember 6-12, 2020, virtual.
+
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. De-
+noising diffusion probabilistic models. In Advances
+in Neural Information Processing Systems 33: An-
+nual Conference on Neural Information Processing
+Systems 2020, NeurIPS 2020, December 6-12, 2020,
+virtual.
+
+Emiel Hoogeboom, Alexey A. Gritsenko, Jasmijn Bast-
+ings, Ben Poole, Rianne van den Berg, and Tim
+Salimans. 2022.
+Autoregressive diffusion models.
+In The Tenth International Conference on Learning
+Representations, ICLR 2022, Virtual Event, April 25-
+29, 2022. OpenReview.net.
+
+Emiel Hoogeboom, Didrik Nielsen, Priyank Jaini,
+Patrick Forré, and Max Welling. 2021.
+Argmax
+ﬂows
+and
+multinomial
+diffusion:
+Towards
+non-autoregressive
+language
+models.
+CoRR,
+abs/2102.05379.
+
+Ciprian Chelba, Tomás Mikolov, Mike Schuster, Qi Ge,
+Thorsten Brants, Phillipp Koehn, and Tony Robin-
+son. 2014. One billion word benchmark for measur-
+ing progress in statistical language modeling. In IN-
+TERSPEECH 2014, 15th Annual Conference of the
+International Speech Communication Association,
+Singapore, September 14-18, 2014, pages 2635–
+2639. ISCA.
+
+Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao,
+and Bryan Catanzaro. 2021. Diffwave: A versatile
+diffusion model for audio synthesis.
+In 9th Inter-
+national Conference on Learning Representations,
+ICLR 2021, Virtual Event, Austria, May 3-7, 2021.
+OpenReview.net.
+
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019.
+BERT: pre-training of
+deep bidirectional transformers for language under-
+standing.
+In Proceedings of the 2019 Conference
+of the North American Chapter of the Association
+for Computational Linguistics: Human Language
+
+Brian Lester, Rami Al-Rfou, and Noah Constant. 2021.
+
+The power of scale for parameter-efﬁcient prompt
+tuning. In Proceedings of the 2021 Conference on
+
+LA, USA, June 18-24, 2022, pages 10674–10685.
+IEEE.
+
+Empirical Methods in Natural Language Processing,
+EMNLP 2021, Virtual Event / Punta Cana, Domini-
+can Republic, 7-11 November, 2021, pages 3045–
+3059. Association for Computational Linguistics.
+
+Chitwan Saharia, William Chan, Saurabh Saxena, Lala
+Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour, Burcu Karagol Ayan, S. Sara Mah-
+davi, Rapha Gontijo Lopes, Tim Salimans, Jonathan
+Ho,
+David J. Fleet,
+and Mohammad Norouzi.
+2022.
+Photorealistic text-to-image diffusion mod-
+els with deep language understanding.
+CoRR,
+abs/2205.11487.
+
+Mike
+Lewis,
+Yinhan
+Liu,
+Naman
+Goyal,
+Mar-
+jan Ghazvininejad, Abdelrahman Mohamed, Omer
+Levy, Veselin Stoyanov, and Luke Zettlemoyer.
+2020. BART: denoising sequence-to-sequence pre-
+training for natural language generation, translation,
+and comprehension. In Proceedings of the 58th An-
+nual Meeting of the Association for Computational
+Linguistics, ACL 2020, Online, July 5-10, 2020,
+pages 7871–7880. Association for Computational
+Linguistics.
+
+Chitwan Saharia, William Chan, Saurabh Saxena, and
+Mohammad Norouzi. 2020. Non-autoregressive ma-
+chine translation with latent alignments. In Proceed-
+ings of the 2020 Conference on Empirical Methods
+in Natural Language Processing, EMNLP 2020, On-
+line, November 16-20, 2020, pages 1098–1108. As-
+sociation for Computational Linguistics.
+
+Xiang Lisa Li, John Thickstun, Ishaan Gulrajani,
+Percy Liang, and Tatsunori B. Hashimoto. 2022.
+Diffusion-lm improves controllable text generation.
+CoRR, abs/2205.14217.
+
+Nikolay
+Savinov,
+Junyoung
+Chung,
+Mikolaj
+Binkowski,
+Erich Elsen,
+and Aäron van den
+Oord. 2022. Step-unrolled denoising autoencoders
+for text generation. In The Tenth International Con-
+ference on Learning Representations, ICLR 2022,
+Virtual Event, April 25-29, 2022. OpenReview.net.
+
+Ilya Loshchilov and Frank Hutter. 2019.
+Decou-
+pled weight decay regularization.
+In 7th Inter-
+national Conference on Learning Representations,
+ICLR 2019, New Orleans, LA, USA, May 6-9, 2019.
+OpenReview.net.
+
+Alexander Quinn Nichol and Prafulla Dhariwal. 2021a.
+
+Jascha Sohl-Dickstein, Eric A. Weiss, Niru Mah-
+eswaranathan, and Surya Ganguli. 2015. Deep un-
+supervised learning using nonequilibrium thermody-
+namics. In Proceedings of the 32nd International
+Conference on Machine Learning, ICML 2015, Lille,
+France, 6-11 July 2015, volume 37 of JMLR Work-
+shop and Conference Proceedings, pages 2256–
+2265. JMLR.org.
+
+Improved denoising diffusion probabilistic models.
+In Proceedings of the 38th International Conference
+on Machine Learning, ICML 2021, 18-24 July 2021,
+Virtual Event, volume 139 of Proceedings of Ma-
+chine Learning Research, pages 8162–8171. PMLR.
+
+Alexander Quinn Nichol and Prafulla Dhariwal. 2021b.
+
+Improved denoising diffusion probabilistic models.
+In Proceedings of the 38th International Conference
+on Machine Learning, ICML 2021, 18-24 July 2021,
+Virtual Event, volume 139 of Proceedings of Ma-
+chine Learning Research, pages 8162–8171. PMLR.
+
+Jiaming Song, Chenlin Meng, and Stefano Ermon.
+2021. Denoising diffusion implicit models. In 9th
+International Conference on Learning Representa-
+tions, ICLR 2021, Virtual Event, Austria, May 3-7,
+2021. OpenReview.net.
+
+Xipeng Qiu, Tianxiang Sun, Yige Xu, Yunfan Shao,
+Ning Dai, and Xuanjing Huang. 2020. Pre-trained
+models for natural language processing: A survey.
+SCIENCE CHINA Technological Sciences.
+
+Tianxiang Sun, Yunfan Shao, Hong Qian, Xuanjing
+Huang, and Xipeng Qiu. 2022. Black-box tuning for
+language-model-as-a-service. In Proceedings of the
+39th International Conference on Machine Learning,
+ICML 2022, Baltimore, Maryland, USA.
+
+Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya
+Sutskever, et al. 2018. Improving language under-
+standing by generative pre-training.
+
+Alex Wang and Kyunghyun Cho. 2019. BERT has a
+mouth, and it must speak: BERT as a markov ran-
+dom ﬁeld language model. CoRR, abs/1902.04094.
+
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine
+Lee, Sharan Narang, Michael Matena, Yanqi Zhou,
+Wei Li, and Peter J. Liu. 2020. Exploring the limits
+of transfer learning with a uniﬁed text-to-text trans-
+former. J. Mach. Learn. Res., 21:140:1–140:67.
+
+Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey
+Chu, and Mark Chen. 2022.
+Hierarchical text-
+conditional image generation with CLIP latents.
+CoRR, abs/2204.06125.
+
+Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Björn Ommer. 2022.
+High-
+resolution image synthesis with latent diffusion mod-
+els. In IEEE/CVF Conference on Computer Vision
+and Pattern Recognition, CVPR 2022, New Orleans,

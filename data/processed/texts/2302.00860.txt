@@ -1,0 +1,3027 @@
+Modeling Causal Mechanisms with Diffusion Models
+for Interventional and Counterfactual Queries
+
+Patrick Bl¨obaum
+Amazon
+
+Patrick Chao*
+University of Pennsylvania
+
+Sapan Patel
+Amazon
+
+Shiva Prasad Kasiviswanathan
+Amazon
+
+arXiv:2302.00860v3 [stat.ML] 9 Oct 2024
+
+Abstract
+
+We consider the problem of answering observational, interventional, and counterfactual queries in a causally
+sufficient setting where only observational data and the causal graph are available. Utilizing the recent developments
+in diffusion models, we introduce diffusion-based causal models (DCM) to learn causal mechanisms, that generate
+unique latent encodings. These encodings enable us to directly sample under interventions and perform abduction for
+counterfactuals. Diffusion models are a natural fit here, since they can encode each node to a latent representation
+that acts as a proxy for exogenous noise. Our empirical evaluations demonstrate significant improvements over
+existing state-of-the-art methods for answering causal queries. Furthermore, we provide theoretical results that offer
+a methodology for analyzing counterfactual estimation in general encoder-decoder models, which could be useful in
+settings beyond our proposed approach.
+
+Abstract
+
+We consider the problem of answering observational, interventional, and counterfactual queries in a causally
+sufficient setting where only observational data and the causal graph are available. Utilizing the recent developments
+in diffusion models, we introduce diffusion-based causal models (DCM) to learn causal mechanisms, that generate
+unique latent encodings. These encodings enable us to directly sample under interventions and perform abduction for
+counterfactuals. Diffusion models are a natural fit here, since they can encode each node to a latent representation
+that acts as a proxy for exogenous noise. Our empirical evaluations demonstrate significant improvements over
+existing state-of-the-art methods for answering causal queries. Furthermore, we provide theoretical results that offer
+a methodology for analyzing counterfactual estimation in general encoder-decoder models, which could be useful in
+settings beyond our proposed approach.
+
+1
+Introduction
+
+Understanding the causal relationships in complex problems is crucial for making analyses, conclusions, and gen-
+eralized predictions. To achieve this, we require causal models and queries. Structural Causal Models (SCMs) are
+generative models describing the causal relationships between variables, allowing for observational, interventional,
+and counterfactual queries (Pearl, 2009a). An SCM specifies how a set of endogenous (observed) random variables
+is generated from a set of exogenous (unobserved) random variables with prior distribution via a set of structural
+equations.
+Given a causal DAG, we focus on approximating the individual SCMs with diffusion models. As an application, we
+present a flexible framework for answering all the three types of causal (observational, interventional, and counterfac-
+tual) queries. For counterfactuals, we work in Pearl’s SCM framework (Pearl, 2009a), and seek to quantify unit-level
+statements of the form: Given that observed a factual sample (xF
+1 , . . . , xF
+K) for a set of K variables (X1, . . . , Xk),
+what would have been the outcome for these K variables be, if the value of some set XI (with I ⊆[K]) had been
+
+*Work done during internship at Amazon.
+
+set to some γ ∈R|I|? Throughout this paper we assume causal sufficiency, i.e., absence of hidden confounders. Note
+that causal sufficiency is a necessary assumption for answering causal queries from observational data alone.
+In the SCM framework, causal queries can be answered by learning a proxy for the unobserved exogenous noise
+and the structural equations. This suggests that (conditional) generative models that encode to a latent space could be
+an attractive choice for the modeling SCMs, as the latent serves as the proxy for the exogenous noise. In these models,
+the encoding process extracts the latent from an observation, and the decoding process generates the sample from the
+latent, approximating the structural equations.
+Our Contributions. In this work, we propose and analyze the effectiveness of using a diffusion model for modeling
+SCMs. Diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020; Song et al., 2021) have gained popularity
+recently due to their high expressivity and exceptional performance in generative tasks (Saharia et al., 2022; Ramesh
+et al., 2022; Kong et al., 2021). The primary contribution of our work is in determining how to apply diffusion
+models to the causal setting. Rather than focusing a single causal inference setting, our aim through this modeling
+is to provide a single flexible framework that works for answering a wide range of causal queries. Now applying
+diffusion models to the causal setting is non-trivial because diffusion models are typically used to learn a stochastic
+process mapping between a standard Gaussian and a data distribution. Our main idea is to model each node in the
+causal graph as a diffusion model and cascade generated samples in topological order to answer causal queries. For
+each node, the corresponding diffusion model takes as input the node and parent values to encode and decode a
+latent representation. To implement the diffusion model, we utilize the recently proposed Denoising Diffusion Implicit
+Models (DDIMs) (Song et al., 2021), which may be interpreted as a deterministic autoencoder model without any
+dimensionality reduction while encoding. We leverage the deterministic forward and backward diffusion processes
+of DDIMs to use diffusion models as an encoder-decoder model. We refer to the resulting model as diffusion-based
+causal model (DCM) and show that this model mimics the necessary properties of an SCM. Our key contributions
+include:
+(1) [Section 3] We propose diffusion-based causal model (DCM), a new model class for modeling structural causal
+models, that provides a flexible and practical framework for approximating both interventions (do-operator) and
+counterfactuals (abduction-action-prediction steps). We present a procedure for training a DCM given just the
+causal graph and observational data, and show that the resulting trained model enables sampling from the observa-
+tional and interventional distributions, and facilitates answering counterfactual queries.
+
+(2) [Section 4] Our theoretical analysis examines the accuracy of counterfactual estimates generated by the DCM, and
+we demonstrate that they can be bounded given some reasonable assumptions. Importantly, our analysis is not
+limited to diffusion models, but also applies to other encoder-decoder settings. To the best of our knowledge, these
+are the first error bounds that explain the observed performance improvements in using encoder-decoder models,
+like diffusion models, to address counterfactual queries. Another feature of this result, is that it also extends, under
+an additional assumption, to the more challenging multivariate case.
+
+(3) [Section 5] We evaluate the performance of DCM on a range of synthetic datasets generated with various structural
+equation types for all three forms of causal queries. We find that DCM consistently outperforms existing state-
+of-the-art methods (S´anchez-Martin et al., 2022; Khemakhem et al., 2021). In fact, for certain interventional and
+counterfactual queries such as those arising with nonadditive noise models, DCM is better by an order of magnitude
+or more than these existing approaches. Additionally, we demonstrate the favorable performance of DCM on an
+interventional query experiment conducted on fMRI data.
+
+Related Work. Over the years, a variety of methods have been developed in the causal inference literature for answer-
+ing interventional and/or counterfactual queries including non-parametric methods (Shalit et al., 2017; Alaa & Van
+Der Schaar, 2017; Muandet et al., 2021) and probabilistic modeling methods (Zeˇcevi´c et al., 2021a). More relevant to
+our approach is a recent series of work, including (Moraffah et al., 2020; Pawlowski et al., 2020; Kocaoglu et al., 2018;
+Parafita & Vitri`a, 2020; Zeˇcevi´c et al., 2021b; Garrido et al., 2021; Karimi et al., 2020; S´anchez-Martin et al., 2022;
+Khemakhem et al., 2021; Sanchez & Tsaftaris, 2022) that have demonstrated the success of using deep (conditional)
+generative models for this task.
+Karimi et al. (2020) propose an approach for answering interventional queries by fitting a conditional variational
+autoencoder to each conditional in the Markov factorization implied by the causal graph. Also using the ideas of
+variational inference and normalizing flows, Pawlowski et al. (2020) propose schemes for counterfactual inference.
+In Khemakhem et al. (2021), the authors propose an autoregressive normalizing flow for causal discovery and
+queries, referred to as CAREFL. CAREFL is also applicable even with only knowledge of the causal ordering rather
+than the full causal graph as we require. However, as also noted by S´anchez-Martin et al. (2022), when the causal graph
+
+is present, CAREFL is unable to exploit the absence of edges fully as it reduces a causal graph to its causal ordering
+(which may not be unique). Using normalizing flows for answering causal queries with causal DAG was also ex-
+plored by (Balgi et al., 2022), however their approach does not have any theoretical guarantees on their counterfactual
+estimates, and their experimental evaluation is quite limited.
+S´anchez-Martin et al. (2022) propose VACA, which uses graph neural networks (GNNs) in the form of a varia-
+tional graph autoencoder to sample from the observational, interventional, and counterfactual distribution. VACA
+can utilize the inherent graph structure through the GNN, however, suffers in empirical performance (see Section 5).
+Furthermore, the usage of the GNN leads to undesirable design constraints, e.g., the encoder GNN cannot have hidden
+layers (S´anchez-Martin et al., 2022).
+A very recent work by Javaloy et al. (2023) combines the idea of using autoregressive normalizing flows (as in
+CAREFL) and modeling the entire causal graph as one model (as in VACA), to reduce possible error propagation
+in the graph. The authors further generalize the theoretical results from Khemakhem et al. (2021) beyond affine
+autoregressive normalizing flows and establish a clearer connection to SCMs by providing a more direct way of
+applying the do-operator. In contrast to our work, Javaloy et al. (2023) focuses on modeling the whole causal graph
+as one model. Modeling on a per-node basis has several advantages over a single model in terms of flexibility and
+computational efficiency because it permits individual node models to be trained in parallel. For example, on a single
+experiment, we observed that our DCM approach trains roughly seven times faster than CAREFL and nine times faster
+than VACA (see Appendix D.1).
+Sanchez & Tsaftaris (2022) use diffusion models for counterfactual estimation, focusing on the bivariate graph
+case with an image class causing an image. The authors train a diffusion model to generate images and use the
+abduction-action-prediction procedure from Pearl et al. (2016) as well as classifier guidance (Dhariwal & Nichol,
+2021) to generate counterfactual images. However, this is solely for bivariate models and requires training a separate
+classifier for intermediate diffusion images, and exhibits poor performance for more complex images e.g., ImageNet
+(Deng et al., 2009). Our approach distinguishes itself from Sanchez & Tsaftaris (2022) as it can handle general causal
+graphs (beyond the simpler two node setting) and operates on continuous variables (beyond the simpler case of a
+discrete label and image). Our experimental evaluations are more general as it also covers interventional queries not
+addressed by Sanchez & Tsaftaris (2022). Finally, in terms of theoretical contribution, we provide rigorous conditions
+on the latent model and structural equations under which we can estimate counterfactuals. Even for two variable
+setting considered by Sanchez & Tsaftaris (2022) such a theoretical understanding was previously missing.
+Finally, a diffusion model based approach has also been recently proposed for the different task of causal discovery
+under additive noise models, where the diffusion model serves as an approximation to the Hessian functions (Sanchez
+et al., 2022). This raises the interesting question of whether the diffusion models can be adapted for solving the
+end-to-end problem from discovery to inference.
+
+2
+Preliminaries
+
+Notation. To distinguish random variables from their instantiation, we represent the former with capital letters and
+the latter with the corresponding lowercase letters. To distinguish between the nodes in the causal graph and diffusion
+random variables, we use subscripts to denote graph nodes. Let [n] := {1, . . . , n}.
+Structural Causal Models. Consider a directed acyclic graph (DAG) G with nodes {1, . . . , K} in a topologically
+sorted order, where a node i is represented by a (random) variable Xi in some generic space Xi ⊂Rdi. Let pai be
+the parents of node i in G and let Xpai := {Xj}j∈pai be the variables of the parents of node i. A structural causal
+model M describes the relationship between an observed/endogenous node i and its causal parents. Formally, an
+SCM M := (F, p(U)) determines how a set of K endogenous random variables X := {X1, . . . , XK} is generated
+from a set of exogenous random variables U := {U1, . . . , UK} with prior distribution p(U) via a set of structural
+equations, F := (f1, . . . , fK) where Xi := fi(Xpai, Ui) for i ∈[K]. Throughout this paper, we assume that
+the unobserved random variables are jointly independent (Markovian SCM), and the DAG G is the graph induced
+by M. Every SCM M entails a unique joint observational distribution satisfying the causal Markov assumption:
+p(X) = QK
+i=1 p(Xi | Xpai).
+Structural causal models address Pearl’s causal hierarchy (or “ladder of causation”), which consists of three “lay-
+ers” of causal queries in increasing complexity (Pearl, 2009a): observational (or associational), interventional, and
+counterfactual. As an example, an interventional query can be formulated as “What will be the effect on the popula-
+tion X, if a variable Xi is assigned a fixed value γi?” The do-operator do(Xi := γi) represents the effect of setting
+
+variable Xi to γi. Note that our proposed framework allows for more general sets of interventions as well, such as
+interventions on multiple variables denoted as do(XI := γ) (where I ⊆[K], XI := (Xi)i∈I, γ ∈R|I|). An inter-
+vention operation, do(XI := γ), transforms the original joint distribution into an interventional distribution denoted
+by p(X | do(XI := γ)). On the other hand, a counterfactual query can be framed as “What would have been the
+outcome of a particular factual sample xF := (xF
+1 , . . . , xF
+K), if the value of XI had been set to γ?”. Counterfactual
+estimation may be performed through the three-step procedure of 1) abduction: estimation of the exogenous noise U,
+2) action: intervene do(XI := γ), and 3) prediction: estimating xCF using the abducted noise and intervention values.
+Note that in Step 1, we perform deterministic counterfactual reasoning, focusing on counterfactuals pertaining to a
+single unit of the population.
+Diffusion Models. Given data from distribution X0 ∼Q, the objective of diffusion models is to construct an effi-
+ciently sampleable distribution approximating Q. Denoising diffusion probabilistic models (DDPMs) (Sohl-Dickstein
+et al., 2015; Ho et al., 2020) accomplish this by introducing a forward noising process that adds isotropic Gaussian
+noise at each time step and a learned reverse denoising process. A common representation of diffusion models is a fixed
+Markov chain that adds Gaussian noise with variances β1, . . . , βT ∈(0, 1), generating latent variables X1, . . . , XT ,
+q(Xt | xt−1) = N(Xt; √1 −βtxt−1, βtI) and q(Xt | x0) = N(Xt; √αtx0, (1−αt)I), where αt := Qt
+i=1(1−βi).
+Here, T ∈Z+, and t ∈{0, . . . , T} denotes the time index.
+By choosing sufficiently large T and αt that converge to 0, we have XT is distributed as an isotropic Gaussian
+distribution. The learned reverse diffusion process attempts to approximate the intractable q(Xt−1 | xt) using a neural
+network and is defined as a Markov chain with Gaussian transitions, pθ(Xt−1 | xt) = N(Xt−1; µθ(xt, t), Σθ(xt, t)).
+Rather than predicting µθ directly, the network could instead predict the Gaussian noise ε from xt = √αtx0 +
+√1 −αtε. Ho et al. (2020) found that modeling ε instead of µθ, fixing Σθ, and using the following reweighted loss
+function
+
+[∥ε −εθ(√αtX0 +
+√
+
+Et∼Unif{[T ]}
+X0∼Q
+ε∼N(0,I)
+
+1 −αtε, t)∥2],
+(1)
+
+works well empirically. We also utilize this loss function in our training.
+Song et al. (2021) demonstrate that it is possible to take a pretrained standard denoising diffusion probabilistic
+model (DDPM) and generalize the generation to non-Markovian processes. In particular, it is possible to use a pre-
+trained DDPM model to obtain a deterministic sample given noise XT , known as the denoising diffusion implicit
+model (DDIM), with reverse implicit diffusion process
+
+Xt−1 :=
+rαt−1
+
+αt
+Xt −εθ(Xt, t)
+p
+
+1 −αt−1
+
+.
+(2)
+
+αt−1(1 −αt)/αt −
+p
+
+Note that the Xt here is deterministic. We also use a forward implicit diffusion process introduced by Song et al.
+(2021), derived from rewriting the DDIM process Eq. 2 as an ordinary differential equation (ODE) and considering
+the Euler method approximation in the forward direction to obtain
+
+Xt+1 :=
+rαt+1
+
+αt
+Xt + εθ(Xt, t)
+p
+
+αt+1(1 −αt)/αt
+
+.
+(3)
+
+1 −αt+1 −
+p
+
+We utilize the DDIM framework in this work, in particular Eqs. 3 and 2 will define the encoding (forward) and
+decoding (reverse) processes. Note that this ensures deterministic encoding and decoding. This construction produces
+a unique latent variable per observation, as well as a unique decoding, and also ensures we obtain the same output for
+repeated counterfactual queries.
+
+3
+DCMs: Diffusion-based Causal Models
+
+In this section, we present our DCM approach for modeling the SCMs and to answer causal queries. The DCM
+approach falls in a general class of techniques that try to model a structural causal model by using an encoder-decoder
+pair. Consider a data generating process X = f(Xpa, U). The goal will to construct an encoding function g and
+a decoding function h. The encoding function g attempts to represent the information in U: for a pair (X, Xpa),
+Z := g(X, Xpa) is the latent variable. The decoder takes the input Z and Xpa as input to attempt to reconstruct X:
+
+ˆX = h(Z, Xpa), where under perfect reconstruction, ˆX = X. The decoding function h mimics the true structural
+equation f, although it does not need to be exactly equal. For example, there are infinitely many encodings that satisfy
+Z = r(U) for all U for an invertible function r.
+We first explain the construction and the training process of a DCM, and then explain how the model can be used
+for answering various causal queries. We start with some notations.
+
+• Define Zt
+i to be the ith endogenous node value at diffusion step t of the forward implicit diffusion process (Eq. 3),
+and let Zi := ZT
+i .
+
+• Define ˆXt
+i to be ith endogenous node value at diffusion step t of the reverse implicit diffusion process (Eq. 2), and
+let ˆXi := ˆX0
+i .
+Training a DCM. We train a diffusion model for each node, taking denoised parent values as input. The parent
+values can be interpreted as additional covariates to the model, where one may choose to use classifier free guidance
+to incorporate the covariates (Ho & Salimans, 2021). Empirically, we find that simply concatenating the covariates
+results in better performance than classifier free guidance.
+We use the εθ parametrization for the diffusion model from Ho et al. (2020), representing the diffusion model for
+node i as εi
+θ(X, Xpai, t). The complete training procedure presented in Algorithm 1 is only slightly modified from the
+usual training procedure, with the additions of the parents as covariates and training a diffusion model for each node.
+Since the generative models learned for generation of different endogenous nodes do not affect training of each other,
+these models may be trained in parallel. For each node in the graph, we can train a model in parallel as each diffusion
+model only requires the current node and parent values. Our final DCM model is just a combination of these K trained
+diffusion models ε1
+θ, . . . , εK
+θ .
+
+Algorithm 1 DCM Training
+Input: Distribution Q, scale factors {αt}T
+t=1, causal DAG G with node i represented by Xi
+
+1: while not converged do
+2:
+Sample X0 ∼Q
+3:
+for i = 1, . . . , K do
+4:
+t ∼Unif[{1, . . . , T}]
+5:
+ε ∼N(0, Idi)
+{di is the dimension of Xi}
+
+6:
+Update
+parameters
+of
+node
+i’s
+diffusion
+model
+εi
+θ,
+by
+minimizing
+the
+following
+loss:
+∥ε −εi
+θ(√αtX0
+i + √1 −αtε, X0
+pai, t)∥2
+2
+(based on Eq. 1)
+7:
+end for
+8: end while
+
+We use all the variables (X1, . . . , XK) for the training procedure, because a priori, we do not assume anything on
+the possible causal queries, i.e., we allow for all possible target variables, intervened variables, etc. However, if we
+are only interested in some pre-defined set of queries, then the graph could be reduced accordingly. For example, if
+we are only interested in counterfactual estimate of a particular node with respect to an intervention of a predecessor,
+one can simply reduce it to a subgraph containing the target node, the intervened node and a backdoor adjustment set
+(e.g., the ancestors of the intervened node). This then reduces to only learning a single diffusion model.
+One major advantage of our proposed DCM approach is the ability to generalize to larger graphs. Since each
+diffusion model only uses the parents as input, modeling each node depends only on the incoming degree of the node
+(the number of causal parents). While the number of diffusion models scales with the number of non-root nodes, each
+model is generally small in terms of its parameter size and can be trained in parallel. Additionally, we may apply the
+proposed DCM approach to any setting where diffusion models are applicable: continuous variables, high dimensional
+settings, categorical data, images, etc.
+Encoding and Decoding Steps with DCM. With a DCM, the encoding (resp. decoding) process is identical to the
+DDIM encoding (resp. decoding) process except we include the parent values as additional covariates. Note that,
+given the model ϵθ, DDIM is a deterministic process as laid out in Eqs. 2 and 3. Let us focus on a node i ∈[K] (same
+process is repeated for each node i). The encoding process takes Xi and its parent values Xpai as input and maps it
+to a latent variable Zi. The decoding process takes Zi and Xpai as input to construct ˆXi (an approximation of Xi).
+Formally, using the forward implicit diffusion process in Eq. 3, given a sample Xi, we encode a unique latent variable
+
+Zi := ZT
+i , using the recursive formula
+
+
+
+
+
+s
+
+αt+1(1 −αt)
+
+Zt+1
+i
+:=
+rαt+1
+
+αt
+Zt
+i + εi
+θ(Zt
+i, Xpai, t)
+
+p
+
+, ∀t = 0, .., T −1,
+(4)
+
+1 −αt+1 −
+
+αt
+
+where Z0
+i := Xi. The latent variable Zi acts as a proxy for the exogenous noise Ui. Using the reverse implicit
+diffusion process from DDIM in Eq. 2, given a latent vector Zi we obtain a deterministic decoding ˆXi := ˆX0
+i , using
+the recursive formula
+
+
+
+
+
+s
+
+αt−1(1 −αt)
+
+ˆXt−1
+i
+:=
+rαt−1
+
+αt
+ˆXt
+i −εi
+θ( ˆXt
+i, Xpai, t)
+
+αt
+−
+p
+
+1 −αt−1
+
+, for all t = T, . . . , 1,
+(5)
+
+
+
+where ˆXT := Zi. In the following, we use Enci(Xi, Xpai) and Deci(Zi, Xpai) to denote the encoding and decoding
+functions for node i defined in Eqns. 4 and 5 respectively. See Algorithms 2 and 3 for detailed pseudocodes.
+
+Algorithm 2 Enci(Xi, Xpai)
+Input: Xi, Xpai
+
+1: Z0
+i ←Xi
+2: for t = 0, . . . , T −1 do
+
+αt Zt
+i + εi
+θ(Zt
+i, Xpai, t)
+√1 −αt+1 −
+q
+
+
+
+3:
+Zt+1
+i
+←
+q
+
+αt+1(1−αt)
+
+αt+1
+
+αt
+
+4: end for
+5: Return Zi := ZT
+i
+
+Algorithm 3 Deci(Zi, Xpai)
+Input: Zi, Xpai
+
+1: ˆXT ←Zi
+2: for t = T, . . . , 1 do
+
+αt
+−√1 −αt−1
+
+
+
+αt
+ˆXt
+i −εi
+θ( ˆXt
+i, Xpai, t)
+q
+
+3:
+ˆXt−1
+i
+←
+q
+
+αt−1(1−αt)
+
+αt−1
+
+4: end for
+5: Return ˆXi := ˆX0
+i
+
+Answering Causal Queries with a Trained DCM. We now describe how a trained DCM model can be used for
+(approximately) answering causal queries. Answering observational and interventional queries require sampling from
+the observational and the interventional distribution respectively. With counterfactuals, a query is at the unit level,
+where the structural assignments are changed, but the exogenous noise is identical to that of the observed datum.
+(a) Generating Samples for Observational/Interventional Queries. Samples from a DCM model that approx-
+imates the interventional distribution p(X | do(XI := γ)) can be generated as follows. For an intervened node i
+with intervention γi, the sampled value is always the intervention value, therefore we generate ˆXi := γi. For a non-
+intervened node i, assume by induction we have the generated parent values ˆXpai. To generate ˆXi, we first sample
+the latent vector Zi ∼N(0, Idi) where di is the dimension of Xi. Then taking Zi as the noise for node i, we compute
+ˆXi := Deci(Zi, ˆXpai) as the generated sample value for node i. This value ˆXi is then used as the parent value for
+the children of node i. Samples from a DCM model that approximates the observational distribution p(X) can be
+generated by setting I = ∅. See Algorithm 4 for the pseudocode.
+(b) Counterfactual Queries. Consider a factual observation xF := (xF
+1 , . . . , xF
+K) and interventions on a set of
+nodes I with values γ. We use a DCM model to construct a counterfactual estimate ˆxCF as follows. The counterfactual
+estimate only differs from the factual value on intervened nodes or descendants of an intervened node. Similarly to
+interventional queries, for each intervened node i ∈I, ˆxCF
+i
+:= γi. For each non-intervened node i that is a descendant
+of any intervened node, assume by induction that we have the generated counterfactual estimates ˆxCF
+pai. To obtain ˆxCF
+i
+,
+
+Algorithm 4 Observational/Interventional Sampling
+Input: Intervention set I with values γ (I = ∅for observational sampling)
+
+1: for i = 1, . . . , K do
+{in topological order}
+2:
+Zi ∼N(0, Idi)
+3:
+if i ∈I then
+4:
+ˆXi ←γi
+5:
+else
+
+6:
+ˆXi ←Deci(Zi, ˆXpai)
+7:
+end if
+8: end for
+9: Return ˆX := ( ˆX1, . . . , ˆXK)
+
+Algorithm 5 Counterfactual Estimation
+Input: Intervention set I with values γ, factual sample xF := (xF
+1 , . . . , xF
+K)
+
+1: for i = 1, . . . , K do
+{in topological order}
+2:
+if i ∈I then
+3:
+ˆxCF
+i
+←γi
+4:
+else if i is not a descendant of any intervened node in I then
+5:
+ˆxCF
+i
+←xF
+i
+6:
+else
+7:
+zF
+i ←Enci(xF
+i , xF
+pai)
+{abduction step}
+
+8:
+ˆxCF
+i
+←Deci(zF
+i , ˆxpai)
+{action and prediction steps}
+9:
+end if
+10: end for
+
+11: Return ˆxCF := (ˆxCF
+1 , . . . , ˆxCF
+K )
+
+we first define the estimated factual noise as ˆzF
+i := Enci(xF
+i , xF
+pai). Then we generate our counterfactual estimate by
+using ˆzF
+i as the noise for node i, by decoding, ˆxCF
+i
+:= Deci(ˆzF
+i , ˆxCF
+pai). See Algorithm 5 for the pseudocode.
+Note that with xF, we assumed full observability,1 since because Algorithm 5 produces a counterfactual estimate
+for each node. However, when intervening on XI and if the only quantity of interest is counterfactual on some X⋆,
+then you only need factual samples from {Xi : Xi is on a path from XI →X⋆} (Saha & Garain, 2022). In practice,
+this could be further relaxed by imputing for missing data, which is beyond the scope of this work.
+
+4
+Bounding Counterfactual Error
+
+We now establish sufficient conditions under which the counterfactual estimation error can be bounded. In fact, the
+results in this section not only hold for diffusion models, but to a more general setting of conditional latent variable
+models satisfying certain properties. Another feature of this result, is that it also extends, under an additional assump-
+tion, to the more challenging higher-dimensional case. All proofs from this section are collected in Appendix A.
+We focus on learning a single conditional latent variable model for an endogenous node Xi, given its parents Xpai,
+as the models learned for different endogenous nodes do not affect each other. Since the choice of node i plays no
+role, we drop the subscript i in the following and refer to the node of interest as X, its causal parents as Xpa, its
+corresponding exogenous variables as U, and its structural equation as X := f(Xpa, U). Let the encoding function
+g : X × Xpa →Z and the decoding function h : Z × Xpa →X, where Z is the latent space. In the DCM context, the
+functions g and h correspond to Enc and Dec functions, respectively.
+It is well-known that certain counterfactual queries are not identifiable from observational data without making as-
+sumptions on the functional relationships, even under causal sufficiency (Pearl, 2009b). Consequently, recent research
+has been directed towards understanding the conditions under which identifiability results can be obtained (Lu et al.,
+
+1This is a common assumption in literature also made in all the related work e.g., (S´anchez-Martin et al., 2022; Khemakhem et al., 2021;
+Pawlowski et al., 2020).
+
+2020; Nasr-Esfahany & Kiciman, 2023; Nasr-Esfahany et al., 2023). Assumption 2 of our Theorem 1, ensures that the
+true counterfactual outcome is identifiable, see e.g., (Lu et al., 2020, Theorem 1) or (Nasr-Esfahany & Kiciman, 2023,
+Theorem 5). In the context of learned structural causal models to determine whether a given counterfactual query can
+be answered with sufficient accuracy, requires also assumptions on the learned SCM, e.g., encoder and decoder in this
+case.
+Our first result presents sufficient conditions on the latent variable encoding function and the structural equation
+under which we can recover latent exogenous variable up to a (possibly nonlinear) invertible function. We start with a
+one-dimensional exogenous noise U and variable X ∈X ⊂R. In Section 4.1, we provide a similar theorem for the
+higher-dimensional case where X ∈Rm for m ≥3 in Theorem 2 with a stronger assumption on the Jacobian of f
+and g.
+
+Theorem 1. Assume for X ∈X ⊂R and exogenous noise U ∼Unif[0, 1], X satisfies the structural equation:
+X := f(Xpa, U), where Xpa ∈Xpa ⊂Rd are the parents of node X and U ⊥⊥Xpa. Consider an encoder-decoder
+model with encoding function g : X × Xpa →Z and decoding function h : Z × Xpa →X, Z := g(X, Xpa),
+ˆX :=
+h(Z, Xpa). Assume the following conditions:
+
+1. The encoding is independent of the parent values, g(X, Xpa) ⊥⊥Xpa.
+
+2. The structural equation f is differentiable and strictly increasing with respect to U for all xpa ∈Xpa.
+
+3. The encoding g is invertible and differentiable with respect to X for all xpa ∈Xpa.
+Then, g(X, Xpa) = ˜q(U) for an invertible function ˜q.
+
+Discussion on Assumptions Underlying Theorem 1.
+(1) Assumption 1 of independence between the encoding and the parent values may appear strong, but is in fact
+often valid. For example, in the additive noise setting with f(Xpa, U) := f ′(Xpa) + U where Xpa and U are
+independent, if the fitted model ˆf ≡f ′, then the encoder g(X, Xpa) = f(Xpa, U) −ˆf(Xpa) = U and by definition
+U is independent of Xpa.2 The same assumption also appears in other related results on counterfactual identifiability
+in bijective SCMs, see, e.g., (Nasr-Esfahany et al., 2023, Theorem 5.3) and proof of Theorem 5 in (Nasr-Esfahany
+& Kiciman, 2023). We conduct empirical tests to further confirm this assumption by examining the dependence
+between the parents and encoding values. Our experimental results show that DCMs consistently fail to reject the null
+hypothesis of independence. This implies that independent encodings can be found in practice. We provide the details
+of these experiments in Appendix B.3.
+(2) Assumption 2 is always satisfied under the additive noise model, where f(Xpa, U) := f ′(Xpa) + U. It is
+also satisfied by post non-linear models, under the standard requirements on identifiability as expressed in (Zhang &
+Hyvarinen, 2012).4 Assumption 2 is also satisfied by heteroscedastic noise models (Strobl & Lasko, 2023).5 Again, the
+recent results about counterfactual identifiability, e.g., (Nasr-Esfahany & Kiciman, 2023, Theorem 5) and (Lu et al.,
+2020, Theorem 1), also utilize the same assumption.
+Through our strictly increasing in U assumption, we obviate distinguishing cases like f(Xpa, U) := Xpa + U vs.
+f(Xpa, U) := Xpa −U, which otherwise will be indistinguishable for symmetric distributions U (see also remark
+below). For example, for any fixed value of Xpa, f(Xpa, U) := Xpa −U is not increasing in U, so such structural
+equations are automatically eliminated in Theorem 1.
+(3) We may consider transformations of the uniform noise U to obtain other settings, for example additive Gaussian
+noise. For a continuous random variable U ′ with invertible CDF F and the structural equation f(·, F(·)), we have
+
+U ′ d= F −1(U) and the results similarly hold.
+We now discuss some consequences of Theorem 1 for estimating counterfactual outcomes.
+
+2In general, if we have a good approximation f by some ˆf, then the encoding g(X, Xpa) = X −ˆf(Xpa) would be close to U, as also noted
+by (Hoyer et al., 2008).
+3To encourage independence, one could also modify the original diffusion model training objective to add a Hilbert-Schmidt independence
+criterion (HSIC) (Gretton et al., 2007) regularization term. Our experiments did not show a clear benefit of using this modified objective, and we
+leave further investigation here for future work.
+4Zhang & Hyvarinen (2012) (see Eqn. 2) defined post-nonlinear models as f(Xpa, U) := f2(f1(Xpa)+U) where Xpa and U are independent,
+function f1 is nonconstant, and f2 is invertible. The invertibility assumption on f2 implies that f is strictly increasing (or decreasing) in U.
+Additionally, (Zhang & Hyvarinen, 2012) make a differentiability of f2 assumption (see Assumption A1) for identifiability, which implies the f is
+differentiable in U.
+5Heteroscedastic noise models are generally defined as f(Xpa, U) := f′(Xpa) + g(Xpa) · U where the function g is assumed to be strictly
+positive (see Definition 1 in (Strobl & Lasko, 2023), which makes it compatible with our Assumption 2 of Theorem 1.
+
+1. Perfect Estimation. Using Theorem 1, we now look at a condition under which the counterfactual estimate
+produced by the encoder-decoder model matches the true counterfactual outcome.6. The idea here been, if no in-
+formation is lost in the encoding and decoding steps, i.e., h(g(X, Xpa), Xpa) = X, and assuming Theorem 1
+(g(X, Xpa) = ˜q(U)), we have h(˜q(U), Xpa) = X = f(Xpa, ˜q−1(U)). This means that in the abduction step,
+the encoder-decoder model could recover ˜q(U), but in the prediction step, it first applies the inverse of ˜q to the recov-
+ered exogenous variable, and then f. Thus, the counterfactual estimate equals the true counterfactual outcome. We
+formalize this in Corollary 1.
+
+Corollary 1. Assume the conditions of Theorem 1. Furthermore, assume the encoder-decoder model pair (g, h)
+satisfies: h(g(X, Xpa), Xpa) = X. Consider a factual sample pair xF := (x, xpa) where x := f(xpa, u) and an in-
+tervention do(Xpa := γ). Then, the counterfactual estimate, given by h(g(x, xpa), γ) matches the true counterfactual
+outcome xCF := f(γ, u).
+
+Comparison with Recent Related Work. Recent studies by Nasr-Esfahany & Kiciman (2023) and Nasr-Esfahany
+et al. (2023) have explored the problem of estimating counterfactual outcomes with learned SCMs. In particular, Nasr-
+Esfahany & Kiciman (2023, Theorem 5) consider a setting where the SCM X := f(Xpa, U) is learned with a bijective
+(deep conditional generative) model ˆf(Xpa, ˆU). Nasr-Esfahany et al. (2023, Theorem 5.3) considered a closely related
+problem of learning a ground-truth bijective SCM. The conditions underlying ours and these results are not directly
+comparable because, unlike our setup, they do not explicitly consider an encoder-decoder model. Our results provide
+precise conditions on the encoder g and decoder h for recovering the correct counterfactual outcome, and we can
+extend these results to obtain counterfactual estimation error bounds under relaxed assumptions, a problem that has
+not been addressed previously.
+Counterfactual identifiability in a different context of reinforcement learning was also established by (Lu et al.,
+2020). Their result relies on incomparable assumptions on state-action pairs. Furthermore, our proof techniques
+are quite different from Lu et al. (2020) who rely on a technique based on analyzing conditional quantile, unlike an
+algebraic technique employed here.
+2. Estimation Error. Another consequence of Theorem 1 is that it can bound the counterfactual error in terms of the
+reconstruction error of the encoder-decoder model. Informally, the following corollary shows that if the reconstruction
+h(g(X, Xpa), Xpa) is “close” to X (measured under some metric d(·, ·)), then such encoder-decoder models can
+provide “good” counterfactual estimates. To the best of our knowledge, this is the first result that establishes a bound
+on the counterfactual error in relation to the reconstruction error of these encoder-decoder models.
+
+Corollary 2. Let γ ≥0. Assume the conditions of Theorem 1. Furthermore, assume the encoder-decoder model
+pair (g, h) under some metric d (e.g., ∥· ∥2), has reconstruction error less than τ: d(h(g(X, Xpa), Xpa), X) ≤τ.
+Consider a factual sample pair xF := (x, xpa) where x := f(xpa, u) and an intervention do(Xpa := γ). Then, the
+error between the true counterfactual xCF := f(γ, u) and counterfactual estimate given by h(g(x, xpa), γ) is at most
+τ. In other words, d(h(g(x, xpa), γ), xCF) ≤τ.
+
+The above result suggests that the reconstruction error can serve as an estimate for the counterfactual error. While
+the true value of τ is unknown, we may compute a reasonable bound by computing the reconstruction error over the
+dataset.
+
+4.1
+Extension of Theorem 1 to Higher-Dimensional Setting
+
+In this section, we present an extension of Theorem 1 to a higher dimensional setting and use it to provide coun-
+terfactual identifiability and estimation error results. Since we are now dealing with vector-valued functions, we use
+Jacobians. Let Jfxpa denote the Jacobian matrix obtained by evaluating the Jacobian (with respect to U) of f(Xpa, U)
+at Xpa = xpa. Let Jgxpa denote the Jacobian matrix obtained by evaluating the Jacobian (with respect to X) of
+g(X, Xpa) at Xpa = xpa.
+
+Theorem 2. Assume for X ∈X ⊂Rm and continuous exogenous noise U ∼Unif[0, 1]m for m ≥3, and X satisfies
+the structural equation
+
+X = f(Xpa, U)
+(6)
+
+6Note that identifiability of the counterfactual outcomes, does not require identifiability of the SCM.
+
+where Xpa ∈Xpa ⊂Rd are the parents of node X and U ⊥⊥Xpa. Consider an encoder-decoder model with encoding
+function g : X × Xpa →Z and decoding function h : Z × Xpa →X,
+
+Z := g(X, Xpa),
+ˆX := h(Z, Xpa).
+(7)
+
+Assume the following conditions:
+
+1. The encoding is independent of the parent values, g(X, Xpa) ⊥⊥Xpa.
+
+2. The structural equation f is invertible and differentiable with respect to U, and Jfxpa is p.d. for all xpa ∈Xpa.
+
+3. The encoding g is invertible and differentiable with respect to X, and Jgxpa is p.d. for all xpa ∈Xpa.
+
+4. The encoding qxpa(U) := g(f(xpa, U), xpa) satisfies Jqxpa|q−1
+xpa(z) = c(xpa)A for all z ∈Z and xpa ∈Xpa,
+where c is a scalar function and A is an orthogonal matrix.
+Then, g(f(Xpa, U), Xpa) = ˜q(U) for an invertible function ˜q.
+
+The interpretations behind Assumptions 1, 2, and 3 in Theorem 2 are similar to corresponding assumptions in
+Theorem 1. Assumption 4 however is technical, and we will explain the need for it below. In Corollaries 3 and 4
+(Appendix A), we restate Corollaries 1 and 2 to this higher-dimensional setting. The proofs are identical to that of
+Corollaries 1 and 2, with the only change being that the role of Theorem 1 in those proofs is now replaced by Theo-
+rem 2.
+On Negative Result of Nasr-Esfahany & Kiciman (2023). Nasr-Esfahany & Kiciman (2023) presented a gen-
+eral counterfactual impossibility identification result under multidimensional exogenous noise. The construction in
+Nasr-Esfahany & Kiciman (2023) considers two structural equations f, f ′ that are indistinguishable in distribution.
+Formally, let R ∈Rm×m be a rotation matrix, and U ∈Rm be a standard (isotropic) Gaussian random vector. Define,
+
+(
+f(Xpa, U)
+for Xpa ∈A
+f(Xpa, R · U)
+for Xpa ∈B ,
+(8)
+
+f ′(Xpa, U) =
+
+where the domain Xpa is split into disjoint A and B. Now, f and f ′ generate different counterfactual outcomes, for
+counterfactual queries with evidence in A and intervention in B (or the other way around).
+In Theorem 2, we avoid this impossibility result by assuming that we can construct an encoding of a “special”
+kind captured through our Assumption 4. In particular, consider the encoding qxpa at a specific parent value xpa as
+a function of the exogenous noise U. The assumption states that the Jacobian of the encoding is equal to c(xpa)A
+for a scalar function c and orthogonal matrix A. However, it is important to acknowledge that this assumption is
+highly restrictive and difficult to verify, not to mention challenging to construct in practice with just observational
+data. Our intention is that these initial ideas can serve as a starting point for addressing the impossibility result, with
+the expectation that subsequent results will further refine and expand upon these ideas.
+
+5
+Experimental Evaluation
+
+In this section, we evaluate the empirical performance of DCM for answering causal queries on both synthetic and real
+world data. Additional semi-synthetic experimental evaluations are presented in Appendix D.2. For the semi-synthetic
+experiments, we leverage the Sachs dataset (Sachs et al., 2005).
+Diffusion Model Implementation and Training. For our implementation of the εθ model in DCM, we use a simple
+fully connected neural network with three hidden layers of size [128, 256, 256] and SiLU activation (Elfwing et al.,
+2018). We fit the model using Adam with a learning rate of 1e-4, batch size of 64, and train for 500 epochs. Since
+the root nodes lack parents, the only form of counterfactual reasoning involves directly intervening on the root node,
+which may be done trivially. Therefore, for root nodes, we do not train diffusion models and instead sample from
+the empirical distribution of the training data. Additional details about the diffusion model parameters are in Ap-
+pendix C.1.
+Compared Approaches. For a fair comparison, our evaluation centers on methodologies that allow for both inter-
+ventional and counterfactual estimation. With this criteria, we primarily compare DCM to two recently proposed
+state-of-the-art schemes VACA (S´anchez-Martin et al., 2022) and CAREFL (Khemakhem et al., 2021), and a general
+
+regression model that assumes an additive noise model which we refer to as ANM.7 For VACA and CAREFL, we use
+the code provided by their respective authors. The ANM approach performs model selection over a variety of models,
+including linear and gradient boosted regressor, and we use the implementation from the popular DoWhy causal infer-
+ence package (Sharma et al., 2019; Bl¨obaum et al., 2022). Additional details on how ANM answers causal queries are
+provided in Appendix C.2 and implementation details for VACA, CAREFL, and ANM are in Appendix C.1.
+
+5.1
+Synthetic Data Experiments
+
+For generating quantitative results, we use synthetic experiments since we know the exact structural equations, and
+hence we have access to the ground-truth observational, interventional, and counterfactual distributions. We provide
+two sets of synthetic experiments, a set of two larger graphs provided here and a set of four smaller graphs provided
+in Appendix D.3. The two larger graphs, include a ladder graph structure (see Figure 9) and a randomly generated
+graph structure. Both graphs are comprised of 10 nodes of three dimensions each, and the random graph is a randomly
+sampled directed acyclic graph (see Appendix C.3 for more details). Since each diffusion model only uses the parents
+as input, modeling each node depends only on the incoming degree of the node (the number of causal parents).
+Following S´anchez-Martin et al. (2022), for the observational and interventional distributions, we report the Maxi-
+mum Mean Discrepancy (MMD) (Gretton et al., 2012) between the true and estimated distributions. For counterfactual
+estimation, we report the mean squared error (MSE) of the true and estimated counterfactual values. Again follow-
+ing S´anchez-Martin et al. (2022), we consider two broad classes of structural equations:
+
+1. Additive Noise Model (NLIN): fi(Xpai, Ui) = f ′(Xpai) + Ui. In particular, we will be interested in the case
+where fi’s are non-linear.
+2. Nonadditive Noise Model (NADD): fi(Xpai, Ui) is an arbitrary function of Xpai and Ui.
+To prevent overfitting of hyperparameters, we randomly generate these structural equations for each initialization.
+Each structural equation is comprised a neural network with a single hidden layer of 16 units and SiLU activation
+(Elfwing et al., 2018) with random weights from sampled from [−1, 1].
+Each simulation generates n = 5000 samples as training data. Let ˆ
+M be a fitted causal model and M ⋆be the
+true causal model, both capable of generating observational and interventional samples, and answering counterfactual
+queries. Each pair of graphs and structural equation type is evaluated for 20 different initialization, and we report
+the mean value. We provide additional details about our observational, interventional, and counterfactual evaluation
+frameworks in Appendix C.4.
+Synthetic Experiments Results. In Table 1, we provide the performance of all evaluated models for observational,
+interventional, and counterfactual queries, averaged over 20 separate initializations of models and training data, with
+the lowest value in each row bolded. The values are multiplied by 100 for clarity. We also provide boxplots of the
+performances in Figure 1 (Appendix D).
+We see DCM and ANM are the most competitive approaches, with similar performance on observational and
+interventional queries. If the ANM is the correctly specified model, then the ANM encoding should be close to the
+true encoding, assuming the regression model fit the data well. We see this in the nonlinear setting, ANM performs
+well but struggles to outperform DCM, perhaps due to the complexity of fitting a neural network using classical
+models. Note thats since observational and interventional queries are inherently easier than counterfactual queries, it
+is natural that we observe smaller improvements over other baselines.
+Our proposed DCM method exhibits superior performance compared to VACA and CAREFL, often by as much
+as an order of magnitude. The better performance of DCM over CAREFL may be attributed to the fact that DCM
+uses the causal graph, while CAREFL only relies on a non-unique causal ordering. In the case of VACA, the limited
+expressiveness of the GNN encoder-decoder might be the reason behind its inferior performance, especially when
+dealing with multivariable, multidimensional complex structural equations as considered here, a shortcoming that
+has also been acknowledged by the authors of VACA (S´anchez-Martin et al., 2022). Furthermore, VACA performs
+approximate inference, e.g. when performing a counterfactual query with do(X1 = 2), the predicted counterfactual
+value for X1 is not exactly 2 due to imperfections in the reconstruction. This design choice may result in downstream
+compounding errors, possibly explaining discrepancies in performance. To avoid penalizing this feature, all metrics
+are computed using downstream nodes from intervened nodes. To evaluate computational efficiency, we compared
+DCM with VACA and CAREFL using a single experimental setup (see Appendix D.1). The results suggest that DCM
+
+7In spite of our best efforts, we were unable to run a proper comparison against the very recent approach proposed by Javaloy et al. (2023) due
+to challenges in adapting their code into our settings.
+
+DCM
+ANM
+VACA
+CAREFL
+
+SCM
+Metric
+(×10−2)
+(×10−2)
+(×10−2)
+(×10−2)
+
+Obs. MMD
+0.44±0.14
+0.63±0.21
+2.82±0.83
+13.41±1.14
+
+NLIN
+
+Int. MMD
+1.63±0.20
+1.80±0.17
+4.48±0.78
+15.01±1.23
+
+Ladder
+
+CF. MSE
+3.42±1.67
+10.65±2.48
+41.03±19.00
+17.46±6.04
+
+Obs. MMD
+0.32±0.11
+0.40±0.16
+3.22±1.05
+14.60±1.34
+
+NADD
+
+Int. MMD
+1.54±0.17
+1.57±0.15
+5.13±1.16
+16.87±1.85
+
+CF. MSE
+4.28±2.39
+10.71±5.47
+27.42±12.34
+22.26±13.75
+
+Obs. MMD
+0.28±0.12
+0.47±0.15
+1.82±0.73
+12.11±1.21
+
+NLIN
+
+Int. MMD
+1.45±0.07
+1.88±0.22
+3.52±1.03
+14.15±2.34
+
+Random
+
+CF. MSE
+9.51±13.12
+23.68±28.49
+82.10±78.49
+52.57±82.03
+
+Obs. MMD
+0.19±0.05
+0.31±0.14
+2.09±0.60
+12.63±1.10
+
+NADD
+
+Int. MMD
+1.42±0.25
+1.73±0.44
+4.24±1.40
+14.65±1.76
+
+CF. MSE
+20.13±57.52
+44.76±86.02
+124.82±275.09
+54.29±83.68
+
+Table 1: Mean±standard deviation of observational, interventional, and counterfactual queries of the ladder and ran-
+dom SCMs in nonlinear and nonadditive settings over 20 random initializations of the model and training data. The
+values are multiplied by 100 for clarity.
+
+Algorithm
+Median Abs. Error
+Mean Abs. Error
+
+DCM
+0.5981 ± 9.5e-3
+0.5779 ± 1.9e-3
+CAREFL
+0.5983 ± 3.0e-2
+0.6004 ± 2.2e-2
+ANM
+0.6746 ± 4.8e-8
+0.6498 ± 1.4e-6
+Linear SCM
+0.6045 ± 0
+0.6042 ± 0
+
+Table 2: Performances for interventional predictions on the fMRI dataset, of the form median/mean absolute
+error±standard deviation, using the mean over 10 random seeds. We do not include VACA due to implementation
+difficulties. The results for CAREFL, ANM, and Linear SCM are consistent with those observed by (Khemakhem
+et al., 2021). We note that the Linear SCM has zero standard deviation, as the ridge regression model does not vary
+with the random seed.
+
+is significantly more computationally efficient than both VACA and CAREFL, with training taking 7 times less time.
+Lastly, the standard deviation of DCM is small relative to the other models, demonstrating relative consistency, which
+points to the robustness of our proposed approach.
+
+5.2
+Real Data Experiments I
+
+We evaluate DCM on interventional real world data by evaluating our model on the electrical stimulation interven-
+tional fMRI data from (Thompson et al., 2020), using the experimental setup from (Khemakhem et al., 2021). The
+fMRI data comprises samples from 14 patients with medically refractory epilepsy, with time series of the Cingulate
+Gyrus (CG) and Heschl’s Gyrus (HG). The assumed underlying causal structure is the bivarate graph CG →HG. Our
+interventional ground truth data comprises an intervened value of CG and an observed sample of HG. We defer the
+reader to (Thompson et al., 2020; Khemakhem et al., 2021) for a more thorough discussion of the dataset.
+In Table 2, we note that the difference in performance is more minor than our synthetic results. We believe this is
+due to two reasons. Firstly, the data seems inherently close to linear, as exhibited by the relatively similar performance
+with the standard ridge regression model (Linear SCM). Secondly, we only have a single ground truth interventional
+
+value instead of multiple samples from the interventional distribution. As a result, we can only compute the absolute
+error based on this single value, rather than evaluating the maximum mean discrepancy (MMD) between the true
+and predicted interventional distributions. Specifically, in the above table, we compute the absolute error between the
+model prediction and the interventional sample for each of the 14 patients and report the mean/median. The availability
+of a single interventional introduces a possibly large amount of irreducible error, artificially inflating the error values.
+For more details on the error inflation, see Appendix C.5.
+
+6
+Concluding Remarks
+
+We demonstrate that diffusion models, in particular, the DDIM formulation (which allows for unique encoding and
+decoding) provide a flexible and practical framework for approximating interventions (do-operator) and counterfactual
+(abduction-action-prediction) steps. Our approach, DCM, is applicable independent of the DAG structure. We find
+that empirically DCM outperforms competing methods in all three causal settings, observational, interventional, and
+counterfactual queries, across various classes of structural equations and graphs.
+While not in scope of this paper, the proposed DCM approach can also be naturally extended to any setting where
+diffusion models are applicable like categorical data, images, etc. For higher dimensional spaces, we believe DCMs
+should scale nicely, as diffusion models are typically deployed for high-dimensional image settings and exhibit SOTA
+performance. Furthermore, we may leverage many of the optimization and implementation tricks, as diffusion models
+are a very active field of research.
+The proposed method does come with certain limitations. For example, as with all the previously mentioned
+related approaches, DCM precludes unobserved confounding. The theoretical analyses require assumptions, not all of
+which are easy to test. However, our practical results suggest that DCM provides competitive empirical performance,
+even when some assumptions needed for our theoretical guarantees are violated.
+
+References
+
+Ahmed M Alaa and Mihaela Van Der Schaar. Bayesian inference of individualized treatment effects using multi-task
+gaussian processes. Advances in neural information processing systems, 30, 2017.
+
+Sourabh Balgi, Jose M Pena, and Adel Daoud. Personalized public policy analysis in social sciences using causal-
+graphical normalizing flows. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 36, pp.
+11810–11818, 2022.
+
+David E Blair. Inversion theory and conformal mapping, volume 9. American Mathematical Soc., 2000.
+
+Patrick Bl¨obaum, Peter G¨otz, Kailash Budhathoki, Atalanti A. Mastakouri, and Dominik Janzing. Dowhy-gcm: An
+extension of dowhy for causal inference in graphical causal models. arXiv preprint arXiv:2206.06821, 2022.
+
+Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hierarchical image
+database. In 2009 IEEE Conference on Computer Vision and Pattern Recognition, pp. 248–255, 2009. doi: 10.
+1109/CVPR.2009.5206848.
+
+Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis. In M. Ranzato, A. Beygelz-
+imer, Y. Dauphin, P.S. Liang, and J. Wortman Vaughan (eds.), Advances in Neural Information Processing Systems,
+volume 34, pp. 8780–8794. Curran Associates, Inc., 2021. URL
+paper/2021/file/49ad23d1ec9fa4bd8d77d02681df5cfa-Paper.pdf.
+
+Conor Durkan, Artur Bekasov, Iain Murray, and George Papamakarios.
+Neural spline flows.
+In H. Wallach,
+H. Larochelle, A. Beygelzimer, F. d'Alch´e-Buc, E. Fox, and R. Garnett (eds.), Advances in Neural Information
+Processing Systems, volume 32. Curran Associates, Inc., 2019. URL
+cc/paper/2019/file/7ac71d433f282034e088473244df8c02-Paper.pdf.
+
+Stefan Elfwing, Eiji Uchibe, and Kenji Doya.
+Sigmoid-weighted linear units for neural network function ap-
+proximation in reinforcement learning.
+Neural Networks, 107:3–11, 2018.
+ISSN 0893-6080.
+doi:
+//doi.org/10.1016/j.neunet.2017.12.012. URL
+pii/S0893608017302976. Special issue on deep reinforcement learning.
+
+Sergio Garrido, Stanislav Borysov, Jeppe Rich, and Francisco Pereira.
+Estimating causal effects with the neural
+autoregressive density estimator. Journal of Causal Inference, 9(1):211–218, 2021.
+
+Arthur Gretton, Kenji Fukumizu, Choon Teo, Le Song, Bernhard Sch¨olkopf, and Alex Smola. A kernel statistical test
+of independence. In J. Platt, D. Koller, Y. Singer, and S. Roweis (eds.), Advances in Neural Information Processing
+Systems, volume 20. Curran Associates, Inc., 2007. URL
+2007/file/d5cfead94f5350c12c322b5b664544c1-Paper.pdf.
+
+Arthur Gretton, Karsten M. Borgwardt, Malte J. Rasch, Bernhard Sch¨olkopf, and Alexander Smola.
+A kernel
+two-sample test. Journal of Machine Learning Research, 13(25):723–773, 2012. URL
+papers/v13/gretton12a.html.
+
+Jennifer L Hill. Bayesian nonparametric modeling for causal inference. Journal of Computational and Graphical
+Statistics, 20(1):217–240, 2011.
+
+Jonathan Ho and Tim Salimans. Classifier-free diffusion guidance. In NeurIPS 2021 Workshop on Deep Generative
+Models and Downstream Applications, 2021. URL
+
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In H. Larochelle, M. Ranzato,
+R. Hadsell, M.F. Balcan, and H. Lin (eds.), Advances in Neural Information Processing Systems, volume 33, pp.
+6840–6851. Curran Associates, Inc., 2020. URL
+file/4c5bcfec8584af0d967f1ab10179ca4b-Paper.pdf.
+
+Patrik Hoyer, Dominik Janzing, Joris M Mooij, Jonas Peters, and Bernhard Sch¨olkopf. Nonlinear causal discovery
+with additive noise models. Advances in neural information processing systems, 21, 2008.
+
+Adri´an Javaloy, Pablo S´anchez-Mart´ın, and Isabel Valera. Causal normalizing flows: from theory to practice, 2023.
+
+Amir-Hossein Karimi, Julius Von K¨ugelgen, Bernhard Sch¨olkopf, and Isabel Valera. Algorithmic recourse under
+imperfect causal knowledge: a probabilistic approach. Advances in neural information processing systems, 33:
+265–277, 2020.
+
+Ilyes Khemakhem, Ricardo Monti, Robert Leech, and Aapo Hyvarinen. Causal autoregressive flows. In Arindam
+Banerjee and Kenji Fukumizu (eds.), Proceedings of The 24th International Conference on Artificial Intelligence
+and Statistics, volume 130 of Proceedings of Machine Learning Research, pp. 3520–3528. PMLR, 13–15 Apr 2021.
+URL
+
+Murat Kocaoglu, Christopher Snyder, Alexandros G Dimakis, and Sriram Vishwanath. Causalgan: Learning causal
+implicit generative models with adversarial training. In International Conference on Learning Representations,
+2018.
+
+Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. Diffwave: A versatile diffusion model for
+audio synthesis. In International Conference on Learning Representations, 2021. URL
+net/forum?id=a-xFK8Ymz5J.
+
+Robert J LaLonde. Evaluating the econometric evaluations of training programs with experimental data. The American
+economic review, pp. 604–620, 1986.
+
+Chaochao Lu, Biwei Huang, Ke Wang, Jos´e Miguel Hern´andez-Lobato, Kun Zhang, and Bernhard Sch¨olkopf. Sample-
+efficient reinforcement learning via counterfactual-based data augmentation.
+arXiv preprint arXiv:2012.09092,
+2020.
+
+Raha Moraffah, Bahman Moraffah, Mansooreh Karami, Adrienne Raglin, and Huan Liu. Can: A causal adversarial
+network for learning observational and interventional distributions. arXiv preprint arXiv:2008.11376, 2020.
+
+Krikamol Muandet, Motonobu Kanagawa, Sorawit Saengkyongam, and Sanparith Marukatat. Counterfactual mean
+embeddings. J. Mach. Learn. Res., 22:162–1, 2021.
+
+Arash Nasr-Esfahany and Emre Kiciman. Counterfactual (non-) identifiability of learned structural causal models.
+arXiv preprint arXiv:2301.09031, 2023.
+
+Arash Nasr-Esfahany, Mohammad Alizadeh, and Devavrat Shah. Counterfactual identifiability of bijective causal
+models. arXiv preprint arXiv:2302.02228, 2023.
+
+Alexander Quinn Nichol and Prafulla Dhariwal.
+Improved denoising diffusion probabilistic models.
+In Marina
+Meila and Tong Zhang (eds.), Proceedings of the 38th International Conference on Machine Learning, volume
+139 of Proceedings of Machine Learning Research, pp. 8162–8171. PMLR, 18–24 Jul 2021.
+URL
+//proceedings.mlr.press/v139/nichol21a.html.
+
+´Alvaro Parafita and Jordi Vitri`a. Causal inference with deep causal graphs. arXiv preprint arXiv:2006.08380, 2020.
+
+Nick Pawlowski, Daniel Coelho de Castro, and Ben Glocker. Deep structural causal models for tractable counterfactual
+inference. Advances in Neural Information Processing Systems, 33:857–869, 2020.
+
+J. Pearl, M. Glymour, and N.P. Jewell. Causal Inference in Statistics: A Primer. Wiley, 2016. ISBN 9781119186847.
+URL
+
+Judea Pearl. Causal inference in statistics: An overview. Statistics Surveys, 3(none):96 – 146, 2009a. doi: 10.1214/
+09-SS057. URL
+
+Judea Pearl. Causal inference in statistics: An overview, 2009b.
+
+Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen. Hierarchical text-conditional image
+generation with clip latents, 2022. URL
+
+Karen Sachs, Omar Perez, Dana Pe’er, Douglas A. Lauffenburger, and Garry P. Nolan. Causal protein-signaling
+networks derived from multiparameter single-cell data. Science, 308(5721):523–529, 2005. doi: 10.1126/science.
+1105809. URL
+
+Saptarshi Saha and Utpal Garain. On noise abduction for answering counterfactual queries: A practical outlook.
+Transactions on Machine Learning Research, 2022.
+
+Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour, Burcu Karagol Ayan, S. Sara Mahdavi, Rapha Gontijo Lopes, Tim Salimans, Jonathan Ho, David J
+Fleet, and Mohammad Norouzi. Photorealistic text-to-image diffusion models with deep language understanding,
+2022. URL
+
+Pedro Sanchez and Sotirios A. Tsaftaris. Diffusion causal models for counterfactual estimation. In CLeaR, 2022.
+
+Pedro Sanchez, Xiao Liu, Alison Q O’Neil, and Sotirios A Tsaftaris. Diffusion models for causal discovery via
+topological ordering. In The Eleventh International Conference on Learning Representations, 2022.
+
+Uri Shalit, Fredrik D Johansson, and David Sontag. Estimating individual treatment effect: generalization bounds and
+algorithms. In International Conference on Machine Learning, pp. 3076–3085. PMLR, 2017.
+
+Amit
+Sharma,
+Emre
+Kiciman,
+et
+al.
+DoWhy:
+A
+Python
+package
+for
+causal
+inference.
+2019.
+
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using
+nonequilibrium thermodynamics. In Francis Bach and David Blei (eds.), Proceedings of the 32nd International
+Conference on Machine Learning, volume 37 of Proceedings of Machine Learning Research, pp. 2256–2265, Lille,
+France, 07–09 Jul 2015. PMLR. URL
+html.
+
+Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. In International Conference
+on Learning Representations, 2021. URL
+
+Eric V Strobl and Thomas A Lasko. Identifying patient-specific root causes with the heteroscedastic noise model.
+Journal of Computational Science, 72:102099, 2023.
+
+Pablo S´anchez-Martin, Miriam Rateike, and Isabel Valera. Vaca: Designing variational graph autoencoders for causal
+queries. Proceedings of the AAAI Conference on Artificial Intelligence, 36(7):8159–8168, Jun. 2022. doi: 10.1609/
+aaai.v36i7.20789. URL
+
+W. H. Thompson, R. Nair, H. Oya, O. Esteban, J. M. Shine, C. I. Petkov, R. A. Poldrack, M. Howard, and R. Adolphs.
+A data resource from concurrent intracranial stimulation and functional MRI of the human brain. Scientific Data,
+7(1):258, August 2020. ISSN 2052-4463. doi: 10.1038/s41597-020-00595-y. URL
+1038/s41597-020-00595-y.
+
+Matej Zeˇcevi´c, Devendra Dhami, Athresh Karanam, Sriraam Natarajan, and Kristian Kersting. Interventional sum-
+product networks: Causal inference with tractable probabilistic models. Advances in Neural Information Processing
+Systems, 34:15019–15031, 2021a.
+
+Matej Zeˇcevi´c, Devendra Singh Dhami, Petar Veliˇckovi´c, and Kristian Kersting. Relating graph neural networks to
+structural causal models. arXiv preprint arXiv:2109.04173, 2021b.
+
+Kun Zhang and Aapo Hyvarinen.
+On the identifiability of the post-nonlinear causal model.
+arXiv preprint
+arXiv:1205.2599, 2012.
+
+A
+Missing Details from Section 4
+
+Notation. For two sets X, Y a map f : X 7→Y, and a set S ⊂X, we define f(S) = {f(x) : x ∈S}. For x ∈X,
+we define x + S = {x + x′ : x′ ∈X}. For a random variable X, define pX(x) as the probability density function
+(PDF) at x. We use p.d. to denote positive definite matrices and Jf|x to denote the Jacobian of f evaluated at x. For
+a function with two inputs f(·, ·), we define fx(Y ) := f(x, Y ) and fy(X) := f(X, y).
+
+Lemma 1. For U, Z ⊂R, consider a family of invertible functions qxpa : U →Z for xpa ∈Xpa ⊂Rd, then
+dqxpa
+
+du (q−1
+xpa(z)) = c(z) for all xpa ∈Xpa if and only if qxpa can be expressed as
+
+qxpa(u) = q(u + r(xpa))
+
+for some function r and invertible q.
+
+Proof. First for the reverse direction, we may assume qxpa(u) = q(u + r(xpa)). Then
+
+dqxpa
+
+du (u) = dq
+
+du(u + r(xpa)).
+
+Now plugging in u = q−1
+xpa(z) = q−1(z) −r(xpa),
+
+dqxpa
+
+du (q−1
+xpa(z)) = dq
+
+du(q−1(z) −r(xpa) + r(xpa)) = dq
+
+du(q−1(z)) = c(z).
+
+Therefore
+dqxpa
+
+du (q−1
+xpa(z)) is a function of z.
+
+For the forward direction, assume
+dqxpa
+
+du (q−1
+xpa(z)) = c(z). Define sxpa : Z →U to be the inverse of qxpa. By the
+inverse function theorem and by assumption.
+
+dz (z) =
+dq−1
+xpa
+dz (z) =
+1
+
+dsxpa
+
+du (q−1
+xpa(z))
+=
+1
+c(z)
+
+dqxpa
+
+for all xpa. Since the derivatives of sxpa are equal for all xpa, by the mean value theorem, all sxpa are additive
+shifts of each other. Without loss of generality, we may consider an arbitrary fixed xpa0 ∈Xpa and reparametrize sxpa
+as
+sxpa(z) = sxpa0(z) −r(xpa).
+
+Let u = sxpa(z). Then we have
+
+sxpa0(z) = u + r(xpa)
+
+qxpa(u) = z = qxpa0(u + r(xpa)),
+
+and we have the desired representation by choosing q = qxpa0.
+
+Theorem 1. Assume for X ∈X ⊂R and exogenous noise U ∼Unif[0, 1], X satisfies the structural equation:
+X := f(Xpa, U), where Xpa ∈Xpa ⊂Rd are the parents of node X and U ⊥⊥Xpa. Consider an encoder-decoder
+model with encoding function g : X × Xpa →Z and decoding function h : Z × Xpa →X, Z := g(X, Xpa),
+ˆX :=
+h(Z, Xpa). Assume the following conditions:
+
+1. The encoding is independent of the parent values, g(X, Xpa) ⊥⊥Xpa.
+
+2. The structural equation f is differentiable and strictly increasing with respect to U for all xpa ∈Xpa.
+
+3. The encoding g is invertible and differentiable with respect to X for all xpa ∈Xpa.
+Then, g(X, Xpa) = ˜q(U) for an invertible function ˜q.
+
+Proof. First, we show that g(X, Xpa) = g(f(Xpa, U), Xpa) is solely a function of U.
+Since continuity and invertibility imply strict monotonicity, without loss of generality, assume g is an strictly
+increasing function (if not, we may replace g with −g and use h(−Z, Xpa)). By properties of the composition of
+functions, qxpa(U) := g(f(xpa, U), xpa) is also differentiable and strictly increasing with respect to U. Also, because
+of strict monotonicity it is also invertible.
+By the assumption that the encoding Z is independent of Xpa,
+
+Z = qxpa(U) ⊥⊥Xpa.
+(9)
+
+Therefore the conditional distribution of Z does not depend on Xpa. Using the assumption that U ⊥⊥Xpa, for all
+xpa ∈Xpa and z in the support of Z, by the change of density formula,
+
+du (q−1
+xpa(z))
+
+=
+1{q−1
+xpa(z) ∈[0, 1]}
+
+pZ(z) =
+pU(q−1
+xpa(z))
+
+dqxpa
+
+du (q−1
+xpa(z))
+= c1(z).
+(10)
+
+dqxpa
+
+The numerator follows from the fact that the noise is uniformly distributed. The term
+dqxpa
+
+du (q−1
+xpa(z)) is nonnega-
+tive since qxpa is increasing. Furthermore, since pZ(z) > 0, the numerator in Eq. 10 is always equal to 1 and the
+denominator must not depend on Xpa,
+dqxpa
+
+du (q−1
+xpa(z)) = c2(z)
+
+for some function c2. From Lemma 1 (by replacing a by xpa), we may express
+
+qxpa(u) = q(u + r(xpa))
+(11)
+
+for an invertible function q.
+Next, since Z ⊥⊥Xpa, the support of Z does not depend on Xpa, equivalently the ranges of qx1 and qx2 are equal
+for all x1, x2 ∈Xpa,
+
+qx1([0, 1]) = qx2([0, 1]).
+(12)
+
+Applying Eq. 11 and the invertibility of q,
+
+q([0, 1] + r(x1)) = q([0, 1] + r(x2))
+
+[0, 1] + r(x1) = [0, 1] + r(x2)
+
+[r(x1), r(x1) + 1] = [r(x2), r(x2) + 1]
+
+Since this holds for all x1, x2 ∈Xpa, we have r(xpa) is a constant function, or r(xpa) ≡r. Thus let ˜q be
+˜q(u) = q(u + r) = qxpa(u), which is solely a function of U for all xpa. For all xpa,
+
+g(f(xpa, U), xpa)) = qxpa(U) = ˜q(U) =⇒g(f(Xpa, U), Xpa) = ˜q(U),
+(13)
+
+for an invertible function ˜q. This completes the proof.
+
+Corollary 1. Assume the conditions of Theorem 1. Furthermore, assume the encoder-decoder model pair (g, h)
+satisfies: h(g(X, Xpa), Xpa) = X. Consider a factual sample pair xF := (x, xpa) where x := f(xpa, u) and an in-
+tervention do(Xpa := γ). Then, the counterfactual estimate, given by h(g(x, xpa), γ) matches the true counterfactual
+outcome xCF := f(γ, u).
+
+Proof. For the intervention do(Xpa := γ), the true counterfactual outcome is xCF := f(γ, u). By assumption,
+h(g(xCF, xpa), xpa) = xCF. Now since Eq. 13 holds true for all Xpa and U, it also holds for the factual and counter-
+factual samples. We have,
+
+g(x, xpa) = g(f(xpa, u), xpa) = ˜q(u) = g(f(γ, u), γ) = g(xCF, γ).
+
+Therefore, the counterfactual estimate produced by the encoder-decoder model
+
+h(g(x, xpa), γ) = h(g(xCF, γ), γ) = xCF.
+
+This completes the proof.
+
+Corollary 2. Let γ ≥0. Assume the conditions of Theorem 1. Furthermore, assume the encoder-decoder model
+pair (g, h) under some metric d (e.g., ∥· ∥2), has reconstruction error less than τ: d(h(g(X, Xpa), Xpa), X) ≤τ.
+Consider a factual sample pair xF := (x, xpa) where x := f(xpa, u) and an intervention do(Xpa := γ). Then, the
+error between the true counterfactual xCF := f(γ, u) and counterfactual estimate given by h(g(x, xpa), γ) is at most
+τ. In other words, d(h(g(x, xpa), γ), xCF) ≤τ.
+
+Proof. For the intervention do(Xpa := γ), the counterfactual outcome is xCF := f(γ, u). Since Eq. 13 holds true for
+all Xpa and U, it also holds for the factual and counterfactual samples. We have,
+
+g(x, xpa) = g(f(xpa, u), xpa) = ˜q(u) = g(f(γ, u), γ) = g(xCF, γ).
+(14)
+
+By the assumption on the reconstruction error of the encoder-decoder and 14,
+
+d(h(g(xCF, γ), γ), xCF) ≤τ
+(15)
+
+d(h(g(x, xpa), γ), xCF) ≤τ.
+(16)
+
+We now discuss a lemma that is an extension of Lemma 1 to higher dimensions.
+
+Lemma 2. For U, Z ⊂Rm, consider a family of invertible functions qxpa : U →Z for xpa ∈Xpa ⊂Rd, if
+Jqxpa(q−1
+xpa(z)) = cA for all xpa ∈Xpa then qxpa can be expressed as
+
+qxpa(u) = q(u + r(xpa))
+
+for some function r and invertible q.
+
+Proof. Assume Jqxpa(q−1
+xpa(z)) = cA. By the inverse function theorem,
+
+Jq−1
+xpa|z =
+
+Jqxpa|q−1
+xpa(z)
+−1
+.
+(17)
+
+Define sxpa : Z →U to be the inverse of qxpa. By assumption
+
+det Jqxpa|q−1
+xpa(z) = det Jq−1
+xpa|z = det Jsxpa|z = cA
+
+for all xpa and a constant c and orthgonal matrix A. Since the Jacobian of sxpa is a scaled orthogonal matrix, sxpa is a
+conformal function. Therefore by Liouville’s theorem, sxpa is a M¨obius function (Blair, 2000), which implies that
+
+sxpa(z) = bxpa + αxpaAxpa(z −axpa)/∥z −axpa∥ε,
+(18)
+
+where Axpa is an orthogonal matrix, ε ∈{0, 2}, axpa ∈Rm, and αxpa ∈R. The Jacobian of sxpa is equal to cA by
+assumption
+
+
+I −ε(z −axpa)(z −axpa)T
+
+Jsxpa
+
+z =
+αxpaAxpa
+∥z −axpa∥ε
+
+
+= cA.
+
+∥z −axpa∥2
+
+This imposes constraints on variables α, a, and ε. Choose z such that z −axpa = kv for a unit vector v and
+multiply by A−1
+xpa,
+
+
+I −ε k2vvT
+
+cAA−1
+xpa = αxpa
+
+
+
+∥kv∥ε
+
+k2∥v∥2
+
+I = εvvT +
+ckε
+
+
+AA−1
+xpa.
+
+αxpa
+
+If ε = 2, choosing different values of k, implying different values of z, results in varying values of on the right hand
+side, which should be the constant identity matrix. Therefore we must have ε = 0. This also implies that αxpa = c
+and A = Axpa. This gives the further parametrization
+
+sxpa(z) = bxpa −cA(z −axpa) = b′(xpa) + cAz
+
+where b′(xpa) = bxpa −cAaxpa.
+Without of loss of generality, we may consider an arbitrary fixed xpa0 ∈Xpa,
+
+sxpa0(z) −sxpa(z) = r(xpa) := b′(xpa0) −b′(xpa).
+
+Let u = sxpa(z). Then we have
+
+sxpa0(z) = u + r(xpa)
+
+qxpa(u) = z = qxpa0(u + r(xpa)),
+
+and we have the desired representation by choosing q = qxpa0.
+
+Theorem 2. Assume for X ∈X ⊂Rm and continuous exogenous noise U ∼Unif[0, 1]m for m ≥3, and X satisfies
+the structural equation
+
+X = f(Xpa, U)
+(6)
+
+where Xpa ∈Xpa ⊂Rd are the parents of node X and U ⊥⊥Xpa. Consider an encoder-decoder model with encoding
+function g : X × Xpa →Z and decoding function h : Z × Xpa →X,
+
+Z := g(X, Xpa),
+ˆX := h(Z, Xpa).
+(7)
+
+Assume the following conditions:
+
+1. The encoding is independent of the parent values, g(X, Xpa) ⊥⊥Xpa.
+
+2. The structural equation f is invertible and differentiable with respect to U, and Jfxpa is p.d. for all xpa ∈Xpa.
+
+3. The encoding g is invertible and differentiable with respect to X, and Jgxpa is p.d. for all xpa ∈Xpa.
+
+4. The encoding qxpa(U) := g(f(xpa, U), xpa) satisfies Jqxpa|q−1
+xpa(z) = c(xpa)A for all z ∈Z and xpa ∈Xpa,
+where c is a scalar function and A is an orthogonal matrix.
+Then, g(f(Xpa, U), Xpa) = ˜q(U) for an invertible function ˜q.
+
+Proof. We may show that g(X, Xpa) = g(f(Xpa, U), Xpa) is solely a function of U.
+By properties of composition of functions, qxpa(U) := g(f(xpa, U), xpa) is also invertible, differentiable. Since
+Jfxpa and Jgxpa are p.d. and Jqxpa = JfxpaJgxpa, then Jqxpa is p.d. for all xpa ∈Xpa as well.
+By the assumption that the encoding Z is independent of Xpa,
+
+Z = qXpa(U) ⊥⊥Xpa.
+(19)
+
+Therefore the conditional distribution of Z does not depend on Xpa. Using the assumption that U ⊥⊥Xpa, for all
+xpa ∈Xpa and z in the support of Z, by the change of density formula,
+
+pZ(z) =
+pU(q−1
+xpa(z))
+det Jqxpa|q−1
+xpa(z)
+
+=
+2−m1{q−1
+xpa(z) ∈[0, 1]m}
+
+det Jqxpa|q−1
+xpa(z)
+= c1(z).
+(20)
+
+The numerator follows from the fact that the noise is uniformly distributed. The determinant of the Jacobian term
+Jqxpa(q−1
+xpa(z)) is nonnegative since Jqxpa is p.d. Furthermore, since pZ(z) > 0, the numerator in Eq. 20 is always
+equal to 2−m and the denominator must not depend on Xpa,
+
+det Jqxpa|q−1
+xpa(z) = c2(z)
+(21)
+
+for some function c2. From our assumption, Jqxpa|q−1
+xpa(z) = c(xpa)A for an orthogonal matrix A for all z. Applying
+this to Eq. 21,
+
+det Jqxpa|q−1
+xpa(z) = det c(xpa)A = c(xpa) = c2(z),
+
+which implies c(xpa) ≡c is a constant function, or Jqxpa|q−1
+xpa(z) = cA. By Lemma 2, we may express qxpa(u) as
+
+qxpa(u) = q(u + r(xpa))
+(22)
+
+for an invertible function q.
+Next, since Z ⊥⊥Xpa, the support of Z does not depend on Xpa, equivalently the ranges of qxpa1 and qxpa2 are
+equal for all x1, x2 ∈Xpa,
+
+qx1([0, 1]m) = qx2([0, 1]m).
+(23)
+
+Applying Eq. 22 and the invertibility of q,
+
+q([0, 1]m + r(x1)) = q([0, 1]m + r(x2))
+
+[0, 1]m + r(x1) = [0, 1]m + r(x2)
+
+[r(x1), r(x1) + 1]m = [r(x2), r(x2) + 1]m.
+
+Since this holds for all x1, x2 ∈Xpa, we have r(x) is a constant, or r(x) ≡r. Thus let ˜q be ˜q(u) = q(u + r) =
+qxpa(u), which is solely a function of U for all xpa. For all xpa,
+
+g(f(xpa, U, xpa)) = qxpa(U) = ˜q(U) =⇒g(f(Xpa, U), Xpa) = ˜q(U).
+(24)
+
+This completes the proof.
+
+Corollary 3. Assume the conditions of Theorem 2. Furthermore, assume the encoder-decoder model pair (g, h)
+satisfies
+
+h(g(X, Xpa), Xpa) = X.
+(25)
+
+Consider a factual sample pair (x, xpa) where x := f(xpa, u) and an intervention do(Xpa := γ). Then, the given by
+h(g(x, xpa), γ) matches the true counterfactual outcome xCF := f(γ, u).
+
+Corollary 4. Let γ ≥0. Assume the conditions of Theorem 2. Furthermore, assume the encoder-decoder model pair
+(g, h) under some metric d (e.g., ∥· ∥2), has reconstruction error less than τ,
+
+d(h(g(X, Xpa), Xpa), X) ≤τ.
+(26)
+
+Consider a factual sample pair (x, xpa) where x := f(xpa, u) and an intervention do(Xpa := γ). Then, the er-
+ror between the true counterfactual xCF := f(γ, u) and counterfactual estimate h(g(x, xpa), γ) is at most τ, i.e.,
+d(h(g(x, xpa), γ), xCF) ≤τ.
+
+B
+Testing Independence between Parents and Encodings
+
+We empirically evaluate the dependence between the encoding and parent values. We consider a bivariate nonlinear
+SCM X1 →X2 where X2 = f(X1, U2) = X2
+1 + U2 and X1 and U2 are independently sampled from a standard
+normal distribution. We evaluate the HSIC between X1 and the encoding of X2. We fit our model on n = 5000
+samples and evaluate the HSIC score on 1000 test samples from the same distribution. We compute a p-value using
+a kernel based independence test and compare our performance to ANM, a correctly specified model in this setting
+(Gretton et al., 2007). We perform this experiment 100 times. Given true independence, we expect the p-values to
+follow a uniform distribution. In the table below, we show some summary statistics of the p-values from the 100
+trials, with the last row representing the expected values with true uniform p-values (which happens under the null
+hypothesis).
+
+Mean
+Std. Dev
+10% Quantile
+90% Quantile
+Min
+Max
+
+DCM
+0.196
+0.207
+0.004
+0.515
+6e-6
+0.947
+ANM
+0.419
+0.255
+0.092
+0.774
+3e-5
+0.894
+True Uniform (null)
+0.500
+0.288
+0.100
+0.900
+1e-2
+0.990
+
+Table 3: Table of p-value descriptions.
+
+We provide p-values from the correctly specified ANM approach which are close to a uniform distribution, demon-
+strating that it is possible to have encodings that are close to independent. Although the p-values produced by our DCM
+approach are not completely uniform, the encodings do not to consistently reject the null hypothesis of independence.
+These results demonstrate that it is empirically possible to obtain encodings independent of the parent variables. We
+further note that the ANM is correctly specified in this setting and DCM is relatively competitive despite being far
+more general.
+
+C
+Missing Experimental Details
+
+In this section, we provide missing details from Section 5.
+
+C.1
+Model Hyperparameters
+
+For all experiments in our evaluation, we hold the model hyperparameters constant. For DCM, we use T = 100
+total time steps with a linear βt schedule interpolating between 1e-4 and 0.1, or βt =
+
+0.1 −10−4 t−1
+
+T −1 + 10−4
+
+for t ∈[T]. To incorporate the parents’ values and time step t, we simply concatenate the parent values and t/T as
+input to the εθ model. We found that using the popular cosine schedule (Nichol & Dhariwal, 2021) resulted in worse
+empirical performance, as well as using a positional encoding for the time t. We believe the drop in performance from
+the positional encoding is due to the low dimensionality of the problem since the dimension of the positional encoder
+would dominate the dimension of the other inputs.
+We also evaluated using classifier-free guidance (CFG) (Ho & Salimans, 2021) to improve the reliance on the
+parent values, however, we found this also decreased performance. We provide a plausible explanation that can be
+explained through Theorem 1. With Theorem 1, we would like our encoding g(Y, X) to be independent of X, however
+using a CFG encoding (1 + w)g(Y, X) −wg(Y, 0) would only serve to increase the dependence of g(Y, X) on X,
+which is counterproductive to our objective.
+For VACA, we use the default implementation8, training for 500 epochs, with a learning rate of 0.005, and the
+encoder and decoder have hidden dimensions of size [8, 8] and [16] respectively, a latent vector dimension of 4, and a
+parent dropout rate of 0.2.
+For CAREFL, we also use the default implementation9 with the neural spline autoregressive flows (Durkan et al.,
+2019), training for 500 epochs with a learning rate of 0.005, four flows, and ten hidden units.
+
+8
+9
+
+For ANM, we also use the default implementation to select a regression model. Given a set of fitted regression
+models, the ANM chooses the model with the lowest root mean squared error averaged over splits of the data. The
+ANM considers the following regressor models: linear, ridge, LASSO, elastic net, random forest, histogram gradient
+boosting, support vector, extra trees, k-NN, and AdaBoost.
+
+C.2
+Details about the Additive Noise Model (ANM)
+
+For a given node Xi with parents Xpai, consider fitting a regression model ˆfi where ˆfi(Xpai) ≈Xi. Using this
+regression model and the training dataset is sufficient for generating samples from the observational and interventional
+distribution, as well as computing counterfactuals.
+Observational/Interventional Samples. Samples are constructed in topological order. For intervened nodes, the
+sampled value is always the intervened value. Non-intervened root nodes in the SCM are sampled from the empirical
+distribution of the training set. A new sample for Xi is generated by sampling the parent value Xpai inductively and
+sampling ˆU from the empirical residual distribution, and outputting ˆXi := ˆfi(Xpai) + ˆU.
+Counterfactual Estimation. For a factual observation xF and interventions on nodes I with values γ, the coun-
+terfactual estimate only differs from the factual estimate for all nodes that are intervened or downstream from an
+intervened node. We proceed in topological order. For each intervened node i, ˆxCF
+i
+:= γi. For each non-intervened
+node i downstream from an intervened node, define ˆuF
+i := xF
+i −ˆfi(xF
+pai), the residual and estimated noise for the
+factual sample. Let ˆxCF
+pai be counterfactual estimates of the parents of Xi. Then ˆxCF
+i
+:= ˆfi(ˆxCF
+pai) + ˆuF
+i .
+Therefore, for counterfactual queries, if the true functional equation fi is an additive noise model, then if ˆfi ≈fi,
+the regression model will have low counterfactual error. In fact, if ˆfi ≡fi, then the regression model will have perfect
+counterfactual performance.
+
+C.3
+Details about Random Graph Generation
+
+The random graph is comprised of ten nodes. We randomly sample this graph by generating a random upper tri-
+angular adjacency matrix where each entry in the upper triangular half is each to 1 with probability 30%. We then
+check that this graph is comprised of a single connected component (if not, we resample the graph). For a graphical
+representation, we provide an example in Figure 4.
+
+C.4
+Query Evaluation Frameworks for Synthetic Data Experiments
+
+Observational Evaluation. We generate 1000 samples from both the fitted and true observational distribution and
+report the MMD between the two. Since DCM and the ANM use the empirical distribution for root nodes, we only
+take the MMD between nonroot nodes.
+Interventional Evaluation. We consider interventions of individual nodes. For an intervention node i, we choose
+20 intervention values γ1, . . . , γ20, linearly interpolating between the 10% and 90% quantiles of the marginal dis-
+tribution of node i to represent realistic interventions. Then for each intervention do(Xi := γj), we generate 100
+values from the fitted model and true causal model, ˆX and X⋆for the samples from the fitted model and true model
+respectively. Since the intervention only affects the descendants of node i, we subset ˆX and X⋆to include only the
+descendants of node i, and compute the MMD on ˆX and X⋆to obtain a distance δi,j between the interventional
+distribution for the specific node and interventional value. Lastly, we report the mean MMD over all 20 intervention
+values and all intervened nodes. For the ladder graph, we choose to intervene on X2 and X3 as these are the farthest
+nodes upstream and capture the maximum difficulty of the intervention. For the random graph, we randomly select
+three non-sink nodes to intervene on. A formal description of our interventional evaluation framework is given in
+Algorithm 6.
+Counterfactual Evaluation. Similarly to interventional evaluation, we consider interventions of individual nodes
+and for node i, we choose 20 intervention values γ1, . . . , γ20, linearly interpolating between the 10% and 90% quantiles
+of the marginal distribution of node i to represent realistic interventions. Then for each intervention do(Xi := γj),
+we generate 100 nonintervened factual samples xF, and query for the estimated and true counterfactual values ˆxCF
+
+and xCF respectively. Similarly to before, ˆxCF and xCF only differ on the descendants of node i, therefore we only
+consider the subset of the descendants of node i. We compute the MSE δi,j, since the counterfactual estimate and
+ground truth are point values, giving us an error for a specific node and interventional value. Lastly, we report the
+
+Algorithm 6 Evaluation of Interventional Queries
+
+1: for each intervention node i do
+2:
+γ1, . . . , γ20 linearly interpolate 10% to 90% quantiles of node i
+
+3:
+for each intervention γj generated above do
+4:
+Intervene do(Xi := γj)
+
+5:
+Generate 100 samples ˆX from ˆ
+M and X⋆from M ⋆of descendants of i
+6:
+δi,j ←
+ˆ
+MMD( ˆX, X⋆)
+
+7:
+end for
+8: end for
+9: Output mean of all δi,j
+
+Algorithm 7 Evaluation of Counterfactual Queries
+
+1: for each intervention node i do
+
+2:
+γ1, . . . , γ20 linearly interpolate 10% to 90% quantiles of node i
+3:
+for each intervention γj generated above do
+4:
+Generate 100 factual samples xF
+1 , . . . , xF
+100
+5:
+Intervene do(Xi := γj)
+6:
+Using {xF}100
+k=1, compute counterfactual estimates {ˆxCF
+k }100
+k=1 and true counterfactuals {xCF
+k }100
+k=1 for all
+descendants of i
+7:
+δi,j ←MSE({ˆxCF
+k }100
+k=1, {xCF
+k }100
+k=1)
+8:
+end for
+9: end for
+10: Output mean of all δi,j
+
+mean MSE over all 20 intervention values and all intervened nodes. We use the same intervention nodes as in the
+interventional evaluation mentioned above. A formal description of our counterfactual evaluation framework is given
+in Algorithm 7 (Appendix C).
+
+C.5
+Explanation of Error Inflation in fMRI Experiments
+
+In our fMRI experiments, we compute the absolute error on a single interventional sample and compute the absolute
+value. As an intuition for why we cannot hope to have errors close to zero and for why the errors are relatively much
+closer together, consider the following toy problem.
+Assume X1, . . . , Xn, Y1, . . . , Yn
+iid
+∼N(θ, 1) and we observe X1, . . . , Xn as data. Consider the two following
+statistical problems:
+
+1. Learn a distribution ˆD such that samples from ˆD and samples Y1, . . . , Yn achieves low MMD.
+
+2. Learn an estimator that estimates Y1 well under squared error.
+In the first statistical problem, if ˆD is a reasonable estimator, we should expect that more data leads to lower a
+MMD, for example the error may decay at a 1/n rate. We should expect MMD values close to zero, and the magnitude
+of the performance is directly interpretable.
+In the second statistical problem, under squared error, the problem is equivalent to
+
+min
+c
+EY1∼N(θ,1)(Y1 −c)2 = min
+c
+θ2 + 1 −2cθ + c2.
+
+The optimal estimator is the mean θ and achieves a squared error of 1. Of course in practice we do not know θ, if
+we were to use the sample mean of X1, . . . , Xn, we would have an error of the order 1 + 1/n. While we may still
+compare various estimators, e.g. sample mean, sample median, deep neural network, all the losses will be inflated by
+1, causing the difference in performances to seem much more minute.
+Our synthetic experiments hope to directly estimate the interventional distribution and computes the MMD be-
+tween samples from the true and model’s distributions, implying they are of the first statistical problem. The fMRI
+real data experiments aim to estimate a single intervention value from a distribution, implying they are of the second
+
+statistical problem. We should not expect these results to be very small, and the metric values should all be shifted by
+an intrinsic irreducible error.
+
+Nonlinear Equations
+
+Nonadditive Equations
+
+0.14
+Observational MMD
+
+0.150
+Observational MMD
+
+0.175
+
+0.150
+
+0.12
+
+0.150
+
+0.125
+
+0.125
+
+0.10
+
+0.125
+
+0.100
+
+MMD
+
+MMD
+
+0.100
+
+0.08
+
+0.100
+
+0.075
+
+0.075
+
+0.06
+
+0.075
+
+0.050
+
+0.050
+
+0.04
+
+0.050
+
+0.025
+
+0.025
+
+0.02
+
+0.025
+
+0.000
+
+0.00
+
+0.000
+
+0.000
+
+0.20
+Interventional MMD
+
+0.175
+Interventional MMD
+
+0.175
+
+0.20
+
+0.150
+
+0.150
+
+0.15
+
+0.125
+
+0.125
+
+0.15
+
+MMD
+
+MMD
+
+0.100
+
+0.100
+
+0.10
+
+0.10
+
+0.075
+
+0.075
+
+0.050
+
+0.050
+
+0.05
+
+0.05
+
+0.025
+
+0.025
+
+0.00
+
+0.000
+
+0.000
+
+0.00
+
+12.5
+Counterfactual MSE
+
+4
+Counterfactual MSE
+
+0.8
+
+0.5
+
+10.0
+
+3
+
+0.4
+
+0.6
+
+MSE
+
+MSE
+
+7.5
+
+0.3
+
+2
+
+0.4
+
+5.0
+
+0.2
+
+1
+
+0.2
+
+2.5
+
+0.1
+
+0.0
+
+0.0
+
+0.0
+
+0
+
+DCM
+ANM
+VACACAREFL
+Ladder
+
+DCM
+ANM
+VACACAREFL
+Random
+
+DCM
+ANM
+VACA CAREFL
+Ladder
+
+DCM
+ANM
+VACA CAREFL
+Random
+
+Figure 1: Left: Nonlinear setting (NLIN), Right: Nonadditive setting (NADD). Box plots of observational, interven-
+tional, and counterfactual queries of the ladder and random SCMs over 20 random initializations of the model and
+training data.
+
+D
+Additional Experiments
+
+D.1
+Running Time Experiments
+
+We present the training times in minutes for one seed on the ladder graph using the default implementation and
+parameters. For a fair comparison, these are all evaluated on a CPU. Note that ANM is the fastest as it uses standard
+
+DCM
+ANM
+VACA
+CAREFL
+
+Training Time (in minutes)
+15.3
+4.3
+142.8
+110.5
+
+Table 4: Table of training times for a single run.
+
+regression models, and our proposed DCM approach is about 7-9x faster than CAREFL and VACA. The generation
+(inference) times for all the methods are in the order of 1 second. For VACA and CAREFL, we use the implementation
+provided by the respective authors.
+
+D.2
+Semi-Synthetic Experiments
+
+To further evaluate the effectiveness of DCM, we explore a semi-synthetic experiment based on the Sachs dataset (Sachs
+et al., 2005). We use the real world graph from comprised of 11 nodes10. The graph represents an intricate network of
+signaling pathways within human T cells. The 11 nodes within this graph each correspond to one of the phosphorylated
+proteins or phospholipids that were examined in their study.
+For our experiment, we sample data in a semi-synthetic manner. For the root nodes, we sample from the empirical
+marginal distribution. For non-root nodes, since the ground truth structural equations are unknown, we use a random
+neural network as the structural equation, as was done in Section 5. We report the performances in Table 5. We see
+that the performance improvements with our DCM approach corroborate our prior findings.
+
+DCM
+ANM
+VACA
+CAREFL
+
+SCM
+Metric
+(×10−2)
+(×10−2)
+(×10−2)
+(×10−2)
+
+Obs. MMD
+0.31±0.15
+0.21±0.04
+0.53±0.24
+7.30±0.95
+
+NLIN
+
+Int. MMD
+1.25±0.11
+1.37±0.12
+2.03±0.36
+5.77±0.85
+
+CF. MSE
+0.72±0.19
+4.72±1.71
+17.71±9.23
+9.59±2.52
+
+Sachs
+
+Obs. MMD
+0.18±0.07
+0.18±0.06
+0.39±0.24
+6.10±1.14
+
+NADD
+
+Int. MMD
+1.42±0.26
+1.86±0.51
+2.21±0.98
+5.29±2.07
+
+CF. MSE
+1.99±2.49
+4.68±5.77
+7.30±11.57
+8.30±8.34
+
+Table 5: Mean±standard deviation of observational, interventional, and counterfactual queries of the Sachs SCM in
+nonlinear (NLIN) and nonadditive (NADD) settings over 10 random initializations of the model and training data. The
+values are multiplied by 100 for clarity.
+
+D.3
+Additional Synthetic Experiments
+
+In this section, we present additional experimental evidence showcasing the superior performance of DCM in address-
+ing various types of causal queries. We consider four additional smaller graph structures, which we call the chain,
+triangle, diamond, and Y graphs (see Figure 9).
+The exact equations are presented in Table 6. These functional equations were chosen to balance the signal-to-
+noise ratio of the covariates and noise to represent realistic settings. Furthermore, these structural equations were
+chosen after hyperparameter selection, meaning we did not tune DCM’s parameters nor tune the structural equations
+after observing the performance of the models.
+Consider a node with value X with parents Xpa and exogenous noise U where Xpa ⊥⊥U, and corresponding
+functional equation f such that
+X = f(Xpa, U).
+
+Further assuming the additive noise model, X := f1(Xpa) + f2(U). In this additive setting, since Xpa ⊥⊥U, we have
+
+Var [X] = Var [f1(Xpa] + Var [f2(U)].
+
+We choose f1 and f2 such that
+
+0.05 ≤Var [f2(U)]
+
+Var [f1(Xpa] ≤0.5,
+
+representing the fact that the ratio of the effect of the noise to the parents is roughly approximate or smaller by an
+order of magnitude.
+For the nonadditive case, we decompose the variance using the law of total variance,
+
+Var [X] = E Var [f(Xpa, U) | U] + Var E[f(Xpa, U) | U].
+
+10
+
+SCM
+Nonlinear Case
+Nonadditive Case
+
+f2(U2, X1)
+exp(X1/2) + U2/4
+1/((U2 + X1)2 + 0.5)
+
+Chain
+
+f3(U3, X2)
+(X2 −5)3/15 + U3
+p
+
+X2 + |U3|/(0.1 + X2)
+
+f2(U2, X1)
+2X2
+1 + U2
+X1/((U2 + X1)2 + 1) + U2/4
+
+Triangle
+
+f3(U3, X1, X2)
+20/(1 + exp(−X2
+2 + X1)) + U3
+(|U3| + 0.3)(−X1 + X2/2 + |U3|/5)2
+
+f2(U2, X1)
+X2
+1 + U2/2
+p
+
+|X1|(|U2| + 0.1)/2 + |X1| + U2/5
+
+Diamond
+
+f3(U3, X1, X2)
+X2
+2 −2/(1 + exp(−X1)) + U3/2
+1/(1 + (|U3| + 0.5) exp(−X2 + X1))
+
+f4(U4, X2, X3)
+X3/(|X2 + 2| + X3 + 0.5) + U4/10
+(X3 + X2 + U4/4 −7)2 −20
+
+f3(U3, X1, X2)
+4/(1 + exp(−X1 −X2)) −X2
+2 + U3/2
+(X1 −2X2 −2)(|U3| + 0.2)
+
+Y
+
+f4(U4, X3)
+20/(1 + exp(X2
+3/2 −X3)) + U4
+(cos(X3) + U4/2)2
+
+Table 6: The equations defining the data generating process in the NLIN and NADD cases.
+
+Similarly, we choose the functional equation f such that f satisfies
+
+0.05 ≤Var E[f(Xpa, U) | U]
+
+E Var [f(Xpa, U) | U] ≤0.5
+
+For all graphs, Ui
+iid
+∼N(0, 1), and we choose f such that Xi = Ui if Xi is a root node, i.e. f is the identity function.
+Lastly, we normalize every node Xi such that Var (Xi) ≈1. For the sake of clarity, we omit all normalizing terms in
+the formulas and omit functional equations for root nodes below.
+Results. For these 4 graph structures (chain, triangle, diamond, and Y), in Table 7, we provide the performance
+of all evaluated models for observational, interventional, and counterfactual queries, averaged over 10 separate initial-
+izations of models and training data, with the lowest value in each row bolded. The values are multiplied by 100 for
+clarity. In Figure 2, we show the box plots for the same set of experiments.
+The results here are similar to those observed with the larger graph structures in Table 1. DCM has the lowest error
+in 7 out of 12 of the nonlinear settings, with the correctly specified ANM having the lowest error in the remaining
+5. Furthermore, DCM and ANM both typically have a lower standard deviation compared to the other competing
+methods. For the nonadditive settings, DCM demonstrates the lowest values for all 12 causal queries.
+
+E
+Real Data Experiment II
+
+In order to evaluate our DCM approach, we assess its performance in computing the Individual Treatment Effect (ITE),
+which is defined as Di := Yi(1) −Yi(0) where Yi(0) ∈R is the potential outcome of unit i when i is assigned to
+the control group, and Yi(1) is the potential outcome when i is assigned to the treatment group. Note that we do not
+
+DCM
+ANM
+VACA
+CAREFL
+
+SCM
+Metric
+(×10−2)
+(×10−2)
+(×10−2)
+(×10−2)
+
+Obs. MMD
+0.27±0.11
+0.19±0.27
+1.63±0.42
+4.25±1.12
+
+NLIN
+
+Int. MMD
+1.71±0.27
+1.70±0.47
+10.10±1.81
+8.63±0.52
+
+Chain
+
+CF. MSE
+0.33±0.16
+2.43±2.49
+25.99±6.47
+19.62±4.01
+
+Obs. MMD
+0.22±0.16
+1.51±0.43
+1.53±0.41
+3.48±1.06
+
+NADD
+
+Int. MMD
+2.85±0.45
+7.34±0.62
+10.42±2.77
+11.02±1.32
+
+CF. MSE
+75.84±1.65
+88.56±2.63
+98.82±4.16
+105.80±11.04
+
+Obs. MMD
+0.16±0.11
+0.12±0.07
+3.12±0.93
+4.64±1.03
+
+NLIN
+
+Int. MMD
+1.50±0.30
+3.28±0.79
+18.43±1.72
+7.08±0.82
+
+Triangle
+
+CF. MSE
+1.12±0.26
+9.80±1.70
+178.69±16.45
+41.85±19.58
+
+Obs. MMD
+0.25±0.12
+0.51±0.08
+2.42±0.48
+5.12±1.10
+
+NADD
+
+Int. MMD
+2.81±0.21
+5.54±0.60
+11.09±0.85
+4.17±0.44
+
+CF. MSE
+26.28±6.68
+97.25±16.45
+173.67±16.28
+121.99±31.34
+
+Obs. MMD
+0.11±0.05
+0.14±0.08
+2.29±0.69
+6.82±0.85
+
+NLIN
+
+Int. MMD
+1.23±0.08
+1.40±0.14
+9.50±0.96
+14.97±1.29
+
+CF. MSE
+0.28±0.25
+1.22±0.27
+28.79±4.02
+27.85±5.33
+
+Y
+
+Obs. MMD
+0.21±0.15
+1.00±0.19
+1.51±0.44
+3.39±0.58
+
+NADD
+
+Int. MMD
+1.54±0.23
+5.62±0.31
+5.37±0.72
+6.51±0.40
+
+CF. MSE
+33.45±2.06
+47.55±2.56
+60.67±3.24
+52.41±6.69
+
+Obs. MMD
+0.22±0.10
+0.13±0.07
+2.77±0.45
+8.28±1.29
+
+NLIN
+
+Int. MMD
+3.21±0.62
+2.56±0.31
+25.30±1.39
+18.23±3.01
+
+Diamond
+
+CF. MSE
+14.74±6.09
+32.02±37.74
+138.65±12.33
+607.62±241.21
+
+Obs. MMD
+0.25±0.18
+0.28±0.09
+2.36±0.44
+5.50±0.81
+
+NADD
+
+Int. MMD
+1.88±0.23
+4.40±0.52
+12.54±0.89
+16.34±1.72
+
+CF. MSE
+1.36±0.14
+8.58±0.77
+57.40±4.23
+24.61±7.05
+
+Table 7: Mean±standard deviation of observational, interventional, and counterfactual queries of four different SCMs
+in nonlinear and nonadditive settings over 10 random initializations of the model and training data. The values are
+multiplied by 100 for clarity.
+
+observe Di for any unit i as for each unit in the training data set, we observe either the outcome under control or the
+outcome under treatment, but never both.
+Now, in non-simulated data, it is impossible to know the counterfactual ground-truth as this event did not happen.
+However, averaging the ITE over all individuals, i.e., E[Y (1) −Y (0)], provides us with an estimate of the average
+treatment effect (ATE), for which we have real-world datasets with known ground-truth. Therefore, to evaluate our
+approach, we first estimate the ITE for each sample by estimating each corresponding counterfactual outcome. We
+then average these to obtain the ATE, which we can then compare with the ground-truth ATE. Since our techniques
+are designed for constructing unit-level counterfactuals, and not ATE directly, the goal here is not to compare against
+other ATE estimation approaches, but rather demonstrate that the individual treatment effects computed through our
+counterfactuals are reasonably accurate.
+The following experiments are based on popular datasets. Each experiment was repeated 10 times using the same
+model hyperparameters for each problem, without fine-tuning to the specific problem. For each dataset, we use the
+
+Dataset
+Algorithm
+ATE (computed from ITE)
+Relative Absolute Error (%)
+
+IHDP
+DCM
+4.013
+0.199%
+IHDP
+ANM
+3.957
+1.592%
+Lalonde
+DCM
+1579.59
+3.672%
+Lalonde
+ANM
+1516.20
+7.538%
+
+Table 8: ATE estimation through computing unit-level counterfactuals. The ground-truth ATE provided with the IHDP
+and Lalonde datasets are 4.021 and 1639.80, respectively.
+
+ground-truth graph structure from the literature and assign a DCM model to each non-root node. For root nodes, we
+can directly use the empirical distribution without the need to fit a particular model.
+Infant Health and Development Program Dataset. The dataset aims at predicting the effect of specialized childcare
+on cognitive test scores of infants (Hill, 2011). The goal here is to see if a treatment (specialized childcare) improves
+the cognitive abilities of infants compared to infants that did not receive the treatment. The average treatment effect
+here is the difference between the expected cognitive test score under do(specialized child care = 1) and expected
+cognitive test score under do(specialized child care = 0). The ground-truth ATE (on cognitive test score) associated
+with this dataset is 4.021.
+Lalonde Dataset. The dataset contains different demographic variables (e.g., gender, age, education etc.) with the
+goal to see if training programs increase earnings (LaLonde, 1986). The average treatment effect here is the difference
+between the expected earnings under do(training program = 1) and expected earnings under do(training program = 0).
+The ground-truth ATE (on earnings) associated with this dataset is 1639.80.
+Results. The results are summarized in Table 8. As noted above, the focus of this paper is on computing unit-level
+counterfactuals. The fact that the estimate of the ATE computed from via DCM approach matches the ground-truth
+ATE well can be seen as a sign that the unit-level counterfactuals were computed accurately. For baseline, we also
+show the results where we replace our DCM approach with additive noise model (ANM) approach for modeling the
+SCMs.
+
+Nonlinear Equations
+
+0.10
+Observational MMD
+
+0.07
+
+0.07
+
+0.08
+
+0.06
+
+0.06
+
+0.08
+
+0.05
+
+0.05
+
+0.06
+
+MMD
+
+0.04
+
+0.04
+
+0.06
+
+0.04
+
+0.03
+
+0.03
+
+0.04
+
+0.02
+
+0.02
+
+0.02
+
+0.02
+
+0.01
+
+0.01
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+Interventional MMD
+
+0.14
+
+0.175
+
+0.20
+
+0.25
+
+0.12
+
+0.150
+
+0.20
+
+0.10
+
+0.15
+
+0.125
+
+MMD
+
+0.08
+
+0.100
+
+0.15
+
+0.10
+
+0.06
+
+0.075
+
+0.10
+
+0.04
+
+0.050
+
+0.05
+
+0.05
+
+0.02
+
+0.025
+
+0.00
+
+0.00
+
+0.000
+
+0.00
+
+10
+Counterfactual MSE
+
+2.0
+
+0.3
+
+0.3
+
+8
+
+1.5
+
+MSE
+
+6
+
+0.2
+
+0.2
+
+1.0
+
+4
+
+0.1
+
+0.1
+
+0.5
+
+2
+
+0.0
+
+0.0
+
+0.0
+
+0
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+Chain
+
+Triangle
+
+Y
+
+Diamond
+
+Structural Causal Model
+
+Nonadditive Equations
+
+0.07
+Observational MMD
+
+0.07
+
+0.04
+
+0.05
+
+0.06
+
+0.06
+
+0.04
+
+0.05
+
+0.05
+
+0.03
+
+MMD
+
+0.04
+
+0.04
+
+0.03
+
+0.02
+
+0.03
+
+0.03
+
+0.02
+
+0.02
+
+0.02
+
+0.01
+
+0.01
+
+0.01
+
+0.01
+
+0.00
+
+0.00
+
+0.00
+
+0.00
+
+0.20
+Interventional MMD
+
+0.12
+
+0.150
+
+0.07
+
+0.10
+
+0.06
+
+0.125
+
+0.15
+
+0.05
+
+0.08
+
+0.100
+
+MMD
+
+0.04
+
+0.10
+
+0.06
+
+0.075
+
+0.03
+
+0.04
+
+0.050
+
+0.02
+
+0.05
+
+0.02
+
+0.025
+
+0.01
+
+0.000
+
+0.00
+
+0.00
+
+0.00
+
+0.6
+Counterfactual MSE
+
+1.25
+
+2.0
+
+0.6
+
+1.00
+
+1.5
+
+MSE
+
+0.75
+
+0.4
+
+0.4
+
+1.0
+
+0.50
+
+0.2
+
+0.2
+
+0.5
+
+0.25
+
+0.00
+
+0.0
+
+0.0
+
+0.0
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+DCM
+ANM
+VACA CAREFL
+
+Chain
+
+Triangle
+
+Y
+
+Diamond
+
+Structural Causal Model
+
+Figure 2: Top: Nonlinear setting (NLIN), Bottom: Nonadditive setting (NADD). Box plots of observational, inter-
+ventional, and counterfactual queries of four different SCMs over 10 random initializations of the model and training
+data.
+
+U1
+
+U3
+
+U5
+
+U7
+
+U9
+
+X1
+
+X3
+
+X5
+
+X7
+
+X9
+
+X2
+
+X4
+
+X6
+
+X8
+
+X10
+
+U2
+
+U4
+
+U6
+
+U8
+
+U10
+
+Figure 3: Ladder graph used in Section 5.
+
+X1
+X2
+X3
+
+X4
+X5
+X6
+X7
+
+X8
+X9
+
+X10
+
+Figure 4: Example of a random graph used in Section 5, with exogenous noise nodes omitted for clarity.
+
+U1
+U2
+
+U1
+
+X1
+
+U1
+
+U1
+
+U2
+U3
+
+X1
+X2
+
+X1
+
+U2
+U3
+
+X2
+
+U2
+
+X1
+
+X3
+
+U3
+
+X2
+X3
+
+X2
+X3
+
+X3
+
+U3
+
+X4
+
+U4
+
+X4
+
+U4
+
+Figure 6: Triangle graph.
+
+Figure 5: Chain graph.
+
+Figure 7: Diamond graph.
+
+Figure 8: Y graph.
+
+Figure 9: Causal graphs used in our experiments in Appendix D.3.

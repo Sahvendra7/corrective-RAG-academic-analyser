@@ -1,0 +1,1608 @@
+Recurrent Vision Transformers for Object Detection with Event Cameras
+
+Mathias Gehrig and Davide Scaramuzza
+
+Robotics and Perception Group, University of Zurich, Switzerland
+
+Abstract
+
+arXiv:2212.05598v3 [cs.CV] 25 May 2023
+
+We present Recurrent Vision Transformers (RVTs), a
+novel backbone for object detection with event cam-
+eras. Event cameras provide visual information with sub-
+millisecond latency at a high-dynamic range and with
+strong robustness against motion blur. These unique prop-
+erties offer great potential for low-latency object detec-
+tion and tracking in time-critical scenarios. Prior work in
+event-based vision has achieved outstanding detection per-
+formance but at the cost of substantial inference time, typ-
+ically beyond 40 milliseconds. By revisiting the high-level
+design of recurrent vision backbones, we reduce inference
+time by a factor of 6 while retaining similar performance.
+To achieve this, we explore a multi-stage design that uti-
+lizes three key concepts in each stage: First, a convolutional
+prior that can be regarded as a conditional positional em-
+bedding. Second, local and dilated global self-attention for
+spatial feature interaction. Third, recurrent temporal fea-
+ture aggregation to minimize latency while retaining tempo-
+ral information. RVTs can be trained from scratch to reach
+state-of-the-art performance on event-based object detec-
+tion - achieving an mAP of 47.2% on the Gen1 automotive
+dataset. At the same time, RVTs offer fast inference (< 12
+ms on a T4 GPU) and favorable parameter efficiency (5×
+fewer than prior art). Our study brings new insights into
+effective design choices that can be fruitful for research be-
+yond event-based vision.
+
+Figure 1. Detection performance vs inference time of our RVT
+models on the 1 Mpx detection dataset using a T4 GPU. The circle
+areas are proportional to the model size.
+
+In recent years, event cameras have emerged as alter-
+native sensor that offers a different trade-off. Instead of
+counterbalancing bandwidth requirements and perceptual
+latency, they provide visual information at sub-millisecond
+latency but sacrifice absolute intensity information.
+In-
+stead of capturing intensity images, event cameras measure
+changes in intensity at the time they occur. This results in
+a stream of events, which encode time, location, and po-
+larity of brightness changes [14]. The main advantages of
+event cameras are their sub-millisecond latency, very high
+dynamic range (> 120 dB), strong robustness to motion
+blur, and ability to provide events asynchronously in a con-
+tinuous manner.
+In this work, we aim to utilize these outstanding proper-
+ties of event cameras for object detection in time-critical
+scenarios.
+Therefore, our objective is to design an ap-
+proach that reduces the processing latency as much as possi-
+ble while maintaining high performance. This is challeng-
+ing because event cameras asynchronously trigger binary
+events that are spread of pixel space and time. Hence, we
+need to develop detection algorithms that can continuously
+associate features in the spatio-temporal domain while si-
+multaneously satisfying strict latency requirements.
+Recent work has shown that dynamic graph neural net-
+works (GNNs) [28,43] and sparse neural networks [10,34,
+55, 57] can theoretically achieve low latency inference for
+event-based object detection. Yet, to achieve this in prac-
+tical scenarios they either require specialized hardware or
+
+Code:
+
+1. Introduction
+
+Time matters for object detection. In 30 milliseconds, a
+human can run 0.3 meters, a car on public roads covers up
+to 1 meter, and a train can travel over 2 meters. Yet, during
+this time, an ordinary camera captures only a single frame.
+Frame-based sensors must strike a balance between la-
+tency and bandwidth. Given a fixed bandwidth, a frame-
+based camera must trade-off camera resolution and frame
+rate. However, in highly dynamic scenes, reducing the res-
+olution or the frame rate may come at the cost of missing
+essential scene details, and, in safety-critical scenarios like
+automotive, this may even cause fatalities.
+
+their detection performance needs to be improved.
+An alternative thread of research approaches the problem
+from the view of conventional, dense neural network de-
+signs [7,19,20,26,38]. These methods show impressive per-
+formance on event-based object detection, especially when
+using temporal recurrence in their architectures [26, 38].
+Still, the processing latency of these approaches remains
+beyond 40 milliseconds such that the low-latency aspect of
+event cameras cannot be fully leveraged. This raises the
+question: How can we achieve both high accuracy and effi-
+ciency without requiring specialized hardware?
+We notice that common design choices yield a subop-
+timal trade-off between performance and compute.
+For
+example, prior work uses expensive convolutional LSTM
+(Conv-LSTM) cells [44] extensively in their feature extrac-
+tion stage [26, 38] or relies on heavy backbones such as
+the VGG architecture [26]. Sparse neural networks instead
+struggle to model global mixing of features which is crucial
+to correctly locate and classify large objects in the scene.
+To achieve our main objective, we fundamentally revisit
+the design of vision backbones for event-based object de-
+tection. In particular, we take inspiration from neural net-
+work design for conventional frame-based object detection
+and combine them with ideas that have proven successful
+in the event-based vision literature. Our study deliberately
+focuses on macro design of the object detection backbone
+to identify key components for both high performance and
+fast inference on GPUs. The resulting neural network is
+based on a single block that is repeated four times to form
+a multi-stage hierarchical backbone that can be used with
+off-the-shelf detection frameworks.
+We identify three key components that enable an excel-
+lent trade-off between detection performance and inference
+time. First, we find that interleaved local- and global self-
+attention [50] is ideally suited to mix both local and global
+features while offering linear complexity in the input reso-
+lution. Second, this attention mechanism is most effective
+when preceded by a simple convolution that also downsam-
+ples the spatial resolution from the previous stage. This
+convolution effectively provides a strong prior about the
+grid-structure of the pixel array and also acts as a condi-
+tional positional embedding for the transformer layers [9].
+Third, temporal recurrence is paramount to achieve strong
+detection performance with events. Differently from prior
+work, we find that Conv-LSTM cells can be replaced by
+plain LSTM cells [18] that operate on each feature sepa-
+rately1. By doing so, we dramatically reduce the number of
+parameters and latency but also slightly improve the over-
+all performance. Our full framework achieves competitive
+performance and higher efficiency compared to state-of-the-
+art methods. Specifically, we reduce parameter count (from
+100M to 18.5 M) and inference time (from 72 ms to 12 ms)
+
+up to a factor of 6 compared to prior art [26]. At the same
+time, we train our networks from scratch, showing that these
+benefits do not originate from large-scale pretraining.
+Our paper can be summarized as follows: (1) We re-
+examine predominant design choices in event-based object
+detection pipelines and reveal a set of key enablers for high
+performance in event-based object detection. (2) We pro-
+pose a simple, composable stage design that unifies the cru-
+cial building blocks in a compact way. We build a 4-stage
+hierarchical backbone that is fast, lightweight and still of-
+fers performance comparable to the best reported so far. (3)
+We achieve state-of-the-art object detection performance of
+47.2% mAP on the Gen1 detection dataset [11] and a highly
+competitive 47.4% mAP on the 1 Mpx detection dataset
+[38] while training the proposed architecture from scratch.
+In addition, we also provide insights into effective data aug-
+mentation techniques that contribute to these results.
+
+2. Related Work
+
+2.1. Object Detection for Event Cameras
+
+Object detection in the event camera literature can be
+broadly classified into three emerging research directions.
+Recent work explores graph neural networks to dy-
+namically construct a spatio-temporal graph [28, 35, 43].
+New nodes and node edges are established by sub-sampling
+events and finding existing nodes that are close in space-
+time. The main challenge is to design the architecture such
+that information can propagate over vast distances in the
+space-time volume. This is relevant, for example, when
+large objects move slowly with respect to the camera. Fur-
+thermore, aggressive sub-sampling of events can lead to the
+removal of potentially crucial information, but is often re-
+quired to maintain low-latency inference.
+A second line of work employs spiking neural net-
+works (SNNs) that propagate information sparsely within
+the network [10,55,57]. SNNs are closely related to dense
+recurrent neural networks (RNNs) in that each spiking neu-
+ron has an internal state that is propagated in time. Differ-
+ently from RNNs, neurons in SNNs only emit spikes when-
+ever a threshold is reached. This spike generation mech-
+anism is not differentiable, which leads to substantial diffi-
+culties in optimizing these networks [4,22,23,36,45,47,56].
+One workaround is to avoid the aforementioned thresh-
+old and instead propagate features throughout the recep-
+tive field [34] . The downside of this mechanism is that
+the sparse-processing property is lost within deeper layers
+of the network. Overall, the design and training of SNNs
+still requires fundamental investigation before competitive
+performance can be reached.
+A third research direction is concerned with exploring
+dense neural networks for object detection with event
+cameras. The first step is the creation of a dense tensor
+
+1equivalent to 1 × 1 kernel in a Conv-LSTM cell
+
+Figure 2. Overview of the unrolled computation graph of our multi-stage recurrent backbone. Events are processed into a tensor repre-
+sentation before they are used as input to the first stage. Each stage also reuses the LSTM states (c: cell, h: hidden) from the previous
+timestep. Finally, the detection framework interfaces with the backbone from the second stage onwards. Specifically, the hidden states of
+the LSTMs are used as features for the detection framework.
+
+(event representation) that enables compatibility with dense
+operations such as convolutions. Early work directly uses a
+single event representation generated from a short temporal
+window of events to infer detections [7, 19, 20]. These ap-
+proaches discard relevant information from beyond the con-
+sidered temporal window such that detecting slowly moving
+objects becomes difficult or impossible. Followup work ad-
+dresses this issue by incorporating recurrent neural network
+layers [26,38] which drastically improved the detection per-
+formance. We follow this line of work but revamp dominant
+architecture choices to build a canonical framework that is
+fast, lightweight and highly performant.
+
+Figure 3. RVT block structure. The input is convolved with
+kernel size k × k and stride s. Block-SA applies self-attention in
+local windows while Grid-SA is a global operation using dilated
+attention. Finally, each block ends with an LSTM that reuses the
+(cell- and hidden) states from the previous timestep. The LSTM
+is applied to each feature separately. Normalization and activation
+layers are omitted for conciseness.
+
+2.2. Vision Transformers for Spatio-Temporal Data
+
+The success of attention-based models [52] in NLP has
+inspired the exploration of transformer-based architectures
+in computer vision [12]. Attention-based models have re-
+cently also been explored in video classification [1,5,13,48]
+where the models are applied directly to a set of frames.
+While these approaches have shown promising results in
+spatio-temporal modelling, they are optimized for offline
+processing of stored video data.
+In event-based vision, attention-based components have
+found applications in classification [42, 53] and image re-
+construction [54], and monocular depth estimation [31], but
+their use in object detection has yet to be investigated.
+
+pass through the backbone, the output of the RNNs are used
+as input to the detection framework. The following sec-
+tions elaborate on each one of these steps. Fig. 2 shows an
+overview of the RVT architecture.
+
+Event Processing
+Each pixel of an event camera can in-
+dependently trigger an event when a significant log bright-
+ness change occurs.
+An event can be positive or nega-
+tive depending on the sign of the brightness change. We
+characterize an event with polarity pk ∈{0, 1} as a tuple
+ek = (xk, yk, tk, pk) that occurs at pixel (xk, yk) at time
+tk. Modern event cameras can produce 10s of millions of
+events per second which renders event-by-event processing
+out of reach on conventional processing units.
+In this work we opt for a very simple preprocessing step
+to enable compatibility with convolutional neural network
+layers which, as we will show later in Sec. 4.2, are an im-
+
+3. Method
+
+Our object detection approach is designed to process
+a stream of events sequentially as they arrive. Incoming
+events are first processed into tensors that represent events
+in space and time. In every timestep, our network takes
+a new event representation as input as well as the previ-
+ous states of the recurrent neural network layers. After each
+
+In a subsequent step, the resulting features are trans-
+formed through multi-axis self-attention. We quickly sum-
+marize the steps but refer to Tu et. al [50] for an elaborate
+explanation. Multi-axis attention consists of two stages us-
+ing self-attention. The first stage performs local feature in-
+teraction while the second stage enables dilated global fea-
+ture mixing. More specifically, the features are first grouped
+locally into non-overlapping windows: Let X ∈RH×W ×C
+
+portant contributor to the performance of our model.
+Our preprocessing step starts with the creation of a 4-
+dimensional tensor E. The first dimension consists of two
+components and represents the polarity. The second dimen-
+sion has T components and is associated with T discretiza-
+tion steps of time. The 3rd and 4th dimension represent
+height and width of the event camera. We process set of
+events E within a time duration [ta, tb) the following way:
+
+be the input feature tensor. We reshape the tensor to a shape
+( H
+
+E(p, τ, x, y) =
+X
+
+P , P × P, C) where P × P is the window size in
+which multi-head self-attention [52] is applied. This block
+attention (Block-SA in Fig. 3) is used to model local inter-
+actions. As a next step, we would ideally be able to extract
+features globally. One straightforward way to achieve this
+would be applying self-attention on the whole feature map.
+Unfortunately, global self-attention has quadratic complex-
+ity in the number of features. Instead, we use grid attention
+(Grid-SA in Fig. 3). Grid attention partitions the feature
+maps into a grid of shape (G×G, H
+
+P × W
+
+ek∈E
+δ(p −pk)δ(x −xk, y −yk)δ(τ −τk),
+
+τk =
+tk −ta
+
+tb −ta
+· T
+
+
+In words, we create T 2-channel frames where each pixel
+contains the number of positive or negative events within
+one of the T temporal frames. As a final step, we flatten
+the polarity and time dimension to retrieve a 3-dimensional
+tensor with shape (2T, H, W) to directly enable compati-
+bility with 2D convolutions. We implement the presented
+algorithm with byte tensors to save memory and band-
+width. Other, more sophisticated representations are pos-
+sible [2,3,6,16,26,51,58], but their thorough evaluation is
+not our focus.
+
+G , C) using a G×G
+uniform grid. The resulting windows are of size H
+
+G × W
+
+G .
+Self-attention is then applied to these windows which cor-
+responds to global, dilated mixing of features.
+We study alternative designs as part of our architecture
+in the ablation studies in Sec. 4.2.
+
+G × W
+
+3.1. Mixing Spatial and Temporal Features
+
+Temporal Feature Extraction
+We opt for temporal fea-
+ture aggregation with LSTM [18] cells at the end of the
+stage. Differently from prior work [26,38] we find that tem-
+poral and spatial feature aggregation can be completely sep-
+arated. This means that we use plain LSTM cells such that
+the states of the LSTMs do not interact with each other. By
+avoiding Conv-LSTM units [44], we can drastically reduce
+the computational complexity and parameter count. I.e. a
+Conv-LSTM with kernel size k × k and stride 1 demands
+k2 the number of parameters and compute compared to the
+original LSTM cell. We examine this aspect in the experi-
+mental Sec. 4.2.
+
+The main difficulty of object detection with event cam-
+eras is that at any given time, the neural network should be
+able to efficiently (1) extract local- and global task-relevant
+features in pixel space because objects can cover both very
+small regions or large portions of the field of view; (2) ex-
+tract features from very recent events (e.g. moving edges) as
+well as events from several seconds ago. This is necessary
+because some objects are moving slowly with respect to the
+camera such that they generate very few events over time.
+These observations motivate us to investigate transformer
+layers for spatial feature extraction and recurrent neural net-
+works for efficient temporal feature extraction. Fig. 3 illus-
+trates the components of a single stage.
+
+Model Details
+We apply LayerNorm [24] before and
+LayerScale [49] after each attention and MLP module, and
+add a residual connection after each module. We found that
+LayerScale enables a wider range of learning rates.
+
+Spatial Feature Extraction
+The spatial feature extrac-
+tion stage should incorporate a prior about the fact that pix-
+els are arranged in a 2D grid as early as possible in the com-
+putation graph. We enable this by using a convolution with
+overlapping kernels on the input features that at the same
+time spatially downsamples the input or features from the
+previous stage. This convolution also endows our model
+with a conditional positional embedding [9] such that we
+do not require absolute [12, 52] or relative [32] positional
+embeddings. Our ablation study in Sec. 4.2 shows that
+overlapping kernels lead to a substantial boost in detection
+performance.
+
+3.2. Hierarchical Multi-Stage Design
+
+We compose multiple RVT blocks together to form a
+multi-stage hierarchical backbone. The overall architecture
+is shown in Fig. 2.
+At first, a local temporal slice of events is processed into
+a 2D tensor format as formulated in the beginning of this
+section. Subsequently, each stage takes the previous fea-
+tures as input and optionally uses the LSTM state from the
+last timestep to compute features for the next stage. By sav-
+ing the LSTM states for the following timestep, each re-
+
+Channels
+
+Gen1
+1 Mpx
+
+Stage
+Size
+Kernel
+Stride
+RVT-T
+RVT-S
+RVT-B
+
+Block-type
+mAP
+AP50
+mAP
+AP50
+Params (M)
+
+S1
+1/4
+7
+4
+32
+48
+64
+S2
+1/8
+3
+2
+64
+96
+128
+S3
+1/16
+3
+2
+128
+192
+256
+S4
+1/32
+3
+2
+256
+384
+512
+
+multi-axis
+47.6
+70.1
+46.0
+72.3
+18.5
+Swin
+46.7
+68.7
+44.4
+71.7
+18.5
+ConvNeXt
+45.5
+65.8
+42.3
+70.6
+18.7
+
+Table 2. Spatial Aggregation. Multi-axis attention leads to the
+best results on both the Gen1 and 1 Mpx dataset.
+
+Table 1. RVT parameters and architecture variation. All model
+variants share the same parameter set except the number of chan-
+nels per stage. Each stage initially applies a 2D convolution with
+kernel and stride as indicated in the table.
+
+sequence length of 5, and learning rate of 3.5e-4. The train-
+ing takes approximately 3 days on two A100 GPUs.
+
+current stage can retain temporal information for the whole
+feature map.
+We follow prior work and use features from the second
+to the fourth stage for the object detection framework. To
+do so, we reshape the hidden states of the LSTMs into 2D
+feature maps.
+
+Datasets
+The Gen1 Automotive Detection dataset [11]
+consists of 39 hours of event camera recordings at a resolu-
+tion of 304 × 240. In total, the Gen1 dataset contains 228k
+car and 28k pedestrian bounding boxes available at 1, 2 or 4
+Hz. We follow the evaluation protocol of prior work [26,38]
+and remove bounding boxes with a side length of less than
+10 pixels and a diagonal of less than 30 pixels.
+The 1 MPx dataset [38] also features driving scenarios
+but provides recordings at a higher resolution of 720×1280
+over a period of several months at day and night. It consists
+of approximately 15 hours of event data labeled at a fre-
+quency of 30 or 60 Hz with a total amount of 25 million
+bounding box labels for three classes (car, pedestrian, and
+two-wheeler). We follow the evaluation protocol of prior
+work [26, 38]. That is, we remove bounding boxes with a
+side length of less than 20 pixels and a diagonal of less than
+60 pixels and halve the input resolution to nHD resolution
+(640×360). We provide qualitative examples of this dataset
+together with predictions of our base model in Fig. 4.
+For both datasets, mean average precision (mAP) is the
+main metric [29] that we consider.
+
+4. Experiments
+
+We conduct ablations and evaluation our model on the
+Gen1 [11] and 1 Mpx [38] event camera datasets. We train
+three variants of our model on both datasets: the base model
+RVT-B and its small and tiny variants RVT-S and RVT-T.
+Parameter details for the models are shown in Tab. 1.
+
+4.1. Setup
+
+Implementation Details
+We initialize all layers ran-
+domly except LayerScale which is initialized to 1e-5 for
+each module. Our models are trained with mixed precision
+for 400k iterations with the ADAM optimizer [21] using a
+OneCycle learning rate schedule [46] with a linear decay
+from a maximum learning rate. We use a mixed batching
+strategy that applies backpropagation through time (BPTT)
+to half of the samples of the batch and truncated BPTT
+(TBPTT) to the other half.
+More details regarding this
+batching strategy can be found in the supplementary ma-
+terial. Our data augmentation includes random horizontal
+flipping, zooming in and zooming out. More details on data
+augmentation are available in Sec. 4.2 and the supplemen-
+tary material. To construct event representations, we con-
+sider 50 ms time windows that are discretized into T = 10
+bins. Finally, we use the YOLOX framework [15], which
+includes the IOU loss, class loss and regression loss. These
+losses are averaged both over the batch and sequence length
+for each optimization step.
+To compare against prior work on the Gen1 dataset, we
+train our models with a batch size of 8, sequence length of
+21, and learning rate of 2e-4. The training takes approxi-
+mately 2 days on a single A100 GPU.
+On the 1 Mpx dataset, we train with a batch size of 24,
+
+4.2. Ablation Studies
+
+This section examines the two main contributors to the
+final performance of the proposed model. First, we inves-
+tigate key components and design choices of the proposed
+backbone. Second, we study the influence of different data
+augmentation techniques that are compatible with our se-
+quential problem setting.
+Unless stated otherwise, the ablation studies are per-
+formed on the Gen1 validation set using the best performing
+model after 400k iterations. To reduce the training time, we
+use BPTT with a sequence length of 11 instead 21.
+
+4.2.1
+Model Components
+
+Spatial Interaction
+In Tab. 2, we study different spatial
+aggregation techniques.
+For a fair comparison, we keep
+the LSTM and convolutional downsampling layers identi-
+cal and only exchange the attention and MLP modules. We
+
+Conv. kernel type
+mAP
+AP50
+AP75
+Params (M)
+
+S1
+S2
+S3
+S4
+mAP
+AP50
+AP75
+
+overlapping
+47.6
+70.1
+52.6
+18.5
+non-overlapping
+46.1
+68.6
+50.5
+17.6
+
+32.0
+54.8
+31.4
+✓
+39.8
+63.5
+41.6
+✓
+✓
+44.2
+68.4
+47.5
+✓
+✓
+✓
+46.9
+70.0
+50.8
+✓
+✓
+✓
+✓
+47.6
+70.1
+52.6
+
+Table 3. Downsampling Strategy. The usage of overlapping ker-
+nels leads to higher performance at the expense of a slight increase
+in the number of parameters.
+
+Table 5. LSTM placement. LSTM cells contribute to the overall
+performance even in the early stages.
+
+LSTM kernel size
+mAP
+AP50
+AP75
+Params (M)
+
+1 × 1
+47.6
+70.1
+52.6
+18.5
+3 × 3
+46.5
+69.0
+51.4
+40.8
+3 × 3 depth-sep
+46.3
+67.2
+51.2
+18.6
+
+wise separable Conv-LSTM first applies a depthwise sepa-
+rable convolution on both the input and hidden state before
+a point-wise (1 × 1) convolution is applied. Our results in
+Tab. 4 suggest that plain LSTM cells are sufficient in our
+model and even outperform both variations. This is to some
+degree surprising because both variants are a strict super-
+set of the plain LSTM. We decide to use a plain LSTM cell
+based on these observations.
+
+Table 4. LSTM kernel size. Conv-LSTM variants do not outper-
+form the feature specific (1 × 1) LSTM.
+
+compare multi-axis attention with ConvNext blocks [33]
+and Swin transformer blocks [32]. ConvNext is a convo-
+lutional neural network architecture that has shown com-
+petitive performance with transformer-based models on a
+wide range of tasks, including object detection. We use
+the default kernel size of 7 × 7 as originally suggested
+and place three ConvNeXt blocks in each stage to approx-
+imately match the number of parameters of the reference
+model. Swin, instead, is an attention-based model that ap-
+plies local self-attention in windows that interact with each
+other through cyclic shifting.
+We find that our Swin variant achieves better perfor-
+mance than the ConvNext variant, however, both are outper-
+formed by multi-axis self-attention [50] on both the Gen1
+and 1 Mpx dataset. This experiment suggests that global
+interaction at every stage (multi-axis) is advantageous to
+purely local interaction (Swin, ConvNext).
+
+LSTM Placement
+In this ablation we study the influence
+of using temporal recurrence only in a subset of stages or
+not at all. For all comparisons, we leave the model exactly
+the same but reset the states of the LSTMs at selected stages
+in each timestep. This way, we can simulate the absence
+of recurrent layers while keeping the number of parameters
+constant in the comparisons.
+The results in Tab. 5 suggest that using no recurrence
+at all leads to a drastic decline of detection performance.
+Enabling the LSTMs in each stage, starting from the fourth
+consistently leads to enhanced performance. Surprisingly,
+we find that adding an LSTM to the first stage also leads to
+improvements, albeit the increase in mAP is not large. In
+general, this experiment suggests that the detection frame-
+work benefits from features that have been augmented with
+temporal information. Based on our observations, we de-
+cide to keep the LSTM also in the first stage.
+
+Convolutional Downsampling
+The original vision trans-
+former [12] architecture does not perform local feature in-
+teraction with convolutional layers. Some popular hierar-
+chical counterparts also choose to apply downsample fea-
+tures without overlapping kernels [8, 32]. In Tab. 3, we
+compare overlapping and non-overlapping convolutional
+kernels in both the input layer (patch embedding) and fea-
+ture downsampling stage. While non-overlapping convolu-
+tions reduce the number of parameters, they cause a sub-
+stantial drop in performance.
+Consequently, we choose
+overlapping kernels in all stages of the network.
+
+4.2.2
+Data Augmentation
+
+While data augmentation is not directly related to the model
+itself, it greatly influences the final result as we will illus-
+trate next. Here, we investigate three data augmentation
+techniques that are suitable for object detection on spatio-
+temporal data: Random (1) horizontal flipping, (2) zoom-in,
+and (3) zoom-out.
+Zoom-in augmentation randomly selects crops that con-
+tain at least one full bounding box at the final timestep of
+the BPTT sequence (i.e.
+during training).
+This crop is
+then applied to the rest of the sequence before the crops are
+rescaled to the default resolution. This procedure ensures
+that we have at least a single label to compute the loss func-
+tion while maintaining the same resolution during training.
+
+LSTM with Convolutions
+Prior state-of-the-art ap-
+proaches on object detection with event cameras heavily
+rely on convolutional LSTM cells [26, 38]. We revisit this
+design choice and experiment with plain LSTM cells and a
+depthwise separable Conv-LSTM variant [39]. The depth-
+
+Gen1
+1 Mpx
+
+Method
+Backbone
+Detection Head
+mAP
+Time (ms)
+mAP
+Time (ms)
+Params (M)
+
+NVS-S [27]
+GNN
+YOLOv1 [40]
+8.6
+-
+-
+-
+0.9
+Asynet [34]
+Sparse CNN
+YOLOv1
+14.5
+-
+-
+-
+11.4
+AEGNN [43]
+GNN
+YOLOv1
+16.3
+-
+-
+-
+20.0
+Spiking DenseNet [10]
+SNN
+SSD [30]
+18.9
+-
+-
+-
+8.2
+Inception + SSD [19]
+CNN
+SSD
+30.1
+19.4
+34.0
+45.2
+> 60*
+RRC-Events [7]
+CNN
+YOLOv3 [41]
+30.7
+21.5
+34.3
+46.4
+> 100*
+MatrixLSTM [6]
+RNN + CNN
+YOLOv3
+31.0
+-
+-
+-
+61.5
+YOLOv3 Events [20]
+CNN
+YOLOv3
+31.2
+22.3
+34.6
+49.4
+> 60*
+RED [38]
+CNN + RNN
+SSD
+40.0
+16.7
+43.0
+39.3
+24.1
+ASTMNet [26]
+(T)CNN + RNN
+SSD
+46.7
+35.6
+48.3
+72.3
+> 100*
+RVT-B (ours)
+Transformer + RNN
+YOLOX [15]
+47.2
+10.2 (3.7)
+47.4
+11.9 (6.1)
+18.5
+
+RVT-S (ours)
+Transformer + RNN
+YOLOX
+46.5
+9.5 (3.0)
+44.1
+10.1 (5.0)
+9.9
+RVT-T (ours)
+Transformer + RNN
+YOLOX
+44.1
+9.4 (2.3)
+41.5
+9.5 (3.5)
+4.4
+
+Table 6. Comparisons on test sets of Gen1 and 1 Mpx datasets. Best results in bold and second best underlined. Brackets (·) in runtime
+indicate the inference time with JIT-compiled code using torch.compile. A star ∗suggests that this information was not directly
+available and estimated based on the publications. Runtime is measured in milliseconds for a batch size of 1. We used a T4 GPU for RVT
+to compare against indicated timings in prior work [26,38] on comparable GPUs (Titan Xp).
+
+imately 18.5 million parameters, a small variant (RVT-S)
+with 9.9 million parameters, and a tiny model (RVT-T) with
+4.4 million parameters by adapting the channel dimensions
+in each stage. Their architectural hyperparameters are out-
+lined in Tab. 1. To compare with prior work, we choose the
+models based on their best performance on the validation
+set and evaluate them on the test set.
+From Tab. 6 we can draw multiple conclusions. First, we
+observe that models using recurrent layers consistently out-
+perform other approaches, both sparse (GNNs, SNNs) and
+dense feed-forward models without recurrent layers (Incep-
+tion+SSD, RRC-Events, YOLOv3 Events) by an mAP of
+more than 10 on both datasets. One notable exception is
+MatrixLSTM [6] which applies LSTM cells directly at the
+input. In contrast, RED [38] and ASTMNet [26] employ
+recurrent layers only in deeper layers.
+Our base model achieves a new state-of-the-art perfor-
+mance of 47.2 mAP on the Gen1 dataset and 47.4 mAP on
+the 1 Mpx dataset. ASTMNet claims comparable results on
+both datasets albeit at the cost of using a much larger back-
+bone and increased inference time. The RED model, also
+reports favorable results, but achieves 7.2 lower mAP on the
+Gen1 and 4.4 lower mAP on the 1 Mpx dataset compared
+to our model. Finally, our tiny model is amongst the small-
+est in our comparison. Still, it achieves 4.1 higher mAP on
+the Gen1 dataset than the RED model while using 5 times
+fewer parameters.
+
+h-flip
+zoom-in
+zoom-out
+mAP
+AP50
+AP75
+
+38.1
+59.5
+41.1
+✓
+41.6
+63.5
+45.5
+✓
+45.8
+67.8
+49.8
+✓
+44.1
+65.7
+48.4
+✓
+✓
+✓
+47.6
+70.1
+52.6
+
+Table 7. Data Augmentation. Data augmentation consistently
+improves the results.
+
+Zoom-out augmentation resizes the full input to a lower
+resolution and randomly places the downscaled input in a
+zero-tensor initialized at the default resolution. This pro-
+cedure is then applied in an identical way to the remaining
+BPTT sequence.
+Table 7 shows that our model is performing poorly if no
+data augmentation is applied. Overall, we find that data aug-
+mentation is important to combat overfittig not only on the
+Gen1 sequence but also on the 1 Mpx dataset. The most ef-
+fective augmentation is zoom-in, followed by zoom-out and
+horizontal flipping. Based on these results, we decide to ap-
+ply all data augmentation techniques. We report the specific
+hyperparameters in the supplementary material.
+
+4.3. Benchmark Comparisons
+
+In this section, we compare our proposed neural network
+architecture against prior work on both the Gen1 [11] and
+1 Mpx dataset [38] and summarize the results in Tab. 6.
+We train three models, a base model (RVT-B) with approx-
+
+Inference Time
+We also compute the inference time of
+our model on a T4 GPU with a batch size of 1. Unfortu-
+
+Figure 4. Predictions on the 1 Mpx dataset. All examples are thematically picked to illustrate the behaviour of the model in different
+scenarios. (d) shows a scenario in which the model can still partially detect objects in absence of events due the temporal memory.
+
+research problem that we have not addressed in this work.
+Our approach currently only uses event streams to de-
+tect objects. Frames yield complementary information that,
+when properly incorporated, will yield significantly en-
+hanced detection performance. For example, in Fig. 4 (d)
+we can see that our model can retain information over some
+period when no events are available. Still, the memory of
+the network will fade and detection performance deterio-
+rates. High quality frames even at low frame-rate could
+provide the missing complementary information. Hence,
+we believe that a multi-modal extension of our method on a
+suitable dataset [17,25] is a promising next step.
+
+nately, both RED and ASTMNet are not open source such
+that we cannot directly compare inference time on the same
+GPU model. Instead, we use the timings provided by the
+authors that conducted their timing experiments on compa-
+rable GPUs (e.g. Titan Xp). We report the timing results of
+our models in Tab. 6 and also visualize them in Fig. 1.
+To compare against prior work we first compute the in-
+ference time in PyTorch eager mode. In eager mode, our
+base model achieves an inference time of 10.2 milliseconds
+(ms) on the Gen1 dataset (304 × 240 resolution). This im-
+plies a latency reduction of 6 ms compared to RED and over
+3 times lower inference time than ASTMNet. On the the 1
+Mpx dataset, at a resolution of 640 × 360, our base model
+takes 11.9 ms for a forward pass, which is 3 times faster
+than RED and over 5 times faster than ASTMNet.
+Even on a T4 GPU, most of the inference time is frame-
+work overhead. To overcome this partially, we use the JIT
+compilation feature torch.compile of PyTorch 2 [37].
+As Tab. 6 shows, this almost halves the inference time for
+RVT-B on the 1 Mpx dataset and reduces the inference time
+by a factor of 2.7 on the Gen1 dataset. As expected, the
+small and tiny models benefit even more from JIT compila-
+tion. For example, RVT-T only takes 2.3 ms for a forward
+pass on Gen1 and 3.5 ms on 1 Mpx. On a RTX 3090 GPU,
+RVT-B completes a forward pass in 2.8 ms on the 1 Mpx
+dataset, which shows the potential for low-latency inference
+if power consumption is less of a concern.
+
+6. Conclusion
+
+We introduced a novel backbone architecture for object
+detection with event cameras. The architecture consists of
+a stage design that is repeatedly applied to create a multi-
+stage hierarchical neural network. Each stage compactly
+incorporates convolutional priors, local- and sparse global
+attention and recurrent feature aggregation.
+Our experi-
+ments highlight that recurrent vision transformers can be
+trained from scratch to reach state-of-the-art performance in
+object detection with event cameras. The resulting canon-
+ical stage-design is directly compatible with existing de-
+tection frameworks, and paves the way to low-latency ob-
+ject detection with event cameras on conventional hardware.
+Nonetheless, we hope that this work also inspires novel de-
+signs in future neuromorphic systems.
+
+5. Discussion and Limitations
+
+7. Acknowledgment
+
+We use a very simple event representation which does
+not leverage the full potential of event-based data. For ex-
+ample, we only have a weak prior on the order of events be-
+cause we process the temporal dimension directly with fully
+connected layers. Recent work has shown substantial gains
+by introducing temporal convolutions in early layers [26].
+Efficient low-level processing of event data is still an open
+
+This work was supported by the National Centre of
+Competence in Research (NCCR) Robotics (grant agree-
+ment No.
+51NF40-185543) through the Swiss National
+Science Foundation (SNSF), and the European Research
+Council (ERC) under grant agreement No. 864042 (AG-
+ILEFLIGHT).
+
+References
+
+[16] Daniel Gehrig, Antonio Loquercio, Konstantinos G. Derpa-
+nis, and Davide Scaramuzza. End-to-end learning of repre-
+sentations for asynchronous event-based data. In Int. Conf.
+Comput. Vis. (ICCV), 2019.
+[17] Mathias Gehrig, Willem Aarents, Daniel Gehrig, and Davide
+Scaramuzza. Dsec: A stereo event camera dataset for driving
+scenarios. IEEE Robot. Autom. Lett., 2021.
+[18] Sepp Hochreiter and J¨urgen Schmidhuber. Long short-term
+memory. Neural Computation, 1997.
+[19] Massimiliano Iacono, Stefan Weber, Arren Glover, and
+Chiara Bartolozzi.
+Towards event-driven object detection
+with off-the-shelf deep learning. In IEEE/RSJ Int. Conf. In-
+tell. Robot. Syst. (IROS), 2018.
+[20] Zhuangyi Jiang, Pengfei Xia, Kai Huang, Walter Stechele,
+Guang Chen, Zhenshan Bing, and Alois Knoll. Mixed frame-
+/event-driven fast pedestrian detection. In IEEE Int. Conf.
+Robot. Autom. (ICRA), 2019.
+[21] Diederik P. Kingma and Jimmy L. Ba. Adam: A method for
+stochastic optimization. Int. Conf. Learn. Representations
+(ICLR), 2015.
+[22] Chankyu Lee, Syed Shakib Sarwar, Priyadarshini Panda,
+Gopalakrishnan Srinivasan, and Kaushik Roy.
+Enabling
+spike-based backpropagation for training deep neural net-
+work architectures. Front. Neurosci., 2020.
+[23] Jun Haeng Lee, Tobi Delbruck, and Michael Pfeiffer. Train-
+ing deep spiking neural networks using backpropagation.
+Front. Neurosci., 2016.
+[24] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton.
+Layer normalization. arXiv e-prints, 2016.
+[25] Jianing Li, Siwei Dong, Zhaofei Yu, Yonghong Tian, and
+Tiejun Huang. Event-based vision enhanced: A joint detec-
+tion framework in autonomous driving. In 2019 IEEE Inter-
+national Conference on Multimedia and Expo (ICME), 2019.
+[26] Jianing Li, Jia Li, Lin Zhu, Xijie Xiang, Tiejun Huang, and
+Yonghong Tian. Asynchronous spatio-temporal memory net-
+work for continuous event-based object detection.
+IEEE
+Trans. Image Process., 2022.
+[27] Yijin Li, Han Zhou, Bangbang Yang, Ye Zhang, Zhaopeng
+Cui, Hujun Bao, and Guofeng Zhang. Graph-based asyn-
+chronous event processing for rapid object recognition. In
+Int. Conf. Comput. Vis. (ICCV), October 2021.
+[28] Zhengqi Li, Simon Niklaus, Noah Snavely, and Oliver Wang.
+Neural scene flow fields for space-time view synthesis of dy-
+namic scenes. In IEEE Conf. Comput. Vis. Pattern Recog.
+(CVPR), 2021.
+[29] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll´ar, and C. Lawrence
+Zitnick. Microsoft COCO: Common objects in context. In
+Eur. Conf. Comput. Vis. (ECCV), pages 740–755. 2014.
+[30] Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian
+Szegedy, Scott Reed, Cheng-Yang Fu, and Alexander C.
+Berg. SSD: Single shot MultiBox detector. In Eur. Conf.
+Comput. Vis. (ECCV), 2016.
+[31] Xu Liu, Jianing Li, Xiaopeng Fan, and Yonghong Tian.
+Event-based monocular dense depth estimation with recur-
+rent transformers. arXiv e-prints, 2022.
+
+[1] Anurag Arnab, Mostafa Dehghani, Georg Heigold, Chen
+Sun, Mario Luˇci´c, and Cordelia Schmid. Vivit: A video vi-
+sion transformer. In Int. Conf. Comput. Vis. (ICCV), 2021.
+[2] Raymond Baldwin, Ruixu Liu, Mohammed Mutlaq Alma-
+trafi, Vijayan K Asari, and Keigo Hirakawa. Time-ordered
+recent event (TORE) volumes for event cameras.
+IEEE
+Trans. Pattern Anal. Mach. Intell., 2022.
+[3] Sami Barchid, Jose Mennesson, and Chaabane Djeraba.
+Bina-rep event frames: A simple and effective representation
+for event-based cameras. In IEEE Int. Conf. Image Process.
+(ICIP), 2022.
+[4] Guillaume Bellec, Franz Scherr, Anand Subramoney, Elias
+Hajek, Darjan Salaj, Robert Legenstein, and Wolfgang
+Maass. A solution to the learning dilemma for recurrent net-
+works of spiking neurons. Nature Communications, 2020.
+[5] Gedas Bertasius, Heng Wang, and Lorenzo Torresani.
+Is
+space-time attention all you need for video understanding?
+In Proc. Int. Conf. Mach. Learning (ICML), 2021.
+[6] Marco Cannici, Marco Ciccone, Andrea Romanoni, and
+Matteo Matteucci. Asynchronous convolutional networks for
+object detection in neuromorphic cameras. In IEEE Conf.
+Comput. Vis. Pattern Recog. Workshops (CVPRW), 2019.
+[7] Nicholas F. Y. Chen.
+Pseudo-labels for supervised learn-
+ing on dynamic vision sensor data, applied to object detec-
+tion under ego-motion. In IEEE Conf. Comput. Vis. Pattern
+Recog. Workshops (CVPRW), 2018.
+[8] Xiangxiang Chu, Zhi Tian, Yuqing Wang, Bo Zhang, Haib-
+ing Ren, Xiaolin Wei, Huaxia Xia, and Chunhua Shen.
+Twins: Revisiting the design of spatial attention in vision
+transformers. In Conf. Neural Inf. Process. Syst. (NeurIPS),
+2021.
+[9] Xiangxiang Chu, Zhi Tian, Bo Zhang, Xinlong Wang, Xi-
+aolin Wei, Huaxia Xia, and Chunhua Shen. Conditional po-
+sitional encodings for vision transformers, 2021.
+[10] Lo¨ıc Cordone, Benoˆıt Miramond, and Philippe Thierion. Ob-
+ject detection with spiking neural networks on automotive
+event data. In Int. Joint Conf. Neural Netw. (IJCNN), 2022.
+[11] Pierre de Tournemire, Davide Nitti, Etienne Perot, Davide
+Migliore, and Amos Sironi. A large scale event-based detec-
+tion dataset for automotive, 2020.
+[12] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is
+worth 16x16 words: Transformers for image recognition at
+scale. In Int. Conf. Learn. Representations (ICLR), 2021.
+[13] Christoph Feichtenhofer, Haoqi Fan, Yanghao Li, and Kaim-
+ing He.
+Masked autoencoders as spatiotemporal learners.
+arXiv e-prints, 2022.
+[14] Guillermo Gallego, Tobi Delbruck, Garrick Orchard, Chiara
+Bartolozzi, Brian Taba, Andrea Censi, Stefan Leutenegger,
+Andrew Davison, J¨org Conradt, Kostas Daniilidis, and Da-
+vide Scaramuzza.
+Event-based vision: A survey.
+IEEE
+Trans. Pattern Anal. Mach. Intell., 2020.
+[15] Zheng Ge, Songtao Liu, Feng Wang, Zeming Li, and Jian
+Sun. Yolox: Exceeding yolo series in 2021, 2021.
+
+[46] Leslie N. Smith and Nicholay Topin.
+Super-convergence:
+Very fast training of neural networks using large learning
+rates, 2017.
+[47] Aboozar
+Taherkhani,
+Ammar
+Belatreche,
+Yuhua
+Li,
+Georgina Cosma, Liam P. Maguire, and T.M. McGinnity. A
+review of learning in biologically plausible spiking neural
+networks. Neural Netw., 2020.
+[48] Zhan Tong, Yibing Song, Jue Wang, and Limin Wang.
+VideoMAE: Masked autoencoders are data-efficient learners
+for self-supervised video pre-training. In Conf. Neural Inf.
+Process. Syst. (NeurIPS), 2022.
+[49] Hugo Touvron, Matthieu Cord, Alexandre Sablayrolles,
+Gabriel Synnaeve, and Herv´e J´egou. Going deeper with im-
+age transformers. In Int. Conf. Comput. Vis. (ICCV), 2021.
+[50] Zhengzhong Tu, Hossein Talebi, Han Zhang, Feng Yang,
+Peyman Milanfar, Alan Bovik, and Yinxiao Li. MaxViT:
+Multi-axis vision transformer.
+In Eur. Conf. Comput. Vis.
+(ECCV), 2022.
+[51] Stepan Tulyakov, Francois Fleuret, Martin Kiefel, Peter
+Gehler, and Michael Hirsch.
+Learning an event sequence
+embedding for dense event-based deep stereo. In Int. Conf.
+Comput. Vis. (ICCV), October 2019.
+[52] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Il-
+lia Polosukhin.
+Attention is all you need.
+In I. Guyon,
+U. Von Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vish-
+wanathan, and R. Garnett, editors, Conf. Neural Inf. Process.
+Syst. (NeurIPS), 2017.
+[53] Zuowen Wang, Yuhuang Hu, and Shih-Chii Liu. Exploiting
+spatial sparsity for event cameras with visual transformers.
+In IEEE Int. Conf. Image Process. (ICIP), 2022.
+[54] Wenming Weng, Yueyi Zhang, and Zhiwei Xiong. Event-
+based video reconstruction using transformer. In Int. Conf.
+Comput. Vis. (ICCV), 2021.
+[55] Man Yao, Huanhuan Gao, Guangshe Zhao, Dingheng Wang,
+Yihan Lin, Zhaoxu Yang, and Guoqi Li. Temporal-wise at-
+tention spiking neural networks for event streams classifica-
+tion. Int. Conf. Comput. Vis. (ICCV), 2021.
+[56] Friedemann Zenke and Surya Ganguli. SuperSpike: Super-
+vised learning in multilayer spiking neural networks. Neural
+Computation, 2018.
+[57] Jiqing Zhang, Bo Dong, Haiwei Zhang, Jianchuan Ding, Fe-
+lix Heide, Baocai Yin, and Xin Yang. Spiking transformers
+for event-based single object tracking. In IEEE Conf. Com-
+put. Vis. Pattern Recog. (CVPR), 2022.
+[58] Alex Zihao Zhu, Liangzhe Yuan, Kenneth Chaney, and
+Kostas Daniilidis. Unsupervised event-based learning of op-
+tical flow, depth, and egomotion. In IEEE Conf. Comput. Vis.
+Pattern Recog. (CVPR), 2019.
+
+[32] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng
+Zhang, Stephen Lin, and Baining Guo. Swin transformer:
+Hierarchical vision transformer using shifted windows. In
+Int. Conf. Comput. Vis. (ICCV), 2021.
+[33] Zhuang Liu, Hanzi Mao, Chao-Yuan Wu, Christoph Feicht-
+enhofer, Trevor Darrell, and Saining Xie. A convnet for the
+2020s.
+IEEE Conf. Comput. Vis. Pattern Recog. (CVPR),
+2022.
+[34] Nico Messikommer, Daniel Gehrig, Antonio Loquercio, and
+Davide Scaramuzza. Event-based asynchronous sparse con-
+volutional networks.
+In Eur. Conf. Comput. Vis. (ECCV),
+2020.
+[35] Anton Mitrokhin, Zhiyuan Hua, Cornelia Fermuller, and
+Yiannis Aloimonos. Learning visual motion segmentation
+using event surfaces. In IEEE Conf. Comput. Vis. Pattern
+Recog. (CVPR), June 2020.
+[36] Emre O. Neftci, Hesham Mostafa, and Friedemann Zenke.
+Surrogate gradient learning in spiking neural networks:
+Bringing the power of gradient-based optimization to spiking
+neural networks. IEEE Signal Processing Magazine, 2019.
+[37] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer,
+James Bradbury, Gregory Chanan, Trevor Killeen, Zeming
+Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison,
+Andreas Kopf, Edward Yang, Zachary DeVito, Martin Rai-
+son, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner,
+Lu Fang, Junjie Bai, and Soumith Chintala. Pytorch: An
+imperative style, high-performance deep learning library. In
+Conf. Neural Inf. Process. Syst. (NeurIPS), 2019.
+[38] Etienne Perot, Pierre de Tournemire, Davide Nitti, Jonathan
+Masci, and Amos Sironi. Learning to detect objects with a
+1 megapixel event camera. In H. Larochelle, M. Ranzato, R.
+Hadsell, M.F. Balcan, and H. Lin, editors, Conf. Neural Inf.
+Process. Syst. (NeurIPS), 2020.
+[39] Andreas Pfeuffer and Klaus Dietmayer. Separable convolu-
+tional LSTMs for faster video segmentation. In IEEE Intel-
+ligent Transportation Systems Conference (ITSC), 2019.
+[40] Joseph Redmon, Santosh Divvala, Ross Girshick, and Ali
+Farhadi. You only look once: Unified, real-time object de-
+tection. In IEEE Conf. Comput. Vis. Pattern Recog. (CVPR),
+2016.
+[41] Joseph Redmon and Ali Farhadi. Yolov3: An incremental
+improvement, 2018.
+[42] Alberto Sabater, Luis Montesano, and Ana C. Murillo. Event
+transformer. a sparse-aware solution for efficient event data
+processing.
+In IEEE Conf. Comput. Vis. Pattern Recog.
+Workshops (CVPRW), 2022.
+[43] Simon Schaefer, Daniel Gehrig, and Davide Scaramuzza.
+Aegnn: Asynchronous event-based graph neural networks.
+In IEEE Conf. Comput. Vis. Pattern Recog. (CVPR), 2022.
+[44] Xingjian Shi, Zhourong Chen, Hao Wang, Dit-Yan Yeung,
+Wai-Kin Wong, and Wang-chun Woo. Convolutional LSTM
+network:
+A machine learning approach for precipitation
+nowcasting. In Conf. Neural Inf. Process. Syst. (NeurIPS),
+2015.
+[45] Sumit Bam Shrestha and Garrick Orchard. SLAYER: Spike
+layer error reassignment in time. In Conf. Neural Inf. Pro-
+cess. Syst. (NeurIPS), 2018.
+
+Supplementary Material
+
+1. Relationship to Temporal Graph Neural
+Networks (TGNNs)
+
+Dataloading Strategy
+mAP
+AP50
+AP75
+
+arXiv:2212.05598v3 [cs.CV] 25 May 2023
+
+BPTT
+38.8
+66.0
+39.5
+TBPTT
+44.1
+72.0
+46.1
+Mixed
+46.0
+72.3
+49.4
+
+The RVT backbone can be understood as an instance of a
+discrete-time dynamic graph (DTDG) (section 4.6.1 in [4]).
+A DTDG can be derived from continuous-time dynamic
+graph (CTDG) by discretizing time.
+More specifically, the proposed RVT backbone is an in-
+stance of a DTDG with a fixed number of persistent tem-
+poral nodes (given a certain input resolution). In our hi-
+erarchy, we have four layers of nodes with temporal his-
+tory (LSTMs in each stage). From here on, there are two
+different interpretations: (1) The layers up to the LSTMs
+are a carefully crafted message-passing algorithm interact-
+ing directly with the nodes from the previous LSTM nodes
+closer to the input; or (2) the strided conv layer creates a
+smaller set of nodes. Block-SA subsequently operates on
+these nodes by creating a new set of edges (fully graphs con-
+nected in local windows) before applying message-passing
+via self-attention. The same principle applies to Grid-SA
+which instead creates fully connected graphs in a global di-
+lated grid. The resulting node features are directly used as
+input to the temporal nodes (LSTM) that also use the states
+from the previous timestamp to update the node features.
+Not every DTDG nor CTDG performs well for event-
+based vision. In our work, we constrain the design specif-
+ically for the problem to get a better trade-off for task per-
+formance and inference speed.
+
+Table 1. Dataloading Strategy. Combining BPTT and TBPTT
+(Mixed) yields the best results on the 1 Mpx validation set.
+
+quences. One possible solution to this problem is training
+with TBPTT.
+
+TBPTT Dataloading
+For TBPTT, the dataloader again
+extracts short sequences. This time, these short sequences
+are consecutive sequences from a longer sequences that usu-
+ally cannot be loaded into RAM. Now we can train the
+model with initialized, detached hidden states from the pre-
+vious optimization step. This allows the model to generalize
+to longer sequences but also precludes some data augmenta-
+tion techniques. For example, zoom-in augmentation on the
+whole sequence becomes impractical because we could re-
+move too many labels in the process. Finally, it can also lead
+to training instabilities and overfitting because the model is
+optimized on samples from the same sequences for many
+training steps.
+
+Mixing BPTT and TBPTT
+What we found to work best
+is to create two dataloaders: First, a dataloader that ran-
+domly samples short sequences from the dataset. This is
+useful for training with BPTT and improves the diversity of
+samples in the batch. This dataloader also applies the full
+set of data augmentations. Second, a dataloader that col-
+lates data from iterating through whole sequences. This dat-
+aloader is used for training with TBPTT and improves the
+capability of the model to generalize to sequences longer
+than the training sequence length. In this case, we do not
+apply zoom-in augmentation.
+Table 1 compares the performance of the RVT-B model
+on the validation set of the 1 Mpx dataset using the different
+dataloading strategies. The performance of BPTT can be
+improved by increasing the sequence length at the cost of
+increased memory consumption and training time. Instead,
+the mixed dataloading strategy allows training with a short
+
+2. Data Pipeline
+
+2.1. Mixed Batching Strategy
+
+Two common ways of training recurrent neural networks
+is using either backpropagation through time (BPTT) or
+truncated BPTT (TBPTT). This section describes a strategy
+that combines both.
+
+BPTT Dataloading
+For BPTT, the dataloader typically
+samples short sequences without replacement from the
+dataset. As a consequence, the model cannot use an ini-
+tialized hidden state from earlier parts of the full sequence.
+This has the advantage that we can perform more aggres-
+sive data augmentation during training. However, the down-
+side is that the model will fail to generalize to longer se-
+
+Magnitude
+
+LSTM residual
+mAP
+AP50
+AP75
+
+without residual
+47.6
+70.1
+52.6
+with residual
+46.0
+69.8
+50.3
+
+Augmentation
+Probability
+min
+max
+
+horizontal flip
+0.5
+apply zoom
+0.8
+zoom-in
+0.8
+1
+1.5
+zoom-out
+1-P(zoom-in)
+1
+1.2
+
+Table 3. LSTM with and without residual connection. Using a
+skip connection over the LSTM cells leads to worse results on the
+Gen1 validation set.
+
+Table 2. Data Augmentation Parameters. The probability de-
+fines the Bernoulli distribution from which we draw the decision
+whether to apply this augmentation on a given sample.
+
+ond, we follow with a qualitative study of cross-dataset gen-
+eralization using our model trained on the 1 Mpx dataset.
+
+4.1. Residual LSTM Ablation
+
+sequence length (here 5) while enjoying stable training with
+improved detection performance.
+In practice, on each GPU, half of the batch is cre-
+ated with the BPTT dataloader and the other half with the
+TBPTT dataloader. Both batches are separately loaded onto
+the GPU before being collated and fed to the model. The
+model then dynamically resets the hidden states based on
+the information whether each sample in the batch originates
+from the BPTT or TBPTT dataloader.
+
+Our
+model
+employs
+LSTM
+cells
+[3]
+without
+skip/residual connections in the model.
+We also ex-
+perimented with adding skip connections to the LSTM
+cells on the Gen1 [1] dataset. Table 3 shows that adding
+a residual connection to the LSTM cells leads to worse
+results.
+We hypothesize that this residual connection
+hampers the LSTM’s ability to control the mixture of
+incoming (current timestep) and retained temporal features
+(previous timesteps).
+For example, it would be difficult
+for the residual-LSTM combination to ignore the incoming
+feature because the output of the LSTM is simply added to
+this feature. Without the residual connection, the LSTM
+could set the input gate to 0 to ignore the input.
+
+2.2. Data Augmentation Details
+
+We apply three data augmentation techniques to train our
+models from scratch. Table 2 summarizes the probability of
+each augmentation being used on an individual sample.
+For each sample, we may apply horizontal flipping and
+also apply a zoom augmentation subsequently.
+For the
+zoom augmentation we draw from a Bernoulli distribution
+to indicate whether we apply the augmentation at all. If
+zoom augmentation shall be applied, we randomly choose
+between zoom-in or zoom-out augmentation based on the
+respective probability. For the zoom augmentations, there
+is also the parameter that defines the magnitude with which
+the augmentation is applied. A magnitude of 1 means that
+no zoom is applied while a magnitude greater than 1 in-
+dicates how strongly zoom-in or zoom-out is applied with
+respect to the original resolution. The magnitude that we fi-
+nally apply is drawn from a continuous uniform distribution
+with bounds min and max.
+
+4.2. Cross-Dataset Generalization: From 1 Mpx to
+DSEC
+
+DSEC is a dataset that features event cameras and global
+shutter cameras close to each other.
+Unlike the 1 Mpx
+dataset [5] which was recorded mostly urban scenarios in
+Paris, DSEC [2] provides recordings from urban and rural
+regions in Switzerland. Furthermore, the event camera used
+in the DSEC dataset is a Gen 3 prophesee event camera in-
+stead of a Gen 4 camera as in the 1 Mpx dataset. In this
+section, we qualitatively show that our model can be suc-
+cessfully deployed in a different environment and using dif-
+ferent event cameras.
+We deploy RVT-B, trained on the 1 Mpx dataset , on sev-
+eral sequences of the DSEC dataset to qualitatively assess
+the cross-dataset generalization. While DSEC does not yet
+provide object detection labels, we can visually assess the
+quality of the detections by using the provided calibration
+files to map the frames of the global shutter camera to the
+event camera view.
+Figure 1 and 2 show predictions of our model together
+with the images closest in time to the detections. Figure 1
+shows our model can successfully detect cars in mountain-
+ous environments. In particular, Figure 1 (a) shows an HDR
+scene where the global shutter frame is overexposed such
+that the approaching car is barely visible. Due to the high
+dynamic range of the event camera, our model can detect
+
+3. Additional Model Details
+
+The attention window size for all stages is set to 8 × 10
+for the Gen1 dataset and 6×10 for the 1 Mpx dataset. Con-
+sequently, the fourth stage employs global self-attention on
+the Gen1 dataset, whereas it utilizes four windows at the
+same stage for the 1 Mpx dataset.
+
+4. Additional Experiments
+
+This section provides two additional experiments that did
+not fit into the main paper. First, we briefly discuss an abla-
+tion on the possibility of using residual LSTM layers. Sec-
+
+the approaching car without any difficulty. Figure 2 features
+more urban environments where our model also manages to
+detect objects correctly.
+
+megapixel-event-based-dataset/
+
+DSEC [2]
+“Creative Commons Attribution-ShareAlike
+4.0 International public license (CC BY-SA 4.0)”:
+//dsec.ifi.uzh.ch/
+
+Discussion of Failure Cases
+By and large, our model can
+successfully detect objects on DSEC even though it has only
+been trained on the 1 Mpx dataset. Still, we found failure
+cases that might stem from distribution shift between the
+datasets. For example, Figure 2 (c) shows the erroneous de-
+tection of a two-wheeler that instead is a pillar on the street.
+Overall, the model is good at detecting cars but is less
+confident and accurate at detecting two-wheelers and pedes-
+trians. This effect likely stems from the fact that the 1 Mpx
+dataset has almost twice as many car labels as pedestrian
+and two-wheeler labels combined.
+
+References
+
+[1] Pierre de Tournemire, Davide Nitti, Etienne Perot, Davide
+Migliore, and Amos Sironi. A large scale event-based detec-
+tion dataset for automotive, 2020.
+[2] Mathias Gehrig, Willem Aarents, Daniel Gehrig, and Davide
+Scaramuzza. Dsec: A stereo event camera dataset for driving
+scenarios. IEEE Robot. Autom. Lett., 2021.
+[3] Sepp Hochreiter and J¨urgen Schmidhuber. Long short-term
+memory. Neural Computation, 1997.
+[4] Seyed Mehran Kazemi, Rishab Goel, Kshitij Jain, Ivan
+Kobyzev, Akshay Sethi, Peter Forsyth, and Pascal Poupart.
+Representation learning for dynamic graphs: A survey.
+J.
+Mach. Learning Research (JMLR), 2020.
+[5] Etienne Perot, Pierre de Tournemire, Davide Nitti, Jonathan
+Masci, and Amos Sironi. Learning to detect objects with a
+1 megapixel event camera. In H. Larochelle, M. Ranzato, R.
+Hadsell, M.F. Balcan, and H. Lin, editors, Conf. Neural Inf.
+Process. Syst. (NeurIPS), 2020.
+
+5. Dataset Licenses
+
+Gen1
+[1]
+“Prophesee
+Gen1
+Automotive
+Detection
+Dataset License Terms and Conditions”:
+prophesee.ai/2020/01/24/prophesee-gen1-
+automotive-detection-dataset/
+
+1 Mpx [5]
+“Prophesee 1MegaPixel Automotive Detec-
+tion Dataset License Terms and Conditions”:
+
+(a)
+(b)
+(c)
+
+Figure 1. Prediction examples on the DSEC dataset featuring a mountainous environment. Frames are shown only for visualization
+purposes and are not used by the model. Column (a) shows a typical high-dynamic range (HDR) scenario where the vehicle is exiting
+a tunnel with a car approaching from outside the tunnel. The HDR capabilities of the event cameras enables our model to detect the
+approaching car. Column (b) shows a scenario with a wet road and challenging reflections.
+
+(a)
+(b)
+(c)
+
+Figure 2. Prediction examples on the DSEC dataset featuring a (sub-)urban environments. Frames are shown only for visualization
+purposes and are not used by the model. Column (a) illustrates a typical urban situation where pedestrians, two-wheelers, cars and other
+road users occupy the street simultaneously. In column (c), we show a failure case of our model where a street pillar is erroneously detected
+and classified as a two-wheeler.

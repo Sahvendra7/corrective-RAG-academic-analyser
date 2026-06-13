@@ -1,0 +1,1137 @@
+YOLO-NAS-Bench: A Surrogate Benchmark with Self-Evolving Predictors for
+YOLO Architecture Search
+
+Zhe Li
+Xiaoyu Ding
+Jiaxin Zheng
+Yongtao Wang *
+Wangxuan Institute of Computer Technology, Peking University
+
+arXiv:2603.09405v2 [cs.CV] 18 May 2026
+
+Abstract
+
+33
+
+Neural Architecture Search (NAS) for object detection is
+severely bottlenecked by high evaluation cost, as fully train-
+ing each candidate YOLO architecture on COCO demands
+days of GPU time. Meanwhile, existing NAS benchmarks
+largely target image classification, leaving the detection
+community without a comparable benchmark for NAS eval-
+uation.
+To address this gap, we introduce YOLO-NAS-
+Bench, the first surrogate benchmark tailored to YOLO-
+style detectors. YOLO-NAS-Bench defines a search space
+spanning channel width, block depth, and operator type
+across both backbone and neck, covering the core mod-
+ules of YOLOv8 through YOLO12. We sample 1,000 ar-
+chitectures via random, stratified, and Latin Hypercube
+strategies, train them on COCO-mini, and build a Light-
+GBM surrogate predictor. To sharpen the predictor in the
+high-performance regime most relevant to NAS, we propose
+a Self-Evolving Mechanism that progressively aligns the
+predictor’s training distribution with the high-performance
+frontier, by using the predictor itself to discover and evalu-
+ate informative architectures in each iteration. This method
+grows the pool to 1,500 architectures and raises the ensem-
+ble predictor’s R2 from 0.770 to 0.815 and Sparse Kendall
+Tau from 0.694 to 0.752, demonstrating strong predictive
+accuracy and ranking consistency.
+Using the final pre-
+dictor as the fitness function for evolutionary search, we
+discover architectures that surpass all official YOLOv8–
+YOLO12 baselines at comparable latency on COCO-mini,
+confirming the predictor’s discriminative power for top-
+performing detection architectures. The code is available
+at
+Bench.
+
+32
+
+COCO-mini mAP50
+95
+val
+(%)
+
+31
+
+30
+
+29
+
+28
+
+27
+
+YOLOv8
+YOLOv9
+YOLOv10
+
+YOLO11
+YOLO12
+Ours
+
+26
+
+10
+20
+30
+40
+50
+Latency P40 (ms/img)
+
+Figure 1. Latency vs. mAP on COCO-mini. Architectures dis-
+covered by our predictor-guided EA search consistently Pareto-
+dominate all official YOLO baselines (v8–v12) across the full la-
+tency spectrum, demonstrating the strong discriminative power of
+the YOLO-NAS-Bench surrogate predictor.
+
+age classifiers [17, 19, 28]. However, extending NAS to
+object detection remains expensive: detection models are
+much larger, datasets such as COCO [16] require far more
+compute per training run, and the complete search space
+needs to jointly consider backbone, neck, and head com-
+ponents. Fully training a single YOLO-family architecture
+on COCO can take days on a multi-GPU cluster. Evaluat-
+ing thousands of candidates—as NAS algorithms typically
+demand—thus becomes infeasible.
+
+NAS benchmarks significantly accelerate research in the
+classification domain by providing precomputed look-up ta-
+bles or surrogate predictors, thereby decoupling NAS algo-
+rithm development from the expensive architecture evalu-
+ation loop and offering a unified benchmark for fair com-
+parison.
+NAS-Bench-101 [24] and NAS-Bench-201 [6]
+offer tabular benchmarks with exhaustive evaluation of
+small cell-based search spaces.
+NAS-Bench-301 [25]
+scales to the full DARTS space via a surrogate predic-
+tor. Yet all these benchmarks target image classification—
+their search spaces, training pipelines, and evaluation pro-
+
+1. Introduction
+
+Neural Architecture Search (NAS) demonstrates notable
+success in automating the design of high-performing im-
+
+*Corresponding author.
+
+re-parameterized blocks and C2PSA attention modules.
+YOLO12 [20] adopts an attention-centric design, push-
+ing the accuracy–speed Pareto frontier further.
+Beyond
+the YOLO lineage, RT-DETR [27] demonstrates that
+Transformer-based detectors can also achieve real-time
+speeds. Despite these continuous improvements, architec-
+ture design in the detection domain remains predominantly
+manual, motivating the need for automated search and, con-
+sequently, a standardized benchmark to evaluate NAS algo-
+rithms fairly.
+
+tocols cannot be directly transferred to detection architec-
+tures. Meanwhile, detection-specific NAS methods such as
+Det-NAS [5], OPANAS [15], and YOLO-NAS [1] each de-
+fine bespoke search spaces and evaluation setups, making
+fair cross-method comparison difficult. The community still
+lacks unified benchmarks for object detection NAS.
+We address this gap with YOLO-NAS-Bench, the first
+surrogate benchmark designed specifically for YOLO-style
+object detectors. YOLO-NAS-Bench features three tightly
+integrated components: (1) a comprehensive search space
+spanning channel width, block depth, and operator type
+across both backbone and neck, covering the core build-
+ing blocks of YOLOv8 through YOLO12; (2) an initial
+ground-truth database of 1,000 architectures sampled via
+complementary strategies and fully trained on COCO-mini
+under a unified protocol; and (3) a Self-Evolving Predictor
+that iteratively enriches the training pool with high-value
+architectures discovered by evolutionary search, culminat-
+ing in an ensemble of 10 LightGBM models that achieves
+sKT = 0.752 and R2 = 0.815. We validate the predictor’s
+practical utility by using its predicted mAP as the fitness
+function for EA-based search [19]. As shown in Fig. 1, the
+discovered architectures surpass all official YOLO baselines
+(v8–v12) at comparable latency.
+Our contributions are summarized as follows:
+• We design a YOLO-oriented search space covering back-
+bone and neck with channel, depth, and operator dimen-
+sions that span the key modules of YOLOv8–YOLO12.
+Through random, stratified, and Latin Hypercube sam-
+pling, we build an initial database of 1,000 architectures
+fully trained on COCO-mini.
+• We propose a Self-Evolving Predictor that bridges the dis-
+tribution gap between uniformly sampled training data
+and the high-performance frontier critical to NAS. The
+predictor guides latency-bucketed evolutionary search to
+discover promising architectures, which are trained and
+fed back to retrain the predictor, forming a self-evolving
+loop. Over 10 rounds, the pool grows to 1,500 architec-
+tures and sKT rises from 0.694 to 0.752.
+• We demonstrate the predictor’s practical utility by de-
+ploying it as the fitness function for EA search and dis-
+covering architectures that surpass official YOLO base-
+lines (v8–v12) at comparable latency on COCO-mini.
+
+NAS Benchmarks.
+Tabular benchmarks such as NAS-
+Bench-101 [24] (423 k architectures on CIFAR-10) and
+NAS-Bench-201 [6] (15,625 cell-based architectures across
+three datasets) are instrumental in democratizing NAS re-
+search for image classification by removing the evalua-
+tion bottleneck.
+NAS-Bench-301 [25] scales to the full
+DARTS search space by training a surrogate predictor eval-
+uated via the Sparse Kendall Tau (sKT) metric, establish-
+ing a protocol that subsequent benchmarks adopt. NAS-
+Bench-360 [21] broadens the scope to diverse tasks and data
+modalities, yet does not include detection-specific search
+spaces.
+YOLOBench [14] characterizes a fixed set of
+YOLO model families but cannot be adapted for NAS algo-
+rithm evaluation. Existing benchmarks predominantly tar-
+get classification or evaluate fixed model families. Conse-
+quently, surrogate benchmarks for detection-oriented NAS
+remain scarce, and our work addresses this gap.
+
+NAS for Object Detection.
+Several works apply NAS to
+detection sub-problems: NAS-FPN [8] searches for feature
+pyramid topologies; Det-NAS [5] performs backbone archi-
+tecture search with a one-shot supernet; OPANAS [15] op-
+timizes FPN neck architectures via an accuracy predictor;
+SP-NAS [10] proposes a serial-to-parallel search strategy
+for detection backbones; and YOLO-NAS [1] employs the
+proprietary AutoNAC framework to design YOLO architec-
+tures. Each of these methods defines its own search space,
+training recipe, and evaluation setup, making direct cross-
+method comparison difficult. Our paper addresses this frag-
+mentation by providing a shared search space, a precom-
+puted architecture–performance database, and a calibrated
+surrogate predictor that any NAS algorithm can query at
+near-zero cost.
+
+2. Related Work
+
+Real-Time Object Detectors.
+The YOLO family has
+driven rapid progress in real-time detection. YOLOv8 [12]
+introduces
+the
+C2f
+module
+with
+streamlined
+cross-
+stage feature fusion.
+YOLOv9 [23] proposes GELAN
+and Programmable Gradient Information (PGI) for im-
+proved gradient flow.
+YOLOv10 [22] eliminates the
+NMS post-processing step via consistent dual assign-
+ments.
+YOLO11 [11] advances efficiency with C3k2
+
+3. Method
+
+An overview of YOLO-NAS-Bench is illustrated in Fig. 2.
+Starting from a carefully designed search space over
+YOLO-style architectures, we sample and fully train 1,000
+architectures on COCO-mini to build a ground-truth per-
+formance database. Each configuration is converted into a
+compact feature vector, upon which a LightGBM surrogate
+
+Backbone
+Neck
+Search Space Design
+
+Sampling & Prediction Strategy
+
+Channels: [128, 192, 256]
+Depth: [1, 2]
+Modules: [C2f, C3k2]
+
+D1
+N2
+
+S2
+
+C
+
+P2
+
+C
+
+Random
+
+LHS Uniform
+
+Sampling
+Stratified
+
+Channels: [256, 320, 384, 448, 512]
+Depth: [2, 3, 4]
+Modules: [C2f, C3k2]
+
+N3
+
+nn.Upsample
+
+Sampling
+
+Sampling
+
+S3
+
+200 architectures
+
+400 architectures
+
+400 architectures
+
+N1
+D2
+
+Channels: [384, 512, 640, 768]
+Depth: [2, 3, 4]
+Modules: [C2f, C3k2, C2fCIB]
+
+C
+
+S4
+
+C
+
+Train on COCO-mini
+
+N4
+
+nn.Upsample
+
+Channels: [768, 1024, 1280]
+Depth: [2, 3]
+Modules: [C2f, C3k2, C2fCIB, A2C2f]
+
+Modules: [Conv, SCDown]
+
+S5
+
+Modules: [C2f, C3k2, C2fCIB, A2C2f]
+
+LGBoost Predictor
+
+Module Library
+
+Self-Evolving Predictors
+
+Input
+
+Input
+
+Input
+
+Input
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+Iterate 10 rounds
+1000 → 1500 architectures
+
+ABlock×2
+
+Split
+
+Split
+
+Split
+
+…
+
+Bottleneck
+
+C3k Block
+
+CIB Block
+
+ABlock×2
+
+…
+
+…
+
+…
+
+C
+
+Bottleneck
+
+C3k Block
+
+CIB Block
+
+Ensemble Learning
+
+1×1 Conv
+
+C
+
+C
+
+C
+
+×
+gamma
++
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+NAS Benchmark
+
+Output
+
+Output
+
+Output
+
+Output
+
+C3k2 (YOLO11)
+
+C2fCIB (YOLOv10)
+
+A2C2f (YOLO12)
+
+C2f (YOLOv8)
+
+Figure 2. Overview of YOLO-NAS-Bench. (1) A YOLO-style search space spanning channel, depth, and operator dimensions across
+both backbone and neck is defined. (2) 1,000 architectures are sampled via three complementary strategies and trained on COCO-mini.
+(3) A LightGBM predictor is trained on the resulting {architecture, mAP} pairs. (4) The Self-Evolving Predictor iteratively expands the
+pool with high-value architectures discovered by evolutionary search, and retrains the predictor over 10 rounds, yielding an ensemble of
+10 LightGBM models over 1,500 architectures.
+
+include standard Conv and the stride-channel-decoupled
+SCDown [22].
+In the backbone, the operator palette widens progres-
+sively: S2/S3 stages choose between {C2f, C3k2}, S4 adds
+C2fCIB, and S5 further includes A2C2f, reflecting the in-
+creasing complexity budget at lower resolutions.
+In the
+neck, channel width and depth are fixed to avoid excessive
+growth of the search space; only the operator type is search-
+able. Feature blocks N1–N4 share a single global choice
+from {C2f, C3k2, C2fCIB, A2C2f}, and the two down-
+sample blocks D1–D2 share a single choice from {Conv,
+SCDown}.
+Upsample layers use fixed nn.Upsample
+throughout the YOLO family and are not searchable.
+Tab. 1 shows the full search space specification. The
+combinatorial product of all dimensions yields an architec-
+ture space on the order of millions of unique configurations,
+providing a rich landscape for NAS algorithm evaluation.
+
+predictor is trained. To further strengthen the predictor in
+the high-performance regime that matters most for NAS,
+we propose a Self-Evolving Predictor loop that iteratively
+discovers, trains, and assimilates promising architectures.
+
+3.1. Benchmark Construction
+
+Search Space Design.
+We design a comprehensive search
+space that covers both the backbone and the neck of YOLO-
+style detectors, while keeping the detection head fixed. The
+space is parameterized along three dimensions:
+• Channel width: Each of the four backbone stages (S2–
+S5) has an independently selectable channel count. The
+candidate sets grow with the stage depth to reflect the nat-
+ural widening of feature hierarchies in modern detectors.
+• Block depth: The number of repeated blocks within each
+stage is searchable, controlling the representation capac-
+ity at each resolution level.
+• Operator type:
+This dimension subsumes both the
+feature-extraction module in each stage and the down-
+sampling operator between stages.
+Feature-extraction
+candidates include C2f [12], C3k2 [11], C2fCIB [22],
+and A2C2f [20]—the core building blocks employed
+across YOLOv8 through YOLO12—spanning a spec-
+trum from lightweight convolutions (C2f) to efficient
+re-parameterized blocks (C3k2, C2fCIB) and attention-
+augmented modules (A2C2f). Downsampling candidates
+
+Architecture Sampling.
+To build a diverse and represen-
+tative ground-truth database, we employ three complemen-
+tary sampling strategies over the search space: (i) Random
+sampling (200 architectures) provides a uniform baseline
+coverage; (ii) Stratified sampling (400 architectures) bins
+candidates by parameters and draws uniformly within each
+
+1S4 channels must be at least S3 to avoid degenerate configurations.
+
+Table 1. Search space of YOLO-NAS-Bench. Channel, depth,
+and operator choices for each stage.
+
+Dimension
+Stage
+Candidates
+#
+
+S2
+128, 192, 256
+3
+S3
+256, 320, 384, 448, 512
+5
+S41
+384, 512, 640, 768
+4
+S5
+768, 1024, 1280
+3
+
+Channel
+
+Self-Evolving
+
+Loop
+
+S2
+1, 2
+2
+S3
+2, 3, 4
+3
+S4
+2, 3, 4
+3
+S5
+2, 3
+2
+
+Depth
+
+S2/S3
+C2f, C3k2
+2
+S4
+C2f, C3k2, C2fCIB
+3
+S5
+C2f, C3k2, C2fCIB, A2C2f
+4
+
+Operator
+(backbone)
+
+10 Rounds: 1000 →1050 →1100 →... →1500 architectures
+
+Operator
+(neck)
+N1–N4
+C2f, C3k2, C2fCIB, A2C2f
+4
+D1–D2
+Conv, SCDown
+2
+
+Figure 3. Self-Evolving Predictor. Starting from 1,000 architec-
+tures, the loop partitions latency into 10 buckets. For each bucket,
+EA search selects the top 5 architectures using predicted mAP as
+fitness and real latency as constraint. In each round, these 50 new
+architectures are trained on COCO-mini, merged into the pool,
+and the predictor is retrained. After 10 rounds the pool grows to
+1,500 architectures, yielding an enhanced benchmark enriched in
+the high-performance regime most relevant to NAS.
+
+stratum, ensuring balanced representation across model
+scales; (iii) Latin Hypercube Sampling [18] (400 architec-
+tures) maximizes coverage across the high-dimensional dis-
+crete space by applying stratified sampling independently
+along each search dimension. The three strategies are com-
+plementary: random sampling covers the space broadly,
+stratified sampling prevents under-representation of light or
+heavy architectures, and LHS provides near-optimal space-
+filling properties.
+All 1,000 sampled architectures are trained from scratch
+on COCO-mini under an identical training protocol (de-
+tailed in Sec. 4.1). COCO-mini is a class- and size-stratified
+10% subset of COCO that preserves the original category
+and bounding-box size distributions. The resulting database
+constitutes the foundation of YOLO-NAS-Bench.
+
+3.2. Self-Evolving Predictor
+
+A predictor trained on uniformly sampled architectures may
+under-represent the high-performance frontier, where rank-
+ing accuracy is most critical for NAS. To address this dis-
+tribution mismatch, we propose a Self-Evolving Mecha-
+nism. As shown in Fig. 3, it iteratively enriches the training
+pool with architectures that the current predictor considers
+promising, thereby sharpening its discrimination in the re-
+gion that matters.
+Latency bucketing.
+The latency range observed across
+all 1,000 initial architectures is evenly partitioned into 10
+buckets. This stratification ensures that the self-evolving
+loop discovers high-performing architectures at every la-
+tency operating point, not only at a single scale.
+Evolutionary expansion (single round). Within each la-
+tency bucket, a target latency is sampled uniformly. An
+evolutionary algorithm (EA) [19] is then run with predicted
+mAP as the fitness function and real measured latency as
+the constraint. The EA runs for 100 generations with a pop-
+ulation of 50, selecting the top 25% as parents, generating
+offspring via crossover (50%) or mutation (50%, rate 0.2),
+and carrying forward the top 10% as elite. The final top 5
+architectures from each bucket are selected as candidates,
+yielding 50 new architectures per round.
+Iterative refinement. Each batch of 50 new architectures is
+fully trained on COCO-mini under the same protocol, their
+configuration and ground-truth mAP are recorded, and the
+
+Architecture
+Encoding
+and
+Surrogate
+Predictor.
+Each architecture configuration is converted into a 25-
+dimensional feature vector.
+Channel widths and block
+depths are represented as scalar values, while operator
+choices are one-hot encoded, allowing the tree-based
+predictor to split on each operator independently without
+imposing artificial ordering.
+We train a LightGBM [13] gradient-boosted decision
+tree as the surrogate predictor, regressing from the 25-
+dimensional encoding to mAP50-95.
+Following NAS-
+Bench-301 [25], we adopt two evaluation metrics:
+• Coefficient of determination (R2): measures overall re-
+gression quality.
+• Sparse Kendall Tau (sKT): the Kendall τ rank correla-
+tion computed after rounding predictions to 0.1% preci-
+sion, which discounts ranking changes due to negligible
+prediction noise. Formally, sKT = τ
+
+y, ⌊ˆy⌉0.001
+
+.
+
+Table 2. Unified training configuration for all architectures in
+YOLO-NAS-Bench.
+
+34
+
+33
+
+Ground-truth mAP50
+95
+val
+(%)
+
+Parameter
+Value
+
+32
+
+Epochs
+120
+Batch size
+128
+Image size
+640 × 640
+Learning rate (lr0)
+0.01
+LR schedule
+Step (decay at epoch 100)
+Mosaic
+1.0
+MixUp
+0.15
+Copy-Paste
+0.5
+Pretrained
+No
+Workers
+16
+
+31
+
+30
+
+29
+
+28
+
+Random (200)
+LHS (400)
+Stratified (400)
+Self-Evolving (500)
+
+27
+
+26
+
+26
+27
+28
+29
+30
+31
+32
+33
+34
+Predicted mAP50
+95
+val
+(%)
+
+pairs are merged into the architecture pool. The predictor is
+then retrained on the expanded pool. This loop repeats for
+10 rounds, growing the pool from 1,000 to 1,500 architec-
+tures. Crucially, each round’s newly added architectures are
+biased toward high-performance regions identified by the
+current predictor, progressively narrowing the distribution
+gap between predictor training and actual NAS search.
+Ensemble prediction. After the final round, 10 LightGBM
+models are trained on the full 1,500-architecture pool with
+different random seeds.
+The ensemble prediction is the
+arithmetic mean of the 10 models, which reduces variance
+and further stabilizes ranking quality.
+
+Figure 4. Predicted vs. ground-truth mAP on the full 1,500-
+architecture pool. Each point is an architecture colored by its
+sampling source. Points cluster closely around the y=x diagonal,
+confirming strong agreement between the ensemble predictor and
+ground-truth performance.
+
+Table 3. Predictor quality before and after Self-Evolving. Met-
+rics are reported on the validation split (20%). Ensemble: 10 ho-
+mogeneous LightGBM models.
+
+Setting
+#Archs
+R2
+sKT
+
+Before Self-Evolving
+1,000
+0.770
+0.694
+After Self-Evolving
+1,500
+0.815
+0.752
+
+4. Experiments
+
+chitectures achieves a validation sKT of 0.694. After 10
+rounds of Self-Evolving, both R2 and sKT improve: R2
+
+4.1. Experimental Setup
+
+Dataset. We construct COCO-mini by stratified sampling
+10% of COCO [16] images, preserving the original cat-
+egory distribution and bounding-box size ratios. The re-
+sulting subset retains 80 classes and follows the standard
+train2017/val2017 split. All architectures—both the bench-
+mark pool and YOLO baselines—are trained and evaluated
+on this identical dataset, ensuring fair comparison.
+Training protocol.
+Every architecture is trained from
+scratch under a unified configuration summarized in Tab. 2,
+including Mosaic [2], MixUp [26], and Copy-Paste [9] aug-
+mentation. The final mAP50-95 is taken from the last epoch.
+Latency measurement. All latencies are measured on a
+single NVIDIA P40 GPU with batch size 1, 640×640 FP32
+input, 10 warmup and 50 timed forward passes. The mean
+inference time is reported in milliseconds.
+Predictor training. The surrogate predictor is trained with
+RMSE as the loss function. We report R2 and sKT on a
+held-out 20% validation split.
+
+rises from 0.770 to 0.815 (+4.5%), and sKT from 0.694 to
+0.752 (+5.8%). An sKT of 0.752 indicates strong ranking
+consistency, while the R2 of 0.815 suggests that the pre-
+dictor captures the majority of variance in architecture per-
+formance. These results show that our surrogate predictor
+is a high-fidelity proxy for the true performance landscape,
+and confirm that the Self-Evolving mechanism effectively
+sharpens the predictor’s ranking ability. Fig. 4 further vi-
+sualizes the close agreement between predicted and actual
+mAP across all 1,500 architectures.
+
+Predictor-Guided Search Results.
+To validate that our
+surrogate predictor can reliably identify top-performing ar-
+chitectures, we conduct an evolutionary architecture search
+(EA) [19] using the ensemble predictor’s predicted mAP as
+the fitness function and real measured latency as the con-
+straint. The EA searches within the same search space de-
+fined in Sec. 3.1. Top candidate architectures are then fully
+retrained on COCO-mini under the identical protocol of
+Tab. 2, producing ground-truth mAP values.
+As shown in Tab. 4, the four predictor-discovered archi-
+tectures Pareto-dominate all official YOLO baselines (v8–
+
+4.2. Main Results
+
+Predictor Quality.
+Tab. 3 summarizes the surrogate pre-
+dictor’s accuracy before and after Self-Evolving. The 10-
+model LightGBM ensemble trained on the initial 1,000 ar-
+
+Table 4. Predictor-guided EA search results vs. official YOLO baselines on COCO-mini. All models are trained from scratch under
+the same protocol. Latency is measured on a single P40 GPU. The top block shows architectures discovered by our predictor-guided EA;
+subsequent blocks show official baselines.
+
+Small (S)
+Medium (M)
+Large (L)
+Extra-Large (X)
+
+Model
+mAP (%)
+Lat. (ms)
+mAP (%)
+Lat. (ms)
+mAP (%)
+Lat. (ms)
+mAP (%)
+Lat. (ms)
+
+Ours
+31.9
+16.85
+32.7
+21.00
+33.4
+27.09
+33.6
+35.00
+
+YOLO12
+27.2
+20.40
+30.4
+22.17
+30.8
+42.51
+32.9
+54.13
+YOLO11
+27.7
+15.30
+30.8
+20.03
+32.1
+29.84
+32.8
+37.73
+YOLOv10
+25.8
+15.89
+29.7
+20.01
+30.1
+25.83
+30.5
+36.84
+YOLOv9
+27.1
+19.25
+31.6
+25.59
+31.6
+26.85
+32.3
+53.07
+YOLOv8
+26.2
+10.95
+29.4
+17.21
+30.8
+23.30
+32.9
+33.71
+
+Table 6. Self-Evolving vs. random pool expansion. Same pool
+size (1,200); metrics on validation split (20%).
+
+Table 5. Predictor type comparison on initial 1,000 architectures
+(no ensemble, same data split).
+
+Predictor
+R2
+sKT
+
+Expansion strategy
+#Archs
+R2
+sKT
+
+LightGBM
+0.768
+0.699
+XGBoost
+0.758
+0.696
+NGBoost
+0.755
+0.704
+Random Forest
+0.744
+0.678
+MLP
+0.053
+0.440
+
+Initial (no expansion)
+1,000
+0.770
+0.694
+Random +200
+1,200
+0.776
+0.701
+Self-Evolving +200
+1,200
+0.798
+0.738
+
+dictor. For fair comparison, we also truncate Self-Evolving
+when the pool reaches 1,200 architectures. As shown in
+Tab. 6, random expansion yields R2 = 0.776 and sKT=
+0.701, while Self-Evolving achieves R2 = 0.798 and sKT=
+0.738. The clear gap (+0.022 R2, +0.037 sKT) confirms
+that the gain is attributable to the targeted enrichment of
+high-performance architectures by the Self-Evolving loop,
+rather than to the increase in data size alone.
+
+v12) across the full latency spectrum, achieving consis-
+tently higher mAP at equal or lower latency. The advan-
+tage is most pronounced in the small-model regime, where
+Ours-s surpasses YOLO11s by +4.2% mAP at compara-
+ble latency, and remains substantial at the large end, where
+Ours-x exceeds YOLO12x in mAP while being 1.5×
+faster.
+These results confirm that the predictor not only
+achieves high ranking correlation (sKT) on held-out data,
+but also exhibits strong discriminative power in the top-
+performance regime—architectures it deems promising in-
+deed yield superior performance after full retraining.
+
+4.4. Limitations and Future Work
+
+The current benchmark is built on COCO-mini (10% of
+COCO) and measures latency on a single GPU (NVIDIA
+P40). To ensure the authenticity of latency measurements
+across different platforms, we do not build a surrogate la-
+tency predictor as we do for mAP; thus, when using this
+benchmark for NAS, one still needs to measure the latency
+of each architecture empirically. But this cost is acceptable
+compared to the error that a latency predictor would intro-
+duce on unseen hardware. Extending YOLO-NAS-Bench
+to the full COCO dataset, diverse hardware platforms (edge
+GPUs, mobile NPUs), and additional tasks such as instance
+segmentation and pose estimation are natural next steps.
+
+4.3. Ablation Studies
+
+Predictor type comparison.
+Tab. 5 compares five pre-
+dictor types trained on the initial 1,000-architecture pool:
+LightGBM [13], XGBoost [4], NGBoost [7], Random For-
+est [3], and MLP. Among the tree-based methods, Light-
+GBM achieves the best balance of R2 (0.768) and sKT
+(0.699), followed closely by NGBoost (sKT 0.704) and XG-
+Boost (R2 0.758). Random Forest lags slightly behind. The
+MLP baseline performs poorly. These results justify our
+choice of LightGBM as the base model for the predictor.
+
+5. Conclusion
+
+Self-Evolving vs. random expansion.
+To disentangle
+whether the predictor improvement stems from the Self-
+Evolving mechanism or merely from increasing the train-
+ing pool size, we conduct an ablation: we train 200 ran-
+domly sampled architectures on COCO-mini, add them to
+the initial 1,000 architectures, and retrain the ensemble pre-
+
+We present YOLO-NAS-Bench, the first surrogate bench-
+mark tailored to YOLO-style detectors.
+By designing a
+search space that spans channel width, block depth, and
+operator type across backbone and neck, and by train-
+ing 1,000 architectures sampled via complementary strate-
+gies on COCO-mini, we establish an initial performance
+
+database. Building on this, our Self-Evolving Predictor iter-
+atively enriches the database with high-value architectures,
+raising the ensemble LightGBM predictor’s sKT from 0.694
+to 0.752.
+Architectures discovered by predictor-guided
+evolutionary search surpass all official YOLOv8–YOLO12
+baselines at comparable latency on COCO-mini, confirming
+the predictor’s practical utility.
+
+[11] Glenn Jocher and Jing Qiu. Ultralytics yolo11, 2024. 2, 3
+[12] Glenn Jocher, Ayush Chaurasia, and Jing Qiu. Ultralytics
+yolov8, 2023. 2, 3
+[13] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei
+Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. LightGBM:
+A highly efficient gradient boosting decision tree. 30:3149–
+3157, 2017. 4, 6
+[14] Ivan Lazarevich, Matteo Grimaldi, Ravish Kumar, Saptarshi
+Mitra, Shahrukh Khan, and Sudhakar Sah.
+YOLOBench:
+Benchmarking efficient object detectors on embedded sys-
+tems. In Proceedings of the IEEE/CVF International Con-
+ference on Computer Vision, pages 1169–1178, 2023. 2
+[15] Tingting Liang, Yongtao Wang, Zhi Tang, Guosheng Hu, and
+Haibin Ling. OPANAS: One-shot path aggregation network
+architecture search for object detection. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 10195–10203, 2021. 2
+[16] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll´ar, and C Lawrence
+Zitnick. Microsoft COCO: Common objects in context. In
+European Conference on Computer Vision, pages 740–755,
+2014. 1, 5
+[17] Hanxiao Liu, Karen Simonyan, and Yiming Yang. DARTS:
+Differentiable architecture search. In International Confer-
+ence on Learning Representations, 2019. 1
+[18] Michael D McKay, Richard J Beckman, and William J
+Conover. A comparison of three methods for selecting values
+of input variables in the analysis of output from a computer
+code. Technometrics, 42(1):55–61, 2000. 4
+[19] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V
+Le. Regularized evolution for image classifier architecture
+search. In Proceedings of the AAAI Conference on Artificial
+Intelligence, pages 4780–4789, 2019. 1, 2, 4, 5
+[20] Yunjie Tian, Qixiang Ye, and David Doermann. YOLOv12:
+Attention-centric real-time object detectors. In Advances in
+Neural Information Processing Systems, 2025. 2, 3
+[21] Renbo Tu, Nicholas Roberts, Misha Khodak, Junhong Shen,
+Frederic Sala, and Ameet Talwalkar.
+NAS-Bench-360:
+Benchmarking neural architecture search on diverse tasks.
+35:12380–12394, 2022. 2
+[22] Ao Wang, Hui Chen, Lihao Liu, Kai Chen, Zijia Lin, Jun-
+gong Han, and Guiguang Ding. YOLOv10: Real-time end-
+to-end object detection. 37:107984–108011, 2024. 2, 3
+[23] Chien-Yao Wang, I-Hau Yeh, and Hong-Yuan Mark Liao.
+YOLOv9:
+Learning what you want to learn using pro-
+grammable gradient information. In European Conference
+on Computer Vision, pages 1–21, 2024. 2
+[24] Chris Ying, Aaron Klein, Eric Christiansen, Esteban Real,
+Kevin Murphy, and Frank Hutter.
+NAS-Bench-101: To-
+wards reproducible neural architecture search. In Interna-
+tional Conference on Machine Learning, pages 7105–7114,
+2019. 1, 2
+[25] Arber Zela, Julien Niklas Siems, Lucas Zimmer, Jovita
+Lukasik, Margret Keuper, and Frank Hutter. Surrogate NAS
+benchmarks: Going beyond the limited search spaces of
+tabular NAS benchmarks. In International Conference on
+Learning Representations, 2022. 1, 2, 4
+
+6. Acknowledgments
+
+This
+work
+was
+supported
+by
+National
+Natu-
+ral
+Science
+Foundation
+of
+China
+under
+Grant
+62176007.
+
+References
+
+[1] Shay Aharon, Louis-Dupont, Ofri Masad, Kate Yurkova,
+Lotem Fridman, Lkdci, Eugene Khvedchenya, Ran Rubin,
+Natan Bagrov, Borys Tymchenko, Tomer Keren, Alexander
+Zhilko, and Eran-Deci. Super-gradients, 2021. 2
+[2] Alexey
+Bochkovskiy,
+Chien-Yao
+Wang,
+and
+Hong-
+Yuan Mark Liao. YOLOv4: Optimal speed and accuracy of
+object detection. arXiv preprint arXiv:2004.10934, 2020. 5
+[3] Leo Breiman. Random forests. Machine Learning, 45(1):
+5–32, 2001. 6
+[4] Tianqi Chen and Carlos Guestrin. XGBoost: A scalable tree
+boosting system. In Proceedings of the ACM SIGKDD In-
+ternational Conference on Knowledge Discovery and Data
+Mining, pages 785–794, 2016. 6
+[5] Yukang Chen, Tong Yang, Xiangyu Zhang, Gaofeng Meng,
+Xinyu Xiao, and Jian Sun. DetNAS: Backbone search for
+object detection. 32:6642–6652, 2019. 2
+[6] Xuanyi Dong and Yi Yang. NAS-Bench-201: Extending the
+scope of reproducible neural architecture search. In Inter-
+national Conference on Learning Representations, 2020. 1,
+2
+[7] Tony Duan, Anand Avati, Daisy Yi Ding, Khanh K Thai,
+Sanjay Basu, Andrew Ng, and Alejandro Schuler. NGBoost:
+Natural gradient boosting for probabilistic prediction. In In-
+ternational Conference on Machine Learning, pages 2690–
+2700, 2020. 6
+[8] Golnaz Ghiasi, Tsung-Yi Lin, and Quoc V Le. NAS-FPN:
+Learning scalable feature pyramid architecture for object
+detection.
+In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 7036–
+7045, 2019. 2
+[9] Golnaz Ghiasi, Yin Cui, Aravind Srinivas, Rui Qian, Tsung-
+Yi Lin, Ekin D Cubuk, Quoc V Le, and Barret Zoph. Simple
+copy-paste is a strong data augmentation method for instance
+segmentation. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 2918–
+2928, 2021. 5
+[10] Chenhan Jiang, Hang Xu, Wei Zhang, Xiaodan Liang, and
+Zhenguo Li.
+SP-NAS: Serial-to-parallel backbone search
+for object detection. In Proceedings of the IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition, pages
+11863–11872, 2020. 2
+
+[26] Hongyi Zhang, Moustapha Ciss´e, Yann N Dauphin, and
+David Lopez-Paz. mixup: Beyond empirical risk minimiza-
+tion. In International Conference on Learning Representa-
+tions, 2018. 5
+[27] Yian Zhao, Wenyu Lv, Shangliang Xu, Jinman Wei,
+Guanzhong Wang, Qingqing Dang, Yi Liu, and Jie Chen.
+DETRs beat YOLOs on real-time object detection. In Pro-
+ceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition, pages 16965–16974, 2024. 2
+[28] Barret Zoph and Quoc V Le.
+Neural architecture search
+with reinforcement learning. In International Conference on
+Learning Representations, 2017. 1

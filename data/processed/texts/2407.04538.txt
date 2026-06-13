@@ -1,0 +1,1799 @@
+PDiscoFormer: Relaxing Part Discovery
+Constraints with Vision Transformers
+
+Ananthu Aniraj1 , Cassio F. Dantas2 , Dino Ienco2 , and Diego Marcos1
+
+1 Inria, Univ. Montpellier, LIRMM, UMR TETIS, Montpellier, France
+{ananthu.aniraj,
+2 Inria, Inrae, Univ. Montpellier, UMR TETIS, Montpellier, France
+{cassio.fraga-dantas,
+
+arXiv:2407.04538v3 [cs.CV] 22 Jul 2024
+
+Abstract. Computer vision methods that explicitly detect object parts
+and reason on them are a step towards inherently interpretable models.
+Existing approaches that perform part discovery driven by a fine-grained
+classification task make very restrictive assumptions on the geometric
+properties of the discovered parts; they should be small and compact.
+Although this prior is useful in some cases, in this paper we show that
+pre-trained transformer-based vision models, such as self-supervised DI-
+NOv2 ViT, enable the relaxation of these constraints. In particular, we
+find that a total variation (TV) prior, which allows for multiple con-
+nected components of any size, substantially outperforms previous work.
+We test our approach on three fine-grained classification benchmarks:
+CUB, PartImageNet and Oxford Flowers, and compare our results to
+previously published methods as well as a re-implementation of the state-
+of-the-art method PDiscoNet with a transformer-based backbone. We
+consistently obtain substantial improvements across the board, both on
+part discovery metrics and the downstream classification task, show-
+ing that the strong inductive biases in self-supervised ViT models re-
+quire to rethink the geometric priors that can be used for unsupervised
+part discovery. Training code and pre-trained models are available at
+
+1
+Introduction
+
+Deep neural networks, first in the form of convolutional neural networks (CNN)
+and, more recently, vision transformers (ViT), have revolutionized the field of
+
+Fig. 1: Concentration vs total variation as part priors.
+
+2
+A. Aniraj et al.
+
+computer vision. However, their black-box nature often limits their application
+in domains where interpretability is crucial. To ameliorate the understanding of
+the internal behaviour of deep learning models trained for computer vision tasks,
+post-hoc interpretability methods [9,32,36] are commonly used. These methods
+generate saliency maps indicating regions in the image that contributed most to
+a classification decision. However, these are only approximations to the actual
+internal process of the model and may be misleading [33].
+
+Recent efforts have been directed towards developing interpretable-by-design
+deep neural networks [6,16,17,21,26,27]. These approaches aim to identify se-
+mantically interpretable features in an image and utilize this information for
+solving a downstream task. Primarily tailored for fine-grained image classifica-
+tion, these methods seek to emulate human reasoning by subdividing the final
+task, such as classifying flower species or dog breeds, into multiple explicit inter-
+mediate stages, such as identifying lower-level semantic features like body parts,
+which in turn are used to provide a classification score.
+
+However, improving interpretability while maintaining performance remains
+a challenge. Some models, such as those proposed in [16, 17, 21, 23], rely on
+objective functions that impose priors on the shape and area of object parts
+such as compactness-inducing part shaping losses that, in practice, result in
+spatial Gaussian priors of fixed variance on the part maps. While effective for
+specific datasets, like the commonly used CUB [43] benchmark for bird species
+classification, where assumptions like parts occurring only once in an image and
+being compact are beneficial, these assumptions may not generalize well to other
+use cases. For instance, in plant species classification, the presence of multiple
+instances of object parts such as leaves or flowers, as well as irregularly-shaped
+parts like branches or stems, renders these assumptions inadequate.
+
+As we show in this work, such strong part shape priors are required when
+using a CNN-based backbone pre-trained on ImageNet; in order to reach ac-
+ceptable classification results, it is imperative to fine-tune the whole backbone.
+This means that the only inductive bias that is kept throughout the part dis-
+covery process is the one brought in by the convolutional nature of the CNN
+architecture. A strong part shape prior is required in order to obtain consistent
+part maps in this setting, leading to all recent methods for part discovery in the
+context of fine-grained classification to use a concentration loss that makes part
+maps small and compact [16,17,21]. Here, we propose a method that addresses
+this issue by refraining from assuming any priors on part shape or area. The
+only prior we assume is that the part maps should tend to be piece-wise con-
+stant and thus be formed of one or more spatially connected components. Our
+model is capable of localizing up to a fixed number of semantically consistent
+parts of an object without relying on part annotations, using only the classifi-
+cation labels as supervision signals. The lack of assumptions about part shape
+and size makes our approach suitable to various fine-grained image classification
+tasks, as demonstrated by our empirical results, generalizing beyond cases where
+compactness is a good part prior.
+
+PDiscoFormer: Part Discovery with Transformers
+3
+
+The main contribution of this paper is to build upon [21] and relax its
+constraining concentration-based part prior by a more flexible total variation
+prior. We investigate which additional elements are required to compensate for
+the flexibility of the total variation loss and find that a combination of an en-
+tropy loss and Gumbel-Softmax on the part maps allows for consistent and high
+quality part maps. Our approach makes better use of the representation of self-
+supervised pre-trained ViT models and allows to apply the model to tasks with
+diverse types of parts.
+
+2
+Related Work
+
+Unsupervised Part Discovery. Machine learning methods designed for unsu-
+pervised part discovery aim to identify a small number of semantically consistent
+parts, typically around K = 8, shared among classes in a dataset. These methods
+visualize all discovered parts in an image through per-part saliency maps, facili-
+tating easier interpretation. However, as this task is unsupervised, it often relies
+on assumptions about the discovered parts, such as their distribution and shape.
+For instance, Huang et al. [16] assume that the presence of each part across a
+mini-batch follows a beta distribution, while [21] assumes that discovered parts
+are present at least once in a mini-batch. Additionally, assumptions are often
+made about the shape of the parts. Methods such as [17, 21, 23, 46] impose a
+spatial Gaussian prior with a fixed variance on the part maps, resulting in com-
+pact parts appearing once in the image. Such assumptions on part shape can
+be highly restrictive and may not generalize well across different scenarios. To
+address this limitation, our proposed method refrains from assuming such priors
+on part shape and only imposes a spatial prior that discovered parts should form
+connected components.
+Part Prototype Networks. Chen et al. [6] introduced the Prototypical Part
+Network (ProtoPNet), an inherently interpretable method featuring a fixed num-
+ber of learned prototypes per class. These prototypes represent visual patterns
+or features learned by the network during training. The model computes the
+similarity between each learned prototype and image patches and uses a lin-
+ear combination of these similarity scores for classification. While explanations
+provided by ProtoPNet visualize all prototypes along with their weighted simi-
+larity scores, the sheer number of prototypes, often proportional to the number
+of classes, can lead to redundancy and interpretability challenges [13,26]. Subse-
+quent works in this line of research have sought to address these challenges. Some
+approaches focus on reducing the number of prototypes shared per class [35,42],
+while others explore sharing prototypes between classes [25, 27]. Despite these
+efforts, recent works like [27] still utilize a large number (K > 500) of prototypes,
+which can pose significant challenges for end-user interpretation.
+Regularization in Image Segmentation. Early works on image segmentation
+made direct use of low-level image features, chiefly color, along with geometric
+priors, in order to find coherent segments. The Mumford-Shah model [24], orig-
+inally devised for piece-wise image reconstruction, was applied to find segments
+
+4
+A. Aniraj et al.
+
+Latent Features z
+
+Part Attention Maps A
+
+Eq. (2)
+
+ArgMax
+
+ViT
+
+H
+
+H
+
+D
+
+K+1
+
+W
+Part  Assignment
+
+W
+
+Total Variation Loss
+
+x
+
+Entropy Loss
+Presence Loss
+Equivariance Loss
+
+y1
+
+v1
+
+v2
+
+Per-part
+
+.
+.
+.
+
+Wclass
+
+Layer
+
+Norm
+
+yk
+
+vk+1
+
+Mean
+
+Part embedding
+
+Image
+
+y
+
+vectors v
+
+Orthogonality Loss
+Classification Loss
+
+Fig. 2: The PDiscoFormer architecture for part discovery.
+
+that are as homogeneous as possible while trying to minimize the length of their
+boundary as a regularization [5]. Total variation (TV) [34] has been shown to
+be a powerful and efficient regularization to approximate this boundary length
+prior, and has been extensively used for piece-wise signal and image reconstruc-
+tion [10,40], as well as unsupervised image segmentation [11,41]. With the advent
+of deep learning, TV regularization has proven valuable for style transfer [19]
+and edge-preserving smoothing [47]. In this work we explore the use of TV reg-
+ularization for weakly-supervised part discovery in order to alleviate the issues
+brought by previously used priors.
+Emergent grouping of ViT representations. Some recent research [31,45]
+has studied the emergence of object segmentation by supervising with image-text
+pairs. These methods learn to group similar patches in a ViT and assign them to
+textual concepts. They aim to identify the pixels in an input image corresponding
+to a predefined text prompt, focusing on segmenting whole objects rather than
+decomposing them into parts, as our model does with part discovery, and are
+limited to concepts that are represented in the text annotations.
+
+3
+Methodology
+
+Here we introduce an end-to-end trainable method (see Fig. 2) capable of auto-
+matically identifying K discriminative parts (semantically interpretable image
+regions) useful for solving a fine-grained image classification task. In contrast
+to earlier methods [16,21], our approach avoids any assumptions related to part
+shape, size or number of part instances. As in [16,21], our model is weakly super-
+vised and relies solely on image-level class labels, thus uncovering discriminative
+parts without requiring any additional supervision. Our formulation is based
+
+PDiscoFormer: Part Discovery with Transformers
+5
+
+on [21], from which we take take most elements of the architecture, except for
+the Gumbel-Softmax and the layer normalization-based part modulation. The
+total variation, entropy and background losses have not been used in previous
+part discovery works and are shown to be important in our results.
+
+3.1
+Model architecture
+
+Let \ mathbf {x} \in \mathbb {R}^{3 \times M \times N} be an image in the dataset, and let y \i n \{1, 2, ..., C\} represent
+the corresponding classification label. Given a backbone model h_{\theta }(\cdot ) , we extract
+a feature tensor:
+
+\math b f {z} = h_{\theta }({\mathbf {x}}) \in \mathbb {R}^{D \times H \times W}
+(1)
+
+We drop the class and register tokens of the ViT and reshape the patch
+tokens to obtain \mathbf {z} . Following prior research [16, 17, 21], we compute attention
+maps \ mat hbf {A} \in [0, 1]^{ (K+1) \times H \times W} , where the last channel in the first dimension is
+used to represent the background region in the image. These attention maps are
+computed using the negative squared Euclidean distance function between patch
+token features \m a thbf {z}_{ij} \in \mathbb {R}^{D} , i \i n \{ 1, ..., H\} , j \i n \{ 1, ..., W\} and each of the learnable
+prototypes \ m athbf {p}^{{k}} \in \mathbb {R}^{D} , with k ∈{1, . . . , K+1}, followed by a Gumbel-Softmax [18]
+across the { K}+1 channels:
+
+\l a
+bel
+
+{eq:g u mbel } a
+_
+
+(2)
+
+{ij}
+^{{ k}} = \fr a c {\ e xp \left (-\| \mathbf {z}_{ij} - \mathbf {p}^{{k}}\|^2 + \gamma _{k} \right )}{\sum _{{l=1}}^{{K+1}} \exp \left (-\| \mathbf {z}_{ij} - \mathbf {p}^{{l}}\|^2 + \gamma _{l}\right )}
+
+where γk and γl are independently drawn samples from the Gumbel(0,1) distri-
+bution, and ak
+ij represents an element of A.
+The attention maps are used to compute part embedding vectors \ m athbf {v}^{{k}} \in \mathbb {R}^{D}
+
+by using the attention values to calculate a weighted average over the feature
+tensor \mathbf {z} :
+
+h bf
+{v}^
+{{k}} = \frac {\sum _{i}\sum _{j} a_{ij}^{{k}} \mathbf {z}_{ij}}{HW}
+(3)
+
+m
+
+a
+t
+
+\
+
+These embedding vectors are then modulated using a layer normalization [3]
+operation, with normalization applied over the feature and prototype dimensions.
+This operation helps to make each embedding vector distinct for the classifier:
+
+\ m ath b f {v}_
+{
+
+m}^{k} =
+\ fr
+a c {
+(\mathbf {v}^{k} - \text {E}[\mathbf {v}^{k}])}{\sqrt {\text {Var}[\mathbf {v}^{k}] + \epsilon }} \odot \mathbf {w}^k_{m} + \mathbf {b}^k_{m}
+(4)
+
+with wk
+m, bk
+m ∈RD being the modulation weights and biases per part. These
+modulated embedding vectors \
+mathbf {v}_{m}^{k} for k ∈{1, . . . , K} (we omit the background
+embedding) are then linearly projected to obtain a vector of class scores condi-
+tioned on the part embedding:
+
+\ ma t hb
+f {y}^{k} = W_{c} \cdot \mathbf {v}_{m}^{k}
+(5)
+
+6
+A. Aniraj et al.
+
+The same linear classifier Wc ∈RC×D is applied to each of the modulated
+embedding vectors, i.e., for each of the K discovered foreground parts. We then
+take the mean of the per-part class scores to obtain the classification scores:
+
+a
+t
+
+\
+
+hbf
+{y} = \frac {1}{K} \sum _{k=1}^{K} \mathbf {y}^{k}
+(6)
+
+m
+
+Finally, a softmax function is employed to obtain the classification probabilities.
+Part dropout. We adopt dropout [39] on the modulated embedding vectors
+vk
+m, as proposed in [21], during model training. This drops entire part embed-
+ding vectors at a time and ensures that all discovered parts are discriminative,
+since discovering a single discriminative part would not be enough to solve the
+downstream classification task.
+
+3.2
+Loss Functions
+
+Our main contribution consists in proposing a set of part-shaping loss functions
+that are able to make the most out of the inductive biases learned by self-
+supervised ViT models.
+Classification Loss (Lc). Our model is mainly driven by the fine-grained clas-
+sification objective during training. We use the standard negative log likelihood
+or multi-class cross-entropy for this purpose. While the classification loss helps
+ensure the discriminative nature of the discovered parts, it may not directly en-
+force the learned attention maps to represent salient parts of the object in the
+image. To address this, we incorporate additional objective functions to enforce
+priors on the discovered parts. These objectives effectively guide the learning
+process to focus on relevant regions of the image.
+Orthogonality Loss (L⊥). We aim to discover parts that are semantically
+distinct. To achieve this, we apply the orthogonality loss, which encourages the
+learned part embedding vectors to be decorrelated from one another. This is ac-
+complished by minimizing the cosine similarity between the embedding vectors.
+We apply this loss on the modulated embedding vectors \
+mathbf {v}_{m}^{k} .
+
+mat
+h
+
+{\
+p e rp
+
+}= \ s u m _{k=1}^{K+1} \sum _{l\neq k} \frac {\mathbf {v}_{m}^{k}\cdot \mathbf {v}_{m}^{l}}{\left \| \mathbf {v}_{m}^{k}\ \right \|\cdot \left \| \mathbf {v}_{m}^{l} \right \|}
+(7)
+
+\
+
+{L}_
+
+cal
+
+Equivariance Loss (Leq). We aim to detect the same parts even if the image
+is translated, rotated, or scaled. To achieve this, we formulate the equivariance
+loss, which encourages the learned part attention maps to be equivariant to rigid
+transformations. Specifically, given an input image, we use an affine transform T
+with parameters randomly sampled from a pre-defined range and pass both the
+original image and the transformed image through our model. Then, we invert
+the transformation on the part attention maps of the transformed image. Fi-
+nally, the equivariance loss is formulated as the cosine distance between the part
+attention maps of the original image and those of the corresponding transformed
+image.
+
+PDiscoFormer: Part Discovery with Transformers
+7
+
+Let Ak(x) be a function that returns the kth attention map given an input
+image x. Then:
+
+{L}_{\ t e xt
+{e q}} =
+1
+
+\ m a t h
+
+a
+
+- \frac {1} {K} \sum _{k} \frac {\left \| A^{k}(\mathbf {x}) \cdot T^{-1}\left ( A^{k}\left ( T(\mathbf {x} \right ) \right ) \right \|}{\left \| A^{k}(\mathbf {x}) \right \| \cdot \left \| A^{k}\left ( T(\mathbf {x}) \right ) \right \|}
+(8)
+
+c
+
+l
+
+Presence Loss (Lp). We assume that all discovered foreground parts are
+present in at least some images of the training dataset, while the background,
+the (K + 1)th part, is expected to be present in all images in the dataset. To
+enforce this, we formulate the presence loss, which consists of two parts. Firstly,
+we define a loss applied only to the discovered foreground parts, ensuring that
+each part is present at least once in a mini-batch. Given a batch {x1, ..., xB},
+the presence loss is calculated as:
+
+\ m a t h
+
+a
+
+l
+{L
+}_{\t ext
+{p}_{1}} = 1 - \frac {1}{K} \sum _{k}\max _{b,i,j} \bar {a}^k_{ij}(\mathbf {x}_b)
+(9)
+
+c
+
+where ¯
+Ak(xb) = avgpool(Ak(xb)) is the output of a 2D average pooling operator
+with a small kernel size employed to prevent single-pixel attention maps.
+Secondly, to ensure the presence of the background, we introduce a stricter
+presence loss, which is satisfied if the background is present in all images of the
+mini-batch. This loss is formulated as follows:
+
+a
+l {
+L
+}_{
+\te
+xt {p}_{
+0}
+}= -
+\frac {1}{B}\sum _{b} \log \left ( \max _{i,j} ~ m_{ij} \bar {a}^{K+1}_{ij}(\mathbf {x}_b) \right )
+
+\ m a t
+
+c
+
+(10)
+
+h
+
+where M = [mij]H×W is a soft mask with mij ∈[0, 1] that privileges entries
+placed farther from the image center (towards the borders):
+
+m _ {
+i j }
+
+ef
+t
+( \ f
+
+-1}{H-1} - \frac {1}{2}\right )^2 + 2 \left ( \frac {j-1}{W-1} - \frac {1}{2}\right )^2
+
+= 2 \
+
+r a c {
+
+(11)
+
+l
+
+i
+
+This loss captures the notion that the background is at the same time ex-
+pected in every image and is more likely to appear near the boundaries of the
+image.
+Entropy Loss (Lent). We aim to ensure that each patch token is assigned to
+a unique part. To achieve this, we formulate an entropy [37] loss applied to the
+part attention maps:
+
+eq:
+e
+
+\l a
+be
+l {
+
+o
+
+py
+_l
+os s}
+\
+ma
+th
+cal {L}_{\text {ent}} = \frac {-1}{K+1}\sum _{k=1}^{K+1} \sum _{ij}a^{k}_{ij} \log \left (a^{k}_{ij} \right )
+
+(12)
+
+ntr
+
+Total Variation Loss (Ltv). We do not want to make any assumptions about
+the part shape. However, we would still like the discovered parts to be composed
+of one or, at most, a few connected components. To achieve this, we make use
+of a total variation loss [34] applied to the part attention maps:
+
+8
+A. Aniraj et al.
+
+cal
+
+\ m
+a
+th
+
+_
+
+text
+{t
+v}} = \frac {1}{HW} \sum _{k=1}^{K+1}\sum _{ij} \left | \nabla a_{ij}^k \right |
+(13)
+
+{\
+
+{L}
+
+where ∇ak
+ij is the spatial image gradient of part map Ak in location ij.
+
+4
+Experimental Setup
+
+We aim to perform part discovery using only image-level class labels as supervi-
+sion signals, assuming that the discovered parts are shared among classes, which
+is common in fine-grained image classification settings. Moreover, we aim to com-
+pare our model with similar methods in the literature in scenarios where they
+have been empirically shown to work well, as well as in new and more challeng-
+ing scenarios where underlying data characteristics may require more flexible
+geometric modeling.
+All models were implemented in PyTorch. We used the DinoV2 [29] ViT [12]
+model with register tokens [8] as the starting weights for all experiments, utilizing
+the Base (ViT-B) variant. The training settings and compute requirements of
+our model are detailed in Appendix A and Appendix B respectively.
+
+4.1
+Datasets
+
+CUB Dataset. The CUB dataset [43] consists of images depicting 200 bird
+species, with 5,994 images in the training set and 5,794 images in the testing
+set. Keypoint annotations for 15 different bird body parts are available for each
+image. Bird parts are typically compact, although their presence may vary in
+images due to changes in pose and occlusion. Most images contain only a sin-
+gle instance of a bird. For this dataset, we evaluate the results using keypoint
+regression (Kp) using ground truth part keypoint annotations to compare them
+with centroids discovered by the model. Furthermore, we compute the Normal-
+ized Mutual Information (NMI) and Adjusted Rand Index (ARI) to quantify the
+clustering quality of the discovered parts, as in related literature [7].
+PartImageNet Dataset. The PartImageNet dataset [14] comprises 158 classes
+distributed among 11 super-classes, such as airplanes, birds, and snakes. Each
+super-class is associated to between two and five possible parts, for a total of 41
+part classes. Additionally, test images may contain multiple instances of objects,
+sometimes from different super-classes, while the classification label provides in-
+formation about a single object. Notably, several super-classes, including snakes,
+airplanes, and reptiles, often exhibit irregular and non-compact part shapes. For
+our experiments, we use the PartImageNet OOD variant. Although originally in-
+tended for out-of-distribution detection, this variant is commonly used in related
+literature. We train our models on 14,865 training images and test on 1,658 im-
+ages, respectively. For evaluation, we derive part centroids from ground truth
+part masks and calculate NMI and ARI scores to assess clustering quality. Ad-
+ditionally, we include an experiment on the newly released PartImageNet Seg
+variant in Appendix E.
+
+PDiscoFormer: Part Discovery with Transformers
+9
+
+Table 1: Quantitative comparison of the part discovery and classification capabilities
+of our model with related approaches from the literature. In this table, K refers to the
+number of parts. The method with the label ∗∗does not use any class supervision.
+
+CUB(%)
+PartImageNet OOD(%)
+Flowers(%)
+
+Method
+K Kp ↓NMI ↑ARI ↑Top-1
+Acc. ↑K NMI ↑ARI ↑Top-1
+Acc. ↑K
+Fg.
+mIoU ↑
+Top-1
+Acc. ↑
+
+Dino [1]∗∗
+4
+-
+31.18
+11.21
+-
+8
+19.17
+7.59
+-
+2
+54.95
+-
+8
+-
+47.21
+19.76
+-
+25 31.46
+14.16
+-
+4
+55.11
+-
+16
+-
+50.57
+26.14
+-
+50 37.81
+16.50
+-
+8
+54.44
+-
+
+4 11.51 29.74
+14.04 87.30 8
+5.88
+1.53
+74.22
+2
+29.92
+93.07
+8 11.60 35.72
+15.90 86.05 25
+7.56
+1.25
+73.56
+4
+33.22
+93.14
+16 12.60 43.92
+21.10 85.93 50 10.19
+1.05
+73.20
+8
+17.26
+92.86
+
+Huang [16]
+
+4
+9.12
+37.82
+15.26 86.17 8
+27.13
+8.76
+88.58
+2
+19.04
+77.51
+8
+8.52
+50.08
+26.96 86.72 25 32.41
+10.69
+89.00
+4
+34.76
+83.05
+16 7.67
+56.87
+38.05 87.49 50 41.49
+14.17
+86.06
+8
+49.10
+81.04
+
+PDiscoNet [21]
+
+4
+7.70
+52.59
+26.66 88.61 8
+19.28
+34.72
+90.95
+2
+4.92
+92.75
+8
+6.34
+65.01
+37.90 86.95 25 28.23
+50.35
+90.29
+4
+1.95
+95.48
+16 5.95
+68.63
+43.41 84.04 50 29.48
+27.80
+89.69
+8
+13.18
+97.40
+
+PdiscoNet
++ ViT-B [8]
+
+4
+7.41
+58.13
+25.11 89.06 8
+29.00
+52.40
+89.75
+2
+73.62
+99.61
+8
+5.99
+69.87
+43.49 88.79 25 44.71
+59.27
+90.77
+4
+73.32
+99.54
+16 5.74 73.38 55.83 88.72 50 46.29 62.21 91.01 8
+69.59
+99.64
+
+PDiscoFormer
+(Ours)
+
+Oxford 102 Flower Dataset. The Oxford 102 Flower Dataset [28] comprises
+8,189 images divided into 102 flower classes. The training and validation sets
+contain 10 images per class, totaling 1,020 images each, while the test set con-
+sists of 6,149 images, with a minimum of 20 images per class. Since no part
+annotations are provided for this dataset, we evaluate the quality of the dis-
+covered parts by combining them and comparing the result to the provided
+foreground/background masks. We evaluate model performance by calculating
+the mean Intersection over Union (mIoU) for the foreground mask. This dataset
+often includes multiple instances of parts in a single image, such as flowers, as
+well as parts with irregular shapes, such as flower petals.
+
+5
+Experiments
+
+5.1
+Comparison with State-of-the-Art
+
+We conduct a quantitative analysis of our model’s part discovery and classifica-
+tion capabilities and compare it with those of related methods from the liter-
+ature. Additionally, we compare our model against a re-implementation of the
+state-of-the-art PDiscoNet [21], where we replaced the backbone with the vari-
+ant used in this paper. The results of this comparison are summarized in Tab. 1.
+From the results, our method consistently outperforms existing approaches for
+both part discovery and image classification across all datasets. We attribute
+this to the synergistic effects of the strong inductive biases ingrained in the self-
+supervised ViT backbone and the enhanced flexibility of the proposed combina-
+
+10
+A. Aniraj et al.
+
+Image
+PDiscoNet
+PDiscoNet
++ ViT-B
+Ours
+
+Fig. 3: Qualitative results on CUB for K = 8.
+
+Image
+PDiscoNet
+PDiscoNet
++ ViT-B
+Ours
+
+Fig. 4: Qualitative results on PartImageNet for K = 8.
+
+tion of geometric priors. Particularly noteworthy are the significant performance
+gains observed on the Flowers and PartImageNet datasets, which contain objects
+with irregular shapes occurring in multiple instances within the same image, un-
+derscoring the importance of our geometric part prior that favors piece-wise
+constant and spatially connected components. Even on CUB, where most parts
+fit well into the compactness prior, we see a consistent improvements of results
+with respect to PDiscoNet, even when using the same ViT backbone. With 16
+parts, our model achieves 55.8% ARI and 73.4% NMI, compared to 43.4% ARI
+and 68.6% NMI of the best competing method, PDiscoNet with a ViT back-
+bone. Despite competitive performance in classification tasks on CUB and Par-
+tImageNet, the PdiscoNet+ViT-B model tends to degrade in accuracy as part
+complexity increases, particularly in CUB, unlike our model, which maintains
+robust accuracy for any number of parts. In the Flowers dataset, all competing
+methods result in subpar performance, while our approach excels at both de-
+tecting the foreground and classification no matter the number of parts. In this
+
+PDiscoFormer: Part Discovery with Transformers
+11
+
+Image
+PDiscoNet
+PDiscoNet
++ ViT-B
+Ours
+
+Fig. 5: Qualitative results on Flowers for K = 2.
+
+Image
+K
+Low
+K
+Medium
+K
+High
+
+Fig. 6: Effect of K on PDiscoFormer. The left three images correspond to Flowers
+(from top to bottom, K = 2, 4, 8). The three middle ones are CUB, with K being 4, 8
+and 16. The three on the right belong to PartImageNet, with K = 8, 25, 50.
+
+dataset, PDiscoNet+ViT-B results in the second best classification accuracy,
+97.4%, after the 99.6% obtained by our method, but completely fails to locate
+the foreground, with an mIoU of 13.2%, against 73.6% for PDiscoFormer. Addi-
+tionally, we extend our comparisons by applying our proposed losses to a ResNet
+backbone and a fully frozen ViT architecture, showing that a pre-trained ViT
+is required to fully profit from the proposed set of losses and that fine-tuning
+the position, class and register tokens, while keeping the rest of the ViT frozen,
+results in better performances than leaving the whole ViT frozen. The results of
+these additional comparisons are presented in Appendix C.
+
+Qualitative Analysis. A qualitative analysis, as illustrated in Fig. 3, Fig. 4,
+Fig. 5 and Fig. 6 corroborates our quantitative findings, showcasing our model’s
+ability to accurately discover irregularly shaped body parts such as bird wings
+(CUB), flower petals (Flowers) and the body of a snake (PartImageNet). At the
+
+12
+A. Aniraj et al.
+
+Table 2: Results of the ablation study in PartImageNet and CUB.
+
+PartImageNet OOD
+(K=25)
+
+CUB
+(K=16)
+
+NMI ↑ARI ↑Top-1
+Acc. ↑Kp ↓NMI ↑ARI ↑Top-1
+Acc. ↑
+Full Model
+44.71 59.27 90.77 5.74 73.38 55.83 88.72
+No Lp0
+41.05
+49.08 89.81 5.85
+68.66
+43.09 83.64
+No Lent
+39.16
+54.46 91.19 5.57 66.88
+45.68 88.21
+No Leq
+43.38
+54.19 90.47 9.05
+56.85
+30.63 83.71
+No L⊥
+42.44
+58.86 91.01 5.79
+70.55
+50.90 88.63
+No Lp1
+33.98
+58.31 91.07 7.14
+61.04
+34.28 89.04
+No Ltv
+33.73
+25.35 90.47 6.01
+70.78
+51.83 80.22
+No Per-Part LayerNorm 31.14
+40.73 89.69 5.74
+70.70
+50.62 69.73
+No Part Dropout
+33.08
+43.98 89.99 6.08
+70.28
+41.69 87.14
+No Gumbel
+32.98
+54.68 90.71 6.44
+68.92
+43.61 86.43
+
+same time, PDiscoNet [21] fails to discover these parts altogether, even when
+retrained on a ViT-B backbone. This indicates the usefulness of the flexible ge-
+ometric priors enabled by our total variation loss. Compared to PDiscoNet [21],
+not only do we achieve a much tighter coverage of the object of interest, with
+our PDiscoFormer more closely following the object boundaries. This is partic-
+ularly the case in parts that are relatively large, such as open bird wings and
+flower corollas. In addition to that, we can observe a substantial improvement
+in the consistency and semantic interpretability of parts. For instance, the parts
+discovered by our model for the four quadruped images displayed in Fig. 4 can
+immediately be interpreted (the green part corresponds to the snout while the
+brown one to the ears), while those from PDiscoNet are not clear. In Fig. 6 we
+vary the number of parts, K. On Flowers, using two parts leads to a clear as-
+signment of one part to the flower calyx and one to the corolla, while more parts
+tends to exhibit oversegmentation. CUB, on the other hand, is able to absorb
+a larger number of parts. With K = 4, beak and legs are covered by the same
+part, while a fine-grained and consistent distinction of the different wing parts is
+achieved with K = 16. Interestingly, in the case of PartImageNet, the effective
+number of parts being used by a specific super-class remains almost constant
+when increasing K.
+
+5.2
+Ablation Study
+
+We conducted an ablation study by systematically removing one loss function
+or architectural element at a time and by replacing the Gumbel-Softmax with a
+regular Softmax. This was performed on the PartImageNet OOD dataset with
+K = 25 parts and the CUB dataset with K = 16 parts. The quantitative results
+of the ablation study are shown in Tab. 2 and some qualitative results can be
+seen in Fig. 7. From the results, we can observe the following: Total Variation
+(Ltv) prevents spurious part activations in the background, possibly reducing
+
+PDiscoFormer: Part Discovery with Transformers
+13
+
+Image
+Ours
+-Lp0
+-Leq
+-Gumbel
+-Perpart
+LN
+-Part
+Dropout
+-Ltv
+
+Fig. 7: Qualitative results from the ablation study.
+
+information leakage between foreground parts and the background. It has the
+largest impact on PartImageNet in terms of ARI. The absence of the Back-
+ground Loss (Lp0) results in the background part not being activated, causing
+the model to discover the background as a foreground part. Presence Loss (Lp)
+and Part Dropout promote the utilization of all parts, preventing domination
+by a few parts which can lead to multiple unused parts (Fig. 7). Removing the
+Per-Part Layer Norm leads to inconsistent part discovery (Fig. 7) indicating
+that it contributes to the creation of discriminative part-specific features driven
+by the classification loss. Equivariance Loss (Leq) enhances robustness to
+affine geometric transformations, supporting stable part discovery across diverse
+inputs (Fig. 7). Gumbel-Softmax and Entropy Loss (Lent) ensure unique
+part assignments for each patch token, further reducing information leakage, as
+shown in Appendix D. As shown in Tab. 2, the complete model, incorporating
+all loss functions and architectural choices, generally performs best for both part
+discovery and classification, demonstrating the efficacy of our approach.
+
+14
+A. Aniraj et al.
+
+6
+Limitations and Future Work
+
+Our study focused on datasets with part annotations or FG-BG masks available
+for the test set. This allowed for quantitative comparison with state-of-the-art
+methods. However, exploring the training of our model on larger and more di-
+verse datasets could provide valuable insights and further validate its perfor-
+mance in real-world scenarios. For example, larger datasets may introduce more
+variability in object appearances and poses, challenging the model to generalize
+better. Methods to enable the evaluation of part discovery in such settings would
+allow to take steps in this direction. The main hyper-parameter K, the number
+of parts to discover, has a large impact on the granularity of the discovered parts
+(Fig. 6). Exploring ways of automatically estimating this value while preserving
+interpretability in the discovered semantic parts would be a valuable contri-
+bution. This could enhance the adaptability of the model to various datasets
+and streamline the training process by removing the need for manual selection
+of K. Additionally, while our approach can detect parts of various shapes due
+to the total variation prior, it cannot ascertain if they belong to the same ob-
+ject. Integrating our method with unsupervised object discovery research [15,38]
+could enable part discovery within each detected object, improving capabilities
+in complex scenes. These methods aim to identify and localize individual objects
+without explicit supervision, complementing our approach for a more compre-
+hensive scene understanding. These considerations suggest promising directions
+for extending and refining our method.
+
+7
+Conclusion
+
+In this paper, we presented PDiscoFormer, a new approach for unsupervised
+part discovery. Unlike previous methods that imposed strict geometric priors
+on discovered object parts, our model, based on self-supervised vision trans-
+formers, demonstrated the capability to relax these constraints. By leveraging
+a total variation (TV) prior, our model achieved substantial improvements in
+both part discovery and downstream classification accuracy when compared to
+the state-of-the-art across multiple datasets, specifically CUB, PartImageNet,
+and Oxford Flowers. Our findings highlight the importance of rethinking geo-
+metric priors in unsupervised part discovery tasks, especially in scenarios where
+objects exhibit complex shapes or occur multiple times within the same image.
+By refraining from assuming specific shape or size priors, our model demon-
+strated enhanced generalization capabilities, making it applicable to a broader
+range of fine-grained image classification tasks. Overall, our study shows that the
+strong inductive biases learned by vision transformers during the self-supervised
+pre-training stage enable the use of flexible shape priors such as total variation,
+leading to robust performance on part discovery and the downstream classifica-
+tion task on all of the tested datasets.
+Acknowledgment. This work was supported in part by ANR project OBTEA
+ANR-22-CPJ1-0054-01 and, was granted access to the HPC resources of IDRIS
+under the allocation 2023-AD011014325 made by GENCI.
+
+PDiscoFormer: Part Discovery with Transformers
+15
+
+References
+
+1. Amir, S., Gandelsman, Y., Bagon, S., Dekel, T.: Deep vit features as dense visual
+descriptors. arXiv preprint arXiv:2112.05814 2(3), 4 (2021)
+2. Aniraj, A., Dantas, C.F., Ienco, D., Marcos, D.: Masking strategies for background
+bias removal in computer vision models. In: Proceedings of the IEEE/CVF In-
+ternational Conference on Computer Vision (ICCV) Workshops. pp. 4397–4405
+(October 2023)
+3. Ba,
+J.L.,
+Kiros,
+J.R.,
+Hinton,
+G.E.:
+Layer
+normalization.
+arXiv
+preprint
+arXiv:1607.06450 (2016)
+4. Beery, S., Van Horn, G., Perona, P.: Recognition in terra incognita. In: Proceedings
+of the European conference on computer vision (ECCV). pp. 456–473 (2018)
+5. Chan, T.F., Vese, L.A.: Active contours without edges. IEEE Transactions on
+image processing 10(2), 266–277 (2001)
+6. Chen, C., Li, O., Tao, D., Barnett, A., Rudin, C., Su, J.K.: This looks like that:
+deep learning for interpretable image recognition. Advances in neural information
+processing systems 32 (2019)
+7. Choudhury, S., Laina, I., Rupprecht, C., Vedaldi, A.: Unsupervised Part Discovery
+from Contrastive Reconstruction. In: Advances in Neural Information Processing
+Systems. vol. 34, pp. 28104–28118 (11 2021),
+8. Darcet, T., Oquab, M., Mairal, J., Bojanowski, P.: Vision transformers need regis-
+ters. In: The Twelfth International Conference on Learning Representations (2024),
+
+9. Desai, S., Ramaswamy, H.G.: Ablation-cam: Visual explanations for deep con-
+volutional network via gradient-free localization. In: 2020 IEEE Winter Confer-
+ence on Applications of Computer Vision (WACV). pp. 972–980 (2020).
+//doi.org/10.1109/WACV45572.2020.9093360
+10. Dobson, D.C., Santosa, F.: Recovery of blocky images from noisy and blurred data.
+SIAM Journal on Applied Mathematics 56(4), 1181–1198 (1996)
+11. Donoser, M., Urschler, M., Hirzer, M., Bischof, H.: Saliency driven total variation
+segmentation. In: ICCV. pp. 817–824. IEEE (2009)
+12. Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner,
+T., Dehghani, M., Minderer, M., Heigold, G., Gelly, S., Uszkoreit, J., Houlsby, N.:
+An Image Is Worth 16X16 Words: Transformers for Image Recognition At Scale.
+ICLR 2021 - 9th International Conference on Learning Representations (2021),
+
+13. Gautam, S., Höhne, M.M.C., Hansen, S., Jenssen, R., Kampffmeyer, M.: This
+looks more like that: Enhancing self-explaining models by prototypical relevance
+propagation. Pattern Recognition 136, 109172 (2023)
+14. He, J., Yang, S., Yang, S., Kortylewski, A., Yuan, X., Chen, J.N., Liu, S., Yang,
+C., Yu, Q., Yuille, A.: Partimagenet: A large, high-quality dataset of parts. In:
+European Conference on Computer Vision. pp. 128–145. Springer (2022)
+15. Hénaff, O.J., Koppula, S., Shelhamer, E., Zoran, D., Jaegle, A., Zisserman, A.,
+Carreira, J., Arandjelović, R.: Object discovery and representation networks. In:
+European Conference on Computer Vision. pp. 123–143. Springer (2022)
+16. Huang, Z., Li, Y.: Interpretable and accurate fine-grained recognition via region
+grouping. In: Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition. pp. 8662–8672 (2020)
+17. Hung, W.C., Jampani, V., Liu, S., Molchanov, P., Yang, M.H., Kautz, J.: SCOPS:
+Self-Supervised Co-Part Segmentation. In: IEEE Conf. on Computer Vision and
+Pattern Recognition (CVPR) (2019)
+
+16
+A. Aniraj et al.
+
+18. Jang, E., Gu, S., Poole, B.: Categorical reparameterization with gumbel-softmax.
+In: International Conference on Learning Representations (2017)
+19. Johnson, J., Alahi, A., Fei-Fei, L.: Perceptual losses for real-time style transfer and
+super-resolution. In: Computer Vision–ECCV 2016: 14th European Conference,
+Amsterdam, The Netherlands, October 11-14, 2016, Proceedings, Part II 14. pp.
+694–711. Springer (2016)
+20. Kingma, D.P., Ba, J.L.: Adam: A method for stochastic optimization. 3rd Inter-
+national Conference on Learning Representations, ICLR 2015 - Conference Track
+Proceedings (12 2015),
+21. van der Klis, R., Alaniz, S., Mancini, M., Dantas, C.F., Ienco, D., Akata, Z., Mar-
+cos, D.: PDiscoNet: Semantically consistent part discovery for fine-grained recog-
+nition. In: Proceedings of the IEEE/CVF International Conference on Computer
+Vision. pp. 1866–1876 (2023)
+22. Krizhevsky, A.: One weird trick for parallelizing convolutional neural networks.
+arXiv preprint arXiv:1404.5997 (2014),
+23. Marcos, D., Kierdorf, J., Cheeseman, T., Tuia, D., Roscher, R.: A whale's tail-
+finding the right whale in an uncertain world. In: International Workshop on Ex-
+tending Explainable AI Beyond Deep Models and Classifiers. pp. 297–313. Springer
+(2020)
+24. Mumford, D.B., Shah, J.: Optimal approximations by piecewise smooth functions
+and associated variational problems. Communications on pure and applied math-
+ematics (1989)
+25. Nauta, M., van Bree, R., Seifert, C.: Neural Prototype Trees for Interpretable
+Fine-Grained Image Recognition. In: Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR). pp. 14933–14943 (6 2021)
+26. Nauta, M., Jutte, A., Provoost, J., Seifert, C.: This looks like that, because... ex-
+plaining prototypes for interpretable image recognition. In: Joint European Con-
+ference on Machine Learning and Knowledge Discovery in Databases. pp. 441–456.
+Springer (2021)
+27. Nauta, M., Schlötterer, J., van Keulen, M., Seifert, C.: PIP-Net: Patch-Based
+Intuitive Prototypes for Interpretable Image Classification. Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (2023)
+28. Nilsback, M.E., Zisserman, A.: Automated flower classification over a large num-
+ber of classes. In: Indian Conference on Computer Vision, Graphics and Image
+Processing (Dec 2008)
+29. Oquab, M., Darcet, T., Moutakanni, T., Vo, H., Szafraniec, M., Khalidov, V., Fer-
+nandez, P., Haziza, D., Massa, F., El-Nouby, A., Assran, M., Ballas, N., Galuba,
+W., Howes, R., Huang, P.Y., Li, S.W., Misra, I., Rabbat, M., Sharma, V., Syn-
+naeve, G., Xu, H., Jegou, H., Mairal, J., Labatut, P., Joulin, A., Bojanowski, P.:
+DINOv2: Learning Robust Visual Features without Supervision. arXiv preprint
+arXiv:2304.07193 (2023),
+30. Pascanu, R., Mikolov, T., Bengio, Y.: On the difficulty of training recurrent neural
+networks. In: International conference on machine learning. pp. 1310–1318. Pmlr
+(2013)
+31. Ranasinghe, K., McKinzie, B., Ravi, S., Yang, Y., Toshev, A., Shlens, J.: Perceptual
+grouping in contrastive vision-language models. In: Proceedings of the IEEE/CVF
+International Conference on Computer Vision. pp. 5571–5584 (2023)
+32. Ribeiro, M.T., Singh, S., Guestrin, C.: "Why Should I Trust You?": Explaining
+the Predictions of Any Classifier. In: Proceedings of the 22nd ACM SIGKDD
+International Conference on Knowledge Discovery and Data Mining, San Francisco,
+CA, USA, August 13-17, 2016. pp. 1135–1144 (2016)
+
+PDiscoFormer: Part Discovery with Transformers
+17
+
+33. Rudin, C.: Stop explaining black box machine learning models for high stakes
+decisions and use interpretable models instead. Nature machine intelligence 1(5),
+206–215 (2019)
+34. Rudin, L.I., Osher, S., Fatemi, E.: Nonlinear total variation based noise removal
+algorithms. Physica D: nonlinear phenomena 60(1-4), 259–268 (1992)
+35. Rymarczyk, D., Struski, Å., Tabor, J., Zieliński, B.: Protopshare: Prototypical
+parts sharing for similarity discovery in interpretable image classification. In: Pro-
+ceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery & Data
+Mining. pp. 1420–1430 (2021)
+36. Selvaraju, R.R., Cogswell, M., Das, A., Vedantam, R., Parikh, D., Batra, D.: Grad-
+CAM: Visual Explanations from Deep Networks via Gradient-Based Localization.
+In: 2017 IEEE International Conference on Computer Vision (ICCV). pp. 618–626
+(2017).
+37. Shannon, C.E.: A Mathematical Theory of Communication. Bell System Technical
+Journal 27(3), 379–423 (1948).
+tb01338.x
+38. Siméoni, O., Puy, G., Vo, H.V., Roburin, S., Gidaris, S., Bursuc, A., Pérez, P.,
+Marlet, R., Ponce, J.: Localizing objects with self-supervised transformers and no
+labels. arXiv preprint arXiv:2109.14279 (2021)
+39. Srivastava, N., Hinton, G., Krizhevsky, A., Sutskever, I., Salakhutdinov, R.:
+Dropout: a simple way to prevent neural networks from overfitting. The journal of
+machine learning research 15(1), 1929–1958 (2014)
+40. Strong, D., Chan, T.: Edge-preserving and scale-dependent properties of total vari-
+ation regularization. Inverse problems 19(6), S165 (2003)
+41. Unger, M., Pock, T., Trobin, W., Cremers, D., Bischof, H.: Tvseg-interactive total
+variation based image segmentation. In: BMVC. vol. 31, pp. 44–46. Citeseer (2008)
+42. Wang, J., Liu, H., Wang, X., Jing, L.: Interpretable image recognition by construct-
+ing transparent embedding space. In: Proceedings of the IEEE/CVF International
+Conference on Computer Vision. pp. 895–904 (2021)
+43. Welinder, P., Branson, S., Mita, T., Wah, C., Schroff, F., Belongie, S., Perona,
+P.: Caltech-UCSD Birds 200. Tech. Rep. CNS-TR-2010-001, California Institute of
+Technology (2010)
+44. Xiao, K.Y., Engstrom, L., Ilyas, A., Madry, A.: Noise or signal: The role of im-
+age backgrounds in object recognition. In: International Conference on Learning
+Representations (2020)
+45. Xu, J., De Mello, S., Liu, S., Byeon, W., Breuel, T., Kautz, J., Wang, X.: Groupvit:
+Semantic segmentation emerges from text supervision. In: Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition. pp. 18134–
+18144 (2022)
+46. Xu-Darme, R., Quénot, G., Chihani, Z., Rousset, M.C.: Particul: part identification
+with confidence measure using unsupervised learning. In: International Conference
+on Pattern Recognition. pp. 173–187. Springer (2022)
+47. Yeh, R.A., Hu, Y.T., Ren, Z., Schwing, A.G.: Total variation optimization layers
+for computer vision. In: CVPR. pp. 711–721 (2022)
+
+18
+A. Aniraj et al.
+
+Table 3: Training details for PDiscoFormer on different datasets.
+
+Dataset
+Batch Size per GPU
+Training Time
+CUB
+8
+4 hours
+PartImageNet OOD
+32
+1 hour 10 minutes
+Flowers
+32
+14 minutes
+
+Table 4: Inference speed comparison on the CUB dataset with K = 8.
+
+Model
+Inference Speed (images/second)
+Huang [16]
+139.31
+PDiscoNet [21]
+248.07
+PDiscoFormer
+326.18
+
+A
+Training Settings
+
+We trained all our models using the Adam optimizer [20]. The class token, posi-
+tion embedding, and register token of the ViT were kept unfrozen, while all other
+ViT layers were frozen during training. We used a starting learning rate of 10−6
+
+for the ViT backbone fine-tuned tokens, 10−3 for the linear projection layer to
+form the part prototypes, and 10−2 for the modulation and the final linear layer
+used for classification. We used a variable batch size, with a minimum of 16, by
+adjusting the learning rate using the square root scaling rule [22]. Training lasted
+for a total of 28 epochs, and we employed a step learning rate schedule, reducing
+the learning rate by a factor of 0.5 every 4 epochs (as in [21]). Additionally, to
+regularize our training process, we applied gradient norm clipping [30] with a
+constant value of 2 for all experiments. In all our experiments, the loss weight
+of the background loss Lp0 was set to 2, while all other loss weights were set to
+a value of 1. We used a constant part dropout value of 0.3.
+
+B
+Compute Requirements and Model Performance
+
+Compute Requirements (Training). We trained our models on a machine
+equipped with 4 NVIDIA GeForce RTX 2080 Ti GPUs. The training duration
+varied depending on the dataset and batch size, as detailed in Tab. 3.
+Inference Speed. Taking the models trained on the CUB dataset [43] with
+K = 8 as an example, the inference speed on a workstation with a single NVIDIA
+GeForce RTX 3090 GPU, averaged over 100 runs, is presented in Tab. 4.
+
+C
+Effect of backbone
+
+In this experiment, we investigate the impact of different deep neural network
+backbones on the performance of our method. The results are summarized
+in Tab. 5.
+
+PDiscoFormer: Part Discovery with Transformers
+19
+
+Table 5: Performance of our method and the state-of-the-art method from the litera-
+ture [21] under different backbone configurations.
+
+CUB (%)
+PartImageNet OOD (%)
+Flowers (%)
+
+Method
+K Kp ↓NMI ↑ARI ↑Top-1
+Acc. ↑K NMI ↑ARI ↑Top-1
+Acc. ↑K
+Fg.
+mIoU ↑
+Top-1
+Acc. ↑
+
+4
+9.12
+37.82
+15.26 86.17 8
+27.13
+8.76
+88.58
+2
+19.04
+77.51
+8
+8.52
+50.08
+26.96 86.72 25 32.41
+10.69
+89.00
+4
+34.76
+83.05
+16 7.67
+56.87
+38.05 87.49 50 41.49
+14.17
+86.06
+8
+49.10
+81.04
+
+PDiscoNet [21]
++ R101
+
+4 11.07 34.32
+16.94 82.59 8
+11.44
+29.64
+87.33
+2
+0.89
+8.41
+8
+8.27
+44.59
+25.63 84.25 25 13.86
+27.55
+88.42
+4
+0.08
+7.12
+16 9.53
+35.64
+17.61 83.84 50
+7.91
+19.64
+88.78
+8
+0.00
+4.96
+
+PDiscoFormer
++ R101
+
+4
+7.70
+52.59
+26.66 88.61 8
+19.28
+34.72
+90.95
+2
+4.92
+92.75
+8
+6.34
+65.01
+37.90 86.95 25 28.23
+50.35
+90.29
+4
+1.95
+95.48
+16 5.95
+68.63
+43.41 84.04 50 29.48
+27.80
+89.69
+8
+13.18
+97.40
+
+PDiscoNet
++ ViT-B
+
+4
+8.19
+52.88
+23.22 88.87 8
+28.84
+55.66
+90.35
+2
+67.28
+99.41
+8
+6.23
+67.59
+41.35 88.56 25 43.36
+62.82
+90.47
+4
+58.71
+99.43
+16 6.44
+69.54
+49.99 85.10 50 44.48
+57.91
+90.59
+8
+72.27
+99.53
+PDiscoFormer +
+partially fine-tuned
+ViT-B
+
+PDiscoFormer +
+frozen ViT-B
+
+4
+7.41
+58.13
+25.11 89.06 8
+29.00
+52.40
+89.75
+2 73.62
+99.61
+8
+6.54
+69.87
+42.76 89.41 25 44.71
+59.27
+90.77
+4
+73.32
+99.54
+16 5.74 73.38 55.83 88.72 50 46.29 62.21 91.01 8
+69.59
+99.64
+
+Effect of Backbone Pre-Training for Part Discovery. From Tab. 5, it is
+evident that our proposed part discovery priors perform optimally on the self-
+supervised DinoV2 ViT backbone. However, when compared to the PDiscoNet
+model with the same ResNet backbone, which utilizes the stricter concentra-
+tion loss prior [17, 21], the resultant PDiscoFormer+R101 model exhibits infe-
+rior performance for both part discovery and classification. For instance, on the
+Oxford Flowers dataset, the PDiscoFormer+R101 model’s training collapses for
+all tested values of K, resulting in classification accuracies of 8.4%, 7.1%, and
+5%, respectively. In contrast, the PDiscoNet+R101 model achieves significantly
+higher accuracies of 77.5%, 83.1%, and 81% for the same values of K. Despite
+relatively better performance on the CUB and PartImageNet OOD datasets, the
+PDiscoFormer+R101 model still lags behind the self-supervised ViT and related
+methods from the literature. These results indicate that a strong part shape
+prior, such as the concentration loss, is indeed required to obtain consistent part
+maps for ImageNet-pretrained CNN backbones. Moreover, they highlight the
+crucial role of the strong inductive biases that the ViT model learns during the
+self-supervised pre-training stage, enabling the use of a more flexible geometric
+prior such as the total variation loss.
+Frozen vs partially fine-tuned ViT. We observe from Tab. 5 that our method
+performs best when we fine-tune the position embeddings, class, and register to-
+kens along with our additional layers while keeping the rest of the ViT frozen.
+Although our losses can still operate on a completely frozen ViT, as shown
+in Tab. 5, the performance is generally a bit lower, particularly for higher values
+of K. For instance, on the CUB dataset with 16 parts, our method with the
+partially fine-tuned ViT achieved 55.8% ARI, 73.4% NMI, and 88.7% classifi-
+
+20
+A. Aniraj et al.
+
+Image
+PDiscoNet
++R101
+Ours
++ R101
+PDiscoNet
++ ViT-B
+
+Ours
++ ViT-B
+(frozen)
+Ours
+
+Fig. 8: Qualitative results on CUB for K = 8.
+
+cation accuracy, compared to 50% ARI, 69.5% NMI, and 85.1% classification
+accuracy for our method with the fully frozen backbone. Similarly, on the Par-
+tImageNet OOD dataset with 50 parts, our method with the partially fine-tuned
+ViT achieved 62.2% ARI, 46.3% NMI, and 91% classification accuracy, compared
+to 57.9% ARI, 44.5% NMI, and 90.6% classification accuracy for our method
+with the fully frozen backbone. These results indicate that some level of fine-
+tuning, combined with our proposed training objective function, is beneficial for
+discovering consistent parts from the self-supervised ViT.
+
+Qualitative Analysis. For our qualitative analysis, we examine the results ob-
+tained for the CUB (K = 8 parts), Oxford Flowers (K = 2 parts), and PartIm-
+ageNet OOD (K = 8 parts) datasets, as depicted in Fig. 8, Fig. 9, and Fig. 10,
+respectively. In Fig. 8, our model with the partially fine-tuned self-supervised
+ViT (last row) demonstrates the most consistent results for part discovery and
+exhibits superior segmentation of discovered parts, such as the bird wings. The
+frozen ViT model (second last row) generally identifies consistent parts but oc-
+casionally misassigns background regions, such as the sky, as foreground parts.
+Notably, models with the self-supervised ViT backbone tend to more accurately
+segment foreground image regions and bird wings, indicating the effectiveness
+of representations learned during self-supervised pre-training for part discovery.
+Turning to Fig. 9, only our models with the partially fine-tuned and frozen ViT
+(last two rows) successfully identify consistent parts. Among these, the partially
+fine-tuned model achieves better segmentation of the flowers and produces more
+semantically interpretable part assignments, with one part clearly corresponding
+
+PDiscoFormer: Part Discovery with Transformers
+21
+
+Image
+PDiscoNet
++R101
+Ours
++ R101
+PDiscoNet
++ ViT-B
+
+Ours
++ ViT-B
+(frozen)
+Ours
+
+Fig. 9: Qualitative results on Flowers for K = 2.
+
+to the flower calyx and the other to the corolla. Finally, in Fig. 10, our model
+with the partially fine-tuned ViT (last row) demonstrates the most consistent
+and semantically interpretable parts. For instance, the blue part corresponds to
+the upper part of the animal’s face, the green part to the snout, and the orange
+part to the mouth. The frozen ViT model (second last row) generally localizes
+the object of interest well but produces parts that are qualitatively more chal-
+lenging to interpret. For example, it assigns the same part (red color) to the face
+of a bear and an alligator, although this part corresponds to the snout for dogs
+and leopards. Additionally, the PDiscoNet+ViT-B model consistently discovers
+the mouth of the animal as a part (blue color) and assigns the upper part of the
+face to the same part (orange color) in most cases. However, some of the other
+discovered parts (red and green colors) are less consistent and harder to interpret.
+Furthermore, this model achieves lower-quality segmentation of foreground parts
+due to the compactness prior of the concentration loss. In comparison, the PDis-
+coNet model and our model with the ResNet backbone find parts that are even
+more inconsistent, making them harder to interpret. Additionally, these models
+demonstrate poorer segmentation of the salient object in the image compared
+to our models with the frozen and partially fine-tuned ViT.
+
+D
+Entropy Analysis of Part Attention Maps
+
+We conducted an analysis of the average entropy (see Eq. (12) in the main paper)
+in the part attention maps of our model ablations in the CUB (K = 16) and
+
+22
+A. Aniraj et al.
+
+Image
+PDiscoNet
++R101
+Ours
++ R101
+PDiscoNet
++ ViT-B
+
+Ours
++ ViT-B
+(frozen)
+Ours
+
+Fig. 10: Qualitative results on PartImageNet OOD for K = 8.
+
+PartImageNet OOD (K = 25) datasets. The results are summarized in Fig. 11.
+From Fig. 11, it is evident that the Gumbel-Softmax mechanism [18], followed
+by the total variation loss (Ltv) and entropy loss (Lent), significantly contribute
+to reducing the overall entropy in our part attention maps for both the CUB and
+PartImageNet OOD datasets. This underscores their crucial role in minimizing
+ambiguity in our part assignments and highlights the necessity of considering
+multiple components for effective entropy reduction, rather than solely focusing
+on minimizing the entropy loss (Lent). By reducing information leakage between
+background and foreground assignments, lower entropy could help prevent the
+model from learning spurious correlations from background image regions [2,4,
+44], thereby enhancing model robustness across diverse imaging environments.
+Additionally, lower entropy between foreground part assignments would ensure
+that each discovered foreground part is a unique, independent feature. We believe
+this mechanism allows our model, as demonstrated in our empirical results, to
+effectively scale for different values of K without any hyper-parameter tuning.
+
+E
+Experiment on the PartImageNet Seg Dataset
+
+We conducted an experiment on the PartImageNet Seg dataset, a recent ad-
+dition to the PartImageNet family specifically tailored for image classification
+tasks [14]. This dataset comprises 158 classes organized into 11 super-classes,
+with a total of 41 part classes, maintaining consistency with the PartImageNet
+OOD version. With a training set comprising 21,662 images and a test set con-
+
+PDiscoFormer: Part Discovery with Transformers
+23
+
+Entropy of Part Attention Maps on PartImageNet OOD
+
+Entropy of Part Attention Maps on CUB
+
+0.1208
+
+No Gumbel
+
+0.1075
+
+No Gumbel
+
+0.0638
+
+No Part Dropout
+
+0.0303
+
+No Part Dropout
+
+0.0799
+
+No per-part LN
+
+0.044
+
+No per-part LN
+
+0.1179
+
+No 
+
+0.099
+
+No 
+
+tv
+
+tv
+
+0.0662
+
+No 
+
+0.0173
+
+No 
+
+p
+
+1
+
+p
+
+1
+
+0.0689
+
+No 
+
+0.0316
+
+No 
+
+orth
+
+orth
+
+0.0561
+
+No 
+
+0.0477
+
+No 
+
+eq
+
+eq
+
+0.0982
+
+No 
+
+0.0615
+
+No 
+
+ent
+
+ent
+
+0.0595
+
+No 
+
+0.0254
+
+No 
+
+p
+
+p
+
+0
+
+0
+
+0.0677
+
+Full Model
+
+0.0357
+
+Full Model
+
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+
+Entropy
+
+Entropy
+
+Fig. 11: Entropy of part attention maps of the different model ablations on the CUB
+(K = 16) and PartImageNet OOD (K = 25) test sets.
+
+taining 2,405 images, assessing the part discovery and classification capabilities
+of our method on this dataset can provide further insights into its overall gener-
+alization. Given the absence of comparable results in the existing literature for
+unsupervised part discovery on this new dataset, we conducted our experiments
+from scratch for all models presented in Tab. 6. This approach ensures that our
+evaluation is thorough and offers valuable insights into the effectiveness of our
+method in this evaluation setting.
+Quantitative Results. We observe from Tab. 6 that our method with the self-
+supervised ViT backbone consistently outperforms the state-of-the-art method
+in terms of consistency in part discovery, as indicated by the NMI and ARI
+scores. For instance, for K = 41 parts, our method achieves NMI and ARI
+scores of 44.9% and 60%, respectively, compared to 27.9% and 40% by the
+PDiscoNet+ViT-B method and 24% and 40.3% by the original PDiscoNet. Ad-
+ditionally, similar to our previous experiments, we observe that the classification
+accuracy for the PDiscoNet method (also with the self-supervised ViT backbone)
+reduces with an increase in the number of parts to be discovered (K). Specifi-
+cally, from Tab. 6, our model’s classification accuracy increases from 87.7% to
+88.7%, while it reduces from 88.4% to 87.7% for PDiscoNet+ViT-B and from
+85% to 84.3% for the original PDiscoNet. These results further indicate the gen-
+eralization capability of our model for datasets containing objects with diverse
+part shapes.
+Qualitative Results. Qualitative results for the PartImageNet Seg dataset
+with K = 25 parts are shown in Fig. 12, featuring three images each for the
+super-classes Car, Quadruped, and Snake. From Fig. 12, it is evident that our
+model is capable of consistently identifying parts with diverse shapes, such as
+the vehicle bumper, the dog’s snout and ears, and the snake’s body. The parts
+discovered by our model are also, on average, easier to interpret semantically. In
+contrast, the compared methods struggle to localize parts with irregular shapes,
+such as the snake body, and are generally less consistent, making them harder
+to interpret.
+
+24
+A. Aniraj et al.
+
+Table 6: Quantitative results on the PartImageNet Seg dataset
+
+PartImageNet Seg (%)
+
+Method
+K NMI↑ARI↑Top-1
+Acc.↑
+
+8 10.69 32.43 85.03
+16 16.91 37.41 84.49
+25 18.44 40.70 84.12
+41 23.99 40.27 84.28
+50 21.98 39.40 84.32
+
+PDiscoNet [21]
+
+8 16.68 32.01 88.36
+16 26.24 48.18 88.81
+25 25.93 46.81 88.90
+41 27.93 39.96 87.86
+50 28.68 34.13 87.73
+
+PDiscoNet
++ ViT-B
+
+8 20.29 38.90 87.65
+16 39.07 56.95 87.98
+25 43.18 64.61 88.15
+41 44.85 59.95 88.57
+50 44.06 60.10 88.65
+
+PDiscoFormer
+(Ours)
+
+Image
+PDiscoNet
+PDiscoNet
++ ViT-B
+Ours
+
+Fig. 12: Qualitative results on PartImageNet Seg for K = 25 parts. The first 3 images
+belong to the super-class Car, the next 3 to the super-class Quadruped and the final 3
+images belong to the super-class Snake.

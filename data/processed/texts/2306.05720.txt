@@ -1,0 +1,867 @@
+Beyond Surface Statistics:
+Scene Representations in a Latent Diffusion Model
+
+Yida Chen
+Harvard University
+Cambridge, MA 02138
+
+Fernanda Viégas
+Harvard University
+Cambridge, MA 02138
+
+Martin Wattenberg
+Harvard University
+Cambridge, MA 02138
+
+arXiv:2306.05720v2 [cs.CV] 4 Nov 2023
+
+Abstract
+
+Latent diffusion models (LDMs) exhibit an impressive ability to produce realistic
+images, yet the inner workings of these models remain mysterious. Even when
+trained purely on images without explicit depth information, they typically output
+coherent pictures of 3D scenes. In this work, we investigate a basic interpretability
+question: does an LDM create and use an internal representation of simple scene
+geometry? Using linear probes, we find evidence that the internal activations of
+the LDM encode linear representations of both 3D depth data and a salient-object
+/ background distinction. These representations appear surprisingly early in the
+denoising process—well before a human can easily make sense of the noisy images.
+Intervention experiments further indicate these representations play a causal role
+in image synthesis, and may be used for simple high-level editing of an LDM’s
+output.
+
+1
+Introduction
+
+Latent diffusion models, or LDMs [24], are capable of synthesizing high-quality images given just a
+snippet of descriptive text. Yet it remains a mystery how these networks transform, say, the phrase
+“car in the street” into a picture of an automobile on a road. Do they simply memorize superficial
+correlations between pixel values and words? Or are they learning something deeper, such as an
+underlying model of objects such as cars, roads, and how they are typically positioned?
+
+In this work we investigate whether a specific LDM goes beyond surface statistics—literally and
+figuratively. We ask whether an LDM creates an internal 3D representation of the objects it portrays
+in two dimensions. To answer this question, we apply the methodology of linear probing [1] to a
+pretrained LDM [29]. Our probes find linear representations of both a continuous depth map and a
+salient-object / background distinction. Intervention experiments further revealed the causal roles of
+these two representations in the model’s output.
+
+Our work fits into a long line of interpretability research. The general question of whether generative
+neural networks can be characterized as merely aggregating surface statistics is an area of heated
+debate in natural language processing [4, 5], with some evidence suggesting they do build world
+models [11, 19, 18].
+
+Investigations of image synthesis systems are less numerous, but suggest internal representations of
+scene geometry may play a role. For example, recent works leveraged pretrained diffusion models as
+priors when optimizing a neural radiance field network for 3D generations [20, 30]. Independent of
+our study, as part of an effort to steer denoising diffusion probabilistic models (DDPMs) [12], Kim
+et al. [15] found evidence of a complex non-linear representation of depth in a DDPM. Section 6
+discusses this and other related work in more detail.
+
+Figure 1: LDM has an internal representation of depth and saliency that develops in the early
+denoising steps. Row 1: decoded images. Rows 2 & 4 are predictions of probing classifiers based on
+the LDM’s internal activations. Rows 3 & 5 are baseline predictions from off-the-shelf models that
+take decoded RGB images decoded at each step as input. (See Appendix C for more examples.)
+
+Our findings—that a simple linear representation of 3D geometry plays a causal role in LDM image
+synthesis—provide additional evidence that neural networks learn to create world models in the
+context of image synthesis, and offer a basis for further study of the issue.
+
+2
+Background
+
+Stable Diffusion: We chose Stable Diffusion because it is an open-source text-to-image diffusion
+model used by millions of people [10]. All of our experiments were conducted on the Stable Diffusion
+v11 that was trained without explicit depth information. Note that we did not use the subsequent
+version, which incorporated depth as a prior.
+
+Stable Diffusion is a two-stage image generative framework that consists of (1) a LDM ϵθ for noise
+prediction and (2) a variational autoencoder (VAE) for converting data between latent and image
+space. It learned to generate images from noisy observations by reversing a forward diffusion process.
+
+In the forward process, the encoder of VAE compresses a RGB image x ∈RH×W ×3 to a latent
+variable z ∈R
+H
+m × W
+
+m ×4 that resides in a low dimensional space. The forward diffusion transforms z
+to a normally distributed variable via Gaussian transition.
+
+The LDM ϵθ is trained to predict the noise added during the forward diffusion. In the generative
+process, ϵθ synthesizes a z by progressively denoising a sampled noisy observation zT ∼N(0, I).
+The decoder of VAE converts the denoised latent z to the image space.
+
+To allow conditional sampling p(z|y), the LDM fuses contextual embeddings τ(y) through its cross-
+attention layer [28]. Our experiments study the text-to-image variant of Stable Diffusion, where y is
+a prompt in a word embedding space and τ is the CLIP text encoder [21].
+
+Probing Classifiers are used to interpret the representation learned by deep neural networks [1, 3].
+We borrow this technique to investigate whether an LDM builds a representation of per-pixel depth.
+
+Probing classifiers take the intermediate activation of a neural network as input to infer some
+properties. We define the intermediate activation as the model’s internal representation. A high
+prediction accuracy indicates a strong correlation between the learned representations of the model
+and the predicted property.
+
+The probing classifier may find spurious correlations when the model has an enormous feature space.
+To quantify the strength of correlation found by the classifier p, previous works test p on the internal
+representation of a randomized untrained model in addition to the trained version [7, 31, 6]. The
+performance on the untrained model serves as a baseline for the probing task.
+
+1Stable Diffusion v1 model: github.com/CompVis/stable-diffusion
+
+Nevertheless, high probing performance does not imply a causal relation between the representations
+of model and the property of its output. To uncover a causal link, recent works use the projection
+learned by p to modify the internal activations of model and measure the effects on its outputs [27, 9].
+We adopt the approach above in designing our intervention experiments 5.1.
+
+3
+Probing for discrete and continuous depth
+
+Stable Diffusion often creates scenes that appear to have a consistent 3D depth dimension, with
+regions arranged from closest to farthest relative to a viewpoint. However, besides this continuous
+depth dimension, we also see images with Bokeh effects, where some objects are in clear focus and
+their background surroundings are blurred. We therefore explored the world representations of depth
+from two perspectives: (1) a discrete binary depth representation from the perspective of human
+cognition, where each pixel either belongs to certain visually attractive objects or their background,
+and (2) a continuous depth representation from the perspective of 3D geometry, where all pixels
+have a relative distance to a single viewpoint.
+
+We formulated probing for binary depth as a salient object detection task [17], which aims to segment
+the objects that are most distinctive to human vision. The probing for continuous depth dimension
+can be characterized by a monocular depth estimation task [23].
+
+Recent works have shown that vision transformers outperformed convolutional neural networks in
+depth estimation tasks [13, 22]. As part of our work on depth probing, we also pursued a preliminary
+study where we examined the depth representations in convolutional layers but found they were
+generally weaker than the those in self-attention layers (see Appendix A). Our study thus focused
+on the representation learned by global self-attention layers when exploring the depth information
+encoded in Stable Diffusion.
+
+3.1
+Synthetic dataset
+
+For our probing experiments, we created a dataset of synthesized images paired with their input
+latents zT ∼N(0, 1), prompts y, and depth labels d. For this synthetic dataset, we generated 1000
+images using a pretrainedStable Diffusion model2 and linear multi-step scheduler [14] with 15 steps.
+
+To ensure the quality and diversity of synthesized images, we sampled prompts from a partition of the
+LAION-AESTHETICS v2 dataset [25], the same dataset used for fine-tuning the pretrained Stable
+Diffusion model. Each image is generated using a different prompt and latent input.
+
+Since the output images do not have ground truth labels for salient-object / background, we instead
+synthesized them using an off-the-shelf salient object tracing model TRACER [17]. Similarly for
+depth, we estimated the relative inverse depth map3 of output images using the pretrained MiDaS
+model [23]. To our knowledge, MiDaS and Tracer are the best off-the-shelf models for monocular
+depth estimation and salient object detection, respectively.
+
+In creating this synthetic dataset, we had to address problematic images. These ranged from offensive
+content to images with corrupted or distorted objects. For ethical concerns, we manually scrutinized
+the synthesized dataset and discarded images with explicit sexual and violent content. It is also
+challenging to infer depth from corrupted images using external models trained on natural images. For
+controlling quality of synthesized labels, we excluded images that were visually corrupted (∼10%
+of dataset). Finally, we took out images without the depth concept, such as black-and-white comic
+art. After generating the labels, we removed the images where TRACER failed to identify any salient
+object. The resulting dataset has 617 samples. We split it into a training set with 246 samples and a
+test set with 371 samples for the following experiments.
+
+3.2
+Binary depth: salient object and background
+
+To investigate discrete binary depth representations inside the LDM, we extract the intermediate
+output ϵθ(l,t) ∈Rhl×wl×c of its self-attention layer l at sampling step t. A linear classifier pb is
+trained on ϵθ(l,t) to predict the pixel-level logits ˆdb ∈R512×512×2 for salient and background classes.
+
+2We initialized Stable Diffusion with official checkpoint v1.4.
+3Depth output by MiDaS is proportional to the inverse of absolute distance 1
+
+D between the view and a region.
+
+This probing classifier can be written as:
+
+hl
+, 512
+
+ˆdb = Softmax(Interp(Wϵθ(l,t), 512
+
+wl
+))
+(1)
+
+The LDM’s self-attention layers operate at different spatial and feature dimensions (see Appendix B).
+We interpolate lower resolution predictions Wϵθ(l,t) to the size of synthesized images. W ∈Rc×2
+are the trainable parameters of probing classifier. W is updated using gradient descent that minimizes
+the Cross Entropy loss between ˆdb and the synthetic label db.
+
+We measured the segmentation performance using the Dice coefficient between the predictions
+˜db = arg max( ˆdb) and the synthetic ground truth db, D( ˜db, db) = 2( ˜
+db ∩db)
+| ˜
+db| + |db|.
+
+3.3
+Continuous relative depth information
+
+We are also interested if a more fine-grained depth dimension also exists inside LDM. Similar to the
+probing of binary depth, we extract the output from self-attention layers and train a linear regressor
+on them to predict the MiDaS relative depth map dc ∈R512×512×1.
+
+ˆdc = Interp(Wϵθ(l,t), 512
+
+hl
+, 512
+
+wl
+)
+(2)
+
+We update W ∈Rc×1 by minizing the Huber loss between ˆdc and dc. We also experimented with
+regularizing depth predictions with a smoothness constraint [13]. However, the smoothness constraint
+had a negative impact on probing (see Appendix F). Following existing practices [8, 23], the accuracy
+of depth probing is measured using root mean squared error.
+
+We probed the internal representations of salient regions and depth across all self-attention layers
+{l1, l2, . . . , l16} of LDM at all sampling steps (t = {1, 2, . . . , 15}). Probing classifiers were trained
+separately on each layer and step. For a fair comparison, we fixed the number of training epochs,
+optimization algorithm and learning rate for all training.
+
+Controlled Probing Experiment: Because of the large feature space of LDM, probing classifiers
+may find a spurious representation of depth. We need a baseline to quantify the strength of the
+internal representation found by probing classifiers. For both probing tasks, we measured the baseline
+performance using probing classifiers trained on the internal representations of a randomized LDM.
+
+4
+Linear Representations of Depth and Salient Objects
+
+For both probing tasks, we obtained high probing performance using the internal representations
+of LDM, especially in the later denoising steps. As shown in Figure 2, the performance increased
+significantly in the first 5 steps and gradually converged in the late denoising process. At the last step,
+probing classifiers achieved an average Dice coefficient of 0.85 for salient object segmentation and
+average RMSE of 0.47 for depth estimation when inputted with decoder side self-attention.
+
+The Dice coefficient suggests that our probing classifiers achieved high-quality salient object segmen-
+tation in the late denoising steps. As Figure 3a shows, the probing classifier captured salient objects in
+various scenes when inferring on a decoder side self-attention output at the last denoising step. Even
+though the spatial dimension of input representations is only
+1
+16 × 1
+
+16 of output images, the predicted
+masks still catch fine-grained details such as limbs of human and legs of chairs. Our synthetic dataset
+covers a variety of objects, including humans, vehicles, furniture, animals, machinery, etc. It’s
+unlikely the linear classifiers learned to select features corresponding to certain kinds of objects or
+memorize their locations in images. Probing classifiers also obtained accurate depth estimations at
+late denoising steps. As shown in Figure 3b, the probing predictions matched the synthetic depth
+maps for images of both indoor and outdoor scenes.
+
+In the controlled experiment, the probing classifiers performed significantly worse when trained
+on the randomized LDM. At the last denoising step, the highest Dice coefficient achieved on the
+randomized LDM was only 0.30 and the smallest RMSE in depth estimation was only 0.95. These
+substantial differences indicate the internal representations of trained LDM have a strong correlation
+with the depth which cannot be easily captured by a random model.
+
+Figure 2: Probing performance of salient object segmentation and depth estimation on test set. For
+both tasks, performance grew rapidly in the early denoising process and converged after step 5. The
+black dashed line is the baseline performance measured on a randomized LDM at step 15, significantly
+lower than its trained counterpart.
+
+Figure 3: Row 2 shows the predictions of two probing classifiers. The probing classifiers achieved an
+average Dice score of 0.85 for salient object segmentation and an average RMSE of 0.50 for depth
+estimation on 371 test samples.
+
+4.1
+Depth emerges at early denoising steps
+
+We saw a dramatic increase in probing performance during the first 5 steps. For both probing tasks,
+the performance difference between successive denoising steps vanished after step 5. High probing
+performance at the early steps suggests an interesting behavior of LDM: the depth dimension develops
+at a stage when the decoded image still appears extremely noisy to a human.
+
+As Figure 4a shows, the images decoded at early denoising steps are heavily corrupted. A human
+viewer can barely capture any meaningful information from them. Unexpectedly, the representation
+of LDM delineates the salient object in the second denoising step. For comparison, we ran TRACER
+on the images decoded from partially denoised latents. This state-of-the-art salient object detection
+model cannot find the salient objects inside noisy images.
+
+A continuous depth dimension also appears at the earlier steps. Figure 4b shows that the internal
+representation has determined the layout of the hotel room as early as at step 5. We ran MiDaS on the
+partially denoised images, but it failed until a significant amount of noise was removed (at step 11).
+
+4.2
+Is depth represented in latent space?
+
+Because an LDM operates on a latent-space representation of an image, one might ask whether this
+representation itself contains depth information. To address this question, we performed a probing
+study of the VAE self-attention layer.
+
+For the salient object detection task, the self-attention layer in VAE cannot decode salient objects
+from the corrupted latents at early steps (see Table 1). Its performance starts to improve when details
+in latent vectors become more perceptible. After the latent is completely denoised at step 15, the
+
+Table 1: Weak depth information was found in VAE’s bottleneck activations, but LDM encodes a
+much stronger representation of depth. This table shows the probing performance achieved by the
+LDM’s and VAE’s self-attention layers at steps 5 and 15.
+
+Step
+Model
+Saliency Detection
+(average Dice ↑)
+Depth Estimation
+(average RMSE ↓)
+
+5
+LDM
+0.84
+0.53
+VAE
+0.15
+0.96
+
+15
+LDM
+0.85
+0.47
+VAE
+0.71
+0.84
+
+Figure 4: LDM’s internal representations of salient object (a) and depth (b) appear surprisingly early
+in the denoising. Probing the internal representations of VAE, however, cannot find the salient objects
+and depth when latents are corrupted. We reported the Dice coefficient and RMSE between probing
+results at each step and the synthetic label obtained at step 15.
+
+segmentation performance of VAE self-attention is slightly lower than the average performance of
+LDM decoder side self-attention (Dice coefficient of 0.71 vs 0.85). For the depth estimation, the
+self-attention layer of VAE failed across all steps. The average RMSE obtained by VAE self-attention
+at the final step is still 0.84.
+
+These results suggest that the VAE bottleneck does not contain a significant linear representation of
+depth early in the denoising process. Later in the process, some saliency / background information
+emerges. In all cases, it seems the LDM has a stronger representation of depth.
+
+5
+Causal Role of Depth Representation
+
+Probing experiments show a high correlation between the internal representations of LDM and the
+depth of its output images. But does this representation play a causal role? To answer this question,
+we designed causal intervention experiments for salient (foreground) object and depth representations.
+Essentially, we want to change the model’s output by solely modifying the internal representations in
+LDM using the projection learned by our probing classifiers.
+
+5.1
+Intervention experiment
+
+Intervention: Repositioning foreground objects. Our goal is to see if changing the depth represen-
+tation, with the same prompt and initial input, will lead to a corresponding change in apparent depth
+in the output image. To modify the geometry while preserving the semantics of original output, we
+test a minimal change: we identify a foreground object, and translate its representation in 2D space.
+
+When translating the object’s representation, we used a modified salient object mask d′
+b as the
+reference. The mask d′
+b was generated by randomly translating the original mask db with vertical and
+
+Figure 5: This figure illustrates our intervention workflow, where the foreground object was repo-
+sitioned in the intervened output. When modifying the representations at a chosen layer (in red),
+we interrupt LDM before the layer forwards its activation ϵθ(l,t). ϵθ(l,t) is updated so the probing
+classifier’s prediction changes to match the modified label. We replace ϵ′
+θ(l,t) with the original
+activations and resume the denoising process. Since LDM uses the latents denoised from previous
+step as input, activations after the intervened layers are also affected by the modification (highlighted
+in yellow). We adopt a similar intervention scheme for the depth representation.
+
+Representations
+Pre-intervention
+Post-intervention
+Saliency (Dice ↑)
+0.46
+0.69
+Depth (RMSE ↓)
+1.02
+0.63
+
+Figure 6: Quantitative results show that intervening saliency representation had causal effects on
+model’s outputs. The median Dice coefficient between modified salient object masks and synthetic
+masks of 1851 intervened outputs is 0.69 (vs. 0.46 of null baseline). The median RMSE between
+modified depth maps and depth maps of 1855 intervened outputs is 0.63 (vs. 1.02 of null baseline).
+
+horizontal translations sampled from U(−120, −90) ∪(90, 120). We created 5 different d′
+b for each
+sample in the test set.
+
+The intervention then modifies the LDM’s representation so the probing classifier’s output, if us-
+ing a modified representation as input, changes to d′
+b. This is achieved by updating the internal
+representation ϵθ(l,t) using gradients from the probing classifier pb. The weights of pb are frozen.
+
+g = ∂LCE(pb(ϵθ(l,t)), d′
+b)
+∂ϵθ(l,t)
+(3)
+
+ϵθ(l,t) is updated using Adam [16] with gradients calculated by Eq.3.
+
+In Section 4.1, we observed that the representation of salient objects formed very early on. Interven-
+tions on the later denoising process cannot effectively change the position of foreground objects. The
+decoder side self-attention also performed better than the encoder side ones in the early steps. Thus,
+during intervention, we modified the activations of decoder side self-attention layers at the first five
+steps. In a preliminary study, we experimented with intervening in different number of denoising
+
+Figure 7: Column 1 & 2: model’s original outputs and labels of salient objects or depth; Column 3:
+the modified labels used in intervention; Column 4: the intervened outputs (with contours of modified
+labels in green for intervention on saliency); Column 5: synthetic labels of intervention outputs. Dice
+and RMSE are measured between modified labels and synthetic labels of intervention outputs.
+
+steps for saliency and depth representations (see Appendix D). For each intervened layer at the chosen
+denoising steps, we optimized ϵθ(l,t) so the probing prediction pb(ϵ′
+θ(l,t)) changed to match d′
+b.
+
+To assess the effects of this intervention, we computed the Dice coefficient between the modified
+mask and synthetic mask of intervened output. If the saliency representation has a causal role in
+LDM, the salient regions of newly generated images should match the modified masks.
+
+We performed a similar intervention on the continuous depth representation. The depth map
+of the original output dc was translated with horizontal and vertical translations sampled from
+U(−120, −90) ∪(90, 120) to generate the modified map d′
+c. Empty areas outside translated depth
+map were filled with its edge values. As in the intervention for saliency, ϵθ(l,t) is updated using the
+gradients of probing regressor pc so its output matches d′
+c. We calculated the gradients using the same
+Eq. 3 with LCE, pb, and d′
+b replaced by LHuber, pc, and d′
+c. We intervened on all self-attention layers
+at the first three sampling steps. The intervention on the depth representations was more effective
+when modifying all self-attention layer activations.
+
+The effects of our interventions were measured by the RMSE between d′
+c and the depth map of
+intervened output. If a causal role exists, the depth maps of new outputs should match the modified
+depth maps used in intervention.
+
+Salient object intervention results: We conducted our proposed intervention on the test set of our
+synthetic dataset (371 samples). For the resultant 1855 interventions, the median Dice coefficient is
+0.69 between the modified salient object labels and the synthetic labels of intervention outputs. We
+further compared the modified label d′
+b with the synthetic label db of the original images, which acts
+as a baseline. The comparison gave us a median Dice overlap of 0.46 (see Figure 6).
+
+As Figure 7 shows, our interventions successfully repositioned the foreground objects by solely
+modifying the self-attention activation using the projection learned by probing classifiers. Our results
+suggest the representation of salient objects has a causal role on the model’s output.
+
+Depth intervention results: The median RMSE for 1855 intervention outputs is 0.63, whereas the
+median RMSE of the null intervention is 1.02 (between d′
+c and the original depth dc). This result
+confirmed the causal role of depth representations. In a fine-grained intervention experiment (see
+Appendix E), we created an additional salient object in the middleground of the scene by inserting
+the object’s depth map with increased depth value in the LDM’s depth representation.
+
+6
+Related Works
+
+Recently, Stable Diffusion 2.0 introduced the depth as a condition on its text-to-image 2D diffusion
+model for shape-preserving synthesis. Its depth-conditional model was fine-tuned with a relative
+
+Figure 8: A sequence of a moving motorbike created by intervening on the LDM’s internal represen-
+tations of a salient object. All images are generated using the same prompt, initial latent vector, and
+random seed.
+
+depth map as an additional input to the LDM. In a similar vein, Zhao et al. [32] suggests using depth
+estimation as a prior step for better image inpainting. Our work, however, shows that the 2D Stable
+Diffusion model already encodes the depth dimension even when trained without an explicit depth
+prior.
+
+The work of Kim et al. [15], performed contemporaneously and independently from this work,
+touches on some of the same issues but from a different perspective – generating geometrically
+plausible images. They found a nonlinear depth representation inside a pretrained 2D DDPM using
+Multi-Layer Perceptrons. Their results also indicated the depth dimension emerges in the early
+denoising. Our probing experiments, however, suggest that 2D LDM has an even simpler linear depth
+representation.
+
+Kim et al. [15] approximated the pseudo ground-truth of depth using predictions from the aggregated
+representations of multiple feature blocks. They compared the pseudo depth label against a weaker
+prediction inferred from a single feature block. This difference is applied as a guidance to improve
+the geometric consistency of output images. From an interpretability perspective, we seek evidence
+for a causal relation between internal representations and depth. We demonstrate the geometry of
+images can be altered by directly modifying the LDM’s layer-wise internal model of depth, suggesting
+that a causal role exists. Moreover, our intervention on depth representations can control the scene
+geometry of output images with respect to a predefined label (see Appendix E and Figure 8). This is
+not achievable using the guidance methods in [15].
+
+Baranchuk et al. [2] extrapolated the intermediate activations of a pretrained diffusion model for
+semantic segmentation. Their high segmentation performance reveals that the diffusion model
+encodes the rich semantic representations during training for generative tasks. Our work shows that
+the internal representation of LDM also captures the geometric properties of its synthesized images.
+
+Poole et al. [20] and Wang et al. [30] utilized features learned by 2D diffusion models to optimize
+a Neural Radiance Field network for 3D synthesis. In contrast, our study centered on finding and
+interpreting the 3D representations inside LDM. Instead of extending 2D models to a 3D generative
+task, we take a direct approach of using linear probing classifier to uncover the depth features learned
+by the self-attention modules.
+
+7
+Conclusion
+
+Our experiments provide evidence that the Stable Diffusion model, although trained solely on two-
+dimensional images, contains an internal linear representation related to scene geometry. Probing
+uncovers a salient object / background distinction as well as information related to relative depth.
+These representations emerge in the early denoising stage. Furthermore, interventional experiments
+support a causal link between the internal representation and the final image produced by the model.
+These results add nuance to ongoing debates about whether generative models can learn more than
+just “surface” statistics.
+
+Our experiments also suggest a number of avenues for future research. A natural extension is to
+look for representations of other scene attributes, such as lighting or texture. Indeed, just as certain
+language models are said to “rediscover the NLP pipeline” [26], perhaps LDMs recapitulate the
+
+standard steps in computer graphics. More generally, one might look for models of semantic aspects
+of a scene, such as sentiment.
+
+8
+Acknowledgements
+
+We would like to thank Catherine Yeh, Shivam Raval, and Aoyu Wu for reading and sharing their
+feedback on this paper. We also wish to thank Kenneth Li and David Bau who contributed their
+thoughts to an early draft of this work.
+
+References
+
+[1] Guillaume Alain and Yoshua Bengio. Understanding intermediate layers using linear classifier
+probes. arXiv preprint arXiv:1610.01644, 2016.
+
+[2] Dmitry Baranchuk, Ivan Rubachev, Andrey Voynov, Valentin Khrulkov, and Artem Babenko.
+Label-efficient semantic segmentation with diffusion models. arXiv preprint arXiv:2112.03126,
+2021.
+
+[3] Yonatan Belinkov. Probing classifiers: Promises, shortcomings, and alternatives. 2021.
+
+[4] Emily M Bender and Alexander Koller.
+Climbing towards nlu: On meaning, form, and
+understanding in the age of data. In Proceedings of the 58th annual meeting of the association
+for computational linguistics, pages 5185–5198, 2020.
+
+[5] Yonatan Bisk, Ari Holtzman, Jesse Thomason, Jacob Andreas, Yoshua Bengio, Joyce Chai,
+Mirella Lapata, Angeliki Lazaridou, Jonathan May, Aleksandr Nisnevich, Nicolas Pinto, and
+Joseph Turian. Experience grounds language. In Proceedings of the 2020 Conference on
+Empirical Methods in Natural Language Processing (EMNLP), pages 8718–8735, Online,
+November 2020. Association for Computational Linguistics.
+
+[6] Grzegorz Chrupała, Bertrand Higy, and Afra Alishahi. Analyzing analytical methods: The
+case of phonology in neural models of spoken language. In Proceedings of the 58th Annual
+Meeting of the Association for Computational Linguistics, pages 4146–4156, Online, July 2020.
+Association for Computational Linguistics.
+
+[7] Alexis Conneau, German Kruszewski, Guillaume Lample, Loïc Barrault, and Marco Baroni.
+What you can cram into a single vector: Probing sentence embeddings for linguistic properties.
+arXiv preprint arXiv:1805.01070, 2018.
+
+[8] David Eigen, Christian Puhrsch, and Rob Fergus. Depth map prediction from a single image
+using a multi-scale deep network. Advances in neural information processing systems, 27, 2014.
+
+[9] Yanai Elazar, Shauli Ravfogel, Alon Jacovi, and Yoav Goldberg. Amnesic probing: Behavioral
+explanation with amnesic counterfactuals. Transactions of the Association for Computational
+Linguistics, 9:160–175, 2021.
+
+[10] Mureji Fatunde and Crystal Tse. Stability ai raises seed round at $1 billion value. Bloomberg,
+2022.
+
+[11] Maxwell Forbes, Ari Holtzman, and Yejin Choi. Do neural language representations learn
+physical commonsense? arXiv preprint arXiv:1908.02899, 2019.
+
+[12] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances
+in Neural Information Processing Systems, 33:6840–6851, 2020.
+
+[13] Adrian Johnston and Gustavo Carneiro. Self-supervised monocular trained depth estimation
+using self-attention and discrete disparity volume. In Proceedings of the ieee/cvf conference on
+computer vision and pattern recognition, pages 4756–4765, 2020.
+
+[14] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of
+diffusion-based generative models. arXiv preprint arXiv:2206.00364, 2022.
+
+[15] Gyeongnyeon Kim, Wooseok Jang, Gyuseong Lee, Susung Hong, Junyoung Seo, and Seungry-
+ong Kim. Dag: Depth-aware guidance with denoising diffusion probabilistic models. arXiv
+preprint arXiv:2212.08861, 2022.
+
+[16] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint
+arXiv:1412.6980, 2014.
+
+[17] Min Seok Lee, WooSeok Shin, and Sung Won Han. Tracer: Extreme attention guided salient
+object tracing network (student abstract). In Proceedings of the AAAI Conference on Artificial
+Intelligence, volume 36, pages 12993–12994, 2022.
+
+[18] Kenneth Li, Aspen K Hopkins, David Bau, Fernanda Viégas, Hanspeter Pfister, and Martin
+Wattenberg. Emergent world representations: Exploring a sequence model trained on a synthetic
+task. arXiv preprint arXiv:2210.13382, 2022.
+
+[19] Fabio Petroni, Tim Rocktäschel, Patrick Lewis, Anton Bakhtin, Yuxiang Wu, Alexander H
+Miller, and Sebastian Riedel.
+Language models as knowledge bases?
+arXiv preprint
+arXiv:1909.01066, 2019.
+
+[20] Ben Poole, Ajay Jain, Jonathan T Barron, and Ben Mildenhall. Dreamfusion: Text-to-3d using
+2d diffusion. arXiv preprint arXiv:2209.14988, 2022.
+
+[21] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal,
+Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual
+models from natural language supervision. In International Conference on Machine Learning,
+pages 8748–8763. PMLR, 2021.
+
+[22] René Ranftl, Alexey Bochkovskiy, and Vladlen Koltun. Vision transformers for dense prediction.
+In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 12179–
+12188, 2021.
+
+[23] René Ranftl, Katrin Lasinger, David Hafner, Konrad Schindler, and Vladlen Koltun. Towards
+robust monocular depth estimation: Mixing datasets for zero-shot cross-dataset transfer. IEEE
+Transactions on Pattern Analysis and Machine Intelligence, 44(3), 2022.
+
+[24] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pages 10684–10695, 2022.
+
+[25] Christoph Schuhmann, Richard Vencu, Romain Beaumont, Robert Kaczmarczyk, Clayton
+Mullis, Aarush Katta, Theo Coombes, Jenia Jitsev, and Aran Komatsuzaki. Laion-400m: Open
+dataset of clip-filtered 400 million image-text pairs. arXiv preprint arXiv:2111.02114, 2021.
+
+[26] Ian Tenney, Dipanjan Das, and Ellie Pavlick. Bert rediscovers the classical nlp pipeline. arXiv
+preprint arXiv:1905.05950, 2019.
+
+[27] Mycal Tucker, Peng Qian, and Roger Levy. What if this modified that? syntactic interventions
+via counterfactual embeddings. arXiv preprint arXiv:2105.14002, 2021.
+
+[28] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
+Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information
+processing systems, 30, 2017.
+
+[29] Patrick von Platen, Suraj Patil, Anton Lozhkov, Pedro Cuenca, Nathan Lambert, Kashif Rasul,
+Mishig Davaadorj, and Thomas Wolf. Diffusers: State-of-the-art diffusion models.
+//github.com/huggingface/diffusers, 2022.
+
+[30] Haochen Wang, Xiaodan Du, Jiahao Li, Raymond A Yeh, and Greg Shakhnarovich. Score
+jacobian chaining: Lifting pretrained 2d diffusion models for 3d generation. arXiv preprint
+arXiv:2212.00774, 2022.
+
+[31] Kelly W Zhang and Samuel R Bowman. Language modeling teaches you more syntax than trans-
+lation does: Lessons learned through auxiliary task analysis. arXiv preprint arXiv:1809.10040,
+2018.
+
+[32] Yunhan Zhao, Connelly Barnes, Yuqian Zhou, Eli Shechtman, Sohrab Amirghodsi, and Charless
+Fowlkes. Geofill: Reference-based image inpainting with better geometric understanding. In
+Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision, pages
+1776–1786, 2023.
+
+A
+Weaker Depth Representations in Convolutional Layers
+
+Figure 9: We found stronger depth and salient object representations in the activations of self-attention
+layers (solid lines). The probing performance on the activations of convolutional layers (dashed lines)
+is generally weaker.
+
+In addition to probing the self-attention layers, we also investigated the depth representations in
+convolutional layers, which produced weaker results. The convolutional layers’ performance only
+starts to improve when the input has been aggressively downsampled (8 x 8 spatial size) such that
+a 3 x 3 filter kernel can cover a large portion of the input latent image. Intuitively, encoding depth
+information will require accessing the global context of images, which is only possible when using
+self-attention.
+
+Our findings revealed that, during generative training without any prior depth information, self-
+attention layers outperformed convolutional layers in capturing saliency and depth representations.
+
+B
+Spatial and Feature Dimensions of Self-Attention Layers in the LDM
+
+Table 2: Spatial and feature dimensions of self-attention layer activations across transformer blocks
+of the LDM.
+
+Blocks
+Number of
+Self-Attn Layers
+Spatial
+h × w
+Feature
+c
+
+Encoder 1
+2
+64 × 64
+320
+Encoder 2
+2
+32 × 32
+640
+Encoder 3
+2
+16 × 16
+1280
+Encoder 4
+0
+–
+–
+Bottleneck
+1
+8 × 8
+1280
+Decoder 1
+0
+–
+–
+Decoder 2
+3
+16 × 16
+1280
+Decoder 3
+3
+32 × 32
+640
+Decoder 4
+3
+64 × 64
+320
+
+In this section, we review the architecture of Stable Diffusion, which helps explain why we need to
+upsample the predictions from probing classifier. We will use the information in Table 2 again in
+Appendix F.
+
+As Table 2 shows, the self-attention layers of LDM operate at different spatial and feature dimensions
+across vision transformer blocks. The probing classifier takes the original activations from the
+self-attention layers as input, and the classifier outputs the prediction in the same resolution of
+activations. We upsampled the low resolution predictions to the same spatial size as the original
+images (512 × 512) when comparing the predictions with the synthetic labels.
+
+C
+Visualizations of Emerging Depth Representations in the LDM
+
+Figure 10: Row 1: Images decoded at each denoising step. The latent vector from which the image is
+decoded serves as the input to the LDM at next step. Row 2 & 4: Predictions of probing classifiers
+based on the LDM’s internal activations. Row 3 & 5: Baseline prediction of depth and salient object
+from external models that take decoded images as input.
+
+We observed that the position of the salient object and depth of the scene were both determined at
+the very early denoising stage (see Figure 10). Despite the LDM being conditioned on noisy latent
+vectors, the probing classifier’s predictions of the salient object and depth already resembled those in
+the fully denoised image.
+
+Visit this link to see more examples of how depth representations develop in the early denoising
+stages of LDM.
+
+D
+Choices of Intervened Denoising Steps
+
+Figure 11: Denoising steps: we experimented with intervening in multiple numbers of steps, both
+for saliency (left) and depth representations (right). For the saliency representation, the intervention
+was effective after intervening 5 steps. Further increasing the number of intervened steps had almost
+no change on the model’s output. For the depth representation, the intervention was effective after
+intervening three steps. Intervening additional steps did not improve the results.
+
+One variable in our intervention experiment is how many denoising steps to intervene on. In a
+preliminary study, we compared the model’s outputs after intervening different numbers of denoising
+steps on saliency and depth representations.
+
+Figure 12: To make modified depth labels consistent with the rules of perspective, we scaled down the
+salient object that was farther away from the viewpoint in the modified label. For each intervention,
+we progressively increased the depth of the added salient object.
+
+As Figure 11 shows, the intervention on salient object representations was effective after intervening
+the first 5 steps of denoising. Further increasing the number of intervened steps had no significant
+influence on the generated image. For the intervention on depth, we observed that intervening the
+first 3 steps of denoising was sufficient to change the depth of generated scenes.
+
+E
+Fine-grained Intervention on Depth Representation
+
+Adding salient objects at different depths: In this experiment, we aimed to test the continuity of
+the LDM’s depth representation. Specifically, if we increase the depth disparity between two objects
+in the LDM’s representations, will the depth difference between two objects enlarge accordingly in
+the output image?
+
+To perform this intervention, we copied the depth map of a salient object onto a horizontally translated
+depth label. The modified depth label initially has two salient objects at the same depth. To create
+the depth disparity, we increased the depth value of the added salient object so it became distant in
+the depth label. It is arguable that having two objects with the same size at different depths breaks
+the rules of perspective. To make the modified depth label geometrically coherent, we scaled down
+the salient object that was distant to the viewpoint. This experiment required manually modifying
+depth label for intervention, and it is therefore hard to generalize on the entire dataset for quantitative
+evaluation.
+
+Table 3: Smoothness constraint negatively affects the performance of probing regressors, especially
+when the resolution of probing prediction is low. The resolution of the probing prediction is equal
+to the spatial size of input activations, which can be as small as 8 × 8 (see Table 2 of Appendix B).
+The spatial size of the ground truth label is 512 × 512. We observed that training probing regressors
+without smoothness loss improved the probing performance.
+
+At Denoising Step 15
+
+Encoder Block 3
+Bottleneck
+Decoder Block 2
+RMSE ↓
+Layer 1
+Layer 2
+Layer 1
+Layer 1
+Layer 2
+Layer 3
+
+Without Smoothness
+0.559
+0.519
+0.594
+0.474
+0.485
+0.522
+With Smoothness
+0.583
+0.545
+0.639
+0.501
+0.511
+0.543
+T-test p-value
+< 0.05
+< 0.05
+≪0.05
+≪0.05
+≪0.05
+< 0.05
+
+Spatial Size
+h × w
+16 × 16
+16 × 16
+8 × 8
+16 × 16
+16 × 16
+16 × 16
+
+Figure 13: The probing predictions have much smaller spatial resolutions compared to that of the
+generated images. In this example, the probing prediction has a spatial size of only 16 × 16, whereas
+the ground truth depth label of the generated image has a spatial size of 512 × 512. Each pixel
+of the probing prediction represents 32 × 32 pixels of the ground truth label. While we anticipate
+the per-pixel depth to change smoothly in the high resolution depth label, this is not true for the
+low resolution probing prediction. Applying the smoothness regularization on the low resolution
+prediction adversely affects probing performance.
+
+As Figure 12 shows, inserting the depth map of a salient object in the LDM’s depth representation
+created another salient object at the corresponding location in the generated image. Increasing the
+depth of the added object pushed it farther away from the viewpoint. In Figure 12ab, increasing the
+depth of the added objects resulted in a blurred effect and creates the perception of greater depth
+within the scene. In Figure 12d, the object with increased depth also exhibited a reduction in its
+physical size.
+
+F
+Smoothness regularization
+
+When training the probing regressors for depth estimation, we also experimented with applying a
+smoothness constraint [13] to the probing prediction. The local changes in per-pixel depth within a
+high resolution image are mostly small. The smoothness constraint leverages this property of the
+image and penalizes rapid local changes to improve the depth prediction.
+
+However, the depth predictions from our probing regressors have much lower resolution compared
+to the generated images, since LDM operates on a latent vector with smaller spatial size. In the
+low resolution probing prediction (see Figure 13), one pixel in the depth map represents a much
+larger region in the generated image, and the change in depth between two large regions are often
+
+unsmooth. We observed that training the probing regressor without smoothness loss improved its
+depth estimation performance, especially when the resolution of the probing prediction is low (see
+Table 3).

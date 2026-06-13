@@ -1,0 +1,3633 @@
+R3-DLA (Reduce, Reuse, Recycle): A More Efﬁcient Approach to Decoupled
+Look-Ahead Architectures
+
+Sushant Kondguli and Michael Huang
+
+Department of Electrical and Computer Engineering
+University of Rochester, Rochester, NY
+{sushant.kondguli,
+
+arXiv:1812.04514v3 [cs.AR] 13 Dec 2018
+
+Abstract
+
+even in non-numerical codes. The real question is whether
+we can realize the potential without undue costs. The typical
+monolithic out-of-order microarchitecture appears to have
+signiﬁcant challenges exploiting this level of parallelism. In
+particular, the instruction and data supply subsystem shoul-
+ders a signiﬁcant responsibility. Fig. 1 illustrates this point.
+When data and instruction supply subsystem is idealized, the
+average level of implicit parallelism is signiﬁcantly higher
+(about 5x) than when it is not, suggesting the subsystem as
+a target for improvements.
+
+Modern societies have developed insatiable demands for
+more computation capabilities. Exploiting implicit paral-
+lelism to provide automatic performance improvement re-
+mains a central goal in engineering future general-purpose
+computing systems. One approach is to use a separate thread
+context to perform continuous look-ahead to improve the
+data and instruction supply to the main pipeline. Such
+a decoupled look-ahead (DLA) architecture can be quite
+effective in accelerating a broad range of applications in a
+relatively straightforward implementation. It also has broad
+design ﬂexibility as the look-ahead agent need not be con-
+cerned with correctness constraints. In this paper, we explore
+a number of optimizations that make the look-ahead agent
+more efﬁcient and yet extract more utility from it. With these
+optimizations, a DLA architecture can achieve an average
+speedup of 1.4 over a state-of-the-art microarchitecture for
+a broad set of benchmark suites, making it a powerful tool
+to enhance single-thread performance.
+
+100
+ideal:128
+ideal:512
+ideal:2048
+real:128
+real:512
+real:2048
+
+10
+
+IPC
+
+1
+
+0.1
+
+gob
+
+h26
+
+lib
+
+omn
+
+gmn
+
+bzi
+
+sje
+
+xal
+
+hmm
+
+ast
+
+mcf
+
+Figure 1. Implicit parallelism of integer applications. The
+three bars on the left indicate the amount of available
+parallelism (instructions per cycle) in the application when
+inspected with a moving window of 128, 512, or 2048
+instructions. The three bars on the right repeat the same
+experiments only this time under a realistic branch mispre-
+diction and cache miss situation that further constrains the
+available parallelism to be exploited. Note that the vertical
+axis is in log scale.
+
+Keywords-single thread performance; decoupled lookahead
+architecture;
+
+I. INTRODUCTION
+
+Modern societies have developed insatiable demands for
+more computation capabilities. While in certain segments,
+delivering higher performance via intense human labor
+(manual parallelization and performance tuning) is justiﬁ-
+able, in many other situations, such effort is not necessar-
+ily effective nor is it particularly efﬁcient when the extra
+resources (energy and loss of productivity) are properly
+accounted for. Automatic performance improvement remains
+a central goal in engineering future general-purpose comput-
+ing systems [44]. After all, the systems have always been
+designed to increase automation and productivity and to free
+human from drudgery (including debugging a parallel code).
+The two traditional drivers for single-thread performance
+(faster cycles and advancements in microarchitecture) have
+all but stopped in recent years – and for good reasons, since
+further gains from these approaches will come at signiﬁcant
+costs. However, the level of implicit parallelism is quite high
+
+One possible way of strengthening this subsystem is to
+use a decoupled look-ahead (DLA) architecture. In DLA, a
+self-sufﬁcient thread guides the look-ahead activities largely
+independent of the actual program execution. Simply having
+a thread for continuous look-ahead is not enough. Many
+elements have to function properly and efﬁciently to create
+a system that can offer sustained, deep, and high-quality
+look-ahead that will provide signiﬁcant beneﬁts at acceptable
+costs. In this paper, we discuss four optimizations on top of a
+basic DLA architecture. Their effects are mainly to increase
+the efﬁciency of the look-ahead thread and simultaneously
+extract more utility out of it. The spirit of techniques are
+somewhat analogous to the “reduce, reuse, and recycle”
+mantra in waste reduction, hence the name R3-DLA.
+The rest of the paper is organized as follows: Sec. II
+
+iii) To be effective, helper threads need to be numerous.
+Without substantial hardware support (possibly on the
+timing critical paths), spawning these threads, passing
+necessary initial values, and receiving results from
+them can create signiﬁcant overheads for the main
+thread, offsetting their beneﬁts [26].
+
+discusses variants of DLAs and the related concepts of
+helper threads; Sec. III explains the design details of the pro-
+posed optimizations; Sec. IV performs experimental analysis
+on these optimizations; and ﬁnally Sec. V summarizes the
+ﬁndings.
+
+II. BACKGROUND AND RELATED WORKS
+
+On the other extreme of the spectrum, an idle core in
+a multicore system is used to execute a different copy of
+the original program on a separate thread context [5], [7],
+[34]–[36], [57], [58], [60], [70], [83], [84], [101], [112].
+This copy is often a reduced version of the program (which
+we referred to as the skeleton) so that it can run faster
+to look ahead. This style of design can be traced back to
+the Decoupled Access/Execute architecture [95]. Unlike in
+DAE, however, the leading thread in this group of designs
+does not affect the architectural state and only performs
+look-ahead functionality. We therefore refer to these designs
+as Decoupled Look-Ahead (DLA) architectures.
+DLA designs sidestep some of the practical problems
+facing micro helper threads. But the key challenge becomes
+how to create a look-ahead thread that is sufﬁciently au-
+tonomous and yet fast enough to permit deep look-ahead.
+Various ways are devised to improve the look-ahead thread’s
+speed in order to stay ahead of the main program thread.
+For instance, Slipstream [101] removes predicted dead in-
+structions and biased branches; Dual-core execution skips
+memory access instructions that miss in the L2 cache [112];
+Tandem uses architectural pruning to make the hardware
+faster [70]. Garg and Huang experimented with a more
+purposeful-built look-ahead thread using a stripped-down
+version of the original program [34].
+In this past work, only a small number of ideas are
+discussed at a time. By themselves these ideas have a
+limited beneﬁt – no different from ideas for conventional
+microarchitectures. The limited beneﬁt coupled with the
+perceived disadvantage of doubling the resources needed
+can hardly make DLA appear as a promissing solution that
+we believe it is. Keep in mind, the extra thread context is
+an infrastructure whose cost is amortized over future ideas.
+As we will show in this paper, there are many conceivable
+optimizations that can lower the overhead even more while
+improving performance.
+Other than explicitly launching a helper thread, many
+proposals have dealt with reducing the chance a conventional
+microarchitecture is blocked [2], [13], [14], [19], [30], [38],
+[39], [41], [51], [55], [69], [73], [100]. Many designs share a
+theme of checkpointing important state, clean up some struc-
+tures to allow further (speculative) execution. Sometimes the
+sole purpose of the execution is warm-up [73]. In this latter
+case, the design is more closely related to helper threading.
+Finally, there are recent incarnations of the basic concept of
+DAE to separate the computation part of the program from
+memory accesses [37], [42].
+
+A basic on-demand caching system is only part of the
+solution to a high-performance instruction and data supply
+subsystem. Anticipating needed data and prefetching them
+is an indispensable component. Canonical prefetchers hard-
+wire expected access patterns and search for clues that sug-
+gest the start of targeted access patterns. Stride prefetchers
+are perhaps the ﬁrst example that comes to mind. They
+target access streams that have a constant stride and is
+comparatively easy to identify and track [43], [45], [50],
+[56], [59], [71], [78], [82]. Other prefetchers target memory
+access properties such as spatial locality [9], [12], [21],
+[28], [61], [96], [97] and temporal locality [23], [47], [49],
+[96] to prefetch data. Correlating address streams [75], [76],
+[109] has been shown to help in prefetching some hard to
+prefetch data, albeit with lower accuracy. Some prefetching
+techniques also target pointer chasing accesses [24], [27],
+[31], [47], [86], [89], [108].
+Ultimately, not all accesses can be described by simple
+address patterns. Obtaining addresses through partial execu-
+tion of the program represents a broad class of prefetching
+approaches. On one extreme of the design spectrum, many
+short threads are launched as helpers to precompute informa-
+tion for data or instruction supply [4], [6], [16]–[20], [24]–
+[26], [29], [32], [52]–[54], [63], [65]–[67], [72], [86]–[88],
+[98], [106], [107], [111], [114]. Although these micro helper
+threads are an immensely useful concept, marshalling a very
+large number of micro threads can bring practical issues:
+
+i) They are largely hand crafted and carefully inserted
+at the right locations, perhaps after lengthy trial-
+and-errors. And sometimes the technique is intended
+for certain targeted applications such as excessively
+memory-bound programs. A fully automated mech-
+anism to make these decisions may have difﬁculty
+achieving effectiveness reported in literature [10], es-
+pecially when targeting a broad spectrum of applica-
+tions.
+ii) A contributing factor to the manual approach is the no-
+tion of “delinquent instructions”: a few culprits created
+most of the performance problems. Unfortunately, as
+programs get more complex and use more ready-made
+code modules, problematic instructions are bound to
+be more spread out [79]. For instance, to account for
+95% of last-level cache misses and branch mispredic-
+tions, an average of more than 300 problematic static
+instructions are involved, accounting for 10% of all
+dynamic instructions [35].
+
+Queue (BOQ). The BOQ also acts as a natural mech-
+anism to detect when LT veers off the correct control
+ﬂow; and to keep it from running too far ahead. In the
+case an incorrect branch outcome is detected, a reboot
+is triggered by MT which re-initializes LT. In addition
+to the BOQ, we can also send other information such
+as branch target addresses and prefetch addresses. We
+use a Footnote Queue (FQ) for such less frequent
+but wider data. On average, one footnote is generated
+every 30 instructions. FQ is also used during reboot
+to copy the architectural registers from MT to LT.
+iii) Support for instruction masking: Finally, we ﬁnd it
+convenient to have the code of LT being a subset
+of MT, thus allowing us to use the same program
+binary and a set of bits to mask off instructions not on
+the skeleton. These unwanted instructions are deleted
+immediately upon fetch in LT. These mask bits can be
+generated either ofﬂine or online through dependence
+analysis of the program binary. In this paper, we model
+a system where these bits are generated ofﬂine and
+stored inside the program binary. At runtime, the I-
+cache will combine the separately fetched mask bits
+and instructions.
+Summary of operations: To put these elements together,
+we now describe the overall operation of the system (Fig-
+ure 2). We assume the program binary is analyzed and
+augmented with mask bits ofﬂine, the system always runs
+in DLA mode, and that the two threads (the real program
+thread and its look-ahead instance) run on individual cores
+connected by the various queues discussed above. Note that
+these are not intrinsic requirements to implement DLA. They
+describe the most basic incarnation.
+
+III. OPTIMIZATIONS OF DLA ARCHITECTURE
+
+In this section, we ﬁrst discuss a basic platform of
+DLA (Sec. III-A), then discuss four optimizations in de-
+tail: reducing look-ahead workload with prefetch ofﬂoad-
+ing (Sec. III-C); reusing value (Sec. III-D1) and control
+ﬂow information (Sec. III-D2); and recycling the skeleton
+(Sec. III-E);
+
+A. Baseline DLA
+
+Our baseline DLA architecture is based on the one
+proposed in [34]. Speciﬁcally, a skeleton of the original
+program binary is generated which includes all the control
+instructions and their backward dependence chain. A subset
+of memory instructions is also included in the skeleton as
+prefetch payloads along with their backward dependence
+chain. (A more detailed discussion of the binary parsing
+algorithm and parameters is left in Appendix A.) During
+execution, this skeleton forms the static code of the look-
+ahead thread (LT) and runs on a different core. It passes
+relevant information (e.g., branch outcomes) which speeds
+up the execution of the main thread (MT). At ﬁrst glance,
+it may seem wasteful to execute the same program twice.
+But in reality, LT only executes a small portion of the code
+(about a third in our design). Even when it does execute
+an instruction, the actions involved may not be redundant.
+For instance, wrong path instructions are mostly limited to
+the LT; off-chip accesses are only time-shifted, not repeated;
+We will present quantitative description on this point later
+in Sec. IV and only note here that the energy overhead is
+less than 25%.
+Such an architecture requires the following support on
+top of a generic multi-core architecture, ordered from least
+to most special-purpose:
+
+1 0 0 1
+BOQ
+
+0 0 1 0
+
+code:
+..
+ldq r1, 0(r5)
+addq r1, r1, r3
+stq r3, 0(r5)
+..
+NOP
+
+mask:
+10001010….
+….
+
+Binary
+
+0 0 0 1
+1 0 0 1
+
+i) Containment of speculation: LT usually involves spec-
+ulative optimizations and thus cannot be allowed to
+update the architectural state. The support is simple as
+most of the state is already naturally conﬁned to the
+thread context. The only additional support needed is
+about dirty lines in the private caches (in our study,
+the L1 data cache and the L2 cache). In the look-
+ahead mode, they are not used to supply coherence
+requests from other cores and are not written back
+upon eviction, but simply discarded. In other words,
+when a core executes in look-ahead mode, its private
+caches only obtain data uni-directionally from the rest
+system and never supplies data. It only supplies hints
+as follows.
+ii) Communication of look-ahead results: In a multicore
+architecture with shared lower level caches, LT can
+already warm up the shared caches without any ad-
+ditional support. However, a mechanism to explicitly
+pass on hints from LT is valuable. First, we can send
+over the branch outcomes via the Branch Outcome
+
+Core0
+Core1
+
+Indir.Branch Target
+
+Indir.Branch Target
+
+L1 Prefetch Target
+
+L1 Prefetch Target
+
+L1
+L1
+
+FQ
+
+TLB Hint
+
+L2
+L2
+
+L3
+
+ldq r1, 0(r5) addq r1, r1, r3 stq r3, 0(r5) …...
+1 0 0 ......
+
+Figure 2. Architectural support for baseline DLA.
+
+When a semantic thread is launched or context-switched
+in, its architectural state is also used to initialize LT. Both
+threads proceed to execute the code largely conventionally:
+fetching, dispatching, executing, and committing instructions
+according to the content of its architectural and microarchi-
+tectural states. They differ from conventional cores in the
+
+parallelism in normal programs. It is not yet clear to us
+what the best approach to exploiting this parallelism is.
+Our current DLA design follows a path that ﬁrst targets
+instruction and data supply issue, basically because we
+have to start somewhere. The baseline DLA design is also
+just a starting point, intuitively with many low-hanging
+optimization opportunities.
+Indeed, as it turns out, there are a number of simple
+things to do to either make the LT more efﬁcient and/or
+get more utility from it. In the ﬁrst category, we can ofﬂoad
+certain type of look-ahead code to a ﬁnite state machine
+(Sec. III-C), making the LT smaller and thus faster. In the
+second category, we ﬁnd that LT can provide more than
+just branch prediction and addresses for prefetching. Both
+the intermediate values and control ﬂow information can be
+reused, for example for value prediction (Sec. III-D). Finally,
+the heuristic-driven skeleton in the baseline DLA is clearly
+not optimal and can be adjusted online to other predeﬁned
+versions which, depending on the speciﬁc situation, can
+make LT more efﬁcient and/or more effective (Sec. III-E).
+
+following way.
+For the core executing the actual program thread (MT),
+its fetch unit draws branch direction predictions from the
+BOQ instead of its branch predictor. If the queue is empty,
+we stall the fetch. The dequeued entry of BOQ may have a
+footnote bit set. In that case, the control logic will dequeue
+one or more entries from FQ and act according to the content
+type. For example, if the entry is a branch target hint, then
+the content from the entry (rather than from the core’s own
+BTB) will be used for target prediction.
+For the core executing in look-ahead mode, there are
+three main differences. First, upon an instruction fetch, the
+logic will delete unwanted instructions. Beyond the I-cache,
+however, the masks are assumed to be stored in a different
+location in the program binary for backward compatibility.
+The masks are thus stored separately from the instructions
+in the lower level caches. During an I-cache miss, the
+controller will issue two read requests to the L2 cache for
+the instructions (at the address Ai) and their masks stored
+in address Am = f(Ai).1
+
+Second, LT will write hints into the queues for MT.
+Speciﬁcally, at commit time, the outcome of a conditional
+branch (“taken” or “not taken”) will be stored in FIFO order
+in the BOQ. The BOQ serves a multitude of purposes. x It
+passes a branch outcome as a prediction to MT. This ensures
+that in the steady state, the majority of branch mispredictions
+are experienced only in LT. y It is a simple and effec-
+tive mechanism to detect incorrect look-ahead control ﬂow.
+When a branch prediction fed by LT turns out wrong, which
+is relatively rare (0.06 per kilo instructions), it means that LT
+is executing down the wrong path. We will reboot LT from
+the current state of MT. z We can easily know and control
+the depth of look-ahead: the number of unread entries in the
+BOQ equals the number of dynamic basic blocks LT is ahead
+of MT. To prevent run-away prefetching, we only need to
+limit the size of the BOQ (512 entries in this paper). { It is a
+convenient way to allow delayed (just-in-time) prefetching.
+When a prefetch hint is generated, it can be associated with
+a branch entry and released only upon the dequeuing of that
+BOQ entry.
+Finally, in addition to the continuous branch direction
+hints, occasionally LT has other hints. Whenever it encoun-
+ters a miss in TLB, L1 data cache, or BTB, it will pass the
+relevant address through FQ and set the footnote bit in the
+most recent BOQ entry.
+
+C. Reduce: ofﬂoading strided prefetch
+
+The ﬁrst optimization speeds up LT by reducing its work-
+load. The intuition is simple. LT serves as a software-guided
+prefetch engine which is far more ﬂexible and precise than
+hard-wired, ﬁnite-state machine (FSM) driven prefetchers.
+The cost, however, is that we need to execute a sequence
+of instructions to compute the address for prefetching. For
+simple, strided accesses, such a software-driven approach is
+an overkill. Instead, we build a hardware FSM (which we
+call T1) to ofﬂoad this type of prefetch.
+Note that there is an important difference in the design
+goal between T1 and a traditional stride prefetcher. The
+latter needs to extract the stride in the presence of unrelated
+addresses and in the absence of any certainty that there
+is a strided stream to begin with. Moreover, to improve
+coverage, practical prefetcher designs target variations of
+strided accesses. All these are non-trivial challenges and
+often involves memorizing and cross-comparing a non-trivial
+number of addresses. T1, on the other hand, merely carries
+out the mundane task of address calculation and issuing
+prefetches. In other words, compared to a traditional stride-
+detecting prefetcher, T1 is only a dumb FSM carrying out
+simple orders. Additionally, T1 only targets one common
+situation and does not try to be general-purpose.
+1) Overview of operation: The common situation targeted
+by T1 is a loop with one or more memory access instructions
+whose address gets incremented by a (run-time) constant
+every iteration. In such a case, all we need for effective
+prefetching is the stride (δ), the prefetch distance (n), and
+the identity of the strided access instructions. When we
+encounter a strided instruction, we can take its address (A)
+and simply prefetch A+nδ. Given the identity of the strided
+instructions, we can easily derive the stride and prefetch
+
+B. R3-DLA: Overview
+
+Before we discuss the proposed optimizations, it may be
+helpful to put these ideas into the context of the vision
+for DLA. As we have seen, there is signiﬁcant implicit
+
+1The masks can arrive asynchronously with respect to the actual instruc-
+tions. Before the actual mask bits arrive, the system defaults to all 1s,
+thus including all instructions in LT. The extra space due to masks and the
+separate access are all faithfully modeled in our simulations.
+
+access. This is why our baseline, access-pattern-agnostic
+DLA system includes a non-trivial amount of instructions
+in the skeleton. Every generated prefetch costs about three
+instructions in LT. T1 helps eliminate 21% of instructions
+from LT, making it run faster ahead to target other incidents.
+
+distance: The former is simply the difference between the
+addresses of two consecutive instances of the same static
+instruction; The latter is the average access latency divided
+by the time interval between two consecutive instances.
+Instead of including these necessary instructions in the
+skeleton to generate proper prefetches, we mark them in
+MT and let T1 handle the prefetches. LT is thus smaller and
+faster than otherwise.
+2) Instruction marking: To summarize the discussion
+above, all the T1 hardware needs is the identities of the loop
+branch and the strided access instructions. These instructions
+are marked with another bit (the S bit). The S bits are
+generated the same time the skeleton masks are generated,
+however they are a marker on the binary for MT2. They are
+fetched from the program binary by MT in the same manner
+as the skeleton’s mask bits. Note that the T1 hardware
+located in MT’s core will use information from MT to pro-
+duce corresponding prefetches for the instructions marked
+with the S bit. Hence, the skeleton generation process will
+completely ignore these instructions and their backward
+dependencies while generating the skeleton for LT.
+
+D. Reuse of Value and Control Information
+
+The software-controlled nature of the baseline DLA
+makes it a very ﬂexible branch predictor and prefetcher. The
+cost for such ﬂexibility is the extra execution. As we will see
+later, even with ofﬂoading discussed above, LT still executes
+about half of the dynamic instructions of the program. The
+next two optimizations try to increase the beneﬁt of this
+work already done. In particular, since a signiﬁcant portion
+of the values have already been computed, we seek to reuse
+them in the form of value prediction. Also, the content of
+BOQ is highly accurate future control ﬂow information and
+can help improve instruction fetch for the trailing MT.
+1) Value Reuse: A variety of techniques have been pro-
+posed to predict values [11], [33], [64], [74], [77], [80], [81],
+[90], [91], [103]–[105], [113]. Most of these techniques rely
+on the history of the values produced to predict future values.
+Unlike branch outcomes, a typical value usually has non-
+trivial entropy and thus defy easy predictions. However, in
+our system, many instructions have already been executed
+in LT. Empirical observations show that over 98% of them
+have the same result as their counterpart in MT and thus
+lend themselves to reuse.
+The basic support is similar to any value predictor: x the
+predicted value will be used to allow dependent instructions
+to execute early; y the instruction producing the value will
+check the outcome with the prediction and, upon disagree-
+ment, trigger a replay. In our system, instead of coming
+from a value prediction table, the predictions are read in
+FIFO order fed by LT. In our design, we extend the footnote
+queue for this purpose: every instruction that we decide to
+apply value reuse will allocate an FQ entry containing the
+value and an offset indicating distance from the preceding
+branch.
+Again, unlike traditional value predictions, we have an
+abundance of highly accurate results. Thus the key design
+issue for our value reuse is to minimize the costs, which
+includes communication from LT to MT and the perfor-
+mance loss due to incorrect values. Our approach is to limit
+value only to ”slow” instructions with a high conﬁdence of
+successful reuse. After some experiments, it quickly became
+obvious that many different heuristics can achieve the goal.
+We describe one runtime version below.
+At the beginning of a new loop (Sec. III-E2), MT spends a
+few iterations (8 in our experiments) identifying these slow
+instructions, deﬁned as having dispatch-to-execute latency
+of at least 20 cycles. Their PCs will be recorded in a bloom
+ﬁlter (let us call that Slow Instruction Filter or SIF). LT
+checks this table at commit stage and if the instruction is
+
+state loop PC inst. PC eﬀ. addr. stride cur. 3me pref. distance
+
+Figure 3. T1 prefetch register ﬁelds.
+
+3) Operations of FSM: With marking of S bits done, the
+run-time operation is to calculate two parameters: stride and
+prefetching distance. To accomplish these tasks, we use a
+small prefetch table. An entry of this table is shown in Fig-
+ure 3. All entries begin in an invalid state. Upon execution
+of a strided instruction, an entry is allocated in the prefetch
+table. T1 starts issuing prefetches (with a ﬁxed prefetch
+degree) as soon as the ﬁrst instance of a stride is calculated.
+Each entry in the table gradually moves from an invalid state
+through transient states to the steady state. Transient states
+help guard T1 against identifying incorrect strides resulting
+from out-of-order execution. They also aid in calculating
+appropriate prefetching distance using the information on
+iteration time and average memory access latency. When
+prefetching distance is calculated, T1 launches multiple
+prefetches to “catch up” with the prefetching distance. T1
+then transitions into a steady state in which it launches one
+prefetch every iteration. All entries in the table are cleared
+when a loop terminates.
+4) Discussion: It may be tempting to believe that a
+conventional prefetcher will competently handle all strided
+accesses and to question the utility of the proposed optimiza-
+tion. While detailed analyses will be presented later, a rough
+characterization helps. A state-of-the-art prefetcher indeed
+targets almost all strided accesses. But empirically about
+a third of the prefetch is still either late or evicted before
+
+2So, the skeleton now includes two bits per instruction: a mask for LT
+and a mark for T1
+
+there, allocates a value reuse entry in FQ. The SIF is cleared
+upon entering a new loop.
+Our conﬁdence mechanism is simplistic: when a value
+prediction turns out incorrect, the entry of that static in-
+struction is deleted from the SIF and LT will no longer
+provide a prediction for that instruction. However, we ob-
+serve that this is infrequent (less than twice per million
+instructions). Finally, in the typical implementations where
+memory consistency is ensured with proper replays [102],
+[110], a value-predicted load is considered executed at the
+time of validation for the purpose of replay tracking [68].
+
+follow a simple heuristic to ﬁnd candidates: they have a long
+dispatch-to-execute latency (more than 20 cycles on average)
+and have more than one dependent instruction. The skeleton
+construction algorithm will include the necessary backward
+dependence chain.
+2) Control ﬂow information reuse: Instruction fetch can
+sometimes be a source of pipeline bubbles. In DLA, the
+presence of future control ﬂow information allows us to
+ameliorate this problem to some extent for MT. For instance,
+a trace cache [85] can increase the number of fetched
+instructions per cache access. Having a highly accurate
+stream of branch predictions from the BOQ is a signiﬁcant
+advantage to leverage when using a trace cache. However,
+trace cache is an expensive form of instruction caching. In
+this paper, we opt for a simpler approach that is in fact more
+effective in our setup.
+The basic idea is to reduce idling for the instruction fetch
+unit by allowing it to continue even if the decode stalls.
+In other words, we want to decouple the fetch unit from
+the rest of the pipeline – or in the case where this has
+already been done to the baseline architecture, increasing
+the degree of decoupling with a bigger buffer. The key
+point to emphasize is that the BOQ offers a much higher
+degree of branch prediction accuracy. Without this accu-
+racy, fetching too much down the predicted control ﬂow
+is unlikely to pay off, and indeed can even backﬁre and
+slow the whole processor down. In fact, in a conventional
+architecture, sometimes a more constrained fetch unit is
+beneﬁcial as it slows down the pollution created by the
+relatively common wrong-path instructions. In other words,
+the beneﬁt of having a fetch buffer is clear for DLA, but
+not necessarily so for a conventional architecture. We will
+show this in the experimental analysis later in Sec. IV-C.
+To understand the effect a bit more, we will perform a
+simpliﬁed, ﬁrst-principle analysis here to show how much a
+fetch buffer can improve the fetch performance and whether
+having a trace cache will materially improve the effect.
+We can measure the performance of a fetch unit by how
+many fetch bubbles it inserts into the pipeline downstream,
+i.e., how many more instructions the next stage (decode)
+can absorb but the fetch unit fails to deliver. This can be
+calculated from a simpliﬁed probabilistic analysis 3.
+Figure 5 shows the effect of the fetch buffer under the
+simpliﬁed probability model. Figure 5-a shows the probabil-
+ity distribution of queue length. We see that a key outcome
+of having a larger capacity is the reduction of probability
+of an empty queue. This means that a longer buffer allows
+the fetch unit to use otherwise idle cycles to ﬁll the queue
+fuller to reduce the impact of, for example, an instruction
+cache miss. Trace cache, on the other hand, only marginally
+increases the ﬁlling speed. Without a longer buffer, its effect
+
+skeleton
+
+mask
+i1
+1
+mul r8,r11,r5
+i2
+1
+add r6,r21,r4
+i3
+0
+mul r5,r12,r11
+i4
+1
+add r4,r5,r2
+i5
+1
+sub r10,r11,r10
+i6
+1
+ret
+
+can skip value
+predic<on valida<on
+
+Figure 4. Example of skipping value prediction validation.
+
+There is one small optimization to this basic support.
+In some cases, we do not need to validate all predicted
+values. We can skip those ALU instructions that only depend
+on other instructions that have produced a predicted value.
+Figure 4 shows an example. i4 sources from i1 and i2,
+both of which produce a value prediction. When we see
+this case, we can directly use i4’s value prediction as the
+outcome and there is no need to execute i4 in MT. This is
+because in our system, we have no speculative optimization
+that can corrupt functional units in LT. So, if both values
+are correct, then i4’s result is correct (barring hardware
+reliability issues). If either value is incorrect, eventually,
+there will be a value misprediction recovery upstream. i5,
+on the other hand, cannot skip validation as it depends on a
+value that is not predicted. This optimization will save about
+11% of validations.
+We implement this optimization with a simple score-
+boarding logic at the decode stage in the MT core. When
+an ALU instruction i produces a value prediction, we mark
+its destination register as validated. Other instructions (e.g.,
+loads, or instructions not producing a value prediction) will
+clear the marking for its destination register. If an instruction
+has a value prediction and its source registers are all marked
+validated, it will not be executed for validation.
+Finally, once the value prediction framework exists, we
+can add some critical-path instructions back to the skeleton.
+Clearly the trade-off is faster execution of MT at the
+expense of slowdown of LT. In general, whether adding
+an instruction to the skeleton speeds up the whole system
+or not depends on the balance of the duo. It opens up a
+general optimization problem of choosing the right skeleton
+that maximizes system performance. In this paper, we only
+
+3A more detailed mathematical reasoning behind this analysis is pre-
+sented in Appendix B.
+
+a few versions of skeleton and cycle through them to ﬁnd
+out the best empirically.4
+
+is very limited. With a longer buffer, it becomes essentially
+unnecessary.
+
+1) Versions of skeleton: The most basic version of the
+skeleton includes all branches and their backward depen-
+dence chains and is produced with a binary parser. From
+this starting point, we may add or subtract instructions using
+a few broad heuristics coupled with static-time proﬁling. In
+our experiments we collect these statistics by executing the
+programs with training inputs and use them to build skele-
+tons that are used during the actual run. We experimented
+with ﬁve options:
+
+povray
+
+povray
+
+Expected Fetch Bubbles
+
+1
+
+0.25
+
+I-cache
+Trace-cache
+
+I-cache (Cap: 8)
+I-cache (Cap: 32)
+Trace cache (Cap: 8)
+Trace cache (Cap:32)
+
+P(Queue Length)
+
+0.2
+
+0.8
+
+0.15
+
+0.6
+
+0.1
+
+0.4
+
+0.05
+
+0.2
+
+0
+
+8
+12
+16
+20
+24
+28
+32
+Capacity
+
+0
+4
+8 12 16 20 24 28 32
+Queue Length
+
+(a)
+
+(b)
+
+• L2 prefetch targets: Instructions that account for signiﬁ-
+cant portions of L2 misses can be added to the skeleton;
+
+Figure 5. (a) The estimated probability distribution of queue
+length with a queue capacity of 8 and 32 entries under both
+I-cache and trace cache. (b) The expectation of fetch bubbles
+as the queue capacity varies. In this analysis, the probability
+distributions of fetch demand and supply are empirically
+obtained from one application (povray).
+
+• L1 prefetch targets: Instructions that account for signiﬁ-
+cant portions of L1 misses can be added to the skeleton;
+
+• Value reuse targets: Instructions that have a long dis-
+patch to execute latency can be added to the skeleton;
+
+• T1 targets: Memory instructions that are handled by
+T1 are by default removed from the skeleton. However,
+they may be added back (as they might warm up cache
+for LT).
+
+In fact, Figure 5 shows the application with the most
+pronounced difference between the two caches. In other
+applications, the difference is even smaller. From Figure 5-b
+we see that with a small increase in fetch queue capacity,
+the number of expected bubble drops from more than 1 per
+fetch to less than half.
+Note that the beneﬁt of increasing fetch buffer size
+is closely tied to the branch prediction accuracy. This is
+because the analysis above assumes that every instruction in
+the queue is on the right path and therefore useful. This is
+a reasonable assumption in our case as the effective branch
+prediction accuracy from the BOQ is above 99.9%. In a
+conventional architecture, the elevated misprediction proba-
+bilities make this analysis inaccurate. In fact, sometimes a
+more constrained fetch unit is beneﬁcial as it slows down
+the pollution created by wrong-path instructions. In other
+words, the beneﬁt of having a fetch buffer is clear for DLA,
+but not necessarily so for a conventional architecture. We
+will show this in the experimental analysis later.
+
+• Biased branches: Conditional branches with a bias over
+a threshold can be converted to unconditional branches
+in the skeleton.
+These independent options naturally lead to many differ-
+ent combinations. Our empirical observation shows that a
+very small number of combinations need to be searched to
+obtain noticeable beneﬁts. We evaluate a design that cycles
+through six versions of skeleton empirically observed to be
+most often helpful. Changes to the number of options, the
+number of versions, or the thresholds used in identifying
+target instructions will likely affect the exact outcome. The
+key point to note is that this is not an effort to ﬁnd the
+optimal points in the design space, but simply an attempt
+to pick a few different points so that we can avoid poor
+design points due to simplistic heuristics. Also note that the
+skeleton generation process (Fig. 6) is an ofﬂine, automated
+process just as in the baseline, except it produces more than
+one skeleton.
+2) Controller: With a number of skeleton options, the
+goal of the controller is to ﬁnd the skeleton version that
+maximizes the beneﬁt. To do this, we divide the execution
+into repeating code units, or loosely speaking, loops. For
+each loop, we cycle through different versions to ﬁnd out
+the best.
+To identify the current loop, we capture the backward
+“loop branch” (Figure 7). Two consecutive instances of the
+loop branch without an interleaving instance of another
+loop branch marks the two ends of an iteration. Note that
+units need to be of sufﬁciently coarse granularity, otherwise
+we can neither accurately measure execution statistics nor
+
+E. Re-cycling the Skeleton
+
+In DLA, the skeleton is constructed using simple heuris-
+tics. Given this basic skeleton, if we add one more memory
+instruction (and its backward dependence chain), LT is
+likely to run a bit slower but potentially helping MT avoid
+more misses. Depending on which thread tends to be the
+bottleneck, this small change may increase or decrease
+system performance. We can see that there is a vast number
+of possible variations and the basic skeleton is unlikely to
+be optimal. The question is, therefore, are there signiﬁcantly
+better options than our default? If so, how can we system-
+atically and efﬁciently arrive at such options?
+These are all questions beyond the scope of this paper.
+Nevertheless, we do know that simple tunings can effectively
+improve the performance. The general approach is to create
+
+4This process may repeat a few times to average out noise. Admittedly,
+the analogy with recycling in the normal sense is tenuous.
+
+Recycle Controller (RC)
+
+Loop PC sktID
+
+Commi=ed
+InstrucAon
+
+ROB
+
+read best
+performing
+
+0x1240
+0
+
+0x1148
+4
+
+found
+
+skeleton
+
+Loop Br?
+
+(LCT)
+
+update if
+not equal
+not found
+insert best
+performing
+skeleton
+
+runtime search
+for best skeleton
+
+Loop
+Register
+
+++
+
+++
+
+LoopBr
+Loop Iter.
+Inst Cnt.
+Cycles
+testSktID
+maxIPC
+bestSktID
+
+(LR)
+
+++
+
+reset
+
+> Loop Threshold
+
+Figure 7. Skeleton recycling ﬂow chart. As a loop branch
+retires, the Loop Conﬁg Table (LCT) is queried for the
+skeleton that is optimum for the current loop. If none of
+the entries in LCT match the loop branch, different ﬁelds
+in the Loop Register (LR) are used to cycles through each
+of the available skeletons for a few iterations of the loop
+and identify the optimum skeleton for the loop. The LCT is
+updated when an optimum skeleton is found and that skeleton
+is used by lead thread until a new loop branch retires from
+ROB.
+
+using training runs. For the simple recycling discussed in
+this paper, we believe the ofﬂine approach is more advisable
+as we need no architectural support (other than performance
+counters). However, an online recycling support (like the one
+we discussed) may be a better alternative in a more dynamic
+environment. We will compare the effect later in Sec. IV-C.
+
+Figure 6. A pseudo code outlining the steps involved in
+generating different skeletons used by the recycle optimiza-
+tion. A few seed vectors are constructed using proﬁling
+information obtained from the program binary and training
+runs. A skeleton is generated from a seed vector by including
+backward dependencies of each seed present in it. Multiple
+combinations of these seed vectors can therefore produce
+multiple skeletons. The recycling optimization we used in
+our evaluations uses six of these skeletons (Line 21 in the
+ﬁgure).
+
+F. Recap
+
+To sum up, a basic DLA design uses one core to execute
+a look-ahead thread and passes information through two
+queues (BOQ and FQ) to help accelerate MT. On top of
+this basic design, we propose to add a number of supporting
+elements (Figure 8) to accelerate either LT or MT:
+
+proﬁtably adjust the system conﬁguration. So, a unit of
+execution is one or more iterations lasting, say, at least
+10,000 instructions.
+Note that recursive functions can represent a signiﬁcant
+portion of the execution time without having a detectable
+loop. To deal with these cases, we treat certain function call
+instructions as if they are loop branches. In such a case, an
+“iteration” may not have the same meaning as we are used
+to. But it is still a valid strategy to observe the behavior of
+a unit of multiple iterations to predict that of a future unit.
+During execution, the controller will run each loop for
+enough iterations under a particular skeleton. This will
+allow an accurate measurement of the speed (instructions
+committed per unit time) of that loop under that skeleton.
+After cycling through all skeletons, the controller selects
+the skeleton showing the highest speed and use it for the
+steady state. The identity of the loop (PC of the loop branch)
+and the corresponding best conﬁguration is then stored in a
+Loop-Conﬁg Table (LCT as shown in Figure 7). If a loop PC
+is found in the LCT, the controller selects the corresponding
+conﬁguration.
+Note that all the steps involved in re-cycling skeleton can
+be done either on-line as the application runs, or off-line
+
+• T1: A prefetching FSM to ofﬂoad prefetching of loop-
+based strided accesses;
+
+• Value reuse: logic to pass register values from LT
+through FQ and used as predictions in the front-end
+of MT;
+
+• Fetch buffer: using an extended buffer to fetch instruc-
+tions down the path predicted in the BOQ;
+
+• Re-cycle controller (hardware support optional): cycles
+through a number of skeleton mask bits to pick the best
+performing conﬁguration.
+With these elements, the R3-DLA becomes signiﬁcantly
+more effective as we will show next. More importantly, these
+optimizations are merely examples of what can be done to
+make the DLA models more effective. We believe that there
+are plenty of opportunities in DLA to keep on extracting
+more implicit parallelism.
+
+IV. EXPERIMENTAL ANALYSIS
+
+In this section, we perform experimental analyses of
+the proposed design. After detailing the simulation setup
+(Sec. IV-A) we ﬁrst show bottom-line results of a complete
+
+that since we do not ignore any of the applications in
+our evaluations and since our baseline conﬁguration uses 3
+levels of cache hierarchy with BOP as a L2 prefetcher, our
+performance numbers for CRE appear different than the ones
+reported in [38]. For similar conﬁguration and applications,
+the average performance gain of CRE on our platform is
+within 5% of the ones reported in [38]. In the case of [34],
+the factors like memory model, improved prefetcher/branch
+predictor and an overall aggressive baseline all contribute to
+the variation in the reported performance beneﬁts.
+
+system (Sec. IV-B) and then provide more detailed analyses
+to gain insight of the individual design decisions (Sec. IV-C).
+
+A. Simulation Setup
+For simulation purposes, we use Gem5 [8] simulator
+to model our proposed architecture. Our baseline is an
+aggressive out-of-order pipeline with a Best Offset [71]
+prefetcher (BOP) at L2. This prefetcher is selected because
+in our experiments it provided the best average performance
+gain among a group of 7 state-of-the-art prefetchers [45],
+[48], [71], [76], [94], [97], [99] over all application suites
+experimented. The prefetcher is conﬁgured with 256 RR
+table entries and 52 offsets as described in [71]. Additional
+technical details about the baseline are provided in Table I.
+Unless otherwise mentioned, we use this baseline conﬁgu-
+ration in all of our experiments. For DLA reboots, we add
+a 64 cycle delay to account for copying of the architectural
+registers from the trailing thread to the look-ahead thread.
+Note that since the chances of reboots are rare in DLA (0.6
+on average in a 10k instruction window), their impact on
+performance is minimal e.g., increasing the reboot cost to
+200 cycles will degrade the overall performance of R3DLA
+by less than 2%.
+For comparison, we have also modeled a number of
+similar approaches [38], [51], [83] ranging from earlier
+design of SlipStream to the recently proposed state-of-the-
+art runahead execution scheme called Continuous Runahead
+Engine (CRE). Under our baseline conﬁguration (Table I),
+CRE outperforms other designs. It generates its helper
+threads at runtime and executes them on a custom processor
+located at the memory controller. We modiﬁed CRE’s design
+to prefetch data into L1 which on average provides higher
+overall performance than just prefetching into LLC. Note
+
+For CPU’s energy consumption modeling, we use Mc-
+PAT [62] and assume a 22nm technology node. We mod-
+iﬁed McPAT to correctly model our proposed architecture
+and additional hardware structures shown in Figure 8. To
+compute main memory energy, we use DRAMPower [15].
+
+We evaluate our proposal on a broad set of bench-
+mark suites. In addition to the SPEC2006 [40] benchmark
+suite, we use CRONO [1] (a graph application suite),
+STARBENCH [3] (embedded applications), and scientiﬁc
+workloads from NAS Parallel Benchmarks (NPB). For
+SPEC2006, we use reference inputs. For STARBENCH
+we use large inputs. NPB is simulated with C class of
+workloads. For CRONO we use graph input data structures
+from google, amazon, twitter, mathoverﬂow and california
+road-networks. All benchmarks are compiled using gcc with
+-O3 option. To reduce simulation time, we use SimPoint
+sampling methodology. To accurately capture all phases of
+the application we use the SimPoint Tool [93] to generate
+ﬁve simpoints per benchmark with 10 million instruction
+intervals. We warm up the caches for 100 million instruc-
+tions before beginning each of the simpoint intervals. All
+the simulation results are obtained from these simpoints.
+
+Skeleton Mask Decoder
+
+Skeleton Mask Decoder
+
+Pre-decode and
+Instruction Fetch
+
+Pre-decode and
+Instruction Fetch
+
+BP
+BP
+
+I-Cache
+
+I-Cache
+
+,
+: DLA structures & connections
+
+&
+I-TLB
+
+&
+I-TLB
+
+FB
+FB
+
+,
+: R3-DLA structures & connections
+
+Decode
+
+Decode
+
+reduce:
+T1,
+reuse:
+VR & FB,
+recycle:
+RC
+
+Rename / Allocate
+
+Rename / Allocate
+VR
+RC
+
+VR
+
+RC
+
+1
+0
+1
+
+1
+0
+0
+
+ROB & Retirement
+
+ROB & Retirement
+
+BOQ
+
+1
+0
+0
+1
+0
+1
+
+Unit
+
+Unit
+
+PRF
+
+PRF
+L2
+
+L2
+
+index
+
+xxxx
+
+xxxx
+
+xxxx
+
+xxxx
+
+Schedulers/ WB
+
+Schedulers/ WB
+
+1
+
+0
+
+0
+
+1
+
+1
+
+FOOTNOTE
+
+Indir. Br. target
+
+MEM
+FPUs
+LD/ST
+BRU
+
+MEM
+FPUs
+LD/ST
+BRU
+
+ALUs
+
+QUEUE
+
+ALUs
+
+TLB prefetch
+
+Value pred.
+
+L2 prefetch
+
+L1 prefetch
+
+T1
+T1
+
+D-Cache & D-TLB
+
+D-Cache & D-TLB
+
+PREF
+
+PREF
+
+L3
+
+Figure 8. Architectural support for R3-DLA. The gray colored rectangle on the left represents the lead core and the one on the
+right represents the main core. Structures included by DLA are patterned and the connections are indicated with the dashed lines.
+Structures included by R3-DLA are shaded and the connections are indicated with the dotted lines.
+
+B-Fetch
+S-Stream
+CRE
+
+DLA
+R3-DLA
+
+BL (noPF)
+BL
+
+DLA (noPF)
+DLA
+
+R3-DLA (noPF)
+R3-DLA
+
+2.0
+
+speedup
+
+1.5
+
+1.0
+
+0.5
+
+1.05
+
+1.08
+
+1.09
+
+1.12
+
+1.40
+
+0.79
+
+1.04
+
+1.21
+
+1.00
+
+1.12
+
+1.42
+
+0.72
+
+0.99
+
+1.27
+
+1.00
+
+1.11
+
+1.37
+
+0.84
+
+0.99
+
+1.30
+
+1.00
+
+1.09
+
+1.35
+
+0.80
+
+1.06
+
+1.19
+
+1.00
+
+1.13
+
+1.39
+
+0.79
+
+1.02
+
+1.23
+
+1.00
+
+1.12
+
+1.40
+
+spec2k6
+crono
+starbench
+npb
+all
+0.0
+
+all
+
+(a)
+
+(b)
+
+Figure 9. Performance gain over an aggressive baseline with BOP at L2. NoPF shows the normalized performance of a baseline
+conﬁguration with no prefetcher.
+
+Processing
+Node
+
+20-stage
+pipeline,
+out-of-order,
+4-wide,
+192
+ROB,
+96
+LSQ,
+128INT/128FP PRF, 4INT/ 2MEM/ 4FP FUs, Tage SC-L Predictor
+(conﬁgured as the 256kBits predictor described in [92]), 4K Entry
+BTB, 32-entry RAS
+Operating
+Points
+
+prefetcher. The speedup ranges from 1.06x to 2.24x
+with a geometric mean of 1.4x. While the average
+performance gain is signiﬁcant, there is also a wide
+range of result. DLA is most likely to be selectively
+applied when the beneﬁt is large. For instance, for
+the top half of the applications, the geometric mean
+speedup would be 1.51x.
+ii) R3-DLA is also signiﬁcantly faster than more basic
+DLA designs. On average, R3-DLA outperforms the
+baseline DLA by about 1.25x. This shows that the
+proposed optimizations are effective. Figure 9-b brieﬂy
+compares the overall performance among a set of
+related approaches: B-fetch [51], SlipStream [83] and
+CRE [38].
+iii) DLA is a fully-ﬂexible prefetcher and thus has over-
+lapping targets with a standalone prefetcher such as
+BOP. When used with R3-DLA, BOP can still help
+as it frees up DLA’s attention to better handle the
+remaining targets, making the system a bit more
+efﬁcient. However, the “collaboration” between the
+two mechanisms is unplanned for and the beneﬁt
+is somewhat limited: while BOP can improve the
+baseline architecture by 1.27x, its effect on an R3-
+DLA system is only 1.13x. We conjecture that a
+more conscious collaboration between a standalone
+prefetcher and DLA will be more effective.
+
+0.8V, 3.0GHz
+
+L1 Caches
+32KB I-cache and 32KB D-cache, 4-way, 64B blocks, 3 ports, 1ns,
+32 MSHRs, LRU
+L2 Cache
+256KB, 8-way, 64B blocks, 2 ports, 3ns, 32 MSHRs, LRU, BOP [71]
+L3 Cache
+2MB, 16-way, 64B blocks, 12ns, LRU
+Main
+Memory
+
+4GB,
+DDR3
+1600MHz,
+1.5V,
+2
+channels,
+2
+ranks/channel,
+8
+banks/rank,
+tRCD=13.75ns,
+tRAS=35ns,
+tF AW =30ns,
+tW T R=7.5ns, tRP =13.75ns
+
+DLA Support
+BOQ
+512 entries (512x2 bits = 128B)
+FQ
+128 entries (128x64 bits = 1KB)
+
+R3-DLA Support
+T1
+16 prefetching entries (512B)
+FB
+32 instructions (256B)
+VPT
+32 Entries (32x64 bits = 256B) (used by VR)
+LCT
+16 Entries (136B) (used by RC)
+
+Table I. System conﬁguration.
+
+B. Overall Beneﬁts
+
+It is worth noting that in this paper, we assume DLA is
+only used as a turbo-boosting technique – when there is
+an idle core/thread. We assume otherwise exploiting explicit
+parallelism yields better results.5
+
+1) Performance: We ﬁrst measure the overall perfor-
+mance of R3-DLA and compare it to that of the underlying
+microarchitecture and that enhanced by our baseline DLA.
+We show these three conﬁgurations both without a hardware
+prefetcher (left group of 3 bars In Figure 9-a) and with BOP
+prefetcher (right group of 3 bars). All performance results
+are normalized to the microarchitecture with BOP, which
+represents the best we can do today without using DLA
+techniques.
+For clarity, we summarize the results of an entire bench-
+mark suite into a single bar showing the geometric mean
+of the whole suite and an I-beam showing the range of
+values. This ﬁgure contains a lot of information that can
+be organized into a number of observations:
+
+2) Efﬁciency: One common concern of DLA architec-
+tures is the energy cost. While it is tempting to assume
+the energy cost (or at least power) doubles in DLA due
+to executing the program twice, it would be a signiﬁcant
+overestimation even for the baseline DLA design, not to
+mention R3-DLA, which further lowers the overhead.
+First and foremost, LT is a much lighter thread, with an
+average length of only 36% that of MT6. Second, not all
+LT activities are overheads. Some are time-shifted activities
+(e.g., most memory accesses). Others help MT avoid almost
+all wrong-path instructions. Finally, faster execution lowers
+ﬁxed energy costs. Note that LT-to-MT communication
+is insigniﬁcant (averaging 2.2 bits per instruction) and is
+
+i) R3-DLA provides high performance compared to
+the underlying microarchitecture with an advanced
+
+6Some instructions (about 7%) are prefetch instructions and do not enter
+the commit stage. The committed instructions in LT, therefore, amount to
+about 29% on average.
+
+5Note that this is not always true anymore. And as more ideas are
+developed, we may reach a point where the decision whether to use resource
+for one type of parallelism or the other becomes a non-trivial one.
+
+after IBM POWER9 SMT8 where the core can also function
+as two independent, narrower cores – which we call half-
+core here. The full core has a fetch/decode/issue/commit
+width of 16/12/16/16 with 512 ROB entries. We also model
+the branch predictor presented in Table I for this core. The
+cache hierarchy, prefetcher and memory conﬁgurations for
+this core are modeled with the same parameters as presented
+in Table I.
+Figure 11 shows the performance results. We compare
+four different usage scenarios: x FC, which uses the entire
+wide core for single-thread execution; y DLA, which uses
+the SMT core to always run two threads (the look-ahead
+and the main thread) on two half-cores, z R3-DLA; and
+ﬁnally, for reference,{ SMT, where we show the throughput
+improvement of using the wide core to run two copies of
+the same benchmark. The only modiﬁcation to R3-DLA here
+is that in the recycling technique, we also allow an empty
+skeleton, which allows all the resource to be used for the
+main thread. We normalize the result to that of the half-core.
+As we can see, on average, a wider core is indeed not
+always effective in improving single-thread performance:
+though speedup can be as high as 1.61, the global average
+is only 1.23. DLA can sometimes be a much more effective
+technique, reaching a speedup of 2.08. But on average, it
+is not as effective as a wider core. R3-DLA is signiﬁcantly
+better than both (with a speedup of 1.44) and represents an
+important step towards supporting the goal of high single-
+thread performance.
+
+faithfully modeled. To see this in a bit more detail, in
+Table II, we show the amount of activities, the resulting
+dynamic and static power in both LT and MT, all normalized
+to the baseline microarchitecture. We see that LT expends
+much less dynamic energy or power than baseline. Also,
+despite running much faster than baseline, MT’s power is
+comparable to the latter since it signiﬁcantly reduces waste.
+
+D
+X
+C
+Dyn.
+Energy
+
+Dyn.
+Power
+
+Static
+Power
+
+Power
+
+DLA
+LT
+49%
+48%
+48%
+48%
+54%
+94%
+71%
+MT
+77%
+86%
+100%
+88%
+96%
+99%
+97%
+
+R3-DLA
+LT
+35%
+29%
+29%
+30%
+42%
+93%
+64%
+MT
+77%
+82%
+100%
+80%
+110%
+95%
+103%
+
+Table II. Average of activities (in Decode, eXecution, and
+Commit stages), energy, and power for both threads in DLA
+and R3-DLA all normalized to baseline. Note that for every
+instruction committed in the baseline processor, 1.16 are
+executed and 1.25 decoded.
+
+DLA
+R3-DLA
+
+DLA
+R3-DLA
+
+1
+
+.
+
+4
+
+5
+
+1
+
+.
+
+6
+
+0
+
+1.50
+
+1
+
+.
+
+4
+
+0
+
+1
+
+.
+
+5
+
+5
+
+1
+
+.
+
+3
+
+5
+
+dram energy
+
+1
+
+.
+
+5
+
+0
+
+1.25
+
+cpu energy
+
+1
+
+.
+
+4
+
+5
+
+1
+
+.
+
+3
+
+0
+
+1
+
+.
+
+4
+
+0
+
+1
+
+.
+
+2
+
+5
+
+1
+
+.
+
+3
+
+5
+
+1.25
+
+1
+
+.
+
+2
+
+0
+
+1
+
+.
+
+3
+
+0
+
+1
+
+.
+
+1
+
+5
+
+1
+
+.
+
+2
+
+5
+
+1
+
+.
+
+1
+
+0
+
+1
+
+.
+
+2
+
+0
+
+1.00
+
+1
+
+.
+
+0
+
+5
+
+1
+
+.
+
+1
+
+5
+
+1
+
+.
+
+1
+
+0
+
+1
+
+.
+
+0
+
+0
+
+1.00
+
+1
+
+.
+
+0
+
+5
+
+0
+
+.
+
+9
+
+5
+
+1
+
+.
+
+0
+
+0
+
+0
+
+.
+
+9
+
+0
+
+0
+
+.
+
+9
+
+5
+
+0
+
+.
+
+8
+
+5
+
+0
+
+.
+
+9
+
+0
+
+0.75
+
+0
+
+.
+
+8
+
+0
+
+0
+
+.
+
+8
+
+5
+
+0.75
+
+0
+
+.
+
+8
+
+0
+
+0
+
+.
+
+7
+
+5
+
+0
+
+.
+
+7
+
+5
+
+0
+
+.
+
+7
+
+0
+
+0
+
+.
+
+7
+
+0
+
+0
+
+.
+
+6
+
+5
+
+0
+
+.
+
+6
+
+5
+
+0
+
+.
+
+6
+
+0
+
+0
+
+.
+
+6
+
+0
+
+spec
+crono
+star
+npb
+all
+0.50
+
+spec
+crono
+star
+npb
+all
+0.50
+
+0
+
+.
+
+5
+
+5
+
+0
+
+.
+
+5
+
+5
+
+0
+
+.
+
+5
+
+0
+
+0
+
+.
+
+5
+
+0
+
+(a)
+
+(b)
+
+Figure 10. Comparison of energy normalized to baseline
+spent in (a) cpu (b) dram by DLA and R3-DLA.
+
+C. Detailed Analysis
+We now look at the contribution of each individual
+element in the design and some aspects of their interaction.
+
+Combining these factors together, our energy estimates
+(Figure 10) suggest that the average normalized energy for
+R3-DLA is 1.11x for the processor and 0.9x for memory
+(all geometric means). There is signiﬁcant variation among
+individual benchmarks (with arithmetic mean 1.19x and 0.92
+respectively.) In terms of energy delay product, DLA is 6%
+worse than baseline while R3-DLA is 19% better on average.
+3) Application in SMT cores: Finally, with increased
+efﬁciency and sophistication, R3-DLA opens up the DLA
+architecture to more usage scenarios. Here we show one
+example of SMT cores. These cores are a good compromise
+between pursuing single-thread performance and throughput.
+When enabling DLA on an SMT core, we use one thread
+to perform the look-ahead and another to run the main
+program thread. Our wide SMT core is loosely modeled
+
+strided
+others
+conﬁg.
+BL
+BL +
+stride
+
+DLA
+DLA
++ T1
+mean
+12.4
+8.4
+5.9
+2.1
+7.4
+6.9
+6.1
+4.8
+median
+10.0
+4.8
+4.0
+1.1
+3.9
+3.5
+2.8
+3.2
+
+DLA
+DLA
++ T1
+
+BL
+BL +
+stride
+
+Table III. L1 MPKI divided between strided accesses and
+non-strided accesses, corresponding to four different conﬁg-
+urations. For brevity, only means and median are shown.
+
+1) Ofﬂoading strided prefetch: With ofﬂoading stride
+prefetching, we move the comparatively simpler task of
+prefetching for certain strided accesses to a hardware FSM.
+This alone reduces the skeleton size (from 66% to 45% on
+
+Throughput norm. to HC
+
+2.4
+FC
+DLA
+R3-DLA
+SMT
+
+2.0
+
+1.8
+
+1.6
+
+1.4
+
+1.2
+
+1.0
+
+bz mc go hm sj
+li
+h2 om as xa bw mi ze gr
+le na so po ge lb
+spspec
+km md rr
+rt
+ro
+rc
+st
+ti star
+bt cg dc ep
+ft
+is
+lu mg sp ua npb
+all
+
+Figure 11. Comparison of normalized throughput obtained by R3-DLA using a single wider core over a half-core (HC).
+
+of performance, ofﬂoading never slows down the system in
+any benchmarks and has a high mean speedup (compared
+to 1.06x for adding a stride prefetcher). This is because the
+T1 hardware does a much more limited and easier job than
+a conventional stride prefetcher [22]. This can be seen by
+the memory trafﬁc result shown in Figure 12-b: the total
+memory trafﬁc is lower with adding T1 than with adding a
+stride prefetcher. Some of the extra prefetches from the stride
+prefetcher are useless and create pollution, which contributes
+to the lower performance.
+2) Reusing control ﬂow information: Using a fetch buffer
+to decouple fetch stage and decode stage is not a new
+idea. The key point here is that DLA makes it far more
+effective due to the much higher branch prediction accuracy.
+Figure 13-a shows the performance gains obtained by adding
+a fetch buffer over a baseline system and a DLA system.
+We see from the ﬁgure that the impact of a fetch buffer
+can be negative in the baseline system. In fact, for NPB suite,
+the overall effect is negative. When averaging over all ap-
+plications, the beneﬁt is relatively small (4% improvement).
+In contrast, when driven by the highly-accurate prediction
+sequence from BOQ, the fetch buffer almost never hurts and
+the beneﬁt can be as high as 1.28x. Overall, the speedup due
+to this addition is 1.08x.
+
+average, more on that later), allowing LT to run faster, and
+in turn making it more likely to succeed in other prefetches.
+To understand the effect, we compare three different options
+of prefetching these strided accesses: a modiﬁed stride
+prefetcher [46],7 the baseline DLA, and R3-DLA. We show
+the mean and median L1 MPKI (misses per kilo instructions)
+for strided and the remaining accesses in Table III.
+
+DLA + Stride
+DLA + T1
+
+DLA + Stride
+DLA + T1
+
+1.4
+
+1.2
+
+1
+
+.
+
+4
+
+0
+
+memory traffic
+
+1
+
+.
+
+2
+
+0
+
+1
+
+.
+
+3
+
+6
+
+1
+
+.
+
+1
+
+6
+
+1
+
+.
+
+3
+
+2
+
+1
+
+.
+
+1
+
+2
+
+speedup
+
+1
+
+.
+
+2
+
+8
+
+1
+
+.
+
+0
+
+8
+
+1.2
+
+1
+
+.
+
+2
+
+4
+
+1.0
+
+1
+
+.
+
+0
+
+4
+
+1
+
+.
+
+2
+
+0
+
+1
+
+.
+
+0
+
+0
+
+1
+
+.
+
+1
+
+6
+
+0
+
+.
+
+9
+
+6
+
+1
+
+.
+
+1
+
+2
+
+0
+
+.
+
+9
+
+2
+
+1
+
+.
+
+0
+
+8
+
+1.0
+
+0
+
+.
+
+8
+
+8
+
+1
+
+.
+
+0
+
+4
+
+0.8
+
+0
+
+.
+
+8
+
+4
+
+1
+
+.
+
+0
+
+0
+
+0
+
+.
+
+9
+
+6
+
+0
+
+.
+
+8
+
+0
+
+0
+
+.
+
+9
+
+2
+
+0
+
+.
+
+7
+
+6
+
+0
+
+.
+
+8
+
+8
+
+0
+
+.
+
+7
+
+2
+
+spec
+crono
+star
+npb
+all
+
+spec
+crono
+star
+npb
+all
+
+(a)
+
+(b)
+
+Figure 12. Comparison of (a) speedup and (b) normalized
+memory trafﬁc of two different conﬁgurations: DLA with a
+stride prefetcher and DLA with ofﬂoading (DLA+T1).
+
+We can imagine that T1 is far from perfect, requiring
+the loop to start a few iterations before catching up. This
+is why there is still a non-trivial 2.1 MPKI remaining for
+strided accesses. But in comparison, both baseline DLA and
+a hardware prefetcher are worse with 5.9 and 8.4 MPKI re-
+maining respectively. Additionally, the ofﬂoading improved
+DLA’s ability to target non-strided misses, reducing it from
+6.1 to 4.8 MPKI on average. The medians show a similar
+trend.
+Figure 12 evaluates both performance and memory trafﬁc
+metrics among the various choices. For brevity, we only
+show the aggregate result as the suite-wide average (repre-
+sented by the bar) and range among individual applications
+(represented by the I-beams).
+First, we see that ofﬂoading works very well with DLA
+across all four suites, achieving a geometric mean speedup of
+1.14x over all benchmarks. Second, this ofﬂoading arrange-
+ment is noticeably more effective as well as more efﬁcient
+than simply adding a hardware stride prefetcher. In terms
+
+Theoritical
+Simulated
+
+P(Queue Length)
+
+0.1
+
+0.08
+
+0.06
+
+0.04
+
+0.02
+
+0
+10
+20
+30
+Queue Length
+
+Figure 14. Comparison of theoretical and simulated proba-
+bility distribution of fetch buffer queue length
+
+In our analysis of using the fetch buffer, we used a
+simpliﬁed probabilistic approach. In Figure 14, we compare
+the theoretically derived probability distribution of the queue
+length with that gathered from actual simulation. We see that
+the general trend predicted by the theoretical analysis agrees
+with simulation result rather well.
+3) Re-cycling skeleton: Re-cycling does not add new
+direct mechanisms for better look-ahead. It merely searches
+
+7The baseline microarchitecture contains a BOP at L2. The stride
+prefetcher was an additional prefetcher to L1 and chosen from among 8
+prefetchers [45], [46], [48], [71], [76], [94], [97], [99] for best performance.
+Additionally, it was tuned to further improve performance and is conﬁgured
+with 32 strides with a prefetch degree of 4 for maximum performance using
+training inputs.
+
+FB over BL
+FB over DLA
+
+First Technique
+Last Technique
+
+1
+
+.
+
+2
+
+8
+
+Dynamic
+Static
+
+1
+
+.
+
+2
+
+6
+
+1
+
+.
+
+3
+
+2
+
+1
+
+.
+
+2
+
+4
+
+1
+
+.
+
+2
+
+8
+
+1.2
+
+1
+
+.
+
+2
+
+2
+
+1.2
+
+1
+
+.
+
+2
+
+4
+
+1
+
+.
+
+3
+
+2
+
+1
+
+.
+
+2
+
+0
+
+speedup
+
+1
+
+.
+
+2
+
+0
+
+1
+
+.
+
+2
+
+8
+
+speedup
+
+1
+
+.
+
+1
+
+8
+
+1.2
+
+speedup
+
+1
+
+.
+
+2
+
+4
+
+1
+
+.
+
+1
+
+6
+
+1
+
+.
+
+1
+
+6
+
+1
+
+.
+
+2
+
+0
+
+1
+
+.
+
+1
+
+2
+
+1
+
+.
+
+1
+
+4
+
+1
+
+.
+
+1
+
+6
+
+1.1
+
+1
+
+.
+
+1
+
+2
+
+1
+
+.
+
+0
+
+8
+
+1
+
+.
+
+1
+
+2
+
+1
+
+.
+
+1
+
+0
+
+1.0
+
+1
+
+.
+
+0
+
+4
+
+1
+
+.
+
+0
+
+8
+
+1
+
+.
+
+0
+
+8
+
+1
+
+.
+
+0
+
+0
+
+1.0
+
+1
+
+.
+
+0
+
+4
+
+1
+
+.
+
+0
+
+6
+
+0
+
+.
+
+9
+
+6
+
+1
+
+.
+
+0
+
+0
+
+1
+
+.
+
+0
+
+4
+
+0
+
+.
+
+9
+
+2
+
+0
+
+.
+
+9
+
+6
+
+1.0
+
+1
+
+.
+
+0
+
+2
+
+0
+
+.
+
+9
+
+2
+
+0
+
+.
+
+8
+
+8
+
+1
+
+.
+
+0
+
+0
+
+0
+
+.
+
+8
+
+8
+
+spec
+crono
+star
+npb
+all
+0.8
+
+0
+
+.
+
+8
+
+4
+
+0
+
+.
+
+9
+
+8
+
+0
+
+.
+
+8
+
+4
+
+0
+
+.
+
+8
+
+0
+
+0
+
+.
+
+9
+
+6
+
+spec
+crono
+star
+npb
+all
+
+AS
+VR
+FB
+
+(a)
+
+(b)
+
+(c)
+
+Figure 13. (a) Comparison of performance gains obtained by a Fetch Buffer over BL system and over DLA system (b) The speedup
+differences between dynamic and static tuning (c) Speedup when an optimization is applied ﬁrst or after other optimizations.
+
+1.0
+
+a
+
+b
+
+c
+
+d
+
+e
+
+f
+
+the ﬁrst step, then none looks especially promising averaging
+about 2-5% gain. However, if we measure the difference
+it makes as the last technique to be applied, the same
+technique now appears to have a noticeably higher 6-8%
+beneﬁt. Thus, as we add more optimizations to the design,
+more performance beneﬁt may be unlocked.
+
+0.8
+
+0.6
+
+0.4
+
+0.2
+
+bz mcgohm sj
+li h2omas xa bw mi ze gr le na so po ge lb spAVG
+0.0
+
+V. CONCLUSIONS
+Today’s general-purpose applications continue to have
+signiﬁcant levels of implicit parallelism. However, data and
+instruction supply subsystem presents signiﬁcant barriers to
+exploiting this parallelism in a conventional microarchitec-
+ture. Decoupled look-ahead systems are a potential solution.
+In this paper, we have explored a number of optimizations
+to such an architecture. They include x reducing the look-
+ahead thread workload by ofﬂoading simple prefetch pattern
+to a ﬁnite state machine; y reusing available values and con-
+trol ﬂow information to improve execution and instruction
+supply to the main thread; and z ﬁne-tuning by cycling
+through a number of pre-made skeletons. Each of these
+techniques makes a seemingly limited contribution when
+applied in isolation. But combined together, they improve the
+performance of a basic DLA system by 1.25x and achieves
+a speedup over a conventional architecture with a state-
+of-the-art prefetcher by 1.4x on average. This performance
+advantage differs from application to application and can
+be as high as 2.24x, suggesting that if used selectively and
+judiciously, an optimized R3-DLA system is already a high-
+performance solution of exploiting the available implicit
+parallelism. Furthermore, analyses of the system suggest the
+potential for further improvements.
+
+Figure 15. The distribution of skeleton versions chosen
+during online tuning.
+
+the conﬁguration space for a better solution. Figure 15 shows
+the distribution of the skeleton being chosen in re-cycling of
+skeleton. Each color shows a different conﬁguration being
+chosen. Although some simulation windows have a single
+choice for a major portion of the window, all of them
+have chosen a number of different solutions for different
+loops. This suggests that using simplistic heuristics to design
+the default skeleton is unlikely to pick an optimal design
+for a particular situation. Some dynamic tuning is perhaps
+necessary.
+Our experiments show that re-cycling skeleton improves
+performance by about 1.08 on average and up to 1.27x
+as shown in Figure 13-b. The ﬁgure also compares the
+difference between dynamic on-line and static off-line (using
+training inputs) tuning. We see that static tuning consistently
+shows better result. This is partly due to the fact that in
+dynamic tuning, more time is spent trying out suboptimal
+conﬁgurations. We note that in both approaches, the tuning
+is done in a very crude way and in a coarse-grain manner.
+This observation suggests that a more methodical, ﬁne-grain
+tuning may be able to further improve the performance of a
+DLA system.
+4) Synergy of individual optimizations: While some op-
+timizations proposed improve the speed of the look-ahead
+thread, others extract more beneﬁt from the look-ahead
+thread to improve the main thread. There is an additional
+synergy when all these techniques are combined: in a DLA
+system, the overall speed in a given phase is limited by
+the slower of the two threads. So, if a technique speeds
+up only one thread, the system performance will increase
+but only to the point where the other thread becomes the
+new bottleneck. The rest of the beneﬁt will only manifest
+when something is done to improve the other thread. So,
+when multiple techniques are applied, their combined beneﬁt
+will usually be higher than implied by the beneﬁt of each
+individual technique measured in isolation. We show this
+visually in Figure 13-c.
+In this experiment, we take the baseline DLA platform
+and measure the performance impact of applying only one
+of the three techniques. We compare that to applying the
+same technique last, that is, when the platform already
+incorporated other techniques. We see that in all three cases,
+if we measure the technique’s beneﬁt when it is applied as
+
+ACKNOWLEDGMENT
+This work is support in part by NSF under grants 1514433
+and 1722847, and by a gift from Huawei.
+
+REFERENCES
+
+[1] M. Ahmad, F. Hijaz, Q. Shi, and O. Khan. Crono: A benchmark
+suite for multithreaded graph algorithms executing on futuristic
+multicores. In IEEE International Symposium on Workload Charac-
+terization, pages 44–55, 2015.
+[2] H. Akkary, R. Rajwar, and S. Srinivasan. Checkpoint Processing and
+Recovery: Towards Scalable Large Instruction Window Processors.
+In Proceedings of the International Symposium on Microarchitecture,
+pages 423–434, December 2003.
+[3] M. Andersch, B. Juurlink, and C. Chi. A benchmark suite for eval-
+uating parallel programming models. In Proceedings of Workshop
+on Parallel Systems and Algorithms (PARS), volume 28, pages 1–6,
+2013.
+[4] M. Annavaram, J. Patel, and E. Davidson. Data Prefetching by De-
+pendence Graph Precomputation. In Proceedings of the International
+Symposium on Computer Architecture, pages 52–61, June 2001.
+[5] A. Ansari, S. Feng, S. Gupta, J. Torrellas, and S. Mahlke. Illusionist:
+Transforming lightweight cores into aggressive cores on demand. In
+Proceedings of the International Symposium on High-Performance
+Computer Architecture, February 2013.
+[6] I. Atta, X. Tong, V. Srinivasan, I. Baldini, and A. Moshovos. Self-
+contained, accurate precomputation prefetching. In Proceedings of
+the International Symposium on Microarchitecture, pages 153–165,
+2015.
+
+[7] R. Barnes, E. Nystrom, J. Sias, S. Patel, N. Navarro, and W. Hwu.
+Beating In-Order Stalls with “Flea-Flicker” Two-Pass Pipelining. In
+Proceedings of the International Symposium on Microarchitecture,
+pages 387–399, December 2003.
+[8] N. Binkert et al. The gem5 simulator. ACM SIGARCH Computer
+Architecture News, 39(2):1–7, 2011.
+[9] D. Burger, T. R. Puzak, W. F. Lin, and S. K. Reinhardt. Filtering
+superﬂuous prefetching using density vectors. In Proceedings of the
+International Conference on Computer Design, September 2001.
+[10] H. Cain and P. Nagpurkar. Runahead Execution vs. Conventional
+Data Prefetching in the IBM POWER6 Microprocessor.
+In Pro-
+ceedings of the International Symposium on Performance Analysis
+of Systems and Software, pages 203–212, March 2010.
+[11] B. Calder, G. Reinman, and D. Tullsen.
+Selective Value Predic-
+tion. In Proceedings of the International Symposium on Computer
+Architecture, pages 64–74, May 1999.
+[12] J. F. Cantin, M. H. Lipasti, and J. E. Smith. Stealth Prefetching. In
+International Conference on Architectural Support for Programming
+Languages and Operating Systems, 2006.
+[13] T. E. Carlson, W. Heirman, O Allam, S. Kaxiras, and L. Eeckhout.
+The Load Slice Core Microarchitecture. In International Symposium
+on Computer Architecture, pages 272–284, 2015.
+[14] L. Ceze, K. Strauss, J. Tuck, J. Renau, and J. Torrellas.
+CAVA:
+Hiding L2 Misses with Checkpoint-Assisted Value Prediction. IEEE
+TCCA Computer Architecture Letters, 3, December 2004.
+[15] K. Chandrasekar, C. Weis, Y. Li, B. Akesson, N. Wehn, and
+K. Goossens. DRAMPower: Open-source DRAM power and energy
+estimation tool, 2012.
+[16] R. Chappell, J. Stark, S. Kim, S. Reinhardt, and Y. Patt. Simulta-
+neous Subordinate Microthreading (SSMT). In Proceedings of the
+International Symposium on Computer Architecture, pages 186–195,
+May 1999.
+[17] R. Chappell, F. Tseng, A. Yoaz, and Y. Patt. Difﬁcult-Path Branch
+Prediction Using Subordinate Microthreads. In Proceedings of the
+International Symposium on Computer Architecture, pages 307–317,
+May 2002.
+[18] R. Chappell, F. Tseng, A. Yoaz, and Y. Patt.
+Microarchitec-
+tural Support for Precomputation Microthreads. In Proceedings of
+the International Symposium on Microarchitecture, pages 74–84,
+November 2002.
+[19] S. Chaudhry, P. Caprioli, S. Yip, and M. Tremblay.
+High-
+Performance Throughput Computing.
+IEEE Micro, 25(3):32–45,
+May/June 2005.
+[20] S. Chaudhry, R. Cypher, M. Ekman, M. Karlsson, A. Landin,
+S. Yip, H. Zeffer, and M. Tremblay.
+Simultaneous Speculative
+Threading: A Novel Pipeline Architecture Implemented in Sun’s
+Rock Processor.
+In Proceedings of the International Symposium
+on Computer Architecture, pages 484–295, June 2009.
+[21] C. F. Chen, Se-Hyun Yang, B. Falsaﬁ, and A. Moshovos. Accurate
+and complexity-effective spatial pattern prediction. In Proceedings
+of the International Symposium on High-Performance Computer
+Architecture, February 2004.
+[22] T. Chen and J. Baer. Effective hardware-based data prefetching for
+high-performance processors. In IEEE Transactions on Computers,
+volume 44, pages 609–623, 1995.
+[23] Y. Chou. Low-cost epoch-basded correlation prefetching for com-
+mercial applications. In Proceedings of the International Symposium
+on Microarchitecture, December 2007.
+[24] J. Collins, S. Sair, B. Calder, and D. Tullsen. Pointer cache assisted
+prefetching.
+In Proceedings of the International Symposium on
+Microarchitecture, pages 62–73, November 2002.
+[25] J. Collins, D. Tullsen, H. Wang, and J. Shen. Dynamic Speculative
+Precomputation. In Proceedings of the International Symposium on
+Microarchitecture, pages 306–317, December 2001.
+[26] J. Collins, H. Wang, D. Tullsen, C. Hughes, Y. Lee, D. Lavery,
+and J. Shen. Speculative Precomputation: Long-range Prefetching of
+Delinquent Loads. In Proceedings of the International Symposium
+on Computer Architecture, pages 14–25, June 2001.
+
+[27] R. Cooksey, S. Jourdan, and D. Grunwald. A stateless, Content-
+Directed Data Prefetching Mechanism. In International Conference
+on Architectural Support for Programming Languages and Operat-
+ing Systems, 2010.
+[28] M. Dimitrov and H. Zhou.
+Combining local and global histroy
+for high performance data prefetching. Journal of Instruction-Level
+Parallelism, 2011.
+[29] M. Dubois and Y. Song.
+Assisted execution.
+Technical Report,
+Department of Electrical Engineering, University of Southern Cali-
+fornia, 1998.
+[30] J. Dundas and T. Mudge. Improving Data Cache Performance by
+Pre-Executing Instructions Under a Cache Miss. In Proceedings of
+the International Conference on Supercomputing, pages 68–75, July
+1997.
+[31] E. Ebrahimi, O. Mutlu, and Y. N. Patt. Techniques for bandwidth-
+efﬁcient prefetching of linked data structures.
+In Proceedings
+of the International Symposium on High-Performance Computer
+Architecture, February 2009.
+[32] A. Farcy, O. Temam, R. Espasa, and T. Juan. Dataﬂow Analysis
+of Branch Mispredictions and Its Application to Early Resolution of
+Branch Outcomes. In Proceedings of the International Symposium
+on Microarchitecture, pages 59–68, November–December 1998.
+[33] F. Gabbay and A. Mendelson. Can program proﬁling support value
+prediction? In Proceedings of the 30th annual ACM/IEEE interna-
+tional symposium on Microarchitecture, pages 270–280, 1997.
+[34] A. Garg and M. Huang. A Performance-Correctness Explicitly De-
+coupled Architecture. In Proceedings of the International Symposium
+on Microarchitecture, pages 306–317, November 2008.
+[35] A. Garg, R. Parihar, and M. Huang.
+Speculative Parallelization
+in Decoupled Look-ahead.
+In Proceedings of the International
+Conference on Parallel Architecture and Compilation Techniques,
+pages 412–422, October 2011.
+[36] B. Greskamp and J. Torrellas. Paceline: Improving Single-Thread
+Performance in Nanoscale CMPs through Core Overclocking.
+In
+Proceedings of the International Conference on Parallel Architecture
+and Compilation Techniques, pages 213–224, September 2007.
+[37] T. Ham, J. Aragn, and M. Martonosi. DeSC: Decoupled supply-
+compute communication management for heterogeneous architec-
+tures.
+In Proceedings of the 48th International Symposium on
+Microarchitecture, pages 191–203, 2015.
+[38] M. Hashemi, O. Mutlu, and Y. Patt. Continuous runahead: Transpar-
+ent hardware acceleration for memory intensive workloads. In 49th
+Annual IEEE/ACM International Symposium on Microarchitecture
+(MICRO), pages 1–12, 2016.
+[39] M. Hashemi and Y. Patt. Filtered runahead execution with a runahead
+buffer.
+In Proceedings of the 48th International Symposium on
+Microarchitecture (MICRO), pages 358–369, 2015.
+[40] J. Henning.
+SPEC CPU2006 benchmark descriptions.
+ACM
+SIGARCH Computer Architecture News, 34(4):1–17, September
+2006.
+[41] A. Hilton, N. Eswaran, and A. Roth. CPROB: Checkpoint processing
+with opportunistic minimal recovery. In 18th International Confer-
+ence on Parallel Architectures and Compilation Techniques, 2009,
+pages 159–168, 2009.
+[42] C. Ho, S. Kim, and K. Sankaralingam. Efﬁcient execution of memory
+access phases using dataﬂow specialization. In Proceedings of the
+42nd Annual International Symposium on Computer Architecture,
+pages 118–130, 2015.
+[43] I. Hur and C. Lin.
+Memory prefetching Using Adaptive Stream
+Detection.
+In Proceedings of the International Symposium on
+Microarchitecture, December 2006.
+[44] W. Hwu. Top Five Reasons Why Sequential Programming Models
+Could the Best to Program CMPs. Keynote Speech, International
+Symposium on Microarchitecture, December 2006.
+[45] Y. Ishii, M. Inaba, and K. Hiraki. Access map pattern matching for
+high performance data cache prefetch. Journal of Instruction-Level
+Parallelism, 2011.
+
+[64] M. Lipasti, C. Wilerson, and J. Shen. Value Locality and Load Value
+Prediction. In Proceedings of the International Conference on Arch.
+Support for Prog. Lang. and Operating Systems, pages 138–147,
+October 1996.
+[65] J. Lu, A. Das, W. Hsu, K. Nguyen, and S. Abraham. Dynamic Helper
+Threaded Prefetching on the Sun UltraSPARC CMP Processor. In
+Proceedings of the International Symposium on Microarchitecture,
+pages 93–104, December 2005.
+[66] C. Luk. Tolerating Memory Latency Through Software-Controlled
+Pre-execution in Simultaneous Multithreading Processors. In Pro-
+ceedings of the International Symposium on Computer Architecture,
+pages 40–51, June 2001.
+[67] C. Madriles, P. L´opez, J. Codina, E. Gibert, F. Latorre, A. Martinez,
+R. Martinez, and A. Gonzalez. Boosting Single-thread Performance
+in Multi-core Systems Through Fine-grain Multi-threading.
+In
+International Symposium on Computer Architecture, pages 474–483,
+2009.
+[68] M. Martin, D. Sorin, H. Cain, M. Hill, and M. Lipasti. Correctly
+Implementing Value Prediction in Microprocessors that Support
+Multithreading or Multiprocessing. In Proceedings of the Interna-
+tional Symposium on Microarchitecture, December 2001.
+[69] J. Martinez, J. Renau, M. Huang, M. Prvulovic, and J. Torrellas.
+Cherry: Checkpointed Early Resource Recycling in Out-of-order
+Microprocessors.
+In Proceedings of the International Symposium
+on Microarchitecture, pages 3–14, November 2002.
+[70] F. Mesa-Martinez and J. Renau.
+Effective Optimistic-Checker
+Tandem Core Design Through Architectural Pruning. In Proceedings
+of the International Symposium on Microarchitecture, pages 236–
+248, December 2007.
+[71] P. Michaud.
+Best-Offset Hardware Prefetching.
+In International
+Symposium on High Performance Computer Architecture, pages
+469–480, 2016.
+[72] A. Moshovos, D. Pnevmatikatos, and A. Baniasadi. Slice-processors:
+an Implementation of Operation-Based Prediction. In Proceedings
+of the International Conference on Supercomputing, pages 321–334,
+June 2001.
+[73] O. Mutlu, J. Stark, C. Wilkerson, and Y. Patt. Runahead Execution:
+An Alternative to Very Large Instruction Windows for Out-of-order
+Processors. In Proceedings of the International Symposium on High-
+Performance Computer Architecture, pages 129–140, February 2003.
+[74] T. Nakra, R. Gupta, and M. Soffa.
+Global context-based value
+prediction. In Fifth International Symposium On High-Performance
+Computer Architecture, pages 4–12, 1999.
+[75] K. Nesbit, A. Dhodapkar, and J. Smith. Ac/dc: An adaptive data
+cache prefetcher. In Proceedings of the International Conference on
+Parallel Architecture and Compilation Techniques, September 2004.
+[76] K. J. Nesbit and J. E. Smith. Data Cache Prefetching using a Global
+History Buffer. In International Symposium on High Performance
+Computer Architecture (HPCA), 2004.
+[77] A. S odani and G. Sohi.
+Understanding the differences between
+value prediction and instruction reuse. In Proceedings of the 31st
+annual ACM/IEEE international symposium on Microarchitecture,
+pages 205–215, 1998.
+[78] S. Palacharla and R. Kessler.
+Evaluating Stream Buffers as a
+Secondary Cache Replacement. In Proceedings of the International
+Symposium on Computer Architecture, pages 24–33, April 1994.
+[79] R. Parihar, C. Ding, and M. Huang. A Coldness Metric for Cache
+Optimization.
+In ACM SIGPLAN Workshop on Memory Systems
+Performance and Correctness, June 2013.
+[80] A. Perais, F. Endo, and A. Seznec. Register sharing for equality
+prediction. In 49th Annual IEEE/ACM International Symposium on
+Microarchitecture (MICRO), pages 1–12, 2016.
+[81] A. Perais and A. Seznec. Practical data value speculation for future
+high-end processors. In IEEE 20th International Symposium on High
+Performance Computer Architecture (HPCA), pages 428–439, 2014.
+[82] S. H. Pugsley, Z. Chishti, C. Wilkerson, P. f. Chuang, R. L. Scott,
+A. Jaleel, S. L. Lu, K. Chow, and R. Balasubramonian. Sandbox
+Prefetching: Safe Run-time Evaluation of Aggressive Prefetchers.
+In International Symposium on High Performance Computer Archi-
+tecture, pages 626–637, 2014.
+
+[46] B. Janssens J. Fu, J. Patel.
+Stride directed prefetching in scalar
+processors.
+In Proceedings of the International Symposium on
+Microarchitecture, December 1992.
+[47] A. Jain and C. Lin.
+Linearizing irregular memory accesses for
+improved correlated prefetching. In Proceedings of the International
+Symposium on Microarchitecture, December 2013.
+[48] K. Jinchuna, S. Pugsley, P. Gratz, A. Reddy, C. Wilkerson, and
+Z. Chishti.
+Path conﬁdence based lookahead prefetching.
+In
+International Symposium on Microarchitecture (MICRO), pages 1–
+12, 2016.
+[49] D. Joseph and D. Grunwald. Prefetching using markov predictors.
+In Proceedings of the International Symposium on Computer Archi-
+tecture, June 1997.
+[50] N. Jouppi.
+Improving Direct-Mapped Cache Performance by the
+Addition of a Small Fully-Associative Cache and Prefetch Buffers.
+In Proceedings of the International Symposium on Computer Archi-
+tecture, pages 364–373, May 1990.
+[51] D.
+Kadjo,
+J.
+Kim,
+P.
+Sharma,
+R.
+Panda,
+P.
+Gratz,
+and
+D. Jimenez.
+B-Fetch: Branch prediction directed prefetching for
+Chip-Multiprocessors. In Proceedings of the International Sympo-
+sium on Microarchitecture, December 2014.
+[52] D. Kim, S. Liao, P. Wang, J. del Cuvillo, X. Tian, X. Zou, H. Wang,
+M. Gikar, J. Shen, and D. Yeung. Physical Experimentation with
+Prefetching Helper Threads on Intel’s Hyper-Threaded Processors.
+In Proceedings of the International Symposium on Code Generation
+and Optimization, pages 27–38, March 2004.
+[53] D. Kim and D. Yeung.
+Design and Evaluation of Compiler
+Algorithms for Pre-Execution. In Proceedings of the International
+Conference on Arch. Support for Prog. Lang. and Operating Systems,
+October 2002.
+[54] D. Kim and D. Yeung. A study of source-level compiler algorithms
+for automatic construction of pre-execution code. ACM Transactions
+on Computer Systems (TOCS), 22(3):326–379, 2004.
+
+[55] N. Kirman, M. Kirman, M. Chaudhuri, and J. Martinez.
+Check-
+pointed Early Load Retirement. In Proceedings of the International
+Symposium on High-Performance Computer Architecture, pages 16–
+27, February 2005.
+[56] S. Kondguli and M. Huang. T2: A Highly Accurate and Energy
+Efﬁcient Stride Prefetcher.
+In Proceedings of the International
+Conference on Computer Design, November 2017.
+[57] S. Kondguli and M. Huang. A Case for a More Effective, Power-
+Efﬁcient Turbo Boosting. ACM Transactions on Architecture and
+Code Optimization, 15(1):5–22, March 2018.
+[58] S. Kondguli and M. Huang. Bootstrapping: Using SMT Hardware
+to Improve Single-Thread Performance.
+IEEE TCCA Computer
+Architecture Letters, 17(2):205–208, July 2018.
+[59] S. Kondguli and M. Huang. Division of Labor: A More Effective
+Approach to Prefetching.
+In Proceedings of the International
+Symposium on Computer Architecture, June 2018.
+
+[60] S. Kondguli and M. Huang. Bootstrapping: Using SMT Hardware to
+Improve Single-Thread Performance. In International Conference on
+Architectural Support for Programming Languages and Operating
+Systems, April 2019.
+[61] S. Kumar and C. Wilkerson.
+Exploiting spatial locality in data
+caches using spatial footprints. In Proceedings of the International
+Symposium on Computer Architecture, June–July 1998.
+[62] S. Li, J. H. Ahn, R. D. Strong, J. B. Brockman, D. M. Tullsen,
+and N. P. Jouppi. McPAT: An Integrated Power, Area and Timing
+Modeling Framework for Multicore and Manycore Architectures. In
+Proceedings of the International Symposium on Microarchitecture,
+December 2009.
+[63] S. Liao, P. Wang, H. Wang, G. Hoﬂehnerg, D. Laveryg, and
+J. Shen. Post-Pass Binary Adaptation for Software-Based Speculative
+Precomputation. In Proceedings of the ACM SIGPLAN Conference
+on Programming Language Design and Implementation, pages 117–
+128, June 2002.
+
+[83] Z. Purser, K. Sundaramoorthy, and E. Rotenberg. A Study of Slip-
+stream Processors. In Proceedings of the International Symposium
+on Microarchitecture, pages 269–280, December 2000.
+[84] E. Rotenberg. AR-SMT: A Microarchitectural Approach to Fault
+Tolerance in Microprocessors. In Proceedings of the International
+Symposium on Fault-Tolerant Computing, pages 84–91, June 1999.
+[85] E. Rotenberg, J. Smith, and S. Bennett. Trace Cache: a Low Latency
+Approach to High Bandwidth Instruction Fetching. In Proceedings
+of the International Symposium on Microarchitecture, pages 24–34,
+December 1996.
+[86] A. Roth, A. Moshovos, and G. Sohi. Dependence Based Prefetching
+for Linked Data Structures.
+In Proceedings of the International
+Conference on Arch. Support for Prog. Lang. and Operating Systems,
+pages 115–126, October 1998.
+[87] A. Roth, A. Moshovos, and G. Sohi. Improving Virtual Function
+Call Target Prediction via Dependence-Based Pre-Computation. In
+Proceedings of the International Conference on Supercomputing,
+pages 356–364, June 1999.
+[88] A. Roth and G. Sohi. Speculative Data-Driven Multithreading. In
+Proceedings of the International Symposium on High-Performance
+Computer Architecture, pages 37–48, January 2001.
+[89] A. Roth and G. S. Sohi. Effective jump-pointer prefetching for linked
+data structures. In Proceedings of the International Symposium on
+Computer Architecture, May 1999.
+[90] M. San, A. Jorge, J. Natalie, and J. Aamer. The Bunker Cache for
+Spatio-Value Approximation. In In Proceedings of the International
+Symposium on Microarchitecture, 2016.
+[91] Y. Sazeides and J. Smith. The Predictability of Data Values. In
+Proceedings of the International Symposium on Microarchitecture,
+pages 248–258, December 1997.
+[92] A. Seznec. Tage-scl branch predictors again. In 5th JILP Workshop
+on Computer Architecture Competitions (JWAC-5): Championship
+Branch Prediction (CBP-5), 2016.
+[93] T. Sherwood, E. Perelman, G. Hamerly, and B. Calder. Automatically
+Characterizing Large Scale Program Behavior. In Proceedings of
+the International Conference on Arch. Support for Prog. Lang. and
+Operating Systems, pages 45–57, October 2002.
+[94] M. Shevgoor, S. Koladiya, R. Balasubramonian, C. Wilkerson,
+S. Pugsley, and Z. Chishti.
+Efﬁciently prefetching complex ad-
+dress patterns.
+In International Symposium on Microarchitecture
+(MICRO), pages 141–152, 2015.
+[95] J. Smith. Decoupled Access/Execute Computer Architectures. ACM
+Transactions on Computer Systems, 2(4):289–308, November 1984.
+[96] S. Somogyi, T. Wenisch, A. Ailamaki, and B. Falsaﬁ.
+Spatio-
+Temporal Memory Streaming. In Proceedings of the International
+Symposium on Computer Architecture, June 2009.
+[97] S. Somogyi, T. Wenisch, A. Ailamaki, B. Falsaﬁ, and A. Moshovos.
+Spatial Memory Streaming.
+In Proceedings of the International
+Symposium on Computer Architecture, June 2006.
+[98] Y. Song, S. Kalogeropulos, and P. Tirumalai. Design and Imple-
+mentation of a Compiler Framework for Helper Threading on Multi-
+core Processors. In Proceedings of the International Conference on
+Parallel Architecture and Compilation Techniques, pages 99–109,
+September 2005.
+[99] S. Srinath, O. Mutlu, H. Kim, and Y. Patt.
+Feedback directed
+prefetching: Improving the performance and bandwidth-efﬁciency
+of hardware prefetchers.
+In International Symposium on High
+Performance Computer Architecture (HPCA), pages 63–74, 2007.
+[100] S. Srinivasan, R. Rajwar, H. Akkary, A. Gandhi, , and M. Upton.
+Continual Flow Pipelines.
+In Proceedings of the International
+Conference on Arch. Support for Prog. Lang. and Operating Systems,
+October 2004.
+[101] K. Sundaramoorthy, Z. Purser, and E. Rotenberg.
+Slipstream
+Processors: Improving both Performance and Fault Tolerance.
+In
+Proceedings of the International Conference on Arch. Support for
+Prog. Lang. and Operating Systems, pages 257–268, November
+2000.
+
+[102] J. Tendler, J. Dodson, J. Fields, H. Le, and B. Sinharoy. POWER4
+System Microarchitecture. IBM Journal of Research and Develop-
+ment, 46(1):5–25, January 2002.
+[103] R. Thomas and M. Franklin.
+Using dataﬂow based context for
+accurate value prediction. In International Conference on Parallel
+Architectures and Compilation Techniques, pages 107–117, 2001.
+[104] D. Tullsen and J. Seng. Storageless Value Prediction Using Prior
+Register Values. In Proceedings of the International Symposium on
+Computer Architecture, pages 270–279, May 1999.
+[105] K. Wang and M. Franklin.
+Highly accurate data value predic-
+tion using hybrid predictors.
+In Proceedings of the 30th annual
+ACM/IEEE international symposium on Microarchitecture, pages
+281–290, 1997.
+[106] P. Wang, J. Collins, H. Wang, D. Kim, B. Greene, K. Chan, A. Yunus,
+T. Sych, S. Moore, and J. Shen.
+Helper Threads via Virtual
+Multithreading. IEEE Micro, 24(6):74–82, November 2004.
+[107] P. Wang, H. Wang, J. Collins, E. Grochowski, R. Kling, and
+J. Shen. Memory Latency-Tolerance Approaches for Itanium Pro-
+cessors: Out-of-Order Execution vs. Speculative Precomputation. In
+Proceedings of the International Symposium on High-Performance
+Computer Architecture, pages 167–176, February 2002.
+[108] Z. Wang, D. Burger, K. S. McKinley, S. K. Reinhardt, and C. C.
+Weems. Guided region prefetching: A cooperative hardware/software
+approach. ACM SIGARCH Computer Architecture News, 31(2):388–
+398, 2003.
+[109] T. Wenisch, M. Ferdman, A. Ailamaki, B. Falsaﬁ, and A. Moshovos.
+Practical off-chip meta-data for address-correlated prefetching. In
+Proceedings of the International Symposium on High-Performance
+Computer Architecture, February 2009.
+[110] K. Yeager. The MIPS R10000 Superscalar Microprocessor. IEEE
+Micro, 16(2):28–40, April 1996.
+[111] W. Zhang, D. Tullsen, and B. Calder. Accelerating and Adapting
+Precomputation Threads for Efﬁcient Prefetching. In Proceedings
+of the International Symposium on High-Performance Computer
+Architecture, February 2007.
+[112] H. Zhou. Dual-Core Execution: Building a Highly Scalable Single-
+Thread Instruction Window.
+In Proceedings of the International
+Conference on Parallel Architecture and Compilation Techniques,
+pages 231–242, September 2005.
+[113] H. Zhou and T. M. Conte. Enhance Memory-Level Parallelism via
+Recovery-Free Value Prediction. In Proceedings of the International
+Conference on Supercomputing, pages 326–335, June 2003.
+[114] C. Zilles and G. Sohi. Execution-Based Prediction Using Speculative
+Slices. In Proceedings of the International Symposium on Computer
+Architecture, pages 2–13, June 2001.
+
+APPENDIX A.
+GENERATING A BASIC DLA SKELETON
+The lead thread in DLA architecture executes a skeleton of
+the original program binary. A skeleton includes all the control
+instructions and a subset of memory instructions from the original
+program binary along with their backward dependence chain. In
+this section we brieﬂy describe the process of generating this
+skeleton for DLA. Note that there is no correctness issue with
+the skeleton as all information from LT is treated as predictions
+and is thus fundamentally speculative.
+The process ﬁrst identiﬁes the instructions for which the look
+ahead thread is supposed to generate hints. These instructions,
+whom we call seeds, include all the control instructions in the
+binary. If a runtime proﬁler is available, then the program binary
+is executed with a training input to identify all the memory
+instructions that have a higher probability of missing in the caches.
+In our experiments, our runtime proﬁler selects all the memory
+instructions that have more than 1% chance of missing in L1
+and/or more than 0.1% chance of missing in L2. Once all the
+seeds are included, the skeleton generator identiﬁes and includes
+
+A. Change in queue length
+Every cycle, the decode unit withdraws instructions under a
+certain probability distribution (D discussed above). At the same
+time, the I-cache can supply new instructions following another
+probability distribution (S). Convolving these two distributions will
+give us a probability distribution of the change in the queue length.
+This probability distribution can be represented as a vector:
+
+C ≡[C−maxw, ..., Cmaxd]T
+
+where Cδ is the probability of a change of δ instructions and maxw
+and maxd represent maximum number of instructions withdrawn
+or deposited, respectively.
+
+B. Transition probability matrix
+With probability distribution C, we can now construct the
+transition matrix
+
+Pi,j
+
+which describes the conditional probability
+of having i instructions in fetch queue the next cycle when there are
+j instructions in the current cycle. Loosely speaking, the columns
+of matrix P are merely vector C shifted appropriately such that
+C0 aligns on the diagonal of the matrix. Since the queue length
+can not be negative or higher than capacity, the boundary elements
+(P0,i and PN,i) absorb the portion of the vector left outside the
+matrix. More formally, the elements are calculated as follows:
+
+Figure 16. Pseudo code outlining the process of generating
+a basic skeleton used by DLA.
+
+the backward dependents of each seed. While considering the
+backward memory dependencies, the skeleton generator ignores all
+the store to load dependencies if the store and the corresponding
+load are separated by more than a 1000 static instructions. Note
+that not all of the memory dependencies can be identiﬁed by the
+binary parser. However, the information generated by the training
+run is sufﬁcient to identify most of the memory dependencies. A
+pseudo code for the skeleton generation process is presented in
+Fig. 16.
+Note that our process of generating the skeleton is almost
+identical to the one described in [34], which includes more detailed
+discussions about the choice of design parameters and additional
+optimizations.
+
+
+
+
+
+P
+
+k≤i−j Ck,
+i = 0;
+P
+
+Pi,j =
+
+k≥i−j Ck,
+i = N;
+C(i−j),
+otherwise.
+
+
+
+
+C. Steady-state distribution
+Given the probability transition matrix, the probability distribu-
+tion of the queue length in cycle n + 1 can thus be expressed
+as:
+Q(n+1) = P × Q(n)
+
+and thus steady-state solution Qss ≡limn→∞Q(n) satisﬁes:
+
+APPENDIX B.
+PROBABILISTIC ANALYSIS OF FETCH BUFFER
+
+Qss = P × Qss
+
+We can measure the performance of a fetch unit by how many
+fetch bubbles it inserts into the pipeline down stream, i.e., how
+many more instructions the next stage (decode) can absorb but the
+fetch unit fails to deliver. We make the simplifying assumption that
+the demand for instruction from the next stage is an independent
+random variable from the status of the queue. We use Dj to
+denote the probability of the demand being j instructions (thus
+PM
+j=0 Dj
+= 1, M being the decode width). We use Qi to
+denote the probability of the queue containing i instructions (thus
+PN
+i=0 Qi = 1, N being queue capacity). Then the expectation of
+fetch bubbles can be calculated as follows.
+
+That is to say Qss is an eigenvector belonging to eigenvalue 1
+of matrix P. Since P is a stochastic matrix, we know that there is
+a unique largest eigenvalue of 1.8
+
+D. Case study
+Here we use a 4-wide decode pipeline with a 16-wide I-cache
+fetch width as a case study to analyze the impact of deeper fetch
+decoupling. In our simpliﬁed model, the behavior of the program
+is reduced to two probability distributions: S and D. They are
+measured empirically. In particular, we idealize the instruction fetch
+and measure the number of instructions demanded to obtain D.
+Conversely, we idealize the backend of the pipeline to measure the
+instruction supply probability distribution both for an I-cache or a
+trace cache. Following the steps above, we obtain the probability
+distribution of queue length (Q) with different capacities and under
+both caches (shown in Fig. 5).
+
+N
+X
+
+
+Qi × PN
+j=i+1 Dj × (j −i)
+
+
+E(FB) =
+
+i
+
+In this calculation, the queue length probability distribution is a
+function of capacity. We can empirically measure it via simulations,
+but it is tedious and does not easily reveal insight. Instead, we can
+analyze the queue as a simple Markov chain. The fetch queue can
+be in one of N + 1 states (holding between 0 and N instructions).
+We represent the probability distribution over these states as a
+vector.
+Q ≡[Q0, Q1, ..., QN]T
+
+8This is according to Perron-Frobenius theorem, though strictly speaking,
+we require the matrix to be positive. We can imagine substituting zero
+elements in P with ϵ →0. Another way of looking at this problem is to
+diagonalize matrix P:
+
+lim
+n→∞Q(n) = lim
+n→∞(P n)Q(0) = X lim
+n→∞(Λn)X−1Q(0)
+
+To estimate the steady-state distribution (Qss) we need to calculate
+probabilities of state transitions. That, in turn, requires knowing
+the probabilities of supplying and withdrawing instructions from
+the queue. The calculation process is as follows.
+
+Again, by Perron-Frobenius theorem, we know there is a unique largest
+eigenvalue, so any initial probability distribution vector Q(0) will lead to
+Qss.

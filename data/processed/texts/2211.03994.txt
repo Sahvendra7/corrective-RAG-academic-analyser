@@ -1,0 +1,3461 @@
+Reinforcement Learning with Stepwise Fairness Constraints
+
+Zhun Deng∗
+He Sun†
+Zhiwei Steven Wu‡
+Linjun Zhang§
+David C. Parkes¶
+
+Abstract
+
+AI methods are used in societally important settings, ranging from credit to employment to housing,
+and it is crucial to provide fairness in regard to algorithmic decision making. Moreover, many settings
+are dynamic, with populations responding to sequential decision policies. We introduce the study of
+reinforcement learning (RL) with stepwise fairness constraints, requiring group fairness at each time
+step. Our focus is on tabular episodic RL, and we provide learning algorithms with strong theoretical
+guarantees in regard to policy optimality and fairness violation. Our framework provides useful tools to
+study the impact of fairness constraints in sequential settings and brings up new challenges in RL.
+
+arXiv:2211.03994v1 [cs.LG] 8 Nov 2022
+
+1
+Introduction
+
+Decision making systems trained with real-world data are deployed ubiquitously in our daily life, for ex-
+ample, in regard to credit, education, and medical care. However, those decision systems may demonstrate
+discrimination against disadvantaged groups due to the biases in the data [16]. In order to mitigate this
+issue, many have proposed to impose fairness constraints [16,20] on the decision, such that certain statistical
+parity properties are achieved. Despite the fact that fair learning has been extensively studied, most of this
+work is in the static setting without considering the sequential feedback eﬀects of decisions. At the same
+time, in many scenarios, algorithmic decisions may incur changes in the underlying features or qualiﬁcation
+status of individuals, which further feeds back to the decision making process; for example, banks’ decision
+may induce borrowers to react, for example changing their FICO score by closing credit cards.
+When there exist sequential feedback eﬀects, even ignoring one-step feedback eﬀects can harm minority
+groups [30]. In response, [36] advocates to study a discrete-time sequential decision process, where responses
+to the decisions made at each time step are accompanied by changes in the features and qualiﬁcations of the
+population in the next time step. In particular, they study and show the drawback of myopic optimization
+together with requiring fairness at each time step, which we refer to as stepwise fairness constraints. While
+imposing stepwise fairness constraints is a natural way to incorporate fairness into a Markov decision process
+(MDP), it makes more sense from the perspective of a decision maker to consider the long-term reward. Thus,
+in this paper, we study stepwise fairness constraints together with optimal, sequential-decision making, taking
+the perspective of a forward-looking decision maker. On one hand, our work could be viewed as a Fair
+Partially Observable Markov Decision Process (F-POMDP) framework to promote fair sequential decision
+making 1. On the other hand, our work also provides a computational tool for studying the quantities of
+interests, such as well-being of groups, in a natural sequential decision making setting.
+In particular, we initiate both the theoretical and experimental studies of reinforcement learning, i.e.
+optimizing long-term reward in a partially observable Markov decision process (POMDP), under stepwise
+fairness constraints.
+We consider an episodic setting, which models for example economic and societal
+activities that exhibit seasonality; e.g., new mortgage applicants who apply for loans from banks more
+often in the spring and summer season every year, or graduate school admission, which usually starts in
+
+∗Harvard University,
+†Harvard University, he
+‡Carnegie Mellon University,
+§Rutgers University,
+¶Harvard University,
+1The problem of long-term well-being of groups brought up in [30] is due to a misalignment of the institute’s reward
+function and well-being measurements, and cannot be solved in any existing literature. It also doesn’t prevent stepwise fairness
+constraints from being a way to build fair MDP.
+
+the autumn and completes around December every year. Similar to [30,36], we mainly consider two types
+of fairness notions, demographic parity and equalized opportunity, and for a POMDP framework that has
+discrete actions and a discrete state space. These are illustrative of other stepwise fairness constraints that
+could be adopted. We take a model-based learning approach, and provide practical optimization algorithms
+that enjoy strong theoretical guarantees in regard to policy optimality and fairness violations as the number
+of episodes increases. We summarize our contributions as below:
+1. Theoretically, we demonstrate how to use sampled trajectories of individuals to solve RL with fairness
+constraints and provide theoretical guarantees to ensure vanishing regrets in reward and fairness violation
+as the number of episodes increases.
+2.
+Experimentally, we implement the ﬁrst algorithm for tabular episodic RL with stepwise fairness
+constraints.
+
+1.1
+Related work
+
+As the rapid development of machine learning [11, 12, 14, 15, 18, 22, 23], there is an increasing interest in
+the study of decision making problems in the context of people [2, 6, 19, 32, 33]. Hardt et al. [19] model a
+classiﬁcation problem as a sequential game (Stackelberg competition) between two players, where the ﬁrst
+player has the ability to commit to his strategy before the second player responds. They characterize the
+equilibruim and obtain near optimal computationally eﬃcient learning algorithms. Shavit and Moses [32]
+study an algorithmic decision-maker who incentivizes people to act in certain ways to receive a better
+decision. Ball et al. [2] study a model of predictive scoring, where there is a sender agent being scored, a
+receiver agent who wants to predict the quality of the sender, and an intermediary who observes multiple,
+potentially mutable features of the sender.
+There is also a growing literature on algorithmic fairness [4, 5, 9, 10, 13, 16, 29, 30, 35]. Liu et al. [30],
+for example, characterize the delayed impact of standard fairness criteria under a feedback model with a
+single period of adaptation. They use a one step feedback model to capture the sequential dynamics of the
+environment. However, these papers do not consider the fairness in a more general sequential decision process.
+There is also a line of literature regarding fair bandits, but not more general (PO)MDP problems [21, 25].
+In regard to fairness considerations in reinforcement learning, it has also gained great attention [7,12,14,17,
+24,26,31,34]. In particular, Creager et al. [7] use causal directed acyclic graphs as a unifying framework for
+fairness. D’Amour et al. [17] use simulation to study the fairness of algorithms and show that neither static
+nor single-step analyses is enough to understand the long-term consequences of a decision system. Jabbari
+et al. [24] deﬁne fairness constraints to require that an algorithm never prefers one action over another if the
+long-term reward of choosing the latter action is higher, whereas we consider groupwise notions of fairness.
+Mandal et al. [31] adopt a welfare-based, axiomatic approach, and give a regret bound for the Nash Social,
+Minimum and generalized Gini Welfare. In contrast with our work, the fairness concepts are not group-based
+but rather based on the value contributed from diﬀerent agents in the system. Similar to this paper, Zhang
+et al. [37] study the dynamics of population qualiﬁcation and algorithmic decisions under a partially observed
+Markov decision problem setting, but whereas they only consider myopic policies, we frame this as a general
+reinforcement learning policies.
+
+2
+Preliminaries
+
+We consider a binary decision setting, with training examples that consist of triplets (x, y, ϑ), where x ∈X
+is a feature vector, ϑ ∈Λ is a protected group attribute such as race or gender, and the label y ∈{0, 1}.For
+simplicity, we only consider binary sensitive attributes Λ = {α, β}, but our method can also be generalized
+to deal with multiple sensitive attributes (see Appendix B). For k ∈N+, we use [k] to denote the set
+{1, 2, · · · , k}.
+Based on feature x, a decision maker makes a decision a ∈A = {0, 1} (e.g., make a loan or not). We
+will also denote an individual’s state as s = (x, y), and let S = X × Y. After a decision is made, a possibly
+group-dependent reward, which may be stochastic, rϑ : (s, a) 7→R is obtained by the decision maker. A
+
+concrete example of a reward function, with r+, r−> 0, is
+
+
+
+
+r+,
+if y = 1, a = 1;
+−r−,
+if y = 0, a = 1;
+0,
+if a = 0.
+
+rϑ(s, a) =
+
+
+
+Here, the decision maker gains r+ by accepting a qualiﬁed individual and incurs a cost r−by accepting
+an unqualiﬁed individual.
+
+2.1
+Sequential setting
+
+Our model as a partially observable Markov decision process (POMDP) mainly follows [36], but they con-
+sider a fair, myopically-optimizing policy while we consider long-term rewards as in typical RL settings.
+Following [30, 36], the decision maker is interested in the expected reward achieved across time for a ran-
+dom individual drawn from the population. Each random individual has their group membership sampled
+according to pα = P(ϑ = α) and pβ = P(ϑ = β), and interacts with the decision maker over multiple time
+steps. At each time step h, the sampled individual with attribute ϑ has feature xϑ
+h = xϑ ∈X along with
+a hidden qualiﬁcation status yϑ
+h = yϑ ∈{0, 1}. One example is that the feature xϑ
+h is determined by the
+hidden qualiﬁcation status with xϑ
+h ∼p(·|yϑ). We call sϑ
+h = (xϑ
+h, yϑ
+h) the state of the individual at time h.
+The initial state sϑ
+1 is sampled from pϑ.
+At each time step h, the decision maker adopts a decision aϑ
+h based on the observed feature xϑ by
+following a group-dependent policy πϑ
+h(xϑ), i.e. aϑ
+h ∼πϑ
+h(xϑ
+h), where πϑ
+h : X →∆(A), and ∆(A) is the set of
+distributions on A.2 The decision maker receives reward rϑ(sϑ
+h, aϑ
+h), and rϑ ∈[l, u], where −∞< l −u < ∞.
+Without loss of generality, let us assume rϑ ∈[0, 1]. The mean of stochastic reward function is denoted by
+r∗ϑ.
+After the decision is made, the individual is informed of the decision and their qualiﬁcation status, and
+their qualiﬁcation status, yϑ
+h+1, and features xϑ
+h+1, may then undergo a stochastic transition. We assume
+that this transition follows a time-invariant but group-dependent transition kernel, which we denote as
+p∗ϑ(sϑ
+h+1|sϑ
+h, aϑ
+h), where p∗ϑ : S × A 7→∆(S), and ∆(S) is the set of distributions on S. As explained
+in [36], in addition to thinking about a single, randomly chosen individual repeatedly interacting with the
+decision maker, this also immediately models a ﬁnite population of randomly chosen individuals, some from
+each group, and with all individuals in a group subject to the same, group-contingent decision policies. In
+addition, we have a reward function pair, (rα, rβ), which may be stochastic.
+
+2.2
+Fair policies
+
+The goal of the decision maker is to ﬁnd a policy, π = (πα, πβ), to maximize the total, expected reward over
+an episode for a random individual, while satisfying stepwise fairness constraints, i.e. imposing a certain
+type of fairness constraint on states and actions for each time step.
+A random individual in group ϑ, and with decision policy πϑ, follows stochastic state, action, reward
+sequence sϑ
+1, aϑ
+1, rϑ(sϑ
+1, aϑ
+1), sϑ
+2, aϑ
+2, rϑ(sϑ
+2, aϑ
+2), sϑ
+3, · · · . Let Eπ,p[·], Pπ,p[·] be the expectation and probability
+of a random variable deﬁned with respect to this stochastic process. We denote the expected reward for a
+random individual at time step h as,
+
+ϑ∈{α,β}
+pϑ · Eπϑ,p∗ϑ[r∗ϑ(sϑ
+h, aϑ
+h)].
+
+R∗
+h(p∗, π) =
+X
+
+Note here that Eπϑ,p∗ϑ[·] refers to the expected value for an individual in group ϑ, i.e., conditioned on the
+individual being sampled in this group. Our ideal goal is to obtain the policy π∗that solves the following
+
+2Following [36], we use group-dependent policies so that the formulation can be more generalized. Our technique can also
+be used for group-independent policies if this is required.
+
+optimization problem:
+
+H
+X
+
+h=1
+R∗
+h(p∗, π)
+
+max
+π
+
+s.t. ∀h ∈[H],
+
+faircon({πϑ, p∗ϑ, sϑ
+h, aϑ
+h}ϑ={α,β}),
+
+where faircon corresponds to a particular fairness concept. We consider two group fairness deﬁnitions, and
+also discuss how the approach can be extended to additional fairness concepts (see Section 6.2). Speciﬁcally,
+we consider the following two fairness concepts:
+(i) RL with demographic parity (DP). For this case, faircon is
+
+Pπα,p∗α[aα
+h = 1] = Pπβ,p∗β[aβ
+h = 1],
+
+which means at each time step h, the decision for individuals from diﬀerent groups is statistically independent
+of the sensitive attribute.
+(ii) RL with equalized opportunity (EqOpt). For this case, faircon is
+
+Pπα,p∗α[aα
+h = 1|yα
+h = 1] = Pπβ,p∗β[aβ
+h = 1|yβ
+h = 1],
+
+which means at each time step h, the decision for a random individual from each of the two diﬀerent groups
+is statistically independent of the sensitive attribute conditioned on the individual being qualiﬁed. In each
+case, Pπα,p∗α[·] refers to the probability for an individual in group ϑ, i.e., conditioned on the individual being
+sampled in this group.
+The above optimization problems are feasible under technical Assumption 4.1, presented later, and we
+assume feasibility throughout the paper (see also Appendix C).
+
+Remark 2.1. Since we are modelling the behavior of a randomly drawn individual from the population, the
+objective should be viewed as to ﬁnd a policy pair π = (πα, πβ) to optimize the long-term reward of of the
+decision maker while ensuring fairness over the population.
+
+2.3
+Episodic RL protocol
+
+This is a learning setting, and we study an episodic sequential decision setting where a learner repeatedly
+interacts with an environment across K > 0 independent episodes. Such a scenario is natural in a number of
+practical settings, as we discussed in the introduction. Throughout the paper, we consider the tabular case,
+i.e., we assume ﬁnite cardinality for S and A.3 Without loss of generality, we can assume that the initial state
+of an episode is a ﬁxed state s0 (the next state can be sampled randomly, and state s0 does not contribute to
+any reward or fairness considerations, see [3] for further detailed explanation). At episode k ∈[K], denote
+policy pair πk = (πα
+k , πβ
+k ) = {(πα
+k,h, πβ
+k,h)}H
+h=1, where H is the horizon. An individual sampled from group
+
+Gϑ starts from state sϑ
+k,1, thus, we can consider starting state pair (sα
+k,1, sβ
+k,1) = (sα
+0 , sβ
+0) for the trajectory of
+diﬀerent groups (the initial state depends on the group from which the individual is drawn). At each time
+step h ∈[H], the decision maker selects an action aϑ
+k,h ∼πϑ
+k,h(xϑ
+k,h). Here, although the policy only uses the
+x component, it is convenient to write it as a function of s. The decision maker gets reward rϑ(sϑ
+k,h, aϑ
+k,h),
+and the state of the individual for next time step is drawn according to sϑ
+k,h+1 ∼p∗ϑ(·|sϑ
+k,h, aϑ
+k,h).
+
+Remark 2.2. The policy is only based on the feature vector x. However, we are able to access y in the
+training data.
+
+3
+Learning Algorithms
+
+Before we formally state our algorithms, we need to gather data to estimate the unknown quantities such as
+reward function mean pair r∗= (r∗α, r∗β) and transition probability pair p∗. In addition, we will incorporate
+an exploration bonus to further modify the estimation.
+
+3In the example of credit score and loan payment in [30], the credit score is discretized and served as X here and the action
+space A and qualiﬁcation status space Y are both {0, 1}.
+
+Data gathering and estimation.
+In order to analyze the policy eﬀect on the population, we model
+the behavior of a randomly drawn individual who interacts with the environment across H steps. Here,
+we demonstrate how to aggregate individuals’ data for each episode and estimate quantities of interest.
+Speciﬁcally, at episode k ∈[K], for each group ϑ, we assume nϑ
+k individuals are drawn, according to pα and
+pβ. Throughout the paper, we assume nϑ
+k ≥1, for each ϑ and k. A decision is made independently for each
+individual at each step, using a group-speciﬁc policy, leading to a stochastic transition in the state of the
+individual. In Appendix D, we will further discuss how to gather data when allowing individuals who opt in
+or out during an episode. We use the counting method to obtain estimates of the statistics of interest. For
+the i-th individual in episode k, their status and action at time step h is denoted as sϑ,(i)
+k,h
+and aϑ,(i)
+k,h .
+
+For ϑ ∈{α, β}, let pk = (pα
+k, pβ
+k) and rk = (rα
+k , rβ
+k),
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a}
+
+,
+
+N ϑ
+k (s, a) = max
+
+1,
+X
+
+pϑ
+k(s′|s, a) =
+1
+N ϑ
+k (s, a)
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a, sϑ,(i)
+k,h+1 = s′},
+
+X
+
+ˆrϑ
+k(s, a) =
+1
+N ϑ
+k (s, a)
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+rϑ(s, a)1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a}.
+
+X
+
+Exploration bonus method.
+In RL, it is standard to introduce optimism in order to encourage exploring
+under-explored states. Speciﬁcally, for ϑ ∈{α, β}, we adopt a bonus term, ˆbϑ
+k, to add to the estimated reward
+function ˆrϑ
+k, such that we obtain rϑ
+k(s, a) = ˆrϑ
+k(s, a) + ˆbϑ
+k(s, a), where the ˆbϑ
+k(s, a) values assign larger values
+for under-explored (s, a)’s. We specify how to choose ˆbϑ
+k in Section 4.1, and denote
+
+ϑ∈{α,β}
+pϑ · Eπϑ,pϑ[rϑ
+k(sϑ
+k,h, aϑ
+k,h)].
+
+Rk,h(p, π) =
+X
+
+For the purpose of analysis, we treat pϑ’s as known constants for simplicity; for example, perhaps these
+proportions are provided by census.
+Practical optimization for DP. In reality, given we don’t have access to p∗and r∗ϑ, we need to solving
+a surrogate optimization problem and hope the optimal policy can have similar performance as the ideal
+optimal policy under certain performance criteria. In the following, we provide a simple algorithm for RL
+with demographic parity. It is based on optimization under pϑ
+k and rϑ
+k:
+
+H
+X
+
+h=1
+Rk,h(pk, π),
+
+max
+π∈Πk
+
+s.t. ∀h ∈[H],
+
+|Pπα,pα
+k (aα
+k,h = 1) −Pπβ,pβ
+k(aβ
+k,h = 1)| ≤ˆck,h,
+
+where we have Πk = {(πα, πβ) : πϑ(a = 1|x) ≥ηDP
+k
+, ∀x, a, h, ϑ}. Πk can ensure the reachability from any x
+to the decision a = 1. Here {ηDP
+k
+}k is a sequence of real numbers and {ˆck,h}k,h are relaxations. Intuitively,
+if we set ηDP
+k
+and ˆck,h to be decreasing and vanishing as k increases, we would expect the above optimization
+to approach the ideal optimization problem as k increases. We formalize this in Section 4.1.
+
+Practical optimization for EqOpt.
+For equalized opportunity, and similar to the case of DP, we have
+
+H
+X
+
+h=1
+Rk,h(pk, π),
+
+max
+π∈Πk
+
+s.t. ∀h ∈[H],
+|Pπα,pα
+k (aα
+k,h = 1|yα
+k,h = 1) −Pπβ,pβ
+k(aβ
+k,h = 1|yβ
+k,h = 1)| ≤ˆdk,h,
+
+where we have Πk = {(πα, πβ) : πϑ(a = 1|x) ≥ηEqOpt
+k
+, ∀x, a, h, ϑ}. Here {ηEqOpt
+k
+}k is a sequence of real
+numbers and { ˆdk,h}k,h are relaxations. We formalize this in Section 4.1.
+
+Algorithm.
+We can solve these optimization problems through occupancy measures, and they each become
+diﬀerent kinds of quadratically constrained linear programs (QCLP) (see Appendix A). Although QCLP is
+generally NP-hard, many methods based on relaxations and approximations such as semi-deﬁnite program
+(SDP) have been extensively discussed. We use Gurobi to solve these relaxed optimization problems.
+
+4
+Theoretical Analysis
+
+In order to track the performance, we consider the following regrets. For policy pairs {πk}K
+k=1, for reward
+regret in episode k, we track:
+
+H
+X
+
+k
+X
+
+Rtype
+reg (k) = 1
+
+
+R∗
+h(p∗, π∗type) −
+
+t=1
+R∗
+h(p∗, πk)
+
+,
+
+H
+
+h=1
+
+where π∗type is the optimal policy pair of RL with constraint types mentioned above and type ∈{DP, EqOpt}.
+For simplicity, we will omit the supscript “type” when it is clear from the context and use π∗= (π∗α, π∗β).
+For the fairness constraints, we consider the violation for each type of constraint in episode k as the
+following,
+
+H
+X
+
+CDP
+reg (k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1)
+,
+
+H
+
+h=1
+
+and
+
+H
+X
+
+CEqOpt
+reg
+(k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1
+yα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1|yβ
+k,h = 1)
+.
+
+H
+
+h=1
+
+The theoretical guarantees hold for any episode, not just the last episode.
+
+4.1
+Choice of various of quantities
+
+In this part, we provide a formal theoretical guarantee for the performance of our algorithms under the
+previously mentioned criteria with suitably chosen quantities {ˆbϑ
+k}k, {ˆck}k, and { ˆdk}k, for each episode k.
+
+Q and V functions.
+Two of the mostly used concepts in RL are Q and V functions. Speciﬁcally, Q
+functions track the expected reward when a learner starts from state s ∈S. Meanwhile, V functions are the
+corresponding expected Q functions of the selected action. For a reward function r and a transition function
+p, the Q and V functions are deﬁned as:
+
+Qπ,p
+r
+(s, a, h) = r(s, a) +
+X
+
+s′∈S
+p(s′|s, a)V π,p
+r
+(s′, h + 1),
+
+V π,p
+r
+(s, h) = Ea∼π(·|s)[Qπ,p
+r
+(s, a, h)],
+
+where we set V π,p
+r
+(s, H + 1) = 0.
+
+Choice of ˆbϑ
+k.
+For {ˆbϑ
+k}k, similar to [3], we need {ˆbϑ
+k}k to be valid.
+
+Deﬁnition 4.1 (Validity). A bonus ˆbϑ
+k is valid for episode k if for all (s, a) ∈S × A and h ∈[H],
+ˆrϑ
+k(s, a) −r∗ϑ
+k (s, a) +
+X
+
+r∗ϑ
+(s′, h + 1)
+≤ˆbϑ
+k(s, a).
+
+
+pϑ
+k(s′|s, a) −p∗ϑ(s′|s, a)
+
+V π∗ϑ,p∗ϑ
+
+s′∈S
+
+Following the exporation-bonus setting [3], we set ˆbϑ
+k = min
+n
+2H, 2H
+q
+
+o
+, and have the
+following lemma.
+
+2 ln(16SAHk2/δ)
+
+Nϑ
+k (s,a)
+
+Lemma 4.1. With probability at least 1 −δ, for
+
+s
+
+2 ln(16SAHk2/δ)
+
+ˆbϑ
+k(s, a) = min
+n
+2H, 2H
+
+o
+,
+
+N ϑ
+k (s, a)
+
+the bonus ˆbϑ
+k(s, a) is valid for every episode k simultaneously.
+
+Choice of ˆck,h and ˆdk,h.
+For {ˆck,h}k,h and { ˆdk,h}k,h, we require them to be compatible.
+
+Deﬁnition 4.2 (Compatibility). The sequence {ˆck,h}k,h is compatible if for all h ∈[H], k ∈[K],
+
+|Pπ∗α,pα
+k (ah = 1) −Pπ∗β,pβ
+k(ah = 1)| ≤ˆck,h.
+
+The sequence { ˆdk,h}k,h is compatible if for all h ∈[H], k ∈[K],
+
+|Pπ∗α,pα
+k (ah = 1|yh = 1) −Pπ∗β,pβ
+k(ah = 1|yh = 1)| ≤ˆdk,h.
+
+Brieﬂy speaking, we hope that when substituting p∗ϑ to pϑ
+k, that ˆck,h and ˆdk,h can control the fairness
+constraints violation. Let us use S to denote |S| and A to denote |A|.
+
+Lemma 4.2. Denote N ϑ,min
+k
+= mins,a N ϑ
+k (s, a). For any {ϵk}K
+k=1, with probability at least 1 −δ, we take
+
+s
+
+2S ln(16SAHk2/(ϵkδ))
+
+ˆck,h =
+X
+
+N ϑ,min
+k
++ 2ϵkHS.
+
+ϑ∈{α,β}
+H
+
+Then, the sequence {ˆck,h}k,h is compatible.
+
+Similarly, for ˆdk,h, we have the following lemma.
+
+Lemma 4.3. Denote pϑ,min
+k
+= mins,a pϑ
+k(y = 1|s, a). For any {ϵk}K
+k=1, with probability at least 1 −δ, we
+take
+
+3H
+r
+
+2S ln(32SAk2/(ϵkδ))
+
+Nϑ,min
+k
++ 3ϵkHS
+
+ˆdk,h =
+X
+
+
+
+
+pϑ,min
+k
+−
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+pϑ,min
+k
+
+ϑ∈{α,β}
+
+Nϑ,min
+k
+
+if pϑ,min
+k
+>
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+Nϑ,min
+k
+; Otherwise, we set ˆdk,h = 1. Then, the sequence { ˆdk,h}k,h is compatible.
+
+4.2
+Main theorems
+
+In this subsection, we provide our formal theoretical guarantees for the reward regret and fairness constraints
+violation. We require technical Assumption 4.1.
+
+Assumption 4.1. (a). For all (s, a, s′) ∈S × A × S, there exists a universal constant C > 0, such that
+p∗ϑ(s′|s, a) ≥C for ϑ = {α, β}. (b). For all (x, a) ∈X × A, there exists a universal constant ˜C, such that
+π∗ϑ(a|x) ≥˜C.
+
+Assumption 4.1 implies irreducibility of the Markov process and ensures feasibility of our optimization
+problems (see Appendix C). Recall that at episode k ∈[K], for each group ϑ, we have nϑ
+k ≥1 individuals
+drawn for each group ϑ. And as a concrete exempliﬁed choice of ηk and ϵk, we take ηk = k−1
+
+3 and ϵk =
+(kHS)−1.
+
+Reward regret.
+For the reward regret, for either demographic parity or equalized opportunity, we can
+provide the following theoretical guarantee.
+Recall for two positive sequences {aj} and {bj}, we write
+aj = O(bj) if limj→∞(aj/bj) < ∞.
+
+Theorem 4.1. For type ∈{DP, EqOpt}, with probability at least 1 −δ, there exists a threshold T =
+
+O
+
+H ln(SA/δ)
+
+3
+, such that for all k ≥T,
+
+nk
+
+HS ln(S2AH2k3/δ)
+
+.
+
+Rtype
+reg (k) = O
+
+Hk−1
+
+3 p
+
+By Theorem 4.1, our algorithms for each of the group fairness notions can ensure vanishing reward
+regrets when k goes to inﬁnity, which implies that the performance in regard to regret reward improves as
+the number of episodes increases.
+
+Fairness constraints violation.
+For fairness violation, we have the following Theorem 4.2.
+
+Theorem 4.2. For type ∈{DP, EqOpt}, with probability at least 1 −δ, there exists a threshold T =
+
+3
+, such that for all k ≥T,
+
+O
+
+H ln(SA/δ)
+
+nk
+
+Ctype
+reg (k) ≤O
+
+k−1
+
+SH ln(S2HAk3/δ)
+
+.
+
+3 p
+
+By Theorem 4.2, our algorithms for each of the group fairness notions can ensure vanishing fairness
+violation when k goes to inﬁnity, which implies the performance in regard to fairness violations improves as
+the number of episodes increases.
+
+5
+Experiments
+
+Settings.
+We take H = 8 for each episode, and update our policy every k = 2l episodes, where l =
+3, 4, . . . , 18. We update our policy in this non-linear way for reasons of computational cost, i.e., to reduce
+the number of optimization problems we need to solve while still collecting a large quantity of data. We
+choose the relaxation parameters ˆck,h and ˆdk,h as deﬁned in the previous sections. After each policy update,
+we use 8,000 episodes to evaluate the new policy. We also produce conﬁdence intervals by repeating each
+experiment ﬁve times.
+
+Estimation and Optimization Process.
+We estimate transition probabilities and rewards using the
+counting method outlined above. These estimates are used as the input for our algorithm. The optimization
+problems are non-convex, and the detailed optimization formulations are included in Appendix F. We use
+Gurobi to solve, and set the optimality-value tolerance, feasibility tolerance, and solving time limit as 1e-3,
+1e-6, and 300 seconds, respectively. We use the barrier algorithm for all problems.
+
+FICO Data.
+We adapt FICO score data4 to form our data generating process. The FICO score dataset
+contains data from non-Hispanic White and Black cohorts consist of j ∈X = {0, . . . , 4}, which represent
+normalized score {0, 25, 50, 75, 100} and can be viewed as the feature. In particular, the FICO data provides
+empirical distributions for credit scores of diﬀerent sensitive groups, i.e.
+ˆPFICO(xϑ = j), along with an
+empirical qualiﬁcation distribution conditioned on each score level ˆPFICO(yϑ = y|xϑ = j), where y ∈{0, 1}.
+We simulate the data generating process according to the empirical distributions stated above. For the
+population dynamics, we model the intial score distribution as P(xϑ
+0 = j) = ˆPFICO(xϑ
+0 = j), according
+to the empirical FICO distribution. For the initial qualiﬁcation distribution conditioned on score, P(yϑ
+0 =
+1|x0 = j) = ˆPFICO(yϑ = 1|xϑ = j). Then, we generate the underlying group-dependent and time invariant
+transition kernel p∗ϑ in the following way: we ﬁrst set a distribution for p∗ϑ(x′ = j′|x = j, y = w, a = v) for
+j′, j ∈X and w, v ∈{0, 1}. Then, we set p∗ϑ(x′, y′|x, y, a) as p∗ϑ(x′|x, y, a)ˆPFICO(yϑ = y′|xϑ = x′). More
+details about the data generating process is speciﬁed in Appendix F.
+
+4
+
+(a) DP FICO Pareto
+(b) DP FICO estConstr
+(c) DP FICO return
+
+(d) EqOpt FICO Pareto
+(e) EqOpt FICO estConstr
+(f) EqOpt FICO return
+
+Figure 1: FICO data result. 1a and 1d for Pareto frontier, 1b1c for the constraint violation level in the
+training dynamics 1e 1f for the avergage episodic return over the training dynamics. In Pareto plots, the
+point with cross marker is the result for the ﬁnal episode.
+The text close to points stand for penalty
+parameters
+
+Reward function.
+We choose a score-dependent reward, conditioned on the qualiﬁcation level and decision
+as the following:
+
+
+
+
+
+βϑ
+1 xh,
+if yh = 1, ah = 1;
+−βϑ
+2 xh,
+if yh = 0, ah = 1;
+0,
+if ah = 0,
+
+rϑ(xh, yh, ah) =
+
+
+
+
+where βϑ
+1 , βϑ
+2 ∈(0, 1). Our reward function is chosen based on the following considerations: in real life,
+the decision maker may give a higher loan amount to a candidate with a higher credit score. As a result,
+the decision maker beneﬁts more when a qualiﬁed candidate has higher score, i.e.
+higher reward value
+(e.g.
+higher total repayment interests) gained from a qualiﬁed candidate with higher score because of
+higher loan amount; the decision maker also suﬀers more (more negative reward gained) if the candidate
+with higher score is not qualiﬁed, because a larger amount of loan is not repaid. In our experiment, we
+set βα
+1 = 0.1, ββ
+1 = 0.9, βα
+2 = 0.9, ββ
+2 = 0.1. This diﬀerence in reward function per group further reﬂects
+a decision maker who may, potentially irrationally and unfairly, beneﬁt or penalize through their reward
+function for diﬀerent groups, even for two individuals who otherwise have the same score x and qualiﬁcation
+y (perhaps the decision maker worries that the model is not equally accurate or calibrated per group).
+
+Baselines.
+We use the following policies as baselines:
+1. Sequentially optimal policies without fairness constraints.
+2. Sequentially optimal policies with an objective that includes a fairness penalty term, which serves as
+an alternative method for our proposed optimization problem. In this case, our optimization objective, for
+a particular kind of fairness constraint, is:
+
+H
+X
+
+
+Rk,h(pk, π) + FP({πϑ, pϑ
+k, sϑ
+h, aϑ
+h}ϑ; λ)
+
+,
+
+max
+π∈Πk
+
+h=1
+
+where FP({πϑ, pϑ
+k, sϑ
+h, aϑ
+h}ϑ; λ) is the fairness penalty and λ is the penalty parameter.
+
+(a). Demographic parity. For this case, we choose FP({πϑ, pϑ
+k, sϑ
+h, aϑ
+h}ϑ; λ) as
+
+λ(Pπα,pα
+k (aα
+k,h = 1) −Pπβ,pβ
+k(aβ
+k,h = 1))2.
+
+(b). Equalized opportunity. For this case, we choose FP({πϑ, pϑ
+k, sϑ
+h, aϑ
+h}ϑ; λ) as
+
+λ
+
+Pπα,pα
+k (aα
+k,h = 1|yα
+k,h = 1) −Pπβ,pβ
+k(aβ
+k,h = 1|yβ
+k,h = 1)
+2
+
+Experimental results.
+Figure 1a shows the Pareto frontier in terms of episodic total return and episodic
+step-average fairness violation for demographic parity, and Figure 1d shows the counterpart for equal oppor-
+tunity. Figure 1b and 1c demonstrate the training dynamics of diﬀerent algorithms for demographic parity,
+and Figures 1e and 1f demonstrate the counterpart for equal opportunity. Our proposed method outperforms
+the baselines in terms of Pareto frontiers, and converges to a stable level in terms of fairness violation over
+the training episodes. Overall, from the Pareto frontier, we can observe that our method reaches smaller
+fairness violation level for non-hispanic white and black individuals in both fairness notions, under a ﬁxed
+reward level for the decision maker. In addition, from the conﬁdence intervals, we can see that our algorithm
+has a much narrower conﬁdence band than the other baseline.
+
+6
+Discussion
+
+In this section, we discuss possible extensions of our framework and future directions.
+
+6.1
+Extension of stepwise fairness notions
+
+In our paper, we mainly consider two popular types of fairness criteria for stepwise fairness constraints, i.e.
+demographic parity and equalized opportunity. However, our techniques can also be extended in future work
+to additional types of fairness criteria. In particular, we can consider a family of fairness constraints, as
+formally introduced in [1]. They consider constraints in the form
+
+Mµ(a) ≤c
+
+for matrix M and vector c, where the j-th coordinate of µ is µj(a) = E[g(x, y, a, ϑ)|Ej] for j ∈J , and
+M ∈R|K|×|J |, c ∈RK. Here, K = A × Y × {+, −} (+, −impose positive/negative sign so as to recover | · |
+in constraints), for Y = {0, 1}, and J = (Λ ∪{∗}) × {0, 1}. Ej is an event deﬁned with respect to (x, y, ϑ)
+and ∗denotes the entire probability space. This formulation includes demographic parity and equalized
+opportunity as special cases.
+
+6.2
+Aggregated fairness notions
+
+Despite the fact that we consider stepwise fairness constraints, our techniques can also be extended in future
+work to aggregate fairness notions that consider the entire episodic process. Speciﬁcally, we could consider
+aggregate equalized opportunity (also called aggregate true positive rate in [8]):
+
+H
+X
+
+h=1
+P(ah = 1|yh = 1, ϑ)
+P(yh = 1|ϑ)
+PH
+h=1 P(yh = 1|ϑ)
+,
+
+which can be viewed as a weighted sum of equalized opportunity across steps. This should be relatively
+straightforward to handle through our techniques.
+
+6.3
+Non-episodic, inﬁnite horizon Markov decision processes
+
+Another natural direction is to extend our framework to non-episodic inﬁnite horizon. Taking DP as an
+example, we could consider
+
+∞
+X
+
+h=1
+γhRh(p, π),
+
+max
+π∈Πk
+
+s.t. ∀h ∈[H],
+
+γh|Pπα,pα(aα
+h = 1) −Pπβ,pβ(aβ
+h = 1)| ≤ˆch.
+
+This will involve using a more advanced version of concentration inequality for Markov chain, and we leave
+this to future work.
+
+References
+
+[1] Alekh Agarwal, Alina Beygelzimer, Miroslav Dud´ık, John Langford, and Hanna Wallach. A reductions
+approach to fair classiﬁcation. In International Conference on Machine Learning, pages 60–69. PMLR,
+2018.
+
+[2] Ian Ball. Scoring strategic agents. In Arxiv, 2019.
+
+[3] Kiant´e Brantley, Miroslav Dudik, Thodoris Lykouris, Sobhan Miryooseﬁ, Max Simchowitz, Aleksandrs
+Slivkins, and Wen Sun. Constrained episodic reinforcement learning in concave-convex and knapsack
+settings. arXiv preprint arXiv:2006.05051, 2020.
+
+[4] Maya Burhanpurkar, Zhun Deng, Cynthia Dwork, and Linjun Zhang. Scaﬀolding sets. arXiv preprint
+arXiv:2111.03135, 2021.
+
+[5] Toon Calders, Faisal Kamiran, and Mykola Pechenizkiy. Building classiﬁers with independency con-
+straints. In Data mining workshops, ICDMW’09, 2009.
+
+[6] Yiling Chen, Yang Liu, and Chara Podimata. Learning strategy-aware linear classiﬁers. In Advances in
+Neural Information Processing Systems 33 (NeurIPS 2020), 2020.
+
+[7] Elliot Creager, David Madras, Toniann Pitassi, and Richard Zemel. Causal modeling for fairness in
+dynamical systems. In Arxiv, 2019.
+
+[8] Alexander D’Amour, Hansa Srinivasan, James Atwood, Pallavi Baljekar, David Sculley, and Yoni
+Halpern.
+Fairness is not static: deeper understanding of long term fairness via simulation studies.
+In Proceedings of the 2020 Conference on Fairness, Accountability, and Transparency, pages 525–534,
+2020.
+
+[9] Zhun Deng, Frances Ding, Cynthia Dwork, Rachel Hong, Giovanni Parmigiani, Prasad Patil, and Pragya
+Sur.
+Representation via representations: Domain generalization via adversarially learned invariant
+representations. arXiv, 2006.11478, 2020.
+
+[10] Zhun Deng, Cynthia Dwork, Jialiang Wang, and Linjun Zhang. Interpreting robust optimization via
+adversarial inﬂuence functions. In International Conference on Machine Learning, pages 2464–2473.
+PMLR, 2020.
+
+[11] Zhun Deng, Hangfeng He, Jiaoyang Huang, and Weijie Su. Towards understanding the dynamics of
+the ﬁrst-order adversaries. In International Conference on Machine Learning, pages 2484–2493. PMLR,
+2020.
+
+[12] Zhun Deng, Hangfeng He, and Weijie Su. Toward better generalization bounds with locally elastic
+stability. In International Conference on Machine Learning, pages 2590–2600. PMLR, 2021.
+
+[13] Zhun Deng, Jiayao Zhang, Linjun Zhang, Ting Ye, Yates Coley, Weijie J Su, and James Zou.
+Fifa: Making fairness more generalizable in classiﬁers trained on imbalanced data.
+arXiv preprint
+arXiv:2206.02792, 2022.
+
+[14] Zhun Deng, Linjun Zhang, Amirata Ghorbani, and James Zou. Improving adversarial robustness via
+unlabeled out-of-domain data.
+In International Conference on Artiﬁcial Intelligence and Statistics,
+pages 2845–2853. PMLR, 2021.
+
+[15] Zhun Deng, Linjun Zhang, Kailas Vodrahalli, Kenji Kawaguchi, and James Y Zou. Adversarial training
+helps transfer learning via better representations. Advances in Neural Information Processing Systems,
+34, 2021.
+
+[16] Cynthia Dwork, Moritz Hardt, Toniann Pitassi, OmerReingold, and Richard Zemel. Fairness through
+awarenes. In Proceedings of the 3rd innovations in theoretical computer science conference, 2012.
+
+[17] Alexander D’Amour, Hansa Srinivasan, James Atwood, Pallavi Baljekar, D Sculley, and Yoni Halpern.
+Fairness is not static: deeper understanding of long term fairness via simulation studies. In Proceedings
+of the 2020 Conference on Fairness, Accountability, and Transparency, 2020.
+
+[18] Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair,
+Aaron Courville, and Yoshua Bengio. Generative adversarial networks. Communications of the ACM,
+63(11):139–144, 2020.
+
+[19] Moritz Hardt, Nimrod Megiddo, Christos Papadimitriou, and Mary Wootters. Strategic classiﬁcation.
+In Proceedings of the 2016 ACM Conference on Innovations in Theoretical Computer Science, pages
+111–122, 2015.
+
+[20] Moritz Hardt, Eric Price, and Nati Srebro. Equality of opportunity in supervised learning. Advances
+in neural information processing systems, 29, 2016.
+
+[21] Tatsunori B Hashimoto, Megha Srivastava, Hongseok Namkoong, and Percy Liang. Fairness without
+demographics in repeated loss minimization. In ICML, 2018.
+
+[22] Kaiming He, Georgia Gkioxari, Piotr Doll´ar, and Ross Girshick. Mask r-cnn. In Proceedings of the
+IEEE international conference on computer vision, pages 2961–2969, 2017.
+
+[23] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition.
+In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 770–778, 2016.
+
+[24] Shahin Jabbari, Matthew Joseph, Michael Kearns, Jamie Morgenstern, and Aaron Roth. Fairness in
+reinforcement learning. In Proceedings of the 34th International Conference on Machine Learning, pages
+1617–1626, 2017.
+
+[25] Matthew Joseph, Michael Kearns, Jamie H. Morgenstern, and Aaron Roth. Fairness in learning: Classic
+and contextual bandits. In Advances in Neural Information Processing Systems 29 (NIPS 2016), 2016.
+
+[26] Kenji Kawaguchi, Linjun Zhang, and Zhun Deng. Understanding dynamics of nonlinear representation
+learning and its application. Neural Computation, 34(4):991–1018, 2022.
+
+[27] Michael Kearns and Satinder Singh. Near-optimal reinforcement learning in polynomial time. Machine
+learning, 49(2):209–232, 2002.
+
+[28] Leonid Aryeh Kontorovich and Kavita Ramanan. Concentration inequalities for dependent random
+variables via the martingale method. The Annals of Probability, 36(6):2126–2158, 2008.
+
+[29] Matt J Kusner, Joshua Loftus, Chris Russell, , and Ricardo Silva. Counterfactual fairness. In Advances
+in Neural Information Processing Systems, 2017.
+
+[30] Lydia T Liu, Sarah Dean, Esther Rolf, Max Simchowitz, and Moritz Hardt. Delayed impact of fair
+machine learning. In International Conference on Machine Learning, pages 3150–3158. PMLR, 2018.
+
+[31] Debmalya Mandal and Jiarui Gan. Socially fair reinforcement learning. In Arxiv, 2022.
+
+[32] Yonadav Shavit and William S. Moses. Extracting incentives from black-box decisions. In Arxiv, 2019.
+
+[33] He Sun, Zhun Deng, Hui Chen, and David C Parkes. Decision-aware conditional gans for time series
+data. arXiv preprint arXiv:2009.12682, 2020.
+
+[34] Min Wen, Osbert Bastani, and Ufuk Topcu. Algorithms for fairness in sequential decision making. In
+Proceedings of The 24th International Conference on Artiﬁcial Intelligence and Statistics, 2021.
+
+[35] Linjun Zhang, Zhun Deng, Kenji Kawaguchi, and James Zou. When and how mixup improves calibra-
+tion. In International Conference on Machine Learning, pages 26135–26160. PMLR, 2022.
+
+[36] Xueru Zhang, Ruibo Tu, Yang Liu, Mingyan Liu, Hedvig Kjellstrom, Kun Zhang, and Cheng Zhang.
+How do fair decisions fare in long-term qualiﬁcation?
+Advances in Neural Information Processing
+Systems, 33:18457–18469, 2020.
+
+[37] Xueru Zhang, Ruibo Tu, Yang Liu, Mingyan Liu, Hedvig Kjellstr¨om, Kun Zhang, and Cheng Zhang.
+How do fair decisions fare in long-term qualiﬁcation?
+In 34th Conference on Neural Information
+Processing Systems, 2020.
+
+A
+Solving Our Algorithms via Occupancy Measures
+
+Let us use occupation measure to reformulate the problem, and the objective will become occupation mea-
+sures. For episode k, let us denote the Pπϑ
+k ,pϑ
+k(xϑ
+k,h = x, yϑ
+k,h = y, aϑ
+k,h = a) as ρϑ
+k(x, y, a, h), which we call
+occupancy measures.
+
+A.1
+Demographic Parity
+
+For episode k, the optimization problem can be reformulated as:
+
+X
+
+x,y,a,h,ϑ
+pϑρα
+k(x, y, a, h)ˆrϑ
+k(x, y, a)
+
+max
+ρ
+
+such that
+
+y,x
+ρβ
+k(x, y, a = 1, h)
+≤ˆck,h,
+
+∀h
+
+X
+
+y,x
+ρα
+k(x, y, a = 1, h) −
+X
+
+∀ϑ, x, t ρϑ
+k(x, y = 1, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 1, a, h) = ρϑ
+k(x, y = 0, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 0, a, h)
+this formula makes sure the policy only depends on x
+
+∀ϑ, x′, y′, h
+X
+
+a
+ρϑ
+k(x′, y′, a, h + 1) =
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h)pϑ
+(k)(x′, y′|x, y, a),
+
+∀ϑ, x, y, a, h 0 ≤ρϑ
+k(x, y, a, h) ≤1,
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h) = 1.
+
+A.2
+Equal Opportunity
+
+For episode k, the optimization problem can be reformulated as:
+
+X
+
+x,y,a,h,ϑ
+pϑρα
+k(x, y, a, h)ˆrϑ
+k(x, y, a)
+
+max
+ρ
+
+such that
+
+≤ˆdk,h,
+
+x ρβ
+k(x, y = 1, a = 1, h)
+P
+
+x ρα
+k(x, y = 1, a = 1, h)
+P
+x,a ρα
+k(x, y = 1, a, h)
+−
+P
+
+P
+
+∀h
+
+x,a ρβ
+k(x, y = 1, a, h)
+
+a ρϑ
+k(x, y = 1, a, h) = ρϑ
+k(x, y = 0, a = 1, h)
+P
+
+∀ϑ, x, t ρϑ
+k(x, y = 1, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 0, a, h)
+this formula makes sure the policy only depends on x
+
+∀ϑ, x′, y′, h
+X
+
+a
+ρϑ
+k(x′, y′, a, h + 1) =
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h)pϑ
+(k)(x′, y′|x, y, a),
+
+∀ϑ, x, y, a, h 0 ≤ρϑ
+k(x, y, a, h) ≤1,
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h) = 1.
+
+B
+Extension to Multiple Sensitive Attributes
+
+Consider there are multiple attributes ϑ ∈Θ = {θ1, θ2, · · · , θq}, where Θ is a set of sensitive attributes. We
+denote the expected reward for a random individual at time step h as,
+
+ϑ∈Θ
+pϑ · Eπϑ,p∗ϑ[r∗ϑ(sϑ
+h, aϑ
+h)].
+
+R∗
+h(p∗, π) =
+X
+
+Note here that Eπϑ,p∗ϑ[·] refers to the expected value for an individual in group ϑ, i.e., conditioned on the
+individual being sampled in this group. Our ideal goal is to obtain the policy π∗that solves the following
+optimization problem:
+
+H
+X
+
+h=1
+R∗
+h(p∗, π)
+
+max
+π
+
+s.t. ∀h ∈[H],
+
+faircon({πϑ, p∗ϑ, sϑ
+h, aϑ
+h}ϑ∈Θ),
+
+where faircon corresponds to a particular fairness concept.
+(i) RL with demographic parity (DP). For this case, faircon is for any θi, θj ∈Θ
+
+Pπθi,p∗θi[aθj
+h = 1] = Pπβ,p∗θj [aθj
+h = 1],
+
+which means at each time step h, the decision for individuals from diﬀerent groups is statistically independent
+of the sensitive attribute.
+(ii) RL with equalized opportunity (EqOpt). For this case, faircon is for any θi, θj ∈Θ
+
+Pπθi,p∗θi[aθj
+h = 1|yθj
+h = 1] = Pπβ,p∗θj [aθj
+h = 1|yθj
+h = 1],
+
+which means at each time step h, the decision for a random individual from each of the two diﬀerent groups
+is statistically independent of the sensitive attribute conditioned on the individual being qualiﬁed.
+The corresponding practical optimization for DP and EqOpt can also adapted to multiple sensitive
+attributes similarly.
+
+C
+Feasibility Discussions
+
+Let us recall our assumption.
+
+Assumption C.1 (Restatement of Assumption 4.1). (a). For all (s, a, s′) ∈S × A × S, there exists a
+universal constant C > 0, such that p∗ϑ(s′|s, a) ≥C for ϑ = {α, β}. (b). For all (x, a) ∈X × A, there exists
+a universal constant ˜C, such that π∗ϑ(a|x) ≥˜C.
+
+For the ideal optimization, Assumption 4.1 make sure every step Pπϑ,p∗ϑ(sϑ
+h = s, aϑ
+h = a) ≥C minx πϑ(a|x)
+for all s, a and h > 1. Thus, for DP, we can set πα(a = 1|x) = πβ(a = 1|x) = 1 for all x, then, we know this
+policy is a feasible policy. Similar for EqOpt, we also take πα(a = 1|x) = πβ(a = 1|x) = 1 for all x, and this
+is a feasible solution given the event yϑ
+h = 1 is always of positive probability.
+Same argument can be applied to the practical optimization for both DP and EqOpt.
+
+D
+Modelling Individual’s Opting In/Out
+
+Recall that in order to analyze the policy eﬀect on the population, we model the behavior of a randomly
+drawn individual who interacts with the environment across H steps. However, when we gather data from
+real individuals, they may opt in opt out at a certain step and not interact with the environment throughout
+the H steps. Nevertheless, we can still aggregate their data and provide estimation of quantities of interest – a
+representative randomly drawn individual that interact with the environment for the full episode. Speciﬁcally,
+at episode k ∈[K], each time step h ∈[H], there are nk,h individuals (people opt in and opt out in the
+process, so there are diﬀerent number of people at each time step). For each group ϑ, we pool all those people
+together and obtain nϑ
+k = P
+
+h nϑ
+k,h people in total. We will use the counting method to obtain empirical
+measures for those quantities, each quantity will need to sum over all the nϑ
+k people. For the i-th individual,
+his/her status and action at time h is denoted as sϑ,(i)
+k,h
+and aϑ,(i)
+k,h . Some people will opt out, for example the
+i-th individual opts out at h + 1, so there is no status for him/her at time h + 1. Given that, let us deﬁne
+1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a, sϑ,(i)
+k,h+1 = ·} to be the indicator, which will be 1 only when s(i)
+k,h = s, a(i)
+k,h = a, and
+
+that individual still hasn’t opted out at time h + 1 (sϑ,(i)
+k,h+1 exists). Similarly, if the the i-th individual has
+
+opted out at time h + 1, those indicators used below concerning sϑ,(i)
+k,h+1 will be 0.
+
+For ϑ ∈{α, β}, let pk = (pα
+k, pβ
+k) and rk = (rα
+k , rβ
+k),
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a, sϑ,(i)
+k,h+1 = ·}
+
+,
+
+N ϑ
+k (s, a) = max
+
+1,
+X
+
+pϑ
+k(s′|s, a) =
+1
+N ϑ
+k (s, a)
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a, sϑ,(i)
+k,h+1 = s′},
+
+X
+
+ˆrϑ
+k(s, a) =
+1
+N ϑ
+k (s, a)
+
+t∈[k−1],h∈[H],i∈[nϑ
+k]
+rϑ(s, a)1{sϑ,(i)
+k,h
+= s, aϑ,(i)
+k,h
+= a}.
+
+X
+
+Our analysis carries to this setting as long as we assume at each time step h in all episodes, there is an
+individual that will not opt out in the next time step h + 1.
+
+E
+Omitted proofs
+
+For notation-wise, for simplicity, we omit the supscript ϑ in most of the proofs. In addition, without loss
+of generality, in the following proofs, we assume r ∈[0, 1]. This is just for proof simplicity, our algorithms
+can still be applied to the models in the preliminary, which allows negative reward values. Also, for quantities
+deﬁned below such as Qπ,p
+r
+and V π,p
+r
+, we will omit subscripts and supscripts when it is clear from the
+text. Recall the following concepts:
+
+Q and V functions.
+Two of the mostly used concepts in RL are Q and V functions. Speciﬁcally, Q
+functions track the expected reward when a learner starts from state s ∈S. Meanwhile, V functions are
+the corresponding expected Q functions of the selected action. For a reward function r and a MDP with
+transition function p, Q and V functions are deﬁned as:
+
+Qπ,p
+r
+(s, a, h) = r(s, a) +
+X
+
+s′∈S
+p(s′|s, a)V π,p
+r
+(s′, h + 1),
+
+V π,p
+r
+(s, h) = Ea∼π(·|s)[Qπ,p
+r
+(s, a, h)],
+
+where we set V π,p
+r
+(s, H + 1) = 0.
+
+Bellman error.
+For an arbitrary function m, for underlying objectives m∗and p∗, the Bellman error for
+p, m under policy π at stage h is denoted as:
+
+Bπ,p
+m (s, a, h) = Qπ,p
+m (s, a, h) −
+
+m∗(s, a) +
+X
+
+s′
+p∗(s′|s, a)V π,p
+m (s′, h + 1)
+
+.
+(1)
+
+E.1
+Proof of lemma 4.1
+
+Lemma E.1 (Restatement of lemma 4.1). If we take ˆbϑ
+k = min
+n
+2H, 2H
+q
+
+o
+, then with prob-
+
+2 ln(16SAHk2/δ)
+
+N ϑ
+k (s,a)
+
+ability 1 −δ, the bonus ˆbϑ
+k(s, a) is valid for all k episodes and ϑ = {α, β}.
+
+Proof. For a ﬁxed ϑ ∈{α, β}, given that r ∈[0, 1], we have sups∈S,h∈H |V (s, h)| ≤H. For a single state-
+action pair (s, a), by Hoeﬀding inequality, with probability 1 −δ′
+
+s
+
+2 ln(2/δ′)
+
+ˆrk(s, a) −r∗
+k(s, a) +
+X
+
+
+pk(s′|s, a) −p∗(s′|s, a)
+
+V (s′, h + 1)
+≤2H
+
+Nk(s, a) .
+
+s′∈S
+
+Also, by the boundedness of ˆrk and V ,
+ˆrk(s, a) −r∗
+k(s, a) +
+X
+
+
+pk(s′|s, a) −p∗(s′|s, a)
+
+V (s′, h + 1)
+≤2H.
+
+s′∈S
+
+Further if we take δ′ =
+δ
+4SAHk2 , and further apply union bound on stats and actions, then the failure
+probability is δ/(4k2) for episode k. Lastly, bounding across episodes, we have the failure probabilty is:
+
+K
+X
+
+δ
+4k2 ≤δ.
+
+i=1
+
+Since there are two values for ϑ, again we apply union bound, then we have the ﬁnal result.
+
+E.2
+Proof of Lemma 4.2
+
+To prove our result, we need the following handy lemma.
+
+Lemma E.2 (Simulation lemma [27]). For any policy π, objective m, transition probabilty p, and underlying
+objectives m∗, p∗, it holds that
+
+EπV π,p
+m (s1, 1) −EπV π,p∗
+m∗(s1, 1) = Eπh H
+X
+
+h=1
+Bπ,p
+m (sh, ah, h)
+i
+.
+
+Lemma E.3 (Restatement of Lemma 4.2). Denote N ϑ,min
+k
+= mins,a N ϑ
+k (s, a), for any {ϵk}K
+k=1, with proba-
+bility at least 1 −δ, we take
+
+s
+
+2S ln(16SAHk2/(ϵkδ))
+
+ˆck,h =
+X
+
+ϑ∈{α,β}
+H
+
+N ϑ,min
+k
++ 2ϵkHS,
+
+then ˆck,h is compatible for all h ∈[H] and k ∈[K].
+
+Proof. For a speciﬁc time step h∗, let us consider taking
+
+(
+1{ak,h = 1},
+if h = h∗.
+0,
+otherwise.
+(2)
+
+mh∗(sk,h, ak,h) = m∗
+h∗(sk,h, ak,h) =
+
+And it is easy to observe that
+EπV π,p
+mh∗(s1, 1) = Pπ,p(ak,h∗= 1).
+
+Thus, in order to bound
+|Pπ∗,pk(ak,h∗= 1) −Pπ∗,p∗(ak,h∗= 1)|,
+
+it is equivalent is to bound
+
+|Eπ∗V π∗,pk
+mh∗(s1, 1) −Eπ∗V π∗,p∗
+mh∗(s1, 1)| =
+Eπ∗h H
+X
+
+h=1
+Bπ∗,pk
+mh∗(sh, ah, h)
+i .
+
+Here, a slight ﬁne-grained analysis suggests that we can replace PH
+h=1 to Ph∗
+
+h=1, but this change cannot
+change the order of the ﬁnal bound, so for simplicity, we still use PH
+h=1.
+
+Now, let us analyze
+Bπ∗,pk
+mh∗(sh, ah, h)
+. Speciﬁcally,
+
+Bπ∗,pk
+mh∗(sh, ah, h)
+=
+
+X
+
+
+pk(s′|s, a) −p∗(s′|s, a)
+
+V π∗,pk
+mh∗(s′)
+.
+
+s′∈S
+
+Since V π∗,pk
+mh∗(s′) (we will use V for simplicity from now on) is data dependent, we need to to use a union
+bound argument. Notice V (s) ∈[0, 1] for all s, thus, we can let Ψ to be a ϵ-net on [0, 1]S. For any ﬁxed
+V ∈Ψ, by similar proof as in Lemma 4.1, we have with probability at least 1 −δ′, for all k ∈[K],
+
+s
+
+2 ln(8SAk2/δ′)
+
+
+pk(s′|s, a) −p∗(s′|s, a)
+
+V (s′)
+≤
+
+X
+
+Nk(s, a)
+.
+
+s′∈S
+
+The cardinality of Ψ is (1/ϵ)S. Thus, by using union bound and let δ = δ′/(1/ϵ)S (we don’t need to
+union bound over H because we have bounded for all elements in epsilon nets), we have with probability at
+least 1 −δ, for all h ∈[H],
+
+s
+
+2S ln(8SAHk2/(ϵδ))
+
+Bπ∗,pk
+mh∗(sh, ah, h)
+≤
+
+Nk(sh, ah)
++ ϵS.
+
+Notice our argument still valid if we set ϵ as ϵk for episode k. Then, we have that with probability at
+least 1 −δ
+
+s
+
+2S ln(16SAk2/(ϵkδ))
+
+ˆck,h =
+X
+
+ϑ∈{α,β}
+2
+
+mins,a N ϑ
+k (s, a)
++ 2ϵkHS.
+
+is compatible for all k ∈[K].
+
+E.3
+Proof of Lemma 4.3
+
+Lemma E.4 (Restatement of Lemma 4.3). Denote pϑ,min
+k
+= mins,a pk(y = 1|s, a), For any {ϵk}K
+k=1, with
+probability at least 1 −δ, we take
+
+3H
+r
+
+2S ln(32SAk2/(ϵkδ))
+
+N ϑ,min
+k
++ 3ϵkHS
+
+ˆdk,h =
+X
+
+
+pϑ,min
+k
+−
+r
+
+
+
+4 ln 2+2 ln(4SAk2/δ)
+
+pϑ,min
+k
+
+ϑ∈{α,β}
+
+N ϑ,min
+k
+
+if pϑ,min
+k
+>
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+N ϑ,min
+k
+; Otherwise, we set ˆdk,h = 1. Then ˆdk,h is compatible for all h ∈[H] and
+
+k ∈[K].
+
+Proof. By Bretagnolle-Huber-Carol’s inequality, we know that with probability at least 1 −δ, for all (s, a) ∈
+S × A and k ∈[K]
+X
+
+s
+
+4 ln 2 + 2 ln(SAk2/δ)
+
+y∈Y
+|pk(y|s, a) −p∗(y|s, a)| ≤
+
+Nk(s, a)
+.
+
+By proof as in Lemma 4.2, we know that by taking
+
+(
+1{ak,h = 1, yk,h = 1},
+if h = h∗,
+0,
+otherwise,
+(3)
+
+mh∗(sk,h, ak,h) = m∗
+h∗(sk,h, ak,h) =
+
+we have for any ϵ > 0, for any a ∈A
+
+s
+
+2S ln(8SAk2/(ϵδ))
+
+|Pπ∗,pk(ak,h∗= a, yk,h∗= 1) −Pπ∗,p∗(ak,h∗= a, yk,h∗= 1)| ≤H
+
+mins,a Nk(s, a)
++ ϵHS,
+
+with probability at least 1 −δ.
+On the other hand, by summing over a for Pπ∗,pk(ak,h∗= a, yk,h∗= 1) −Pπ∗,p∗(ak,h∗= a, yk,h∗= 1), we
+have
+
+a
+|Pπ∗,pk(ak,h∗= a, yk,h∗= 1) −Pπ∗,p∗(ak,h∗= a, yk,h∗= 1)|
+
+|Pπ∗,pk(yk,h∗= 1) −Pπ∗,p∗(yk,h∗= 1)| ≤
+X
+
+s
+
+2S ln(8SAk2/(ϵδ))
+
+≤2H
+
+mins,a Nk(s, a)
++ 2ϵHS,
+
+If h > 1
+
+Pπ∗,p∗(yk,h = 1) ≥
+X
+
+s,a
+p∗(yk,h = 1|sk,h−1 = s, ak,h−1 = a)Pπ∗,p∗(sk,h−1 = s, ak,h−1 = a)
+
+≥min
+s,a p∗(y = 1|s, a).
+
+Since s1 can be chosen by us, so we can make sure Pπ∗,p∗(yk,1 = 1) bounded away from 0. Actually, even
+we set yk,1 = 0, conditioning on ∅automatically satisfy EqOpt constraint.
+Similarly,
+
+Pπ∗,pk(yk,h = 1) ≥
+X
+
+s,a
+pk(yk,h = 1|sk,h−1 = s, ak,h−1 = a)Pπ∗,pk(sk,h−1 = s, ak,h−1 = a)
+
+≥min
+s,a pk(y = 1|s, a).
+
+By Bretagnolle-Huber-Carol’s inequality, with probability at least 1 −δ, for all (s, a) ∈S × A
+
+s
+
+4 ln 2 + 2 ln(SAk2/δ)
+
+|pk(y = 1|s, a) −p∗(y = 1|s, a)| ≤
+
+Nk(s, a)
+.
+
+As a result, if
+
+s
+
+4 ln 2 + 2 ln(SAk2/δ)
+
+min
+s,a pk(y = 1|s, a) > 2
+
+mins,a Nk(s, a)
+,
+
+then, with probability at least 1 −δ,
+
+s
+
+4 ln 2 + 2 ln(SAk2/δ)
+
+min
+s,a p∗(y = 1|s, a) > min
+s,a pk(y = 1|s, a) −
+
+mins,a Nk(s, a)
+,
+
+which further leads to
+
+|Pπ∗,pk(ak,h∗= 1|yk,h∗= 1) −Pπ∗,p∗(ak,h∗= 1|yk,h∗= 1)|
+
+≤|Pπ∗,pk(ak,h∗= 1, yk,h∗= 1) −Pπ∗,p∗(ak,h∗= 1, yk,h∗= 1)| + |Pπ∗,pk(ak,h∗= 1) −Pπ∗,p∗(ak,h∗= 1)|
+
+pk(y = 1|s, a)p∗(y = 1|s, a)
+
+≤|Pπ∗,pk(ak,h∗= 1, yk,h∗= 1) −Pπ∗,p∗(ak,h∗= 1, yk,h∗= 1)| + |Pπ∗,pk(ak,h∗= 1) −Pπ∗,p∗(ak,h∗= 1)|
+
+mins,a pk(y = 1|s, a)(mins,a pk(y = 1|s, a) −
+q
+
+4 ln 2+2 ln(SAk2/δ)
+
+mins,a Nk(s,a)
+)
+
+≤
+3H
+q
+
+2S ln(8SAk2/(ϵδ))
+
+mins,a Nk(s,a)
++ 3ϵHS
+
+mins,a Nk(s,a)
+)
+.
+
+mins,a pk(y = 1|s, a)(mins,a pk(y = 1|s, a) −
+q
+
+4 ln 2+2 ln(SAk2/δ)
+
+Notice our argument still valid if we set ϵk for episode k and apply union bounds for all the events
+mentioned above and ϑ = {α, β}, then, we have that with probability at least 1 −δ
+
+
+
+
+
+
+
+s
+
+2S ln(32SAk2/(ϵkδ))
+
+Nϑ,min
+k
++3ϵkHS
+
+3H
+
+!,
+if pϑ,min
+k
+>
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+P
+
+N ϑ,min
+k
+;
+
+ˆdk,h =
+
+ϑ
+
+pϑ,min
+k
+−
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+pϑ,min
+k
+
+Nϑ,min
+k
+
+
+
+
+
+
+1,
+otherwise;
+
+is compatible for all k ∈[K].
+
+E.4
+Proof of Theorem 4.1
+
+We ﬁrst need a lemma regarding the lower bound of mins,a N ϑ
+k (s, a).
+
+Restatement of Result in [28]
+In order to do that, let us consider a simpliﬁed variant of Theorem 1.1 in
+[28]. Let Zi ∈S, where S is a ﬁnite set, and Z = (Z1, Z2, · · · , Zn). We further denote Zj
+i = (Zi, Zi+1, · · · , Zj)
+as a random vector for 1 ⩽i < j ⩽n. Correspondingly, we let zj
+i = (zi, zi+1, · · · , zj) be a subsequence for
+(z1, z2, · · · , zn). And let
+
+¯ηi,j =
+sup
+vi−1
+1
+∈Si−1,w,w′∈S, P(Zi
+1=Y i−1w)>0, P(Zi
+1=V i−1w′)>0
+ηi,j(vi−1
+1
+, w, w′),
+
+where
+ηi,j(vi−1
+1
+, w, w′) = TV
+
+D(Zn
+j |Zi
+1 = vi−1
+1
+w), D(Zn
+j |Zi
+1 = vi−1
+1
+w′)
+
+.
+
+Here TV is the total variational distance, and D(Zn
+j |Zi
+1 = vi
+1w) is the conditional distribution of Zn
+j condi-
+tioning on {Zi
+1 = vi
+1w}.
+Let Hn be n × n upper triangular matrix deﬁned by
+
+
+
+
+1
+i = j
+¯ηi,j
+i < j
+0
+o.w.
+
+(Hn)ij =
+
+
+
+Then,
+∥Hn∥∞= max
+1⩽i⩽n Jn,i,
+
+where
+Jn,i = 1 + ¯ηi,i+1 + · · · + ¯ηi,n,
+
+and Jn,n = 1.
+
+Theorem E.1 (Variant of Result in [28]). Let f be a Lf-Lipschitz function (with respect to the Hamming
+distance) on Sn for some constant Lf > 0. Then, for any t > 0,
+
+P(|f(Z) −Ef(z)| ⩾t) ⩽2 exp
+
+−
+t2
+
+
+.
+
+2nL2
+f∥Hn∥2∞
+
+Lemma E.5. Under Assumption 4.1, with probability at least 1−δ, for all k ∈[K], (s, a) ∈S×A, ϑ ∈{α, β}
+
+s
+
+!
+
+2H2 ln(4k2SA/δ)
+cηknk(H −1)(k −1)
+
+N ϑ
+k (s, a) ≥
+
+1 −
+
+cηknk(H −1)(k −1).
+
+Proof. By (a) in Assumption 4.1, we know that for any (s, a), (s′, a′)
+
+Pπϑ
+k ,p∗ϑ(sϑ
+k,h = (x, y), aϑ
+k,h = a) ≥πϑ
+k(aϑ
+k,h = a|xϑ
+k,h = x)p∗ϑ(sϑ
+k,h = (x, y)|sϑ
+k,h−1 = s′, aϑ
+k,h−1 = a′) ≥Cηk.
+
+As ηk is decreasing with respect to k, we must have for all t ≤k,
+
+Pπϑ
+t ,p∗ϑ(sϑ
+t,h, aϑ
+t,h) ≥πϑ
+t (aϑ
+t,h|xϑ
+t,h)p∗ϑ(sϑ
+t,h|sϑ
+t,h−1, aϑ
+t,h−1) ≥Cηk.
+
+Notice each individual is independent thus,
+
+E
+Nk(s, a)
+(H −1)(K −1) ≥Cηknk.
+
+Meanwhile, the data between diﬀerent episodes are independent, thus, using the notation in [28], we
+know ¯ηij = 0 if |i −j| ≥H. Notice total variational distance is always bounded by 1, so
+
+∥Hn∥∞= max
+1⩽i⩽n Jn,i ⩽H.
+
+then, by applying Theorrem E.1 about the concentration result for non-stationary Markov chain,
+
+P (|Nt(s, a) −ENt(s, a)| ≥εcnkηk(H −1)(k −1)) ≤2 exp
+−ε2Cηknk(H −1)(k −1)
+
+
+.
+
+2H2
+
+In other words, with probability at least 1 −δ′,
+
+s
+
+!
+
+2H2 ln(2/δ′)
+Cηknk(H −1)(k −1)
+
+Nk(s, a) ≥
+
+1 −
+
+Cηknk(H −1)(k −1)
+
+Taking δ′ = δ/(2SAk2), we have with probability at least 1−δ, for all k ∈[K], (s, a) ∈S ×A, ϑ ∈{α, β}
+
+s
+
+!
+
+2H2 ln(4k2SA/δ)
+Cηknk(H −1)(k −1)
+
+N ϑ
+k (s, a) ≥
+
+1 −
+
+Cηknk(H −1)(k −1).
+
+Next, we will use the concept of optimism in [3] in our proof.
+
+Deﬁnition E.1 (Optimism). We call (pk, rk) is optimisitc if
+
+E
+h
+V π∗,pk
+rk
+(s1, 1)
+i
+≥E
+h
+V π∗,p∗
+r∗
+(s1, 1)
+i
+.
+
+Lemma E.6. If ˆbk is valid in episode k for all k simultaneously, we have
+
+E
+h
+V π∗,pk
+rk
+(s1, 1)
+i
+≥E
+h
+V π∗,p∗
+r∗
+(s1, 1)
+i
+.
+
+Proof. This proof mainly follows [3] by using induction.
+Since the setting ends at episode H,
+
+Qπ∗,pk
+rk
+(s, a, H + 1) = Qπ∗,p∗
+r∗
+(s, a, H + 1) = 0.
+
+We assume that the inductive hypothesis Qπ∗,pk
+rk
+(s, a, h) ≥Qπ∗,p∗
+r∗
+(s, a, h + 1) (thus, V π∗,pk
+rk
+(s, h + 1) ≥
+V π∗,p∗
+r∗
+(s, h + 1) holds)). Then, for h,
+
+s′∈S
+pk(s′|s, a)V π∗,pk
+rk
+(s′, h + 1)
+
+Qπ∗,pk
+rk
+(s, a, h + 1) = rk +
+X
+
+s′∈S
+pk(s′|s, a)V π∗,p∗
+r∗
+(s′, h + 1).
+
+≥rk +
+X
+
+Meanwhile, we know,
+
+s′∈S
+p∗(s′|s, a)V π∗,p∗
+r∗
+(s′, h + 1).
+
+Qπ∗,p∗
+r∗
+(s, a, h) = r∗(s, a) +
+X
+
+Subtracting the above two formulas, we have
+
+Qπ∗,pk
+rk
+(s, a, h) −Qπ∗,p∗
+r∗
+(s, a, h) ≥(ˆrk(s, a) + ˆbk(s, a) −r∗(s, a))
+
+s′∈S
+(pk(s′|s, a) −p∗(s′|s, a))V π∗,p∗
+r∗
+(s′, h + 1) ≥0
+
++
+X
+
+where the last inequality holds because of the bonuses are valid.
+
+Let us summarize brieﬂy and informally: with probability 1 −4δ, we have:
+
+1. {ck,h}k,h are compatible;
+
+2. {dk,h}k,h are compatible;
+
+3. {bϑ
+k,h}k,h are valid;
+
+2H2 ln(4k2SA/δ)
+cηknk(H−1)(k−1)
+
+Cηknk(H −1)(k −1).
+
+4. N ϑ
+k (s, a) ≥
+
+1 −
+q
+
+We denote event E1 as the events 1, 3, 4 hold simultaneously. We denote event E2 as the events 2, 3, 4
+hold simultaneously.
+
+Lemma E.7. When for DP case, E1 holds (similar for EqOpt case, E2 holds), and when ηk ≤˜C, we have
+
+Proof. Recall
+R∗
+h(p∗, π) =
+X
+
+ϑ∈{α,β}
+pϑ · Eπϑ,p∗ϑ[r∗ϑ(sϑ
+h, aϑ
+h)].
+
+Our aim is to bound
+
+H
+X
+
+Rreg(k) = 1
+
+
+R∗
+h(p∗, π∗) −R∗
+h(p∗, πk)
+
+= 1
+
+r∗ϑ
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+.
+
+X
+
+H
+
+H
+
+h=1
+
+r∗ϑ
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+Let us ﬁrst study P
+ϑ pϑ
+E
+h
+V π∗ϑ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+.
+
+If {bϑ
+k,h}k,h are valid, by optimism, we have
+
+r∗ϑ
+(s1, 1)
+i
+≤E
+h
+V π∗ϑ,pϑ
+k
+rϑ
+k
+(s1, 1)
+i
+.
+
+E
+h
+V π∗ϑ,p∗ϑ
+
+As a result, we have
+
+r∗ϑ
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,pϑ
+k
+rϑ
+k
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+≤
+X
+
+r∗ϑ
+(s1, 1)
+i
+.
+
+X
+
+Throughout the proof and proofs afterwards, let us take ηk = k−1/3.
+
+If ηk ≤˜C (equivalently k > ( ˜C)−3 if we take ηk = k−1/3), then by compatibility of {ˆck,h}k,h or { ˆdk,h}k,h,
+(π∗α, π∗β) is a feasible solution to our algorithm, as a result
+
+r∗ϑ
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,pϑ
+k
+rϑ
+k
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+≤
+X
+
+r∗ϑ
+(s1, 1)
+i
+
+X
+
+ϑ
+pϑ
+E
+h
+V πϑ
+k ,pϑ
+k
+rϑ
+k
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+
+≤
+X
+
+ϑ
+pϑ h
+Bπϑ
+k ,pϑ
+k
+rϑ
+k
+(sk,h, ak,h, h)
+i
+.
+
+≤
+X
+
+Thus,
+
+H
+X
+
+Rreg(k) = 1
+
+
+R∗
+h(p∗, π∗) −R∗
+h(p∗, πk)
+
+
+H
+
+h=1
+
+= 1
+
+r∗ϑ
+(s1, 1)
+i
+−E
+h
+V πϑ
+k ,p∗ϑ
+
+ϑ
+pϑ
+E
+h
+V π∗ϑ,p∗ϑ
+
+r∗ϑ
+(s1, 1)
+i
+
+X
+
+H
+
+≤1
+
+ϑ
+pϑ h
+Bπϑ
+k ,pϑ
+k
+rϑ
+k
+(sk,h, ak,h, h)
+i
+.
+
+X
+
+H
+
+By Lemma B.4 of [3], with probability 1 −2δ for any ϑ ∈{α, β},
+
+Bπϑ
+k ,pϑ
+k
+rϑ
+k
+(sk,h, ak,h, h)
+≤4H2
+s
+
+2S ln(16S2AH2k3/δ)
+
+mins,a Nk(s, a)
++ 1
+
+k .
+
+Cnk(H−1)
+3
+for some constant C′, we have
+
+Then, when k ≥8H2 ln(4k2SA/δ)
+
+Cηknk(H−1) , that is k ≥C′ +
+
+8H2 ln(4SA/δ)
+
+N ϑ
+k (s, a) ≥1
+
+2Cηknk(H −1)(k −1).
+
+Thus,
+Bπϑ
+k ,pϑ
+k
+rϑ
+k
+(sk,h, ak,h, h)
+≤4H2
+s
+
+4S ln(16S2AH2k3/δ)
+Ck−1/3nk(H −1)(k −1) + 1
+
+k .
+
+Thus, with probability 1 −2δ
+
+s
+
+4S ln(16S2AH2k3/δ)
+Ck−1/3nk(H −1)(k −1) +
+1
+kH
+
+Rreg(k) ≤4H
+
+Theorem E.2 (Restatement of Theorem 4.1). For type ∈{DP, EqOpt}, with probability at least 1−δ, there
+
+exists a threshold T = O
+
+H ln(SA/δ)
+
+3
+, such that for all k ≥T,
+
+nk
+
+Rtype
+reg (k) = O
+
+Hk−1
+
+HS ln(S2AH2k3/δ)
+
+.
+
+3 p
+
+Proof. Noticing nk ≥1 and the result follows immediately from Lemma E.7.
+
+E.5
+Proof of Theorem 4.2
+
+Recall for the fairness constraints, we consider violation for each type of constraint in episode k as the
+following:
+
+H
+X
+
+CDP
+reg (k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1)
+.
+
+H
+
+h=1
+
+and
+
+H
+X
+
+CEqOpt
+reg
+(k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1
+yα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1|yβ
+k,h = 1)
+.
+
+H
+
+h=1
+
+Theorem E.3 (Restatement of Theorem 4.2). For type ∈{DP, EqOpt}, with probability at least 1−δ, there
+
+3
+, such that for all k ≥T,
+
+exists a threshold T = O
+
+H ln(SA/δ)
+
+nk
+
+Ctype
+reg (k) ≤O
+
+k−1
+
+SH ln(S2HAk3/δ)
+
+.
+
+3 p
+
+Proof. Let us ﬁrst consider CDP
+reg (k). Notice
+
+H
+X
+
+CDP
+reg (k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1)
+
+H
+
+h=1
+
+H
+X
+
+H
+X
+
+Pπα
+k ,pα
+k (aα
+k,h = 1) −Pπβ
+k ,pβ
+k(aβ
+k,h = 1)
++ 1
+
+≤1
+
+Pπα
+k ,p∗α(aα
+k,h = 1) −Pπα
+k ,pα
+k (aα
+k,h = 1)
+
+H
+
+H
+
+h=1
+
+h=1
+
+H
+X
+
++ 1
+
+Pπβ
+k ,p∗β(aβ
+k,h = 1) −Pπβ
+k ,pβ
+k(aβ
+k,h = 1)
+
+H
+
+h=1
+
+H
+X
+
+H + 1
+
+ˆck,h
+
+Pπα
+k ,p∗α(aα
+k,h = 1) −Pπα
+k ,pα
+k (aα
+k,h = 1)
+
+≤
+X
+
+H
+
+h=1
+
+h
+
+H
+X
+
++ 1
+
+Pπβ
+k ,p∗β(aβ
+k,h = 1) −Pπβ
+k ,pβ
+k(aβ
+k,h = 1)
+.
+
+H
+
+h=1
+
+Notice that switching π∗ϑ to πϑ
+k doesn’t change our argument in Lemma 4.2, thus with probability at
+least 1 −δ, for ϵk (we take ϵk to be consistent to ˆck,h) for both ϑ = {α, β}
+
+s
+
+2S ln(16SAk2/(ϵkδ))
+
+Pπϑ
+k ,p∗ϑ(aϑ
+k,h = 1) −Pπϑ
+k ,pϑ
+k(aϑ
+k,h = 1)
+≤H
+
+mins,a N ϑ
+k (s, a)
++ 2ϵkHS.
+
+Thus, with probability at least 1 −2δ,
+
+s
+
+2S ln(16SAk2/(ϵkδ))
+
+CDP
+reg (k) ≤
+X
+
+ϑ
+2H
+
+mins,a N ϑ
+k (s, a)
++ 4ϵkHS.
+
+By taking ϵk = 1/(kHS),
+
+s
+
+2S ln(16S2Ak3H/(δ))
+
+mins,a N ϑ
+k (s, a)
++ 4
+
+CDP
+reg (k) ≤
+X
+
+ϑ
+2H
+
+k .
+
+Now, let us consider
+
+H
+X
+
+CEqOpt
+reg
+(k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1
+yα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1|yβ
+k,h = 1)
+.
+
+H
+
+h=1
+
+Similarly, by triangular inequality,
+
+H
+X
+
+CEqOpt
+reg
+(k) = 1
+
+Pπα
+k ,p∗α(aα
+k,h = 1
+yα
+k,h = 1) −Pπβ
+k ,p∗β(aβ
+k,h = 1|yβ
+k,h = 1)
+
+H
+
+h=1
+
+H
+X
+
+≤1
+
+Pπα
+k ,pα
+k (aα
+k,h = 1
+yα
+k,h = 1) −Pπβ
+k ,pβ
+k(aβ
+k,h = 1|yβ
+k,h = 1)
+
+H
+
+h=1
+
+H
+X
+
++ 1
+
+Pπϑ
+k ,pϑ
+k(aϑ
+k,h = 1
+yϑ
+k,h = 1) −Pπϑ
+k ,p∗ϑ(aϑ
+k,h = 1|yϑ
+k,h = 1)
+.
+
+X
+
+H
+
+h=1
+
+ϑ
+
+Notice that switching π∗ϑ to πϑ
+k doesn’t change our argument in Lemma 4.3, thus with probability at
+least 1 −2δ, for ϵk (we take ϵk to be consistent to ˆck,h),
+
+
+
+
+
+
+
+s
+
+2S ln(32SAk2/(ϵkδ))
+
+Nϑ,min
+k
++6ϵkHS
+
+6H
+
+!,
+if pϑ,min
+k
+>
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+P
+
+Nϑ,min
+k
+;
+
+CEqOpt
+reg
+(k) ≤
+
+ϑ
+
+pϑ,min
+k
+−
+r
+
+4 ln 2+2 ln(4SAk2/δ)
+
+pϑ,min
+k
+
+Nϑ,min
+k
+
+
+
+
+
+
+1,
+otherwise.
+
+Meanwhile, it also holds simultaneously that for all (s, a) ∈S × A,
+
+s
+
+4 ln 2 + 2 ln(4SAk2/δ)
+
+|pk(y = 1|s, a) −p∗(y = 1|s, a)| ≤
+
+Nk(s, a)
+.
+
+Thus, if 4
+q
+
+4 ln 2+2 ln(4SAk2/δ)
+
+mins,a Nk(s,a)
+< C, we have
+
+6H
+r
+
+2S ln(32SAk2/(ϵkδ))
+
+Nϑ,min
+k
++ 6ϵkHS
+
+CEqOpt
+reg
+(k) ≤
+X
+
+c2/4
+
+ϑ
+
+Recall with probability at least 1 −δ, for all k ∈[K], (s, a) ∈S × A, ϑ ∈{α, β}
+
+s
+
+!
+
+2H2 ln(4k2SA/δ)
+Cηknk(H −1)(k −1)
+
+N ϑ
+k (s, a) ≥
+
+1 −
+
+Cηknk(H −1)(k −1).
+
+Then, when k ≥8H2 ln(4k2SA/δ)
+
+Cηknk(H−1) ,
+
+N ϑ
+k (s, a) ≥1
+
+2Cηknk(H −1)(k −1).
+
+Thus, we have the following properties:
+
+Cnk(H−1)
+3
+, we have
+
+• With probability 1 −3δ, there exists a constant threshold C, for k ≥C′ +
+
+8H2 ln(4SA/δ)
+
+min
+s,a N ϑ
+k (s, a) ≥1
+
+2Cnk(H −1)(k −1)k−1/3.
+
+As a result,
+
+s
+
+4S ln(16S2HAk3/δ)
+Cnk(H −1)(k −1)k−1/3 + 4
+
+CDP
+reg (k) ≤
+X
+
+ϑ
+2H
+
+k .
+
+• With probability 1 −3δ, there exists a constant threshold C′, for
+
+C′ +
+8H2 ln(4SA/δ)
+
+3
+,
+32 ln 2 + 16 ln(4SA/δ)
+
+(
+
+3)
+
+k ≥max
+
+,
+
+C3(H −1)nk
+
+Cnk(H −1)
+
+24H
+q
+
+4S ln(32S2HAk3/δ)
+Cnk(H−1)(k−1)k−1/3 + 24/k
+
+CEqOpt
+reg
+(k) ≤
+X
+
+C2
+.
+
+ϑ
+
+Noticing nk ≥1, we obtain the ﬁnal result.
+
+F
+Further Details About Experiments
+
+F.1
+Additional Optimizations
+
+For the formulation of our algorithm via occupancy measure, please refer to Appendix A. We here describe
+additional formulations for the surrogate optimization. The formulation for surrogate optimization with
+diﬀerent fairness notions are discussed below.
+
+F.1.1
+Demographic Parity Penalized Objective Surrogate
+
+For episode k, the optimization problem can be reformulated as:
+
+y,x
+ρβ
+k(x, y, a, h))2
+
+y,x
+ρα
+k(x, y, a, h) −
+X
+
+x,y,a,h,ϑ
+pϑρϑ
+k(x, y, a, h)ˆrϑ
+k(x, y, a) −λ
+X
+
+h,a
+(
+X
+
+X
+
+max
+ρ
+
+such that
+
+∀ϑ, x, t ρϑ
+k(x, y = 1, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 1, a, h) = ρϑ
+k(x, y = 0, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 0, a, h)
+
+a
+ρϑ
+k(x′, y′, a, h + 1) =
+X
+
+∀ϑ, x′, y′, h
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h)pϑ
+(k)(x′, y′|x, y, a),
+
+∀ϑ, x, y, a, h 0 ≤ρϑ
+k(x, y, a, h) ≤1,
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h) = 1.
+
+F.1.2
+Equal Opportunity Penalized Objective Surrogate
+
+We implement change of variable techniques to convert the polynomial optimization problem to quadratic
+optimization problems for computational purpose. For episode k, the optimization problem can be reformu-
+lated as:
+max
+ρ,u,v
+
+X
+
+x,y,a,h,ϑ
+pϑρϑ
+k(x, y, a, h)ˆrϑ
+k(x, y, a) −
+X
+
+h
+λ(uh −vh)2
+
+such that
+
+x,a
+ρβ
+k(x, y = 1, a, h)
+
+∀h vh =
+X
+
+x
+ρα
+k(x, y = 1, a = 1, h)
+X
+
+x
+ρβ
+k(x, y = 1, a = 1, h)
+X
+
+∀h uh =
+X
+
+x,a
+ρα
+k(x, y = 1, a, h)
+
+∀ϑ, x, t ρϑ
+k(x, y = 1, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 1, a, h) = ρϑ
+k(x, y = 0, a = 1, h)
+P
+
+a ρϑ
+k(x, y = 0, a, h)
+
+∀ϑ, x′, y′, h
+X
+
+a
+ρϑ
+k(x′, y′, a, h + 1) =
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h)pϑ
+(k)(x′, y′|x, y, a),
+
+∀ϑ, x, y, a, h 0 ≤ρϑ
+k(x, y, a, h) ≤1,
+X
+
+x,y,a
+ρϑ
+k(x, y, a, h) = 1.
+
+F.2
+Additional Results for Synthetic Data
+
+F.2.1
+Synthetic Data
+
+For the population dynamics, we model the intial qualiﬁcation distribution as Pϑ(yϑ
+0 = 1), and initial
+feature distribution conditioned on qualiﬁcation Pϑ(x0 = j|y0 = w). For a loan setting, we can interpret a
+higher feature value i as corresponding to a better credit score. Then, we generate the underlying group-
+independent and time invariant transition kernel p∗ϑ in the following way: we ﬁrst set a distribution for
+p∗ϑ(y′ = w′|y = w, a = v) for w′, w, v ∈{0, 1}. Then, we set p∗ϑ(x′ = j′|x = j, y′ = w′, a = v) for j′, j ∈X
+and w′, v ∈{0, 1}. Thus we set p∗ϑ(x′, y′|x, y, a) as p∗ϑ(y′|y, a) p∗ϑ(x′|x, y′, a)
+
+F.2.2
+Experimental Results
+
+Figure 2a shows the Pareto frontier in terms of episodic total return and episodic step-average fairness
+violation for demographic parity, and Figure 2d shows the counterpart for equal opportunity. Figure 2b
+and 2c demonstrate the training dynamics of diﬀerent algorithms for demographic parity, and Figures 2e
+and 2f demonstrate the counterpart for equal opportunity. Our proposed method outperforms the baselines
+in terms of Pareto frontiers, and converges to a stable level in terms of fairness violation over the training
+episodes. Overall, from the Pareto frontier, we can observe that our method reaches smaller fairness violation
+level for two groups of individuals in both fairness notions, under a ﬁxed reward level for the decision maker.
+In addition, from the conﬁdence intervals, we can see that our algorithm has a much narrower conﬁdence
+band than the other baseline.
+
+(a) DP Synthetic Pareto
+(b) DP Synthetic estConstr
+(c) DP Synthetic return
+
+(d) EqOpt Synthetic Pareto
+(e) EqOpt Synthetic estConstr
+(f) EqOpt Synthetic return
+
+Figure 2: Synthetic data result. 2a and 2d for Pareto frontier, 2b2c for the constraint violation level in
+the training dynamics 2e 2f for the avergage episodic return over the training dynamics. In Pareto plots,
+the point with cross marker is the result for the ﬁnal episode. The text close to points stand for penalty
+parameters
+
+F.3
+Detailed choice for parameters for experiments
+
+We discuss the choice of parameters for our data generating processes.
+
+F.3.1
+Synthetic Data
+
+We set P(x0 = i|y0 = 1) = 0.2 and P(x0 = i|y0 = 0) = 0.2 for initial probability conditioned on the
+qualiﬁcation status of the individual.
+We set p∗ϑ(y′ = 1|y = 1, a = 1) = 0.6, p∗ϑ(y′ = 1|y = 1, a = 0) = 0.4, p∗ϑ(y′ = 1|y = 0, a = 1) = 0.6 and
+p∗ϑ(y′ = 1|y = 0, a = 0) = 0.4 .
+We deﬁne dϑ,j′,j,w′ := p∗ϑ(x′ = j′|x = j, y′ = w′), ∀ϑ, j′, j, w′.
+We further deﬁne a vector: Dϑ,j,w′ =
+[dϑ,j′,j,w′]j′. And we set Dϑ,0,w′ = [0.3, 0.25, 0.2, 0.15, 0.1], Dϑ,1,w′ = [0.22, 0.26, 0.22, 0.17, 0.13], Dϑ,2,w′ =
+[0.17, 0.21, 0.24, 0.21, 0.17], Dϑ,3,w′ = [0.13, 0.17, 0.22, 0.26, 0.22] and Dϑ,4,w′ = [0.1, 0.15, 0.2, 0.25, 0.3], ∀ϑ, w′
+
+Here, we use asymmetric p∗ϑ value such that we have higher probability to obtain sampled individual who
+is qualiﬁed for the next time step if we give positive decision at this step.
+This design purpose is we would like to reﬂect the fact that the sampled individual will be motivated by
+positive decision from decision maker and demotivated by negative decisions.
+
+F.3.2
+Semi-Realistic Data
+
+Notice our experiments in the main context on FICO data is semi-realistic data.
+We here include the
+details about the full data generating process. We deﬁne gϑ,j′,j,1,1 := p∗ϑ(x′ = j′|x = j, y = 1, a = 1),
+gϑ,j′,j,1,0 := p∗ϑ(x′ = j′|x = j, y = 1, a = 0), gϑ,j′,j,0,1 := p∗ϑ(x′ = j′|x = j, y = 0, a = 1) and
+gϑ,j′,j,0,0 := p∗ϑ(x′ = j′|x = j, y = 0, a = 0). We further deﬁne a vector: Gϑ,j,w,v = [gϑ,j′,j,w,v]j′, and
+we set,
+Gϑ,0,1,1 = [0.3, 0.25, 0.2, 0.15, 0.1], Gϑ,1,1,1 = [0.18, 0.27, 0.23, 0.18, 0.14], Gϑ,2,1,1 = [0.14, 0.18, 0.27, 0.23, 0.18],
+Gϑ,3,1,1 = [0.1, 0.15, 0.2, 0.3, 0.25], Gϑ,4,1,1 = [0.06, 0.13, 0.19, 0.24, 0.38],
+Gϑ,0,1,0 = [0.38, 0.24, 0.19, 0.13, 0.06], Gϑ,1,1,0 = [0.25, 0.3, 0.2, 0.15, 0.1], Gϑ,2,1,0 = [0.18, 0.23, 0.27, 0.18, 0.14],
+Gϑ,3,1,0 = [0.14, 0.18, 0.23, 0.27, 0.18], Gϑ,4,1,0 = [0.1, 0.15, 0.2, 0.25, 0.3],
+Gϑ,0,0,1 = [0.3, 0.25, 0.2, 0.15, 0.1], Gϑ,1,0,1 = [0.18, 0.27, 0.23, 0.18, 0.14], Gϑ,2,0,1 = [0.14, 0.18, 0.27, 0.23, 0.18],
+Gϑ,3,0,1 = [0.1, 0.15, 0.2, 0.3, 0.25], Gϑ,4,0,1 = [0.1, 0.15, 0.2, 0.25, 0.3],
+Gϑ,0,0,0 = [0.38, 0.24, 0.19, 0.13, 0.06], Gϑ,1,0,0 = [0.25, 0.3, 0.2, 0.15, 0.1], Gϑ,2,0,0 = [0.18, 0.23, 0.27, 0.18, 0.14],
+Gϑ,3,0,0 = [0.14, 0.18, 0.23, 0.27, 0.18], Gϑ,4,0,0 = [0.1, 0.15, 0.2, 0.25, 0.3]
+Similar to synthetic data generating process, gϑ,j′,j,w,v are set such that x has higher probability to
+transition to a higher value of x′ for the next step when we make a positive decision at the current step, and
+lower probability to transition to a lower value of x′ for the next step when we make a negative decision at
+the current step.
+For example, when x = 2, we have higher probability that x will transition to x′ = 3 than x′ = 1 given a = 1.

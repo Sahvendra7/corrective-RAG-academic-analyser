@@ -1,0 +1,2297 @@
+Zhichao Lu, Student Member, IEEE, Gautam Sreekumar, Erik Goodman, Wolfgang Banzhaf,
+Kalyanmoy Deb, Fellow, IEEE and Vishnu Naresh Boddeti, Member, IEEE
+
+Abstract—Neural architecture search (NAS) has emerged as a promising avenue for automatically designing task-speciﬁc neural
+networks. Existing NAS approaches require one complete search for each deployment speciﬁcation of hardware or objective. This is a
+computationally impractical endeavor given the potentially large number of application scenarios. In this paper, we propose Neural
+Architecture Transfer (NAT) to overcome this limitation. NAT is designed to efﬁciently generate task-speciﬁc custom models that are
+competitive under multiple conﬂicting objectives. To realize this goal we learn task-speciﬁc supernets from which specialized subnets
+can be sampled without any additional training. The key to our approach is an integrated online transfer learning and many-objective
+evolutionary search procedure. A pre-trained supernet is iteratively adapted while simultaneously searching for task-speciﬁc subnets.
+We demonstrate the efﬁcacy of NAT on 11 benchmark image classiﬁcation tasks ranging from large-scale multi-class to small-scale
+ﬁne-grained datasets. In all cases, including ImageNet, NATNets improve upon the state-of-the-art under mobile settings (≤600M
+Multiply-Adds). Surprisingly, small-scale ﬁne-grained datasets beneﬁt the most from NAT. At the same time, the architecture search
+and transfer is orders of magnitude more efﬁcient than existing NAS methods. Overall, experimental evaluation indicates that, across
+diverse image classiﬁcation tasks and computational objectives, NAT is an appreciably more effective alternative to conventional
+transfer learning of ﬁne-tuning weights of an existing network architecture learned on standard datasets. Code is available at
+
+arXiv:2005.05859v2 [cs.CV] 22 Mar 2021
+
+Index Terms—Convolutional Neural Networks, Neural Architecture Search, AutoML, Transfer Learning, Evolutionary Algorithms.
+
+✦
+
+1
+INTRODUCTION
+I
+
+architectures on standard image classiﬁcation benchmarks, such
+as ImageNet, CIFAR-10 [9], CIFAR-100 [9] etc., in terms of
+predictive performance, computational complexity and model size.
+However, apart from transfer learning by ﬁne-tuning the weights,
+current NAS approaches have failed to deliver new models for
+both weights and topology on custom non-standard datasets. The
+key barrier to realizing the full potential of NAS is the large
+data and computational requirements for employing existing NAS
+algorithms on new tasks.
+In this paper, we introduce Neural Architecture Transfer (NAT)
+to breach this barrier. Given an image classiﬁcation task, NAT
+obtains custom neural networks (both topology and weights),
+optimized for possibly many conﬂicting objectives, and does so
+without the steep computational burden of running NAS for each
+new task from scratch. A single run of NAT efﬁciently obtains
+multiple custom neural networks spanning the entire trade-off
+front of objectives.
+Our solution builds upon the concept of a supernet [10] which
+comprises of many subnets. All subnets are trained simultaneously
+through weight sharing, and can be sampled very efﬁciently. This
+procedure decouples the network training and the search phases of
+NAS. A many-objective1 search can then be employed on top of
+the supernet to ﬁnd all network architectures that provide the best
+trade-off among the objectives. However, training such supernets
+for each task from scratch is very computationally and data
+intensive. The key idea of NAT is to leverage an existing supernet
+and efﬁciently transfer it into a task-speciﬁc supernet, whilst
+simultaneously searching for architectures that offer the best trade-
+off between the objectives of interest. Therefore, unlike standard
+supernet-based NAS, we combine supernet transfer learning with
+the search process. At the conclusion of this process, NAT returns
+
+MAGE classiﬁcation is a fundamental task in computer vision,
+where given a dataset and, possibly, multiple objectives to op-
+timize, one seeks to learn a model to classify images. Solutions to
+address this problem fall into two categories: (a) Sufﬁcient Data: A
+custom convolutional neural network architecture is designed and
+its parameters are trained from scratch using variants of stochastic
+gradient descent, and (b) Insufﬁcient Data: An existing architec-
+ture designed on a large scale dataset, such as ImageNet [1], along
+with its pre-trained weights (e.g., VGG [2], ResNet [3]), is ﬁne-
+tuned for the task at hand. These two approaches have emerged as
+the mainstays of present day computer vision.
+Success of the aforementioned approaches is primarily at-
+tributed to architectural advances in convolutional neural net-
+works. Initial efforts at designing neural architectures relied on
+human ingenuity. Steady advances by skilled practitioners has
+resulted in designs, such as AlexNet [4], VGG [2], GoogLeNet
+[5], ResNet [3], DenseNet [6] and many more, which have led to
+performance gains on the ImageNet Large Scale Visual Recogni-
+tion Challenge [1]. In most other cases, a recent large scale study
+[7] has shown that, across many tasks, transfer learning by ﬁne-
+tuning ImageNet pre-trained networks outperforms networks that
+are trained from scratch on the same data.
+Moving beyond manually designed network architectures,
+Neural Architecture Search (NAS) [8] seeks to automate this
+process and ﬁnd not only good architectures, but also their
+associated weights for a given image classiﬁcation task. This goal
+has led to notable improvements in convolutional neural network
+
+Fig. 1: Overview: Given a dataset and objectives to optimize, NAT designs custom architectures spanning the objective trade-off front. NAT comprises of two
+main components, supernet adaptation and evolutionary search, that are iteratively executed. NAT also uses an online accuracy predictor model to improve its
+computational efﬁciency.
+
+– We also demonstrate the utility of NAT in searching for a
+backbone for semantic segmentation, a dense prediction task. On
+Cityscapes [20], NAT matches the mIoU performance of Auto-
+DeepLab [21] while using 4× fewer MAdds.
+– Finally we demonstrate the scalability and utility of NAT
+across many objectives and on dense image prediction. Optimizing
+accuracy, model size and one of MAdds, CPU or GPU latency,
+NATNets dominate MobileNetV3 [22] across all objectives. We
+also consider a 12 objective problem of ﬁnding a common ar-
+chitecture across eleven datasets while minimizing MAdds. The
+best trade-off NATNet dominates all models across these datasets
+under mobile settings.
+
+(i) subnets that span the entire objective trade-off front, and (ii)
+a task-speciﬁc supernet. The latter can now be utilized for all
+future deployment-speciﬁc NAS, i.e., new and different hardware
+or objectives, without any additional training.
+The core of NAT’s efﬁciency lies in only adapting the subnets
+of the supernet that will lie on the efﬁcient trade-off front of the
+new dataset, instead of all possible subnets. But, the structure
+of the corresponding subnets is unknown before adaptation. We
+resolve this “chicken-and-egg problem” by adopting an online
+procedure that alternates between the two primary stages of NAT:
+(a) supernet adaptation of subnets that are at the current trade-off
+front, and (b) evolutionary search for subnets that span the many-
+objective trade-off front. A pictorial overview of the entire NAT
+method is shown in Fig.1.
+In the adaptation stage, we ﬁrst construct a layer-wise em-
+pirical distribution from the promising subnets returned by evo-
+lutionary search. Then, subnets sampled from this distribution
+are ﬁne-tuned. In the search stage, to improve the efﬁciency of
+the search, we adopt a surrogate model to quickly predict the
+objectives of any sampled subnet without a full-blown and costly
+evaluation. Furthermore, the predictor model itself is also learned
+online from previously evaluated subnets. We alternate between
+these two stages until our computational budget2 is exhausted.
+The key contributions of this paper are:
+
+2
+RELATED WORK
+
+– We introduce Neural Architecture Transfer as a NAS-powered
+alternative to ﬁne-tuning based transfer learning. NAT is powered
+by a simple, yet highly effective online supernet ﬁne-tuning and
+online accuracy predicting surrogate model.
+
+– We demonstrate the scalability and practicality of NAT on
+multiple datasets corresponding to different scenarios; large-scale
+multi-class (ImageNet [1], CINIC-10 [12]), medium-scale multi-
+class (CIFAR-10, CIFAR-100 [9]), small-scale multi-class (STL-
+10 [13]), large-scale ﬁne-grained (Food-101 [14]), medium-scale
+ﬁne-grained (Stanford Cars [15], FGVC Aircraft [16]) and small-
+scale ﬁne-grained (DTD [17], Oxford-IIIT Pets [18], Oxford
+Flowers102 [19]) datasets.
+
+– Under mobile settings (≤600M MAdds), NATNets lead to
+state-of-the-art performance across all these tasks. For instance,
+on ImageNet, NATNet achieves a Top-1 accuracy of 80.5% at
+600M MAdds.
+
+Methods
+Search Method
+Performance
+Prediction
+Weight
+Sharing
+Multiple
+Objective
+Dataset Searched
+
+NASNet [8]
+RL
+C10
+PNAS [23]
+SBMO
+✓
+C10
+DARTS [24]
+gradient
+✓
+C10
+LEMONADE [25]
+EA
+✓
+✓
+C10, C100, ImageNet64
+ProxylessNAS [26]
+RL / gradient
+✓
+✓†
+C10, ImageNet
+MnasNet [27]
+RL
+✓†
+ImageNet
+EfﬁcientNet [28]
+RL+scaling
+ImageNet
+ChamNet [29]
+EA
+✓
+✓†
+ImageNet
+MobileNetV3 [22]
+RL+expert
+✓†
+ImageNet
+SPOS NAS [30]
+EA
+✓
+✓†
+ImageNet
+OnceForAll [31]
+EA
+✓
+✓
+✓†
+ImageNet
+FBNetV2 [32]
+gradient
+✓
+✓†
+ImageNet
+
+ImageNet, C10, C100,
+CINIC-10, STL-10, Flowers102,
+Pets, DTD, Cars, Aircraft, Food-101
+
+NAT (this paper)
+EA+transfer
+✓
+✓
+✓
+
+stages. Methods of the latter kind [10], [31], [50] use performance
+of subnets (obtained by sampling the trained supernet) as a metric
+to select architectures during search. However, training a supernet
+beforehand for each new task is computationally prohibitive. In
+this work, we take an integrated approach where we train a
+supernet on large-scale datasets (e.g. ImageNet) once and couple
+it with our architecture search to quickly adapt it to a new
+task. An elaborated discussion connecting our method to existing
+approaches is provided in Section A.
+
+search on multiple tasks during training and transfer the learned
+search strategy, as opposed to searched networks, to new tasks at
+inference. Next, we provide short overviews on methods that are
+closely related to the technical approach in this paper. Table 1 pro-
+vides a comparative overview of NAT to existing NAS approaches.
+
+Performance Prediction: Evaluating the performance of an archi-
+tecture requires a computationally intensive process of iteratively
+optimizing model weights. To alleviate this computational burden,
+regression models have been learned to predict an architecture’s
+performance without actually training it. Baker et al. [45] use a
+radial basis function to estimate the ﬁnal accuracy of architectures
+from its accuracy in the ﬁrst 25% of training iterations. PNAS
+[23] uses a multilayer perceptron (MLP) and a recurrent neural
+network to estimate the expected improvement in accuracy if the
+current modular structure (which is later stacked together to form
+a network) is expanded with a new branch. Conceptually, both
+of these methods seek to learn a prediction model that extrapolate
+(rather than interpolate), resulting in poor correlation in prediction.
+OnceForAll [31] also uses a MLP to predict accuracy from
+architecture encoding. However, the model is trained ofﬂine for the
+entire search space, thereby requiring a large number of samples
+for learning (16K samples -> 2 GPU-days for just constructing
+the surrogate model). Instead of using uniformly sampled archi-
+tectures to train the prediction model to approximate the entire
+landscape, ChamNet [29] trains many architectures through full
+SGD and selects only 300 samples of high accuracy with diverse
+efﬁciency (Multiply-adds, Latency, Energy) to train a prediction
+model ofﬂine. In contrast, NAT learns a prediction model in an
+online fashion only on the samples at the current trade-off front
+as we explore the search space. Such an approach only needs to
+interpolate over a much smaller space of architectures constituting
+the current trade-off front. Consequently, this procedure signiﬁ-
+cantly improves both the accuracy and the sample complexity of
+constructing the prediction model.
+
+Multi-Objective NAS: Methods that consider multiple objectives
+for designing hardware speciﬁc models have also been developed.
+The objectives are optimized either through (i) scalarization, or (ii)
+Pareto-based solutions. The former include, ProxylessNAS [26],
+MnasNet [27], ChamNet [29], MobileNetV3 [22], and FBNetV2
+[32] which use a scalarized objective or an additional constraint
+to encourage high accuracy and penalize compute inefﬁciency at
+the same time, e.g., maximize Acc ∗(Latency/T arget)−0.07.
+Conceptually, the search of architectures is still guided by a single
+objective and only one architecture is obtained per search. Em-
+pirically, multiple runs with different weighting of the objectives
+are needed to ﬁnd an architecture with the desired trade-off, or
+multiple architectures with different complexities. Methods in the
+latter category include [25], [51], [52], [53], [54] and aim to
+approximate the entire Pareto-efﬁcient frontier simultaneously—
+i.e. multiple architectures with different complexities are obtained
+in a single run. These approaches rely on heuristics (e.g., EA)
+to efﬁciently navigate the search space allowing practitioners to
+visualize the trade-off between the objectives and to choose a
+suitable network a posteriori to the search. NAT falls into the
+latter category and uses an accuracy prediction model and weight
+sharing for efﬁcient architecture transfer to new tasks.
+
+3
+PROPOSED APPROACH
+
+Prev. Layer
+
+Resolution (R)
+
+Skippable
+
+Stem
+
+1 × 1
+
+Stage 1
+
+Prev. Stage
+
+Stage 2
+
+Width Multiplier (W)
+
+Layer 1
+
+Depth K × K
+
+Stage 3
+
++
+
+Layer 2
+
+# of Layers
+
+Stage 4
+
+Algorithm 1: Neural Architecture Transfer
+
+Layer 3
+
+1 × 1
+
+Stage 5
+
+Input
+: Training data Dtrn, validation data Dvld,
+additional objectives ˜f, supernet Sw, archive size N,
+# of iterations T, # of epochs E, # of generations G.
+
+Layer 4
+
+Tail
+
+1 t ←0 // initialize an iteration counter.
+
+Next Layer
+
+Next Stage
+
+2 A ←randomly initialize an archive of archs with a size of N.
+
+3 while t < T do
+
+4
+// compute accuracy by inheriting weights and inference.
+
+(a) Search Space
+
+5
+f ←Sw(A, Dvld)
+
+6
+// construct the accuracy predictor.
+
+R
+W
+L1
+L2
+L3
+L4
+L5
+L6
+L7
+L8
+· · · L17 L18 L19 L20
+
+7
+Sf ←Accuracy Predictor(A,f)
+⊳Algo. 2
+
+8
+// ﬁnd promising archs by evolutionary search.
+
+Stage 1
+Stage 2
+Stage 5
+
+9
+Pt ←Evolutionary Search(Sf, ˜f, A, G)
+⊳Algo. 3
+
+R
+192 · · · 224 · · · 256
+
+10
+// keep the top-N ranked archs in archive.
+
+W
+1.0 1.2
+
+11
+A ←Selection(A ∪Pt, N)
+⊳Algo. 4
+
+E
+0
+· · ·
+8
+· · ·
+16
+
+E
+0
+1
+
+12
+// ﬁne tune supernet to promising archs.
+
+13
+Sw ←Adapt(Sw, A, Dtrn, E)
+⊳Algo. 5
+
+Li
+Skip
+E = 3, K = 3
+E = 3, K = 5
+. . .
+E = 6, K = 7
+
+14
+t ←t + 1
+
+E
+0
+1
+2
+. . .
+9
+
+15 end
+
+16 // optional in case of no preferences from users.
+
+(b) Encoding
+
+17 A∗←choose a subset of archs from A based on trade-offs by
+method presented in Section C.
+
+Fig. 2: The architectures in our search space are variants of MobileNetV2
+family of models [22], [27], [28], [56]. (a) Each networks consists of ﬁve
+stages. Each stage has two to four layers. Each layer is an inverted residual
+bottleneck block. The search space includes, input image resolution (R), width
+multiplier (W), the number of layers in each stage, the # of output channels
+(expansion ratio E) of the ﬁrst 1 × 1 convolution and the kernel size (K) of the
+depth-wise separable convolution in each layer. (b) Networks are represented
+as 22-integer strings, where the ﬁrst two correspond to resolution and width
+multiplier, and the rest correspond to the layers. Each value indicates a choice,
+e.g. the third integer (L1) takes a value of “1” corresponds to using expansion
+ratio of 3 and kernel size of 3 in layer 1 of stage 1.
+
+18 Return Sw, A, A∗.
+
+3.1
+Problem Formulation
+
+The problem of neural architecture search for a target dataset D =
+{Dtrn, Dvld, Dtst} with many objectives can be formulated as the
+following bilevel optimization problem [55],
+
+3.2
+Search Space and Encoding
+
+1 k ←0 // initialize an counter.
+
+2 pool ←∅// initialize a pool to store all models.
+
+3 while k < K do
+
+4
+( ˜
+X, ˜Y ) ←randomly create a subset of the training data.
+
+Approximate Predictor (Sf)
+ˆf
+
+5
+idx ←randomly pick a subset of the features in training data.
+
+6
+rbf ←ﬁt a RBF model from ˜
+X[:, idx] and ˜Y .
+
+7
+pool ←pool ∪(rbf, idx) // append the ﬁtted model to the pool.
+
+Computational
+Cost
+
+Hours
+Mins
+Secs
+Skipped if weight-sharing/supernet
+
+8
+k ←k + 1
+
+9 end
+
+10 Return a pool of K RBF models.
+
+Fig. 3: Top Path: A typical process of evaluating an architecture in NAS
+algorithms. Bottom Path: Accuracy predictor aims to bypass the time-
+consuming components for evaluating a network’s performance by directly
+regressing its accuracy f from a (architecture in the encoded space).
+
+Overall, we search over four primary hyperparameters of
+CNNs i.e., the depth (# of layers), the width (# of channels), the
+kernel size, and the input resolution. The resulting volume of our
+search space is approximately 3.5 × 1019 for each combination of
+image resolution and width multiplier.
+To encode these architectural choices, we use an integer string
+of length 22, as shown in Fig. 2b. The ﬁrst two values represent
+the input image resolution and width multiplier, respectively.
+The remaining 20 values denote the expansion ratio and kernel
+size settings for each of the 20 layers. The available options
+for expansion ratio and kernel size are [3, 4, 6] and [3, 5, 7],
+respectively. It is worth noting that we sort the layer settings
+in ascending #MAdds order, which is beneﬁcial to the mutation
+operator used in our evolutionary search algorithm.
+
+Fig. 4: Accuracy predictor performance as a function of training samples. For
+each model, we show the mean and standard deviation of the Spearman rank
+correlation on 11 datasets (Table 3). The size of RBF ensemble is 500.
+
+2)
+Consistent prediction: the quality of the prediction should
+be consistent across different datasets.
+3)
+Sample efﬁciency: minimizing the number of training
+examples necessary to construct an accurate predictor
+model, since each training sample requires costly training
+and evaluation of a subnet.
+
+3.3
+Accuracy Predictor
+
+The main computational bottleneck of NAS arises from the nested
+nature of the bi-level optimization problem. The inner optimiza-
+tion requires the weights of the subnets to be thoroughly learned
+prior to evaluating its performance. Methods like weight-sharing
+[31], [46], [50] allow sampled subnets to inherit weights among
+themselves or from a supernet, avoiding the time-consuming
+process (typically requiring hours) of learning weights through
+SGD. However, standalone weight-sharing still requires inference
+on validation data (typically requiring minutes) to assess per-
+formance. Therefore, simply having to evaluate the subnets can
+still render the overall process computationally prohibitive for
+methods [8], [27], [38] that sample thousands of architectures
+during search.
+To mitigate the computational burden of fully evaluating the
+subnets, we adopt a surrogate accuracy predictor that regresses the
+performance of a sampled subnet without performing training or
+inference. By learning a functional relation between the integer-
+strings (subnets in the encoded space) and the corresponding
+performance, this approach decouples the evaluation of an archi-
+tecture from data-processing (including both SGD and inference).
+Consequently, the evaluation time reduces from hours/minutes to
+seconds. We illustrate this concept in Fig. 3. The effectiveness of
+this idea, however, is critically dependent on the quality of the
+surrogate model. Below we identify three desired properties of
+such a model:
+
+1)
+Reliable prediction: high rank-order correlation3 between
+predicted and true performance.
+
+(Offspring 1)
+
+(Parent 2)
+
+1 g ←0 // initialize an generation counter.
+
+(a)
+
+2 f ←Sf(A) // compute accuracy of all archs in archive.
+
+3 P ←Selection(A, f, ˜f(A), K) // initialize the parent population
+with top-K ranked archs from A.
+
+4 while g < G do
+
+5
+// choose parents through tournament selection for mating.
+
+6
+P ←Binary Tournament Selection(P )
+
+7
+// create offspring population by crossover between parents.
+
+8
+Q ←Crossover(P, pc)
+
+(b)
+
+9
+// induce randomness to offspring population through mutation.
+
+Fig. 5: (a) Crossover Operator: new offspring architectures are created
+by recombining integers from two parent architectures. The probability of
+choosing from either one of the parents is equal. (b) Mutation Operator:
+histograms showing the probabilities of mutated values with current value at 5
+under different hyperparameter ηm settings.
+
+10
+Q ←Mutation(Q, pm)
+
+11
+R ←P ∪Q // merge parent and offspring population.
+
+12
+// survive the top-K archs to next generation.
+
+13
+P ←Selection(R, Sf(R), ˜f(R), K)
+
+14
+g ←g + 1
+
+15 end
+
+and the mutated ith integer, ai, of the mutated offspring is:
+
+16 Return parent population P .
+
+ai + ((2u)1/(1+ηm) −1)(ai −a(L)
+i
+),
+for u ≤0.5,
+
+
+
+
+a′
+i =
+
+ai + (1 −
+2(1 −u)
+1/(1+ηm))(a(U)
+i
+−ai),
+for u > 0.5
+(2)
+where u is a uniform random number in the interval [0, 1]. a(L)
+i
+and a(U)
+i
+are the lower and upper bounds of ai, respectively.
+Each mutated value in an offspring is rounded to the nearest
+integer. The PM operator inherits the parent-centric convention, in
+which the offspring are intentionally created around the parents.
+The centricity is controlled via an index hyperparameter ηm. In
+particular, high-values of ηm tend to create mutated offspring
+around the parent, and low-values encourage mutated offspring
+to be further away from the parent architecture. See Fig. 5b for
+a visualization of the effect of ηm. It is the worth noting that the
+PM operator was originally proposed for continuous optimization
+where distances between variable values are naturally deﬁned. In
+contrast, in context of our encoding, our variables are categorical
+in nature, indicating a particular layer hyperparameter. So we sort
+the searched subnets in ascending order of #MAdds, such that ηm
+now controls the difference in #MAdds between the parent and
+the mutated offspring.
+We apply PM to every member in the offspring population
+(created from crossover). We then merge the mutated offspring
+population with the parent population and select the top half using
+many-objective selection operator described in Algorithm 4. This
+procedure creates the parent population for the next generation.
+We repeat this overall process for a pre-speciﬁed number of
+generations and output the parent population at the conclusion
+of the evolution.
+
+other models across all regimes. Fig. 4 compares the performance
+of the different surrogate models we considered. Practically, we
+observed that the RBF ensemble can be learned under a minute.
+
+
+
+3.4
+Many-Objective Evolutionary Search
+
+Given the accuracy predictor, we employ a customized evolution-
+ary algorithm (EA) to search for optimal architectures that offer
+the best trade-off between many objectives. The EA is an iterative
+process in which initial architectures, selected from the archive
+of previously explored architectures, are gradually improved as a
+group, referred to as a population. In every generation (iteration),
+a group of offspring (i.e., new architectures) are created by
+applying variations through crossover and mutation (described
+below) operations on the most promising architectures, also known
+as parents, found so far in the population. Every member of the
+population, i.e., both parents and offspring, competes for survival
+and reproduction (becoming a parent) in each generation. See
+Fig. 1 (bottom right shaded in green) for a pictorial overview,
+and Algorithm 3 for the pseudocode.
+
+Crossover exchanges information between two or more popu-
+lation members to create two or more new members. Designing an
+effective crossover between non-standard solution representations
+can be difﬁcult and has been largely ignored by existing EA-based
+NAS algorithms [37], [38], [59]. Here we adopt a customized,
+homogeneous crossover that uniformly picks integers from parent
+architectures to create offspring architectures. This crossover oper-
+ator offers two properties: (1) it preserves common integers shared
+between parents; and (2) it is free of additional hyperparameters.
+Fig. 5a visualizes our implementation of the crossover operation.
+We generate two offspring architectures with each crossover, and
+an offspring population of the same size as the parent population
+is generated in each generation.
+
+3.5
+Many-Objective Selection
+
+1 // put archs into different fronts (rank levels) based on domination.
+
+1 e ←0 // initialize an epoch counter.
+
+2 (F1, F2, . . .) ←non dominated sort(F )
+
+2 Distr ←construct the distribution from A following Eq. (3).
+
+3 S ←∅, i ←1
+
+3 while e < E do
+
+4 while |S|+|Fi|< N do S ←S ∪Fi; i ←i + 1;
+
+4
+for each batch in Dtrn do
+
+5 FL ←Fi // next front is the split front where we cannot
+accommodate all archs associated with it.
+
+5
+subnet ←sample from Distr.
+
+6
+w ←set forward path of Sw according to subnet.
+
+6 if |S|+|FL|= N then S ←S ∪FL;
+
+7
+L ←compute cross-entropy loss on data batch.
+
+7 else
+
+8
+∇w ←compute the gradient by ∂L/∂w
+
+8
+( ˜S, ˜
+FL) ←Normalize(S, FL) // normalize the objectives based
+the ideal and nadir points derived from R.
+
+9
+Sw ←one step of SGD.
+
+10
+end
+
+11
+e ←e + 1
+
+9
+d ←compute orthogonal dist to Zi for each i
+
+12 end
+
+10
+ρ ←count #associated solutions for Zi based on d for each i.
+
+13 Return supernet Sw.
+
+11
+// remaining archs from FL to ﬁll up S.
+
+12
+S ←S ∪Niching( ˜
+FL, N −|S|, ρ, d)
+
+13 end
+
+14 Return S.
+
+at a time until no more sets can be included to maintain the popu-
+lation size. The ﬁnal accepted set may have to be split to choose
+only a part. For this purpose, we choose the most diverse subset
+based on a diversity-maintaining mechanism. We ﬁrst create a
+set of reference directions from a set of uniformly distributed (in
+(m −1)-dimensional space) reference points in the unit simplex
+by using Das-and-Dennis method [61]. Then we associate each
+solution to a reference direction based on orthogonal distance of
+the solution from the direction. Then, for every reference direction,
+we choose the closest associated solution in a systematic manner
+by adaptively computing a niche count ρ so that every reference
+direction gets an equal opportunity to choose a representative
+closest solution in the selected population. The domination and
+diversity-preserving procedures are easily scalable to any number
+of objectives and importantly are free from any user-deﬁned
+hyperparameter. See Algorithm 4 for the pseudocode and Fig. 6
+for a graphical illustration. A more elaborated discussion on the
+necessity of the reference point based selection is provided in
+Section B.
+
+(a)
+(b)
+
+Fig. 6: (a) An example (assuming minimization of all objectives) of the selec-
+tion process in Algo 4: We ﬁrst create reference directions Z by joining refer-
+ence points with the ideal solution (origin). Then through non dominated sort,
+three non-dominated solutions are identiﬁed, associated with reference direc-
+tions Z(1), Z(3) and Z(5). We then select the remaining solutions by the
+orthogonal distances to the reference directions with no associated solutions—
+i.e. Z(2) and Z(4). This selection is scalable to larger # of objectives. A
+tri-objective example is shown in (b).
+
+with as many as 15 objectives. In the remainder of this section, we
+provide an overview of NSGA-III procedure and refer readers to
+the original publication for more details.
+Domination is a widely-used partial ordering concept for
+comparing two objective vectors. For a generic many-objective
+optimization problem: mina {f1(a), . . . , fm(a)}, where fi(·)
+are the objectives (say, loss functions) to be optimized and a is
+the representation of a neural network architecture. For two given
+solutions a1 and a2, solution a1 is said to dominate a2 (i.e.,
+a1 ⪯a2) if following conditions are satisﬁed:
+
+3.6
+Supernet Adaptation
+
+1)
+a1 is no worse than a2 for all objectives (fi(a1) ≤
+fi(a2), ∀i ∈{0, . . . , m}), and
+2)
+a1 is strictly better than a2 in at least one objective ∃
+i ∈{0, . . ., m} | fi(a1) < fi(a2)).
+
+ImageNet [1]
+
+1,281,167
+50,000
+1,000
+CINIC-10 [12]
+180,000
+9,000
+10
+CIFAR-10 [9]
+50,000
+10,000
+10
+CIFAR-100 [9]
+50,000
+10,000
+10
+STL-10 [13]
+5,000
+8,000
+10
+
+Global
+Archive size
+300
+Number of iterations
+30
+
+multi-class
+
+Accuracy predictor
+Train size
+100
+Ensemble size
+500
+
+75,750
+25,250
+101
+Stanford Cars [15]
+8,144
+8,041
+196
+FGVC Aircraft [16]
+6,667
+3,333
+100
+DTD [17]
+3,760
+1,880
+47
+Oxford-IIIT Pets [18]
+3,680
+3,369
+37
+Oxford Flowers102 [19]
+2,040
+6,149
+102
+
+Food-101 [14]
+
+Population size
+100
+Number of generations per iteration
+100
+Crossover probability
+0.9
+Mutation probability
+0.1
+Mutation index ηm
+1.0
+
+ﬁne-grained
+
+Evolutionary search
+
+Supernet
+Number of epochs per iteration
+5
+
+Oxford Flowers102 [19]); and texture classiﬁcation (DTD [17]).
+We use the ImageNet dataset for training the supernet, and use the
+other ten datasets for architecture transfer.
+
+different architectures in order to be efﬁcient. In other words, not
+all subnets are equally important for the task at hand. Secondly,
+only a tiny fraction4 of the search space can practically be explored
+by a NAS algorithms.
+Based on the aforementioned observations, we propose a
+simple yet effective supernet training routine that only focuses
+on training the subnets recommended by the evolutionary search
+algorithm in Section 3.5. Speciﬁcally, we seek to exploit the
+knowledge gained from the search process so far. Recall that our
+algorithm uses an archive to keep track of the promising architec-
+tures explored so far. For each value in our architecture encoding,
+we construct a categorical distribution from architectures in the
+archive, where the probability for ith integer taking on the j value
+is computed as:
+
+4.2
+Supernet Preparation
+
+Our supernet is constructed by setting the architecture encoding
+at the maximum value, i.e. four layers in each stage and every
+layer uses expand ratio of six and kernel size of seven. Adapting
+subnets of a supernet with randomly initialized weights leads to
+training instability and large variance in its performance. There-
+fore, we warm-up the supernet weights on ImageNet following
+the progressive shrinking algorithm [31], where the supernet is
+ﬁrst trained at full-scale, with subnets corresponding to different
+options (expand ratio, kernel size, # of layers) being gradually
+activated during the training process. This procedure, which takes
+about 6 days on a server with eight V100 GPUs, is optimized
+with only the cross-entropy loss i.e., a single objective. We note
+that supernet preparation expense is a one-time cost that amortizes
+over any subsequent transfer to different datasets and objective
+combinations we show in the following subsections.
+
+p(Xi = j) = # of architectures with option j at ith integer
+
+total # of architectures in the archive
+(3)
+In each training step (batch of data), we sample an integer-string
+from the above distribution5. We then activate the sub parts of
+the supernet corresponding to the architecture decoded from the
+integer-string. Only weights corresponding to the activated sub
+parts in the supernet will be updated in each step. See Algorithm 5
+for pseudocode. A more in-depth discussion connecting our pro-
+posed approach to the existing supernet-based NAS approaches is
+provided in Section A.
+
+4.3
+ImageNet Classiﬁcation
+
+Before we evaluate our approach for architecture transfer to other
+datasets, we ﬁrst validate its effectiveness on the ImageNet-
+1K dataset. This experiment evaluates the effectiveness of NAT
+in adapting and searching for architectures that span trade-off
+between two objectives. For this experiment, we consider accuracy
+and #MAdds as the two objective of interest. We randomly sample
+50,000 images from the original ImageNet training set as the
+validation set to guide the architecture search. We run NAT for
+30 iterations, and from the ﬁnal archive of architectures, we select
+four models ranging from 200M MAdds to 600M MAdds (for
+high-end mobile devices). Following [31], we ﬁne-tune6 each
+model to further boost the performance. Our ﬁne-tune training
+largely follows [27]: RMSProp optimizer with decay 0.9 and
+momentum 0.9; batch normalization momentum 0.99; weight
+decay 1e-5. We use a batch size of 512 and an initial learning
+rate of 0.012 that gradually reduces to zero following the cosine
+annealing schedule. Our regularization settings are similar as in
+[28]: we use augmentation policy [63], drop connect ratio 0.2, and
+dropout ratio 0.2.
+Table 4 shows the performance of NAT models obtained
+through bi-objective optimization of maximizing accuracy and
+minimizing #MAdds. Our models, referred to as NAT-M{1,2,3,4},
+are in ascending order of #MAdds (Fig. 7). Fig. 8 shows the full
+#MAdds-accuracy trade-off curve comparison between NAT and
+existing NAS methods.
+
+4
+EXPERIMENTAL EVALUATION
+
+In this section, we present experimental results to evaluate the
+efﬁcacy of Neural Architecture Transfer on multiple image classi-
+ﬁcation tasks. In addition, we also investigate the scalability of our
+approach to more than two objectives. For all the experiments in
+this section, we use the same set of hyperparmaters (see Table 2)
+for the different components of NAT. These choices were guided
+by the ablation studies described in Section 5.
+
+4.1
+Datasets
+
+We consider eleven image classiﬁcation datasets for evaluation
+with sample size varying from 2,040 to 180,000 images (20 to
+18,000 images per class; Table 3). These datasets span a wide
+variety of image classiﬁcation tasks, including superordinate-level
+recognition (ImageNet [1], CIFAR-10 [9], CIFAR-100 [9], CINIC-
+10 [12], STL-10 [13]); ﬁne-grained recognition (Food-101 [14],
+Stanford Cars [15], FGVC Aircraft [16], Oxford-IIIT Pets [18],
+
+Model
+Method
+#Params
+#Multi-Adds
+CPU Lat (ms)
+GPU Lat (ms)
+Top-1 Acc (%)
+Top-5 Acc (%)
+
+NAT-M1
+WS+EA
+6.0M
+225M
+9.1
+30
+77.5
+93.5
+MobileNetV2 [56]
+manual
+3.5M
+300M
+8.3
+23
+72.0
+91.0
+SPOS NAS [30]
+WS+EA
+3.4M
+328M
+-
+-
+74.7
+92.0
+ProxylessNAS [26]
+RL/gradient
+4.0M
+465M
+8.5
+27
+75.1
+92.5
+MnasNet-A1 [27]
+RL
+3.9M
+312M
+9.3
+31
+75.2
+92.5
+MobileNetV3 [22]
+RL/NetAdapt
+5.4M
+219M
+10.6
+33
+75.2
+-
+MUXNet-m [54]
+EA
+3.4M
+218M
+14.7
+42
+75.3
+92.5
+FBNetV2-F4 [32]
+gradient
+7.0M
+238M
+15.6
+44
+76.0
+-
+
+NAT-M2
+WS+EA
+7.7M
+312M
+11.4
+37
+78.6
+94.3
+MUXNet-l [54]
+EA
+4.0M
+318M
+19.2
+74
+76.6
+93.2
+EfﬁcientNet-B0 [28]
+RL/scaling
+5.3M
+390M
+14.4
+46
+77.1
+93.2
+AtomNAS-C+ [64]
+WS+shrinkage
+5.9M
+363M
+-
+-
+77.6
+93.5
+AutoNL-L [65]
+gradient
+5.6M
+353M
+-
+-
+77.7
+93.7
+DNA-c [66]
+gradient
+5.3M
+466M
+14.5
+67
+77.8
+93.7
+
+NAT-M3
+WS+EA
+9.1M
+490M
+16.1
+62
+79.9
+94.9
+ResNet-152 [3]
+manual
+60M
+11.3B
+66.7
+176
+77.8
+93.8
+MixNet-L [67]
+RL
+7.3M
+565M
+29.4
+105
+78.9
+94.2
+EfﬁcientNet-B1 [28]
+RL/scaling
+7.8M
+700M
+19.5
+67
+79.1
+94.4
+
+NAT-M4
+WS+EA
+9.1M
+0.6B
+17.3
+78
+80.5
+95.2
+BigNASModel-L [68]
+WS
+6.4M
+0.6B
+-
+-
+79.5
+-
+OnceForAll [31]
+WS+EA
+9.1M
+0.6B
+16.5
+72
+80.0
+94.9
+Inception-v4 [69]
+manual
+48M
+13B
+84.6
+206
+80.0
+95.0
+Inception-ResNet-v2 [69]
+manual
+56M
+13B
+99.1
+289
+80.1
+95.1
+
+Fig. 8: MAdds vs. ImageNet Accuracy. NATNets outperform other models
+in both objectives. In particular, NAT-M4 achieves a new state-of-the-art top-1
+accuracy of 80.5% under mobile setting (≤600M MAdds). NAT-M1 improves
+MobileNetV3 top-1 accuracy by 2.3% with similar #MAdds.
+
+Fig. 7: ImageNet Architectures from Trade-Off Front.
+
+Results indicate that NATNets completely dominate (i.e. bet-
+ter in both #MAdds and accuracy) all existing designs, both
+manual and from other NAS algorithms, under mobile settings
+(≤600M MAdds). Compared to manually. designed networks,
+NAT is noticeably more efﬁcient. NAT-M1 is 2.3% and 1.5%
+more accurate than MobileNetV3 [22] and FBNetV2-F4 [32]
+respectively, while being equivalent in efﬁciency (i.e. #MAdds,
+CPU and GPU latency). Furthermore, NATNets are consistently
+6% more accurate than MobileNetV2 [56] scaled by width
+multiplier from 200M to 600M #MAdds. Our largest model, NAT-
+M4, achieves a new state-of-the-art ImageNet top-1 accuracy of
+80.5% under mobile settings (≤600M #MAdds). Interestingly,
+even though this experiment did not explicitly optimize for CPU
+or GPU latency, NATNets are faster than those (MobileNet-V3
+[22], MNasNet [27]) that explicitly do optimize for latency.
+
+4.4
+Scalability to Datasets
+
+Fig. 9: MAdds vs. Accuracy trade-off curves comparing NAT and existing architectures on a diverse set of datasets. The datasets are arranged in ascending
+order of training set size. Methods shown in the legend pre-train on ImageNet and ﬁne-tune the weights on the target dataset. Methods with names annotated in
+sub-ﬁgures train from scratch or use external training data.
+
+once before all experiments; see Section 4.2) and adapt it to the
+new dataset. During this procedure, the last linear layer is reset
+depending on the number of categories in the new dataset. NAT
+is now applied for a total of 30 iterations. In each iteration the
+supernet is adapted for 5 epochs using SGD with a momentum
+of 0.9. The learning rate is initialized at 0.01 and annealed to
+zero in 150 epochs (30 iterations with ﬁve epochs in each). All
+hyperparameters are set at default values from Table 2. For each
+dataset, the overall NAT process takes slightly under a day on a
+server with eight 2080Ti GPUs.
+Fig. 9 shows the accuracy and #MAdds trade-off for each
+dataset across a wide range of models, including NATNets,
+existing NAS and hand-designed models. Across all datasets,
+NATNets consistently achieve better accuracy while being an
+order of magnitude more efﬁcient (#MAdds) than existing models,
+suggesting that searching directly on the targeted datasets is a
+more effective alternative to the conventional transfer learning that
+ﬁne-tunes weights of architectures learned on standard datasets
+(i.e. ImageNet and CIFAR-10). Under mobile settings (≤600M),
+NATNets achieve the state-of-the-art on these datasets, and a new
+state-of-the-art accuracy on both STL-10 [13] and CINIC-107
+
+[12] datasets. Surprisingly, on small scale datasets e.g. Oxford
+Flowers102 [19], Oxford-IIIT Pets [18], DTD [17] and STL-10
+[13], we observe that NATNets are signiﬁcantly more effective
+than conventional ﬁne-tuning. Even on ﬁne-grained datasets such
+as Stanford Cars and FGVC aircraft, where conventional ﬁne-
+tuning did not improve upon training from scratch, NATNets
+improve accuracy while also being signiﬁcantly more efﬁcient.
+Fig. 10 shows a visualization of architectures with 350M
+MAdds for each dataset. The lack of similarity in the networks
+suggest that different datasets require different architectures to be
+efﬁcient in accuracy-MAdds, and NAT is able to generate these
+
+Fig. 10: Efﬁcient architectures (350M MAdds) obtained by NAT on ten diverse
+image classiﬁcation datasets.
+
+Fig. 11: Top row: NATNets obtained from tri-objective search to maximize ImageNet top-1 accuracy, minimize model size (#Params), and minimize {#MAdds,
+CPU latency, GPU latency} from left to right. Pareto surfaces emerge at higher model complexity regime (i.e. top right corner) suggesting that trade-offs exist
+between model size (#params) and model efﬁciency (#MAdds and latency). Bottom row: 2D projections from above 3D scatter, showing top-1 accuracy vs. each
+of the four efﬁciency related measurements. The ﬁrst two 2D projections are from the ﬁrst 3D scatter, and the remaining two 2D projections are from the second
+and third 3D scatters, respectively. To better visualize (the comparison with MobileNetV3 [22] and MUXNet [54]), partial solutions from the non-dominated
+frontiers are shown. All top-1 accuracy shown are without ﬁne-tuning.
+
+4.5
+Scalability to Objectives
+
+on ImageNet along all the objectives (top-1 accuracy, #params,
+#MAdds, CPU and GPU latency). Additionally, we compare to
+MUXNets [54] which are also obtained from a three-objective
+NAS optimizing {top-1 accuracy, #params, and #MAdds}. How-
+ever, MUXNets adopt a search space that is speciﬁcally tailored
+for reducing model size. Therefore, in comparison to MUXNets,
+we observe that NATNets perform favourably on all the remaining
+three efﬁciency metrics, except for #params. Primarily driven by
+curiosity in terms of pushing the scalability of our approach with
+respect to number of objectives, we provide an application to 12
+objective problem in Section F.
+
+4.6
+Utility on Dense Image Prediction
+
+5.2
+Search Efﬁciency
+
+The overall computation cost consumed by a NAS algorithm can
+be factored into three phases: (1) Prior-search: Cost incurred
+prior to architecture search, e.g. training supernet in case of
+one-shot approaches [10], [31] or constructing accuracy predictor
+[29], etc; (2) During-search: Cost associated with measuring the
+performance of candidate architectures sampled during search
+through inference. It also includes the cost of training the supernet
+in case it is coupled with the search, like in [24] and NAT; (3)
+Post-search: Cost associated with choosing a ﬁnal architecture,
+and/or ﬁne-tuning/re-training the ﬁnal architectures from scratch.
+For comparison, we select representative NAS algorithms, in-
+cluding those based on reinforcement learning (RL), gradients,
+evolutionary algorithm (EA), and weight sharing (WS). Table 6
+shows results for ImageNet and CIFAR-10. The former is the
+dataset on which the supernet is trained and the latter is a proxy
+for transfer learning to a non-standard dataset. NAT consistently
+achieves better performance, both in terms of top-1 accuracy and
+model efﬁciency (e.g. #MAdds), compared to the baselines while
+computational cost is similar or lower. The primary computational
+cost of NAT is the prior-search training of supernet for 1200 hours.
+We emphasize, again, that it is a one-time cost that is amortized
+across all subsequent deployment scenarios (e.g. 10 additional
+datasets in Section 4.4).
+Comparing the search phase contribution to the success of
+different NAS algorithms is challenging and ambiguous due to
+substantial disparities in search spaces and training procedures. So,
+we conduct the following controlled experiment where we replace
+only the evolutionary search component in the NAT pipeline with
+(1) a random search that uniformly samples (with possible repeti-
+tion) from the search space, and (2) NSGANet [51], another multi-
+objective EA-based NAS algorithm. This experiment is under a bi-
+objective setup: maximize top-1 accuracy and minimize #MAdds.
+We run each method ﬁve times on three datasets to capture
+the variance in performance due to inherent stochasticity in the
+optimization initialization. We use hypervolume [78], a widely-
+used metric for comparing algorithms under multiple objectives,
+as the evaluation metric. Fig. 14 shows the mean and the standard
+deviation of the hypervolume achieved by each method. The
+evolutionary search component in NAT is 3× - 5× more sample
+efﬁcient than the baselines for the same hypervolume.
+
+Fig. 12: MAdds vs. Cityscapes mIoU. NAT obtained backbone feature
+extractors (green curve) signiﬁcantly outperform the original BiSeNet, which
+are based on ResNets (R18 - R152). With further ﬁne-tuning of 4K iterations,
+NAT achieves the state-of-the-art performance (red curve).
+
+Fig. 12 compares the mIoU-MAdds trade-off obtained by
+NAT and the original BiSeNet [75] on the Cityscapes dataset.
+Empirically, we observe that NAT based backbones consistently
+outperform the original BiSeNets, which are based on ResNets. To
+realize the full potential of the searched NATNets, we further ﬁne-
+tune the obtained models for 4K iterations. As shown in Table 5,
+the resulting NAT model yields comparable performance against
+state-of-the-art methods, including PSPNet [76], DeepLabv3 [77],
+Auto-DeepLab-S [21], while being 4x - 28x more efﬁcient in
+#Madds.
+
+TABLE 5: Cityscapes Semantic Segmentation [20]: All results are based on
+single-scale inputs from validation set.
+
+Method
+#Params
+#Multi-Adds
+mIoU (%)
+
+BiSeNet [75]
+13.4M
+67B
+74.8
+PSPNet [76]
+65.9M
+2,017B
+78.4
+DeepLabv3+ [77]
+43.5M
+1,551B
+79.6
+Auto-DeepLab-S [21]
+10.2M
+333B
+79.7
+
+NAT + BiSeNet (ours)
+8.8M
+73B
+79.7
+
+5
+ABLATION STUDY
+
+In this section, we provide additional experiments towards quanti-
+fying the impacts of the main components introduced in NAT and
+hyperparameter analysis.
+
+5.1
+Accuracy Predictor Performance
+
+5.3
+Analysis of Crossover
+
+Fig. 13: Top row: Spearman rank correlation between predicted accuracy and true accuracy of different surrogate models across many datasets. Each accuracy
+predictor is constructed from 250 samples (trained architectures). Error bars show mean and standard deviation over ten runs. Bottom row: Goodness of ﬁt
+visualization of RBF ensemble, the best accuracy predictor.
+TABLE 6: Comparing the relative search efﬁciency of NAT to other methods. “–” denotes for not applicable, “WS” stands for weight sharing and “SMBO”
+stands for sequential model-based optimization [79]. † is taken from [32], ‡ estimate based on the # of models evaluated during search (20K in [8], 1.2K in [23],
+27K in [38]). ∗denotes re-ranking stage where top 100-250 models undergo extended training and evaluation for 300 epochs before selecting the ﬁnal model.
+
+Method
+Type
+Top-1
+Acc. (%)
+#MAdds
+(M)
+
+Estimated Search Cost (GPU hours)
+
+Prior-search
+During-search
+Post-search
+Total
+
+MnasNet [27]
+gradient
+75.2
+312
+-
+-
+-
+91k†
+OnceForAll [31]
+WS+EA
+76.9
+230
+1,200
+40
+75
+1.3k
+NAT (ours)
+WS+EA
+77.5
+225
+1,200
+150
+75
+1.4k
+
+ImageNet
+
+NASNet [8]
+RL
+97.4
+569
+-
+10,000‡
+6000∗
+16k
+PNASNet [23]
+SMBO
+96.6
+588
+-
+600‡
+36
+0.6k
+DARTS [24]
+WS+gradient
+97.3
+595
+-
+96
+36
+0.1k
+AmoebaNet [38]
+EA
+97.5
+555
+-
+13,500‡
+2400∗
+16k
+NAT (ours)
+transfer+EA
+98.4
+468
+-
+150
+-
+0.1k
+
+CIFAR-10
+
+2)
+w/o crx: crossover probability of 0.0; mutation probability
+of 0.2; mutation index ηm of 3.
+
+We double the mutation probability when crossover is not used to
+compensate for the reduced exploration ability of the search. On
+each dataset, we run each setting to maximize the top-1 accuracy
+11 times and report the median performance as a function of the
+number of architecture sampled in Fig 15a. On all four datasets,
+the crossover operator signiﬁcantly improves the efﬁciency of the
+evolutionary search algorithm. To further validate, we sweep over
+the probability of crossover while maintaining the rest of the
+settings. The median performance (over 11 runs) deteriorates as
+the crossover probability is reduced from 0.9 to 0.2 (see Fig. 15b).
+
+5.4
+Analysis of Mutation Hyperparameters
+
+Fig. 14: Top left: A sketch visualizing the hypervolume metric [78]. In case
+of bi-objective, it measures the dominated area achieved by a multi-objective
+algorithm. A larger hypervolume indicates a better Pareto front achieved.
+Rest: Search efﬁciency comparison between NAT, NSGANet [51], and random
+search under a bi-objective setup. Mean hypervolume over ﬁve runs are plotted
+with shaded region showing the standard deviation.
+
+We run the evolutionary search of NAT with and without the
+crossover operator on four datasets; ImageNet [1], CIFAR-10 [9],
+Oxford Flowers102 [19], and Stanford Cars [15]. The hyperpa-
+rameters that we compare are:
+
+(a) Effect of Crossover
+
+(b) Effect of Crossover Probability
+
+Fig. 15: Ablation study on the crossover operator: (a) the median performance from eleven runs of our evolutionary algorithm with and without the crossover
+operator. (b) the median performance deteriorates as the crossover probability reduces from 0.9 to 0.2.
+
+(a) Effect of Mutation Probability
+
+(b) Effect of Mutation Hyperparameter ηm
+
+Fig. 16: Hyperparameter study on (a) mutation probability pm and (b) mutation index parameter ηm. For each study, we run NAT eleven times on four datasets
+to maximize top-1 accuracy and report the median performance.
+
+5.5
+Effectiveness of Supernet Adaptation
+
+an additional 150 epochs. We refer to this as additional ﬁne-
+tuning in Fig. 17. Empirically, we observe that further ﬁne-tuning
+can match the performance of supernet adaptation on datasets
+with larger training samples per class (e.g. 4,000 in CIFAR-10).
+On datasets with fewer samples per class (e.g. 20 in Flowers
+102), there is still a large performance gap between supernet
+adaptation and additional ﬁne-tuning. Overall the results suggest
+that supernet adaptation is more effective on tasks with limited
+training samples.
+
+Recall that NAT adopts any supernet trained on a large-scale
+dataset, e.g. ImageNet, and seeks to efﬁciently transfer to a
+task-speciﬁc supernet on a given dataset. Here, we compare this
+procedure to a more conventional approach of adapting every
+subnet (candidate architectures in search) directly. Speciﬁcally, we
+consider the following,
+
+1)
+Supernet Adaptation: ﬁne-tune supernet for 5 epochs in
+each iteration and use accuracy from inherited weights
+(without further training) to select architectures during
+search (adopted in NAT).
+2)
+Subnet Adaptation: ﬁne-tune each subnet for 5 epochs
+from the inherited weights, then measure the accuracy.
+
+5.6
+Towards Quantifying Architectural Advancement
+
+Fig. 17: Comparing the performance of adapting supernet, adapting subnet and additional ﬁne-tuning under a bi-objective search setup on four datasets. Details
+are provided in Section 5.5.
+
+TABLE 9: Effect of different training setups. Details of the standard and
+advanced settings under Random Initialization are provided in Table 7.
+
+model, NAT-M1, is 0.5 - 1.0% more accurate on ImageNet than
+compared models using similar or less #MAdds.
+
+Training
+Settings
+
+Random Initialization
+Inherited from Supernet
+
+TABLE 7: Details of training hyperparameter settings. Advance settings are
+in addition to standard settings.
+
+standard
+advanced
+w/o ﬁne-tune
+w/ ﬁne-tune
+
+NAT-M1
+75.7
+77.1
+75.9
+77.5
+NAT-M2
+76.9
+78.0
+77.4
+78.6
+NAT-M3
+78.2
+79.1
+78.9
+79.9
+NAT-M4
+78.8
+79.5
+79.4
+80.5
+
+Setting
+Data Augmentation
+Regularization
+Optimizer
+LR Schedule
+
+Standard
+Horizontal Flop + Crop
+Drop out
+
+Step LR w/ Decay
++ Linear Warm-up [80]
+Advance
++ Random Augmentation [81]
++ Random Erase Pixel [82]
++ Drop path [83]
+
+RMSProp + Exponential
+Moving Averaging
+
+To further quantify the architectural advancement made by
+NAT, we use NAT-M1 as a drop-in replacement of the backbone
+feature extractor for three dense image prediction tasks, including
+object detection, semantic segmentation, and instance segmenta-
+tion. More speciﬁcally, we replace the EfﬁcientNet-B0 [28] in
+EfﬁcientDet-D0 [84] for object detection; the ResNet-18 [3] in
+BiSeNet [75] for semantic segmentation; and the ResNet-50 [3]
+in YOLACT [85] for instance segmentation. For comparison, we
+apply the same procedure to both MobileNetV3 and FBNetV2
+as well. The results are reported in Table 8. In general, our
+NAT searched model, NAT-M1, is consistently better than peer
+competitors across all tasks and datasets using similar or less
+#MAdds. Speciﬁcally, NAT-M1 is better than the compared mod-
+els on all three datasets for semantic segmentation, achieving 1.0
+- 2.3 higher mIoU.
+
+supernet and an evolutionary search algorithm for designing task-
+speciﬁc neural networks trading-off accuracy and computational
+complexity. We also showed how to use an online regressor, as a
+surrogate model to predict the accuracy of subnets in the supernet.
+Experimental evaluation on eleven benchmark image classiﬁcation
+datasets, ranging from large-scale multi-class to small-scale ﬁne-
+grained tasks, showed that networks obtained by NAT outperform
+conventional ﬁne-tuning based transfer learning, while being or-
+ders of magnitude more efﬁcient under mobile settings (≤600M
+Multiply-Adds). NAT was especially effective for small-scale ﬁne-
+grained tasks where ﬁne-tuning pre-trained ImageNet models is
+ineffective. Finally, we also demonstrated the utility of NAT in
+optimizing up to twelve objectives with a subsequent trade-off
+analysis procedure for identifying a single preferred solution.
+Overall, NAT is the ﬁrst large scale demonstration of many-
+objective neural architecture search for designing custom task-
+speciﬁc models on diverse image classiﬁcation datasets.
+
+TABLE 8: Comparison between NAT searched model and representative
+models on ImageNet classiﬁcation under standard training setup, and as feature
+extractors on MS COCO [86] object detection task, PASCAL VOC [87]
+instance segmentation task and semantic segmentation tasks.
+
+REFERENCES
+
+Backbone
+MobileNetV3 [22]
+FBNetV2 [32]
+NAT-M1 (ours)
+
+#MAdds
+219M
+238M
+225M
+
+ImageNet Top-1 Acc.
+74.7
+75.2
+75.7
+
+AP
+31.8
+31.1
+32.2
+AP s/m/l
+10.4 / 37.3 / 50.1
+10.9 / 36.6 / 48.4
+11.5 / 37.9 / 49.7
+
+Object
+Detection
+
+AP bbox
+44.0
+44.8
+45.2
+AP mask
+43.6
+43.9
+44.3
+
+Instance
+Segmentation
+
+Cityscapes [20]
+73.0
+72.6
+74.0
+PASCAL VOC [87]
+73.8
+73.6
+75.9
+COCO-Stuff [88]
+28.5
+28.5
+29.5
+
+Semantic
+Segmentation
+
+Finally, we break down the effect of different training settings
+and additional ﬁne-tuning for the Top-1 accuracy of the searched
+models in Table 9. The advance setting in Table 7 also uses
+knowledge distillation [31], [68].
+
+6
+CONCLUSION
+
+APPENDIX A
+RELATION TO EXISTING ONE-SHOT NAS
+
+Most existing one-shot NAS approaches follow a two-step pro-
+cess, where the supernet training and the architecture search are
+disentangled into two sequential stages. This process starts with
+training a supernet (in which searchable architectures become
+subnets) ofﬂine as a one-time process prior to the search. Then the
+performance of the subnets, evaluated with the inherited weights,
+is used to guide the selection of architectures during search. Early
+one-shot approaches [10], [30], [53] follow a conventional (rather
+na¨ıve) way to train the supernet, i.e. train a randomly chosen sub-
+part (subnet) of the supernet directly from randomly initialized
+weights for each mini-batch (see Fig. 18a). Consequently, the
+searched subnets need to be re-trained thoroughly from scratch
+as the performance evaluated with inherited weights are far below
+the true performance and can only be used as a proxy indicator to
+compare the relative difference between subnets.
+The progressive shrinking algorithm proposed in OnceForAll
+[31] also trains the supernet in an ofﬂine fashion, but differs in
+three aspects—(i) it pre-trains the supernet at full scale before
+sampling subnets; (ii) it gradually adds the searched dimensions
+(kernel size, depth, width) into the search space; and (iii) it uses the
+full-scale supernet to supervise the training of subnets. However,
+the supernet weights update is still based on randomly sampled
+subnets. See Fig. 18b for a visualization. Empirically, OnceForAll
+shows that the supernet trained with progressive shrinking enables
+subnets with inherited weights to be directly deployed without
+re-training.
+Despite the success shown in OnceForAll, we argue that such
+an ofﬂine training process of supernet is fundamentally limited by
+the fact that it requires all subnets to be learned simultaneously.
+To elaborate, without prior knowledge on the distribution of the
+optimal subnets for the tasks at hand, the supernet training has
+to cover the search space of subnets globally as the training is
+performed prior to the search as a one-time process. However,
+training the supernet weights in such a way that all subnets are
+optimized simultaneously is practically infeasible. For instance,
+progressive shrinking [31] sampled roughly 634K8 subnets during
+supernet training, which is less than 10−12% of the its total
+subnet volume. Any additional options added to the search space
+(one more kernel size and expand ratio choice) will require 100x
+more training epochs (100K vs 1K) to cover the same volume of
+subnets, which is obviously not scalable. Moreover, we argue that
+simultaneously training all subnets is also unnecessary as not all
+subnets are equally important for the tasks at hand. Speciﬁcally,
+existing NAS works have shown that different hardware requires
+different architectures to be efﬁcient, e.g. CPU favors deeper
+networks with fewer channels in each layer, while GPU favors
+
+!"#$%&'()"*+,-"+.)
+")/012"3+
+
+42$"+.)5.,67+/)"//%*,"+.$)
+58)+7.)!"#$%& '()#*+
+
+9:;):'6%3,+7&
+<,--=) ."+*#-/=)>?
+
+A3%&)/*3"+*7
+
+(a) A typical process that most early One-Shot NAS approaches follow [10], [30].
+
+2.3)1"+*8
+
+!"#$%&'()"*+,-"+.)
+")/012"3+4
+
+52$"+.)6.,78+/)"//%*,"+.$)
+69)+8.)!"#$%& '()#*+
+
+:-%;)<."3*8
+=,-->) ."+*#-/?
+
+@2+,%#"')
+A,#.B+0#,#7
+
+C,/+,''"+,%#
+
+(b) The Progressive Shrinking algorithm proposed in OnceForAll [31]. It pre-trains the supernet at full scale before subnet sampling and use the supernet at full scale to supervise
+the training of subnets. *And the searched dimensions are gradually added to the search space, i.e. kernel size –> kernel size + depth –> kernel size + depth + width.
+
+Fig. 18: Overview of existing one-shot NAS approaches, which decouples the supernet training and architecture search to two sequential steps.
+
+"&;'5$%.+
+"&;')%&;$%)-1
+
+!"#$%&#'()$"#*$+,#$-.
+-/(-0#$%&1(",+.'#"
+
+!"#$%&
+
+!"#$%&'(&)*+%,'$,,-.)$%&#'
+(/'%+&'!"#$%& '()#*+
+
+0$123456&.%)7&
+87-9':&$;.+
+
+4"%)-1$<'
+=)1&3%>1)1*
+
+!"#$"%&'()"&&&&&&&*"+,-&&&&&&&&&&.(/,-
+
+?),%)<<$%)-1
+
+Fig. 19: Overview of our proposed NAT. The distribution of optimal subnets is estimated from the promising architectures returned by architecture search. Then
+it is used to guide the training of the supernet. The “per iteration” refers to the iteration in Algorithm 1 in the main paper.
+
+(as in the case of one-shot NAS). One way is to spend all the
+true evaluation budget on randomly sampled (from a uniform
+distribution) solutions at the beginning to learn a meta-model; then
+the optimization is carried out on the meta-model (as in the case of
+existing one-shot NAS approaches [30], [31], [53]). See Fig. 20b
+for a visualization. Another way is to adaptively learn a meta-
+model in an online fashion. Instead of uniformly exhausting all the
+true evaluation budget at the beginning, the online approach (as in
+the case of NAT) constructs an initial coarse meta-model from
+uniformly sampled solutions using partial budget, then a gradual
+reﬁnement is applied using the solutions optimized based on the
+current meta-model. See Fig. 20c for a visualization. As shown in
+Fig. 21, the online approach allows the meta-model to focus on
+local regions where potential optimal solutions are more likely to
+reside, eventually leading to a better solution.
+
+shallower networks with more channels in each layer, from the
+latency perspective [26], [62].
+To overcome the aforementioned limitations of existing one-
+shot approaches, we propose NAT. The key difference is that NAT
+trains the supernet online. Instead of randomly sampling subnets to
+train the supernet all at once, NAT estimates the distribution (in the
+variable space) of the optimal subnets from the subnets returned
+by a many-objective search algorithm, and trains the supernet in
+correspondence to the estimated distribution. NAT does so in a
+progressive manner, where the estimated distribution and supernet
+training are gradually reﬁned through iterations (see Fig. 19). We
+argue that our approach is conceptually more scalable and efﬁcient
+than existing one-shot approaches since the supernet training now
+can focus on the promising task-speciﬁc subnets recommended by
+the search algorithm, instead of on all subnets globally.
+To visualize the difference between the existing approach
+of disentangling supernet training from architecture search, and
+our approach that use architecture search to guide the supernet
+training, let us consider the following problem of minimizing a
+two-variable Rosenbrock function [89]:
+
+APPENDIX B
+MANY-OBJECTIVE SELECTION CONTINUED
+
+minimize
+f(x1, x2) = (1 −x1)2 + 100(x2 −x2
+1)2,
+x1, x2 ∈[−2.048, 2.048].
+(4)
+
+(a)
+(b)
+
+(c)
+
+Fig. 20: (a) True objective landscape (contour) of a two-variable Rosenbrock function. (b) Ofﬂine surrogate modelling approach (adopted by existing one-
+shot NAS methods [30], [31], [53]): the objective landscape is interpolated through uniformly sampled solutions, then the optimization is carried out on the
+interpolated landscape. (c) Online surrogate modelling approach (ours): a coarse interpolation of the objective landscape is ﬁrstly learned using partial budget,
+then the landscape is gradually reﬁned by adding the optimization outcome on the current landscape to the interpolation. See Fig. 21 for comparison on the
+obtained results.
+
+(a)
+(b)
+
+Fig. 21: Top row compares the interpolated landscapes and the obtained optimum by (a) our online surrogate modeling (Fig. 20c) with initial, 3/4, and full
+budget from Left to Right, and (b) ofﬂine surrogate modeling (existing one-shot NAS approaches; Fig. 20b). Bottom row visualizes the evaluated solutions by
+the two approaches. Even though the ofﬂine approach of uniformly sampling provides a better global interpolation of the landscape (i.e. sub-ﬁgure (b)), the
+online approach achieves a better local interpolation around the optimum (i.e. sub-ﬁgure (a) Right). The true landscape is shown in Fig. 20a.
+
+each selection method. The mean IGD values along with the
+standard deviations are plotted in Fig. 23. The consistently lower
+IGD values across different numbers of objectives conﬁrm the
+effectiveness of the reference point based selection method.
+
+To compensate for the degradation in selection pressure from
+domination alone, many recently proposed many-objective opti-
+mization algorithms [11], [90], [91], [92] opt for the route of
+reference point based selection, including this work. The ref-
+erence points serve as a set of pre-deﬁned targets to aid the
+selection whenever domination concept ﬁnds two solutions indis-
+tinguishable, i.e. non-dominated. To demonstrate the effectiveness
+of the reference point based selection, we select the DTLZ1
+problem [93], a benchmark problem that is scalable in number
+of objectives, and compare the IGD metric9 [95], a widely-used
+performance assessment indicator for comparing many-objective
+optimization algorithms. We vary the number of objectives in
+DTLZ1 from 3 to 15 and perform 31 independent runs for
+
+APPENDIX C
+CHOOSING BEST TRADE-OFF SOLUTION
+
+Fig. 22: Mean ratio of non-dominated solutions from a set of randomly
+generated solutions. N is the sample size of the randomly generated solutions.
+
+Fig. 24: MAdds vs. ImageNet Accuracy. Our NATNets signiﬁcantly out-
+perform other models from NAS algorithms and human experts. In particular,
+NAT-M4 achieves new state-of-the-art 80.5% top-1 accuracy under mobile
+setting (600M MAdds).
+
+APPENDIX E
+ARCHITECTURE VISUALIZATION
+
+One of the main advantages of multi-objective optimization is that
+it generates a set of non-dominated solutions in a single run. These
+non-dominated solutions are special in the sense that one has to
+sacriﬁce on one objective to gain on another. Thereby, “mining”
+on these non-dominated solutions oftentimes yields important
+design principles for the task at hand, in this case, to efﬁciently
+construct an architecture speciﬁc to the objectives and dataset.
+To demonstrate this concept, we visualize the non-dominated
+architectures (to maximize top-1 accuracy and minimize #MAdds)
+resulting from NAT on a diverse set of datasets in Fig. 25. Each
+sub-ﬁgure is a heat map showing the distribution of the searched,
+input image resolutions, width multipliers, and layer settings.
+It is clear from Fig. 25 that even under the same objectives,
+the optimal architectures for different datasets are different. For
+example, the most frequent input image resolution is 192 (the
+lowest value in our searched options) for Oxford-IIIT Pets [18] and
+STL-10 [13]. While on FGVC Aircraft [16] and Food-101 [14],
+the most frequent choice of resolution is 256, which is the highest
+value in our searched option. Similar observations can be made in
+case of width multiplier and layer settings. This example provides
+empirical evidence necessary for ﬁnding dataset-speciﬁc optimal
+architectures, as opposed to conventional transfer learning. And
+as demonstrated in the main paper, our proposed NAT presents an
+efﬁcient and effective way to achieve this goal.
+
+Fig. 23: Performance comparison of reference point based (Algorithm 4 in the
+main paper) and domination based selections [96] on DTLZ1 problem [93].
+
+gain among m nearest neighbors (B(i)) based on normalized
+Euclidean distance are used here), as follows [97]:
+
+Trade-off(i) =
+|B(i)|
+max
+j=1
+Avg.Loss(i, j)
+Avg.Gain(i, j)
+(5)
+
+where
+
+Avg.Loss(i, j)
+=
+Pm
+k=1 max (0, fk(j) −fk(i))
+Pm
+k=1 {1|fk(j) > fk(j)}
+
+Avg.Gain(i, j)
+=
+PM
+k=1 max (0, fk(i) −fk(j))
+Pm
+k=1 {1|fk(i) > fk(j)}
+
+Thereafter, the solutions having the highest trade-off value indi-
+cates that it causes the largest average loss in some objectives
+to make a unit average gain in other objectives to choose any
+of its neighbors. If this highest trade-off value is much larger
+statistically than other solutions, then the highest trade-off solution
+is the preferred choice, in case of no preferences provided from
+users.
+
+APPENDIX F
+SCALABILITY TO OBJECTIVES CONTINUED
+
+APPENDIX D
+COMPARISON TO EXISTING CONVNETS
+
+(a) Flowers102
+(b) Pets
+(c) DTD
+
+(d) STL-10
+(e) Aircraft
+(f) Stanford Cars
+
+(g) CIFAR-10
+(h) Food-101
+(i) ImageNet
+
+Fig. 25: Non-dominated architectures to {top-1 accuracy, #MAdds} obtained by NAT on different datasets.
+
+TABLE 10: NAT model performance corresponding to Fig. 9 in main paper.
+
+Flowers102 [19]
+Oxford-IIIT Pets [18]
+DTD [17]
+STL10 [13]
+FGVC Aircraft [16]
+
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+3.3M
+152M
+97.5
+4.0M
+160M
+91.8
+2.2M
+136M
+76.1
+4.4M
+240M
+96.7
+3.2M
+175M
+87.0
+3.4M
+195M
+97.9
+5.5M
+306M
+93.5
+4.0M
+297M
+77.6
+5.1M
+303M
+97.2
+3.4M
+235M
+89.0
+3.7M
+250M
+98.1
+5.7M
+471M
+94.1
+4.1M
+347M
+78.4
+7.5M
+436M
+97.8
+5.1M
+388M
+90.1
+4.2M
+400M
+98.3
+8.5M
+744M
+94.3
+6.3M
+560M
+79.1
+7.5M
+573M
+97.9
+5.3M
+581M
+90.8
+
+Stanford Cars [15]
+CIFAR-100 [9]
+CIFAR-10 [9]
+Food-101 [14]
+CINIC-10 [12]
+
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+#Params
+#MAdds
+Top-1 Acc (%)
+2.4M
+165M
+90.9
+3.8M
+261M
+86.0
+4.3M
+232M
+97.4
+3.1M
+198M
+87.4
+4.6M
+317M
+93.4
+2.7M
+222M
+92.2
+6.4M
+398M
+87.5
+4.6M
+291M
+97.9
+4.1M
+266M
+88.5
+6.2M
+411M
+94.1
+3.5M
+289M
+92.6
+7.8M
+492M
+87.7
+6.2M
+392M
+98.2
+3.9M
+299M
+89.0
+8.1M
+501M
+94.3
+3.7M
+369M
+92.9
+9.0M
+796M
+88.3
+6.9M
+468M
+98.4
+4.5M
+361M
+89.4
+9.1M
+710M
+94.8
+
+TABLE 11: Accuracy predictor model mean (standard deviation) performance corresponding to Fig. 13 in main paper.
+
+Method
+ImageNet [1]
+CIFAR-10 [9]
+CIFAR-100 [9]
+Flowers102 [19]
+Food-101 [14]
+Oxford-IIIT Pets [18]
+Aircraft [16]
+Stanford Cars [15]
+DTD [17]
+STL-10 [13]
+
+GP
+0.606 (0.09)
+0.969 (0.01)
+0.693 (0.13)
+0.918 (0.02)
+0.980 (0.01)
+0.945 (0.02)
+0.551 (0.17)
+0.964 (0.01)
+0.467 (0.11)
+0.973 (0.11)
+RBF
+0.705 (0.11)
+0.969 (0.01)
+0.806 (0.08)
+0.932 (0.03)
+0.981 (0.01)
+0.967 (0.01)
+0.693 (0.08)
+0.977 (0.01)
+0.653 (0.06)
+0.979 (0.01)
+MLP
+0.635 (0.09)
+0.851 (0.06)
+0.562 (0.10)
+0.766 (0.06)
+0.775 (0.09)
+0.798 (0.05)
+0.658 (0.15)
+0.717 (0.10)
+0.490 (0.09)
+0.899 (0.06)
+DT
+0.625 (0.11)
+0.974 (0.01)
+0.736 (0.11)
+0.940 (0.02)
+0.990 (0.01)
+0.961 (0.01)
+0.629 (0.14)
+0.986 (0.01)
+0.590 (0.14)
+0.976 (0.01)
+RBF Ensemble
+0.866 (0.04)
+0.959 (0.02)
+0.858 (0.05)
+0.931 (0.01)
+0.967 (0.03)
+0.943 (0.01)
+0.870 (0.07)
+0.975 (0.01)
+0.890 (0.04)
+0.964 (0.02)
+
+with NAT, it also reveals important information, which a low-
+dimensional optimization may not. During search, the accuracy
+on each dataset is computed by inheriting weights from the
+dataset-speciﬁc supernets generated from previous experiments
+(Section 4.4 in the main paper). Since the supernets are already
+adapted to each dataset, we exclude the supernet adaptation step
+in NAT for this experiment.
+
+Fig. 26: Left: Parallel Coordinate Plot (PCP) where each vertical bar is an objective and each line is a non-dominated architectures achieved by NAT from
+a 12-obj optimization of minimizing #MAdds and maximizing accuracy on the 11 datasets. The model with the best trade-off (see Section A for details) is
+highlighted in dark blue. Right: 1-on-1 comparison between the selected NATNet (top-ranked in trade-off) and representative peer models on top-1 accuracy on
+various datasets. Method with larger area is better.

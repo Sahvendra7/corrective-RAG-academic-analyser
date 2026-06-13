@@ -1,0 +1,1440 @@
+BinaryViT: Pushing Binary Vision Transformers Towards Convolutional Models
+
+Xinlin Li
+Huawei Noah’s Ark Lab
+
+Phuoc-Hoan Charles Le *
+
+arXiv:2306.16678v1 [cs.CV] 29 Jun 2023
+
+Abstract
+
+of data with proper data augmentation and regularization.
+
+With the rising popularity and the increasing size of
+vision transformers (ViTs), there has been a rising inter-
+est in making them more efficient and less computation-
+ally costly to deploy them onto edge devices with lim-
+ited resources such as smartphones, smart watches, etc.
+Therefore, model compression techniques such as quanti-
+zation [20, 21, 26, 30, 47, 50], distillation [18, 30, 50], prun-
+ing [12, 34, 48], etc.
+have been actively studied to re-
+duce the model size and computational cost of transform-
+ers. Among these compression methods, quantization can
+not only reduce the memory requirement of the model but
+can also replace expensive floating-point operations with
+simpler fixed-point operations. An extreme form of quan-
+tization is binarization. Binarization of weights and activa-
+tions can facilitate the use of popcount operations to reduce
+the model size and reduce computational cost. However,
+matching the performance of a binary transformer with bi-
+nary weights and activations with its full-precision counter-
+part is still a challenging task.
+
+With the increasing popularity and the increasing size
+of vision transformers (ViTs), there has been an increasing
+interest in making them more efficient and less computa-
+tionally costly for deployment on edge devices with limited
+computing resources. Binarization can be used to help re-
+duce the size of ViT models and their computational cost
+significantly, using popcount operations when the weights
+and the activations are in binary. However, ViTs suffer a
+larger performance drop when directly applying convolu-
+tional neural network (CNN) binarization methods or ex-
+isting binarization methods to binarize ViTs compared to
+CNNs on datasets with a large number of classes such as
+ImageNet-1k. With extensive analysis, we find that binary
+vanilla ViTs such as DeiT miss out on a lot of key architec-
+tural properties that CNNs have that allow binary CNNs to
+have much higher representational capability than binary
+vanilla ViT. Therefore, we propose BinaryViT, in which in-
+spired by the CNN architecture, we include operations from
+the CNN architecture into a pure ViT architecture to enrich
+the representational capability of a binary ViT without in-
+troducing convolutions. These include an average pooling
+layer instead of a token pooling layer, a block that contains
+multiple average pooling branches, an affine transforma-
+tion right before the addition of each main residual connec-
+tion, and a pyramid structure. Experimental results on the
+ImageNet-1k dataset show the effectiveness of these opera-
+tions that allow a binary pure ViT model to be competitive
+with previous state-of-the-art (SOTA) binary CNN models.
+
+Previous works have shown that the drop in the per-
+formance can be mitigated with distillation methods from
+[30, 50] to encourage the binary transformers to mimic the
+full-precision model. Also, a scaling factor can be applied
+to reduce the drop in the performance of DNNs due to bina-
+rization to minimize the quantization error [33]. The scal-
+ing factor can also be determined by setting it as a learn-
+able parameter and training it to minimize the task loss [24].
+For CNNs, [27] proposes Bi-RealNet a binary CNN that has
+extra residual connections to preserve more information to
+increase its representational capability to make it more ac-
+curate on tasks that have lots of classes like ImageNet-1k
+[7]. [25] proposes ReActNet which further improves upon
+the work Bi-RealNet [27] by adding a learnable threshold
+before the sign function and by adding the RPReLU activa-
+tion function after each residual connection to help reshape
+the output distribution at near zero extra cost. For MLPs,
+BiMLP [43] tries to solve the limited representational ca-
+pability of fully-connected layers by proposing the multi-
+branch block where they allow patch mixing and channel
+mixing to happen simultaneously.
+
+1. Introduction
+
+Transformers [38] have attracted a lot of attention in nat-
+ural language processing tasks such as BERT [8] and GPT
+[5]. Also, they are gaining a lot of attention in computer
+vision tasks [10, 36], since they have been able to outper-
+form most CNNs when being pre-trained on large amounts
+
+*This work was done when Phuoc-Hoan Charles Le was an intern at
+Huawei Noah’s Ark Lab Montreal Research Center.
+
+(a) Baseline binary ViT with the DeiT-S structure
+
+(b) Our BinaryViT with a global average pooling layer, Multi-Pooling
+Branches, LayerScale, and a pyramid structure
+
+Figure 1. We start from the baseline binary ViT architecture in (a) and slowly change the architecture to BinaryViT in (b).
+
+binary vanilla ViTs. Therefore, we propose BinaryViT, in
+which inspired by the CNN architecture, we include oper-
+ations from the CNN architecture into a pure ViT architec-
+ture in Section 3.1, 3.2, 3.3, and 3.4 to enrich the represen-
+tational capability of a binary pure ViT without introducing
+convolutions and without significantly increasing the num-
+ber of operations and the number of parameters. These in-
+clude an average pooling layer instead of a token pooling
+layer to account for information from all tokens/patches; a
+block with multiple average pooling branches to compen-
+sate for the loss of the representational capability from a
+binary fully-connected layer; an affine transformation right
+before the addition of each main residual branch to prevent
+the scale of each main residual branch from overwhelming
+the scale of each main branch; and a pyramid structure to
+allow binary features to be processed at higher resolution at
+the early stages without increasing the computational com-
+plexity.
+
+However, binary pure ViTs suffer huge performance
+drop in tasks with large number of classes like ImageNet-1k
+such that they have lower performance than binary CNNs
+when applying CNN binarization techniques or applying
+existing transformer/MLP-based binarization methods onto
+a pure vanilla ViT architecture since existing binarization
+methods do not go into details about how architectural or
+operational designs, besides additional extra residual con-
+nections, affect the performance of binary neural networks.
+BiMLP [43] only explores the limited representational ca-
+pability of a binary fully-connected layer itself and does not
+explore other architectural details as this work does.
+
+Therefore, in this work, after we design a baseline binary
+pure ViT using existing binarization techniques in Section
+2, we analyze the differences between the architecture of a
+CNN model such as ResNet [13] and the architecture of a
+pure vanilla ViT such as DeiT. From our analysis in Sec-
+tion 3, we find that binary vanilla ViTs miss out on a lot
+of key architectural properties that CNNs have that allow
+CNNs to have much higher representational capability than
+
+To the best of our knowledge, these operations or ar-
+chitectural properties introduced in this work have already
+
+Method
+Top-1 (%)
+BinaryBERT [2]
+1.4
+BiBERT [30]
+33.5
+BiT [24]
+45.7
++Remove FFN-Distill
+46.5
++SGBERT [1]
+47.4
++ReActNet [25]
+48.5
+
+been explored in previous works relating to full-precision
+ViTs, but their effects on the accuracy of binary neural net-
+works or on binary ViTs have not yet been explored. Also,
+to the best of our knowledge, with these operations, we are
+the first to be competitive with prior binary CNN models on
+the ImageNet-1k dataset in terms of accuracy and the num-
+ber of operations (OPs), using a pure ViT architecture. The
+source code of this work is available on GitHub 1.
+
+Table 1. Top 1 accuracy on ImageNet with existing transformer-
+based binarization methods applied on the binary DeiT-S.
+
+2. Designing a binary ViT baseline
+
+First, we design a baseline binary pure ViT model us-
+ing the DeiT [10, 36] backbone, since, to the best of our
+knowledge, there has never been works on a pure ViT model
+with binary weights and activations. In this section, we use
+existing binarization techniques applied on CNN, and on
+BERT [8] to design the baseline binary pure ViT model as
+shown in Figure 1a and 2a.
+
+input and output dimensions are the same. If the input di-
+mension is smaller than the output channel by n times, the
+residual function will be the input concatenation with itself
+n times. If the input dimension is larger than the output
+channel by n times, the residual function will be the aver-
+age pooling function with a stride of n and a window size
+of n. Therefore, R(X) can be defined as
+
+2.1. Binary fully-connected layer
+
+For the forward pass, for each matrix multiplication,
+a sign function is used for each input activation matrix,
+X ∈RN×Din, and weight matrix, W ∈RDin×Dout. A
+threshold vector, βX ∈RDin, can be applied to the real
+value inputs right before applying the sign function to al-
+low these inputs to have some distributional shift. For the
+weights, the threshold, µ(W) ∈RDout, can be determined
+by computing the mean value of all elements inside the ma-
+trix as in [30–32]. For the activations, the threshold param-
+eter can be determined using backpropagation to minimize
+the task loss as in [25, 44]. After applying the sign func-
+tion, a scaling factor, αW ∈R, where αW = 1
+
+t
+h
+r
+
+{R
+}(\ t extb
+f {X}) = \ b eg in {cases} \textb
+f {X } , &
+c
+_
+{i
+n} = c_ {o ut}
+
+\m a
+
+\\ \ m
+
+m
+
+athrm
+{Ca t }([\textbf {X},\text {for i in range(n)}], \text {dim=2}), & nc_{in} = c_{out} \\ \frac {1}{n} \sum _{i=1}^{n} \textbf {X}(:,:, \frac {i-1}{n}d_{in}: \frac {i}{n}d_{in})) & c_{in} = nc_{out} \end {cases} \label {eq:birealres}
+
+(3)
+where Cat is the concatenation function.
+Using a straight-through estimator [3], we approximate
+the derivative of sign with respect to an input as
+
+a
+rt
+ial \
+\
+mathrm {sign}(x)}{\partial x} \approx \begin {cases} 1, & |x| \leq 1 \\ 0, & \mathrm {otherwise} \end {cases} \label {eq:ste}
+(4)
+
+\frac
+
+{\
+p
+
+n∥W∥1, is
+applied as in [30]. Then, the matrix multiplication output,
+Y(X) ∈RN×Dout, can be calculated using popcount, ⊗, as
+
+2.2. Binary vision transformer
+
+A ViT uses N number of transformer encoder blocks
+and each transformer block contains one multi-head atten-
+tion (MHA) module and one feed-forward network (FFN)
+module.
+Initially, in the embedding layer, the image, x
+∈RH×W ×C gets split up into fixed-size patches, xp ∈
+RN×(P 2·C), where (H, W) is the image dimensions, C is
+the number of channels of the input image, (P, P) is the
+dimension of each image patch, and N = HW/P 2 is the
+number of patches. These patches are then linearly pro-
+jected by E ∈R(P 2·C)×D before being appended with a
+cls-token embedding, xclass ∈RD, and summed with the
+position embeddings, Epos ∈R(N+1)×D, as in Eq. (5)
+
+\m a th rm {Y}(\ t extbf { X}) = \alpha _{\textbf {W}} \ \mathrm {Rsign}(\textbf {X}) \otimes \mathrm {sign}(\textbf {W} - \mu (\textbf {W})) \label {eq:binary}
+(1)
+
+where Rsign = sign(X + βX) as in [25].
+For each binary fully-connected layer, BiFC, in a binary
+transformer, we connect a residual connection, R, from the
+input, X, to the output of the linear layer, BN(Y(X)), as:
+
+\math r m {BiFC}(\te x tbf {X}) = \mathrm {RPReLU}(\mathrm {BN}(\mathrm {Y}) + \mathrm {R}(\textbf {X})) \label {eq:birealres1}
+(2)
+
+to preserve the information from the previous layer as in
+[25, 27]. RPReLU activation function proposed by [25] is
+used after each residual connection. Also, we replace all
+layer normalization in the ViT model with batch normaliza-
+tion [17], BN, since all linear layers have a normalization
+layer after it, as in [45], to enable faster inference and also
+faster training compared to layer normalization. The resid-
+ual function, R, from [25] can be an identity function if the
+
+\ textbf { H}
+_{1 }
+= [ \tex tb
+f { x }_{\mathrm {class}}; \ \textbf {x}^{1}_{p} \textbf {E}; \ \textbf {x}^{2}_{p} \textbf {E};...; \ \textbf {x}^{N}_{p} \textbf {E}] + \textbf {E}_\mathrm {pos} \label {eq:embedding}
+(5)
+
+Like in previous works on binarization, the operations in the
+first layer are always kept in full precision.
+The output of the embedding layer H1 ∈R(N+1)×D
+
+then becomes the input for the first transformer block. In
+each transformer block, the input H ∈R(N+1)×D first gets
+
+1
+
+Model
+R(...)
+DeiT-S
+153,216
+ResNet-34
+71,193,472
+
+normalized by a pre-batch-normalization layer as ˆH =
+BN1(H). Then, in the MHA module of the binary trans-
+former with NH attention heads, the output of that batch-
+normalization is then used to calculate the query, Qh ∈
+R(N+1)×Dh; key, Kh ∈R(N+1)×Dh; and value, Vh ∈
+R(N+1)×Dh, for each head, h, as:
+
+Table 2. Element-wise representational capability R(...) for the
+binary DeiT-S and for the binary ResNet-34.
+
+\ begin {alig
+
+Like in previous works in binarization, the parameter bi-
+ases, the parameters at the classifier, operations in the soft-
+max, and normalization layers are kept in full precision.
+To improve the performance of the binary ViT, we distill
+the knowledge of a full precision model to a model with bi-
+nary weights and activations by minimizing the soft cross-
+entropy loss between the student’s logit and the teacher’s
+logit as in [25]. We do not use distillation loss for the atten-
+tion scores and output as the performance will significantly
+degrade just as shown in [24, 30]. Also, we do not distill
+the FFN outputs from [2,24,50] as it causes a slight loss of
+accuracy by 1.2%. Using the partially-random-initialization
+method from [1] where we initialize the first patch embed-
+ding layer from the full precision model, improves the per-
+formance by 0.9%.
+
+ne d } \textbf {
+
+(6)
+
+Q} _ {h} = \mathrm {BiFC}_{\mathrm {Q}_h}(\hat {\textbf {H}}_h) \\ \textbf {K}_{h} = \mathrm {BiFC}_{\mathrm {K}_h}(\hat {\textbf {H}}_h)\\ \textbf {V}_{h} = \mathrm {BiFC}_{\mathrm {V}_h}(\hat {\textbf {H}}_h) \end {aligned} \label {eq:qkv}
+
+using Eq.
+(1) and Eq.
+(2), where Dh
+=
+D/NH.
+We
+then
+calculate
+the
+attention
+score
+as,
+Ah
+=
+Rsign(Qh)Rsign(K⊤
+h ).
+From [24], to get the binary attention probability matrix
+of each head, Ph ∈R(N+1)×(N+1) we apply the softmax
+function on the attention score, Ah ∈R(N+1)×(N+1), and
+then apply the round-to-nearest-integer function, ⌈·⌋,
+
+\ te
+x
+t
+b f
+
+{
+P}_{h}
+= \
+alp
+
+h
+a _ {
+\textbf {P}} \Big \lceil \sigma \Big ( \frac {1}{\alpha _{\textbf {P}}} \ \mathrm {Softmax} \Big ( \frac {\textbf {A}_{h}}{\sqrt {D_{h}}} \Big ), 0, 1 \Big ) \Big \rfloor \label {eq:att-prob2}
+
+(7)
+
+where αP ∈R is a learnable scaling factor trained using
+the method from [11] and the σ(x, r1, r2) function keeps
+the output to be between r1 and r2. A boolean function
+from [30] can also be applied on the attention score, but in
+Table 1, we find that it performs 12% worse than applying
+the softmax function and then rounding the output.
+To get the output of each head, headh ∈R(N+1)×Dh, the
+binary attention probability matrix, Ph, will be multiplied
+by the binary value matrix, ¯Vh = Rsign(Vh). Also, to
+preserve the information of the query, the key, and the value,
+we also add the query, the key, and the value to the head
+output as shown below
+
+3. What else do binary CNNs have that binary
+transformers do not have?
+
+In Table 1, using all of the aforementioned techniques
+in Section 2 will only get us 48.5% top-1 accuracy on
+ImageNet-1k which is far below the accuracy for most
+SOTA binary CNNs. Therefore, in this section, we further
+analyze the details/properties of the CNN architecture that
+have not been explored in the context of binary neural net-
+works and that can help pure ViTs with binary weights and
+binary activations improve their representational capability
+to improve their accuracy on a dataset with a large num-
+ber of classes without introducing convolutions and with-
+out significantly increasing the number of operations and
+the number of parameters. From Table 4, even increasing
+the number of parameters by either increasing the width or
+depth of the baseline vanilla binary ViT, it has trouble sur-
+passing SOTA binary CNN models.
+Analysis of representational capability.
+First, let’s an-
+alyze and compare the element-wise representational ca-
+pability of a binary CNN such as a binary ResNet34,
+R(ResNet-34) versus a binary ViT such as a binary DeiT-
+S, R(DeiT-S) with both of these models using the ReAct-
+Net [25] design. As in [27, 43], we quantify the element-
+wise representational capability as the number of possible
+absolute values that each element in a matrix/tensor can
+have. We calculate the element-wise representational capa-
+bility of these models by calculating the element-wise rep-
+resentational capability of the tensor that will be the input
+for the classifier layer, following the steps from [27,43].
+
+\ma t hrm {head}_h = \ma t hr m { R PReLU}(\mathrm {BN}_\mathrm {at}(\textbf {P}_h \bar {\textbf {V}}_{h}) + \textbf {Q}_{h} + \textbf {K}_{h} + \textbf {V}_{h}) \label {eq:head} (8)
+
+and as shown in Figure 2a.
+The outputs from all heads are then concatenated with
+each other and used by the fully-connected layer, BiFCO,
+to get the multi-head attention output. A main residual con-
+nection is then applied to the output of MHA as
+
+\textbf {F} = \m athr m {BiFC} _ \mathrm {O}(\mathrm {Cat}(\mathrm {head}_{1},...,\mathrm {head}_{N_{H}})) + \textbf {H} \label {eq:first-res}
+(9)
+
+Then the residual output, F ∈R(N+1)×D, gets nor-
+malized by a 2nd pre-batch-normalization layer, BN2, as
+ˆF = BN2(F) and goes through the binary feed-forward net-
+work layer, BiFFN, which has two binary fully-connected
+linear (BiFC) layers. Finally, a second main residual con-
+nection is then applied to the FFN output to get R
+
+\textbf { R } = \mathrm {BiFFN}(\hat {\textbf {F}}) + \textbf {F} \label {eq:second-res}
+(10)
+
+which gets inputted to the next transformer block.
+
+Global Average
+Multi-Pooling
+LayerScale
+Pyramid
+ImageNet
+Pooling
+Branches
+Structure
+Top-1 (%)
+
+48.5
+56.4
+60.2
+61.8
+67.7
+
+Table 3. Results of introducing different operations to the binary ViT model.
+
+ual branch to prevent the scale of each main residual branch
+from overwhelming the scale of each main branch such as
+the MHA output and the FFN output. With these designs
+added onto the binary ViT, we name the resulting binary
+ViT, BinaryViT. While trying to improve the ViT with bi-
+nary weights and activations, we try to keep the number of
+parameters and the number of OPs to be around the same
+as this baseline binary ViT or to be around the same as a
+ReActNet ResNet-34 [25]. We define our baseline ViT as
+the DeiT-S [36] architecture with the applied methods men-
+tioned in Section 2. This baseline has 22.1M parameters
+and 1.29 × 108 operations (OPs).
+
+From Table 2,
+for a binary DeiT-S, we calcu-
+late the element-wise representational capability to be
+R(DeiT-S) = 153, 216, whereas for a binary ResNet-34,
+we calculate the element-wise representational capability to
+be R(ResNet-34) = 71, 193, 472 which is the order of mag-
+nitudes greater than the binary DeiT-S. We believe that the
+representational capability gap leads to the performance gap
+between binary ResNet-34 and binary ViT.
+
+Calculating the representational capability.
+A detailed
+explanation of how the element-wise representational ca-
+pability was calculated for binary DeiT-S and for binary
+ResNet-34 can be found in Appendix B.1 and B.2, re-
+spectively. Generally, from [27, 43], one single binary lin-
+ear/convolutional layer contributes Din ·K2 to the element-
+wise representational capability of an output tensor, where
+Din is the input dimension, K is the kernel size of the
+square-shaped weight filter. For an average pooling layer
+with a kernel size of 2 × 2 and a stride of 2 × 2, the
+element-wise representational capability of an output tensor
+would be equal to the element-wise representational capa-
+bility of an input tensor multiplied by 4 such that R(out) =
+4 × R(in), since that average pooling layer can be seen as
+an information aggregation of 4 neighboring patches if we
+ignore the element-wise division involved in average pool-
+ing.
+For the global average pooling layer, the element-
+wise representational capability of an output tensor would
+be equal to the element-wise representational capability of
+an input tensor multiplied by the number of patches/tokens
+of that input tensor such that R(out) = N × R(in), where
+N is the number of tokens/patches since the global average
+pooling layer can be seen as an information aggregation of
+all patches/token. For affine transformation such as batch-
+normalization [17], we ignore its effect on the representa-
+tional capability according to [27].
+
+3.1. Global average pooling before classifier layer
+
+We noticed that most binary CNNs, such as binary
+ResNet-34 [13] and binary MobileNet [15] have an average
+pooling layer at right before the classifier fully-connected
+layer, whereas the pure vanilla ViT models such as DeiT
+[10, 36] have a single cls-token pooling layer before the
+classifier layer. Using a single cls-token pooling layer pre-
+vents the information from all tokens from being taken into
+account. Knowing from [27] that each output token right
+before the classifier layer has a very limited representational
+capability for binary networks compared to full-precision
+networks, it would be useful to have information from all to-
+kens being taken into account through global average pool-
+ing so that the final classifier layer has more flexibility in
+adjusting its output during training. After the introduction
+of the global average pooling into the model right before
+the classifier, the total element-wise representational capa-
+bility can be increased by up to 196× since there are 196
+patches/tokens in the DeiT-S throughout the whole model.
+We also remove the cls-token embedding from the model
+such that in our binary ViT the output from the first embed-
+ding layer, H1 ∈RN×D is changed from Eq. (5) to
+
+Increasing the representational capability.
+To increase
+the representational capability of ViT architecture and
+achieve better binary ViT performance, we proposed three
+designs. (1) Adding global average pooling before the clas-
+sifier layer. (2) Adding multiple average pooling branches
+(3) Bringing Pyramid structure from CNN to ViT. Also,
+we borrow from the successful design of ResNet and Mo-
+bileNet and placed an affine transformation before the resid-
+
+\ tex
+tbf {
+H}_ {1} =
+[ \t e xtbf {x}^{1}_{p} \textbf {E}; \ \textbf {x}^{2}_{p} \textbf {E};...; \ \textbf {x}^{N}_{p} \textbf {E}] + \textbf {E}_\mathrm {pos} \label {eq:embedding2}
+(11)
+
+where the position embedding is now Epos ∈RN×D.
+From Table 3, after replacing cls-token pooling with av-
+erage pooling as shown in Figure 1b, we received an in-
+crease in the performance from 48.5% to 56.4% top-1 on
+ImageNet-1k. Note that from [41], average pooling does
+
+not change the performance by a lot for a full-precision ViT.
+Also, the impact of the average pooling right before the final
+layer on the number of OPs is negligible.
+
+vents the signal of the main branch to be over-consumed by
+the residual branch as in [37,42].
+In [42], they showed that with pre-norm architectures
+like most ViTs, the scale of hidden states grows as we go
+deeper into the layers of these pre-norm models such that
+
+3.2. More branches
+
+We find that a binary convolution has more represen-
+tational power than a binary fully connected layer if the
+number of parameters for the binary convolution and for
+the binary fully-connected layer are the same. Let’s con-
+sider a fully-connected layer with a binary weight matrix
+of size 384 × 384 and a binary convolution weight filter of
+size 3 × 3 × 128 × 128. For that binary fully connected
+layer, the output tensor will have an element-wise repre-
+sentational capability of 384 whereas, for that binary con-
+volutional layer, that output tensor will have an element-
+wise representational capability of 1152. As we can see,
+the element-wise representational capability of that binary
+convolutional layer is 3× larger than the element-wise rep-
+resentational capability of that binary fully connected layer.
+This huge element-wise representational capability from
+the binary convolutional layer allows it to be more flexi-
+ble in adjusting its output. As a result of this huge output
+element-wise representational capability per layer, more in-
+formation will be carried to the final layer through the resid-
+ual connections, allowing the binary CNNs to adjust their
+output during training more easily than a binary ViT.
+Therefore, inspired by [43], we decided to add 4
+branches right beside each FFN block as shown in Figure
+1b. However, the 4 branches contain: an average pooling
+layer of kernel size 1 × 3, an average pooling layer of ker-
+nel size 3 × 1, an average pooling layer of kernel size 1 × 5,
+and an average pooling layer of kernel size 5 × 1. The aver-
+age pooling branches that have a kernel size of 1 × K apply
+the filter along the feature map width, whereas the average
+pooling branches that have a kernel size of K × 1 apply
+the filter along the feature map height. The multi average-
+pooling branches, allow the binary ViT to increase its rep-
+resentational capability without significantly increasing the
+number of parameters or operations.
+The multi-branch structure increased the performance of
+the binary ViT from 56.4% to 60.2% in Table 3. Also, the
+number of OPs increased from 1.29×108 to 1.32×108, but
+the number of OPs for the current binary ViT is still below
+a ReActNet ResNet-34.
+
+2)D ≤E(||Hl||2
+2) ≤(1 + 3l
+
+(1 + l
+
+2 )D
+
+where l is the layer index. Therefore, even though we men-
+tioned that an element-wise affine transformation should
+have no effect on a binary model’s representational capabil-
+ity, there is a possibility that the information from any main
+branches in the deeper layer area could be over-consumed
+by a residual branch, preventing information from any main
+branches in the deeper layer area to be passed down in the
+residual connection, such that the model’s representational
+capability would be lower than what we would expect.
+To test this, we test 3 configurations:
+one with
+the residual-post-norm connection (res-post-norm) as in
+ResNets; one with the residual-post-norm connection plus
+the pre-norm connection (sandwich-configuration [9]); and
+one with the pre-norm connection plus LayerScale [37].
+From our experiments, using the res-post-norm configu-
+ration gets us to 61.4% top-1, using the sandwich configura-
+tion gets us to 61.8%, and using the third configuration gets
+us to 61.8%. However, having any kind of affine transfor-
+mation right before the residual connection is better than no
+affine transformation at all. Using the third configuration,
+we get increased the performance of the binary ViT from
+60.2% to 61.8% as shown in Table 3. Therefore, for each
+main residual connection in the transformer in the attention
+and in the FFN, its main branch would contain an affine
+transformation such that in our binary ViT Eq. (9) and Eq.
+(10) are changed to
+
+\textbf {F} = \alph a _ 1 \odot \mathrm {BiFC}_\mathrm {O}(\mathrm {Cat}(\mathrm {head}_{1},..,\mathrm {head}_{N_{H}})) + \beta _1 + \textbf {H} \label {eq:layerscale1} (12)
+
+\t e xtbf {R} = \ a lpha _2 \odot \mathrm {BiFFN}(\hat {\textbf {F}}) + \beta _2 + \textbf {F} \label {eq:layerscale2}
+(13)
+
+where α1, α2 ∈RD are scaling factors and β1, β2 ∈RD
+
+are the bias terms.
+From [37, 41], the gain in accuracy for using res-post-
+norm or LayerScale for a full-precision ViT is very small
+compared to the gain in accuracy we get for a binary ViT.
+
+3.4. Pyramid structure
+
+3.3. Scaling right before residual connection
+
+We find that networks tested for binarization problems
+such as ResNet [13] and MobileNet [15] tend to have a
+batch-normalization layer [17] right before being added
+by a residual connection. We are not sure if that batch-
+normalization placement helps the signal that is propagat-
+ing through the residual to be normalized as in [22] or if the
+affine transformation property of batch normalization pre-
+
+Current SOTA binary models with backbones such as
+ResNet [13], MobileNet [15], and WaveMLP [35] have a
+pyramid structure where the feature map size progressively
+decreases from a high resolution to low resolution and the
+hidden dimension size progressively increases. However,
+previous works in binary neural networks overlook the pyra-
+mid structure’s effect/importance on accuracy.
+
+Methods
+Model
+Global Average
+Multi
+Pyramid
+FLOPs
+OPs
+BOPs
+Params
+Top-1 Acc
+backbone
+Pooling
+Branches
+Stucture
+(×108)
+(×108)
+(×109)
+(×106)
+(%)
+
+ReActNet [25]
+ResNet-34
+1.39
+1.93
+3.53
+21.8
+67.5
+ReActNet-B [25]
+MobileNet
+0.44
+1.63
+4.69
+29.3
+70.1
+BiMLP-S [43]
+Wave-MLP-T
+1.21
+1.56
+2.25
+17.0
+70.0
+Baseline-S
+DeiT-S
+0.57
+1.29
+4.51
+22.1
+48.5
+Baseline-S×1.5
+DeiT-S×1.5
+0.57
+1.70
+7.15
+34.9
+48.7
+Baseline-B
+DeiT-B
+1.15
+3.86
+17.4
+86.4
+60.5
+BinaryViT
+-
+0.19
+0.79
+3.83
+22.6
+67.7
+BinaryViT*
+-
+0.95
+1.54
+3.75
+22.6
+70.6
+
+Table 4. Comparing results of BinaryViT model with other SOTA binary models with different architecture backbones. * denotes that the
+patch embedding layers in the middle are in full precision. Floating-point operations (FLOPs) is the number of operations on full-precision
+layers, bit-operations (BOPs) is the number of operations on binary layers, and from [25], OPs = BOPs/64 + FLOPs.
+
+transition between stages and the global average pooling
+layer right before the classifier layer. We can see that this
+binary fully-connected layer with a low hidden dimension
+that is applied on a high-resolution feature map can con-
+tribute much more to the element-wise representational ca-
+pability of a binary model than each binary fully-connected
+layer with a high hidden dimension and a low feature-map
+resolution such as a binary DeiT-S that has a global aver-
+age pooling layer, hidden dimension of 384, and a feature
+map resolution of 14 × 14 in which each of its binary fully-
+connected layer contributes 75,264 to the model’s represen-
+tational capability. Therefore, we find the pyramid struc-
+ture can be useful to increase the element-wise representa-
+tional capability of the model without increasing the com-
+putational complexity.
+
+We design the pyramid architecture to be similar to PVT-
+S and/or ResNet-34. Our pyramid architecture contains 4
+stages with base channel dimensions of 64-128-256-512 as
+in Figure 1b. The first stage contains 3 identical transformer
+blocks, the second stage contains 4 transformer blocks, the
+third stage contains 8 transformer blocks, and the last stage
+contains 4 transformer blocks. More details on the pyra-
+mid architecture can be found in Table 6. We designed the
+pyramid architecture in this way such that we still match the
+number of parameters of the DeiT-S model [36] and for the
+ReAcNet method [25] to be compatible with the transition
+from the 2nd to the 3rd stage. If the third stage has a base
+channel dimension of 320, we wouldn’t be able to apply the
+concatenate operation properly as in [25], since 320 is not
+divisible by 128.
+
+(b)
+Bi-Spatial-Reduction
+Multi-
+Head-Attention
+
+(a) Bi-Multi-Head-Attention
+
+Figure 2. Normal Bi-Multi-Head-Attention (Bi-MHA) (a) versus
+Bi-Spatial-Reduction Multi-Head-Attention (Bi-SR-MHA) (b).
+
+However, we found that the pyramid structure can im-
+prove the element-wise representational capability of bi-
+nary neural networks. Let’s consider an example of a net-
+work containing 4 stages where each stage contains a differ-
+ent feature map resolution and base hidden dimension like
+the ResNet model [13], PVT [39] model, or the Swin [23]
+transformer. One binary fully connected layer with a hid-
+den dimension of 64 in the first stage can contribute up to
+64·4·4·4·49 = 200704 of the element-wise representational
+capability, considering the downsampling layers for each
+
+For the first and second stages, applying attention to such
+a large sequence size of 3136 and 784, respectively, is very
+computationally costly. To remedy this, we apply a down-
+sampling layer on the input right before the calculation of
+the key, and value matrix in the self-attention as in the PVT-
+v2 model [40] and as shown in Figure 2b. Therefore, Eq.
+
+can achieve competitive performance while having a lower
+number of FLOPs and OPs because our BinaryViT does not
+use an overlapping convolutional layer in each patch em-
+bedding layer which significantly increases the number of
+FLOPs of the BiMLP. Also, the BiMLP is able to achieve
+competitive performance by just increasing the number of
+branches, because its backbone architecture, WaveMLP-T,
+already contains some operations from the CNN architec-
+ture, such as a global average pooling and a pyramid struc-
+ture in which [43] is unaware of and hasn’t explored their
+importance yet.
+
+(6) for the key and value would be changed to
+
+\ begin {aligned} \textbf {K}
+
+(14)
+
+_{ h } = \mathrm {BiFC}_{\mathrm {K}_h}(\mathrm {BiFC}_\mathrm {R}(\mathrm {AvgPool}(\hat {\textbf {H}}))_h) \\ \textbf {V}_{h} = \mathrm {BiFC}_{\mathrm {V}_h}(\mathrm {BiFC}_\mathrm {R}(\mathrm {AvgPool}(\hat {\textbf {H}}))_h) \end {aligned} \label {eq:qkv2}
+
+where AvgPool is an average pooling function with a ker-
+nel size of R and a stride of R and BiFCR is an additional
+binary linear projection after the average pooling function.
+Also the calculation of each head from Eq. (8) would be
+changed to
+
+\be g in {aligned} \ math r m { head} _ h = \mathrm {RPReLU}(\mathrm {BN}_\mathrm {at}(\textbf {P}_h \bar {\textbf {V}}_{h}) + \textbf {Q}_{h} + \mathrm {N}(\textbf {K}_{h}) + \mathrm {N}(\textbf {V}_{h})) \end {aligned} \label {eq:head2}
+
+(15)
+where N is the nearest-neighbor interpolation function used
+to resize the resolution of the key and value feature back to
+its original resolution after it was downsampled in Eq. (14).
+In [39], the accuracy gain on ImageNet [7] from intro-
+ducing a pyramid structure into a full-precision ViT model
+is negligible, but in Table 3, the pyramid structure increased
+the performance of the binary ViT from 61.8% to 67.7% and
+the number of OPs decreased from 1.32×108 to 0.79×108.
+
+Overall, from Table 4, we can see that it is very important
+to have a global average pooling layer, some sort of multi
+branches layer, and a pyramid structure in which all of the
+SOTA binary models have in their architecture backbone to
+have a competitive accuracy.
+
+4.2. Benefit of modifying the architecture
+
+Model
+DeiT-S
+BinaryViT
+FP32
+79.9
+79.9
+1-bit
+48.5
+70.6
+
+4. Experiments
+
+We evaluate our BinaryViT on the ImageNet [7] dataset
+because most of the SOTA binary CNNs works have been
+evaluated on that dataset. The dataset contains around 1.2M
+training images and 50,000 validation images from 1,000
+classes. Our training procedure is described in Appendix
+A.
+
+Table 5. Comparisons of the original and our proposed architec-
+tures on FP32 and binary settings on ImageNet-1k top-1 accuracy.
+
+Table 5 reports the accuracy gaps between the FP32
+and the binary version of the vanilla ViT such as DeiT-
+S and of the modified ViT. In FP32 setting, the modified
+ViT achieves roughly the same performance as the DeiT-S.
+However, in binary setting, our proposed BinaryViT archi-
+tecture outperforms the DeiT-S significantly, which justifies
+the effectiveness of the proposed BinaryViT architecture.
+
+4.1. Experimental Results
+
+In Table 4, we show that our BinaryViT can outperform
+the baseline binary ViT and even the base version of the
+baseline binary ViT while having a significantly less num-
+ber of OPs and a significantly less number of parameters.
+This shows the importance of our proposed operations on
+binary pure ViT models.
+We also compare BinaryViT to other SOTA binary mod-
+els with different architectural backbones such as ReAct-
+Net [25] and BiMLP [43]. From Table 4, BinaryViT can
+achieve comparable performance with the MobileNet ver-
+sion of the ReActNet-B with having less parameters and
+less number of OPs, if we let the down-sampling layers
+in the patch embedding be run in full precision. The Mo-
+bileNet version of ReActNet does not use depth-wise con-
+volutions like the original MobileNet, so it’ll have 29.3M
+parameters. Also, BinaryViT can outperform the ResNet-
+34 version of the ReAcNet, having less number of FLOPs
+and OPs. If the patch embeddings in the downsampling lay-
+ers are binary, it can outperform the ReAcNet ResNet-34,
+with having around 7× less number of FLOPs and having
+around 2× less number of OPs.
+Comparing our BinaryViT with BiMLP-S [43], which
+uses a WaveMLP-T [35] architecture as its backbone, we
+
+5. Conclusion
+
+In this work, we point out that binary vanilla ViTs with
+backbone architectures such as DeiT miss out on a lot of key
+architectural properties that CNNs have that allow binary
+CNNs to have much higher representational capability than
+binary vanilla ViTs. Thus, we introduce some operations
+from the CNN architecture into a pure ViT architecture to
+increase representational capability without the use of con-
+volutions. These include an average pooling layer instead
+of a token pooling layer, a novel block that contains multi-
+ple average pooling branches, an affine transformation right
+before the addition of each main residual connection, and a
+pyramid structure. Experimental results on the ImageNet-
+1k dataset show the effectiveness of the proposed operations
+to be competitive with prior binary CNNs.
+
+References
+
+Vaughan, editors, Advances in Neural Information Process-
+ing Systems, volume 34, pages 19822–19835. Curran Asso-
+ciates, Inc., 2021. 6
+[10] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is
+worth 16x16 words: Transformers for image recognition at
+scale. ICLR, 2021. 1, 3, 5
+[11] Steven K. Esser, Jeffrey L. McKinstry, Deepika Bablani,
+Rathinakumar Appuswamy, and Dharmendra S. Modha.
+Learned step size quantization. In International Conference
+on Learning Representations, 2020. 4
+[12] Mitchell Gordon, Kevin Duh, and Nicholas Andrews. Com-
+pressing BERT: Studying the effects of weight pruning on
+transfer learning.
+In Proceedings of the 5th Workshop on
+Representation Learning for NLP, pages 143–155, Online,
+July 2020. Association for Computational Linguistics. 1
+[13] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proceed-
+ings of the IEEE conference on computer vision and pattern
+recognition, pages 770–778, 2016. 2, 5, 6, 7
+[14] Elad Hoffer, Tal Ben-Nun, Itay Hubara, Niv Giladi, Torsten
+Hoefler, and Daniel Soudry.
+Augment your batch: Im-
+proving generalization through instance repetition. In 2020
+IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pages 8126–8135, 2020. 12
+[15] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry
+Kalenichenko, Weijun Wang, Tobias Weyand, Marco An-
+dreetto, and Hartwig Adam. MobileNets: Efficient convolu-
+tional neural networks for mobile vision applications. arXiv
+preprint arXiv:1704.04861, 2017. 5, 6
+[16] Gao Huang, Yu Sun, Zhuang Liu, Daniel Sedra, and Kilian Q
+Weinberger. Deep networks with stochastic depth. In Com-
+puter Vision–ECCV 2016: 14th European Conference, Am-
+sterdam, The Netherlands, October 11–14, 2016, Proceed-
+ings, Part IV 14, pages 646–661. Springer, 2016. 12
+[17] Sergey Ioffe and Christian Szegedy. Batch normalization:
+Accelerating deep network training by reducing internal co-
+variate shift. In Francis Bach and David Blei, editors, Pro-
+ceedings of the 32nd International Conference on Machine
+Learning, volume 37 of Proceedings of Machine Learning
+Research, pages 448–456, Lille, France, 07–09 Jul 2015.
+PMLR. 3, 5, 6
+[18] Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao
+Chen, Linlin Li, Fang Wang, and Qun Liu. TinyBERT: Dis-
+tilling BERT for natural language understanding. In Findings
+of the Association for Computational Linguistics: EMNLP
+2020, pages 4163–4174, Online, Nov. 2020. Association for
+Computational Linguistics. 1
+[19] Diederik P Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization.
+arXiv preprint arXiv:1412.6980,
+2014. 12
+[20] Yanjing Li, Sheng Xu, Baochang Zhang, Xianbin Cao, Peng
+Gao, and Guodong Guo. Q-ViT: Accurate and fully quan-
+tized low-bit vision transformer.
+In Alice H. Oh, Alekh
+Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors,
+
+[1] Arash Ardakani. Partially-random initialization: A smoking
+gun for binarization hypothesis of BERT. In Findings of the
+Association for Computational Linguistics: EMNLP 2022,
+pages 2603–2612, Abu Dhabi, United Arab Emirates, Dec.
+2022. Association for Computational Linguistics. 3, 4
+[2] Haoli Bai, Wei Zhang, Lu Hou, Lifeng Shang, Jin Jin, Xin
+Jiang, Qun Liu, Michael Lyu, and Irwin King. BinaryBERT:
+Pushing the limit of BERT quantization. In Proceedings of
+the 59th Annual Meeting of the Association for Computa-
+tional Linguistics and the 11th International Joint Confer-
+ence on Natural Language Processing (Volume 1: Long Pa-
+pers), pages 4334–4348, Online, Aug. 2021. Association for
+Computational Linguistics. 3, 4
+[3] Yoshua Bengio, Nicholas L´eonard, and Aaron Courville.
+Estimating or propagating gradients through stochastic
+neurons for conditional computation.
+arXiv preprint
+arXiv:1308.3432, 2013. 3
+[4] Maxim Berman, Herv´e J´egou, Vedaldi Andrea, Iasonas
+Kokkinos, and Matthijs Douze. MultiGrain: a unified im-
+age embedding for classes and instances. arXiv e-prints, Feb
+2019. 12
+[5] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Sub-
+biah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakan-
+tan, Pranav Shyam, Girish Sastry, Amanda Askell, Sand-
+hini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom
+Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler,
+Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric
+Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack
+Clark, Christopher Berner, Sam McCandlish, Alec Radford,
+Ilya Sutskever, and Dario Amodei.
+Language models are
+few-shot learners. In H. Larochelle, M. Ranzato, R. Hadsell,
+M.F. Balcan, and H. Lin, editors, Advances in Neural Infor-
+mation Processing Systems, volume 33, pages 1877–1901.
+Curran Associates, Inc., 2020. 1
+[6] Ekin D Cubuk, Barret Zoph, Jonathon Shlens, and Quoc V
+Le.
+RandAugment:
+Practical automated data augmen-
+tation with a reduced search space.
+In Proceedings of
+the IEEE/CVF conference on computer vision and pattern
+recognition workshops, pages 702–703, 2020. 12
+[7] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. ImageNet: A large-scale hierarchical im-
+age database. In 2009 IEEE Conference on Computer Vision
+and Pattern Recognition, pages 248–255, 2009. 1, 8
+[8] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina
+Toutanova. BERT: Pre-training of deep bidirectional trans-
+formers for language understanding. In Proceedings of the
+2019 Conference of the North American Chapter of the As-
+sociation for Computational Linguistics: Human Language
+Technologies, Volume 1 (Long and Short Papers), pages
+4171–4186, Minneapolis, Minnesota, June 2019. Associa-
+tion for Computational Linguistics. 1, 3
+[9] Ming Ding, Zhuoyi Yang, Wenyi Hong, Wendi Zheng,
+Chang Zhou, Da Yin, Junyang Lin, Xu Zou, Zhou Shao,
+Hongxia Yang, and Jie Tang.
+CogView: Mastering text-
+to-image generation via transformers.
+In M. Ranzato,
+A. Beygelzimer, Y. Dauphin, P.S. Liang, and J. Wortman
+
+Advances in Neural Information Processing Systems, 2022.
+1
+[21] Yang Lin, Tianyu Zhang, Peiqin Sun, Zheng Li, and
+Shuchang Zhou.
+FQ-ViT: Post-training quantization for
+fully quantized vision transformer.
+In Proceedings of the
+Thirty-First International Joint Conference on Artificial In-
+telligence, IJCAI-22, pages 1173–1179, 2022. 1
+[22] Ze Liu, Han Hu, Yutong Lin, Zhuliang Yao, Zhenda Xie,
+Yixuan Wei, Jia Ning, Yue Cao, Zheng Zhang, Li Dong,
+Furu Wei, and Baining Guo. Swin Transformer v2: Scal-
+ing up capacity and resolution. In International Conference
+on Computer Vision and Pattern Recognition (CVPR), 2022.
+6
+[23] Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng
+Zhang, Stephen Lin, and Baining Guo. Swin Transformer:
+Hierarchical vision transformer using shifted windows. In
+Proceedings of the IEEE/CVF International Conference on
+Computer Vision (ICCV), 2021. 7
+[24] Zechun Liu, Barlas Oguz, Aasish Pappu, Lin Xiao, Scott
+Yih, Meng Li, Raghuraman Krishnamoorthi, and Yashar
+Mehdad.
+BiT: Robustly binarized multi-distilled trans-
+former. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave,
+and Kyunghyun Cho, editors, Advances in Neural Informa-
+tion Processing Systems, 2022. 1, 3, 4
+[25] Zechun Liu, Zhiqiang Shen, Marios Savvides, and Kwang-
+Ting Cheng. ReActNet: Towards precise binary neural net-
+work with generalized activation functions.
+In European
+Conference on Computer Vision (ECCV), 2020. 1, 3, 4, 5,
+7, 8
+[26] Zhenhua Liu, Yunhe Wang, Kai Han, Wei Zhang, Siwei Ma,
+and Wen Gao. Post-training quantization for vision trans-
+former. Advances in Neural Information Processing Systems,
+34:28092–28103, 2021. 1
+[27] Zechun Liu, Baoyuan Wu, Wenhan Luo, Xin Yang, Wei Liu,
+and Kwang-Ting Cheng. Bi-Real Net: Enhancing the per-
+formance of 1-bit cnns with improved representational ca-
+pability and advanced training algorithm. In Proceedings of
+the European conference on computer vision (ECCV), pages
+722–737, 2018. 1, 3, 4, 5, 12
+[28] Ilya Loshchilov and Frank Hutter.
+Decoupled weight de-
+cay regularization. In International Conference on Learning
+Representations, 2019. 12
+[29] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer,
+James Bradbury, Gregory Chanan, Trevor Killeen, Zem-
+ing Lin, Natalia Gimelshein, Luca Antiga, et al. PyTorch:
+An imperative style, high-performance deep learning li-
+brary. Advances in neural information processing systems,
+32, 2019. 12
+[30] Haotong Qin, Yifu Ding, Mingyuan Zhang, Qinghua Yan,
+Aishan Liu, Qingqing Dang, Ziwei Liu, and Xianglong Liu.
+BiBERT: Accurate fully binarized bert.
+In International
+Conference on Learning Representations (ICLR), 2022. 1,
+3, 4
+[31] Haotong Qin, Ruihao Gong, Xianglong Liu, Mingzhu Shen,
+Ziran Wei, Fengwei Yu, and Jingkuan Song. Forward and
+backward information retention for accurate binary neural
+networks. In IEEE CVPR, 2020. 3
+
+[32] Haotong Qin, Xiangguo Zhang, Ruihao Gong, Yifu Ding, Yi
+Xu, and Xianglong Liu. Distribution-sensitive information
+retention for accurate binary neural network. International
+Journal of Computer Vision, pages 1–22, 2022. 3
+[33] Mohammad Rastegari, Vicente Ordonez, Joseph Redmon,
+and Ali Farhadi. XNOR-Net: Imagenet classification using
+binary convolutional neural networks. In Bastian Leibe, Jiri
+Matas, Nicu Sebe, and Max Welling, editors, Computer Vi-
+sion – ECCV 2016, pages 525–542, Cham, 2016. Springer
+International Publishing. 1
+[34] Victor Sanh, Thomas Wolf, and Alexander Rush. Movement
+pruning: Adaptive sparsity by fine-tuning. Advances in Neu-
+ral Information Processing Systems, 33:20378–20389, 2020.
+1
+[35] Yehui Tang, Kai Han, Jianyuan Guo, Chang Xu, Yanxi Li,
+Chao Xu, and Yunhe Wang.
+An image patch is a wave:
+Phase-aware vision mlp. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition,
+pages 10935–10944, 2022. 6, 8
+[36] Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco
+Massa, Alexandre Sablayrolles, and Herve Jegou. Training
+data-efficient image transformers: distillation through atten-
+tion. In International Conference on Machine Learning, vol-
+ume 139, pages 10347–10357, July 2021. 1, 3, 5, 7, 12
+[37] Hugo Touvron, Matthieu Cord, Alexandre Sablayrolles,
+Gabriel Synnaeve, and Herv´e J´egou. Going deeper with im-
+age transformers. In Proceedings of the IEEE/CVF Interna-
+tional Conference on Computer Vision, pages 32–42, 2021.
+6
+[38] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Il-
+lia Polosukhin.
+Attention is all you need.
+In I. Guyon,
+U. Von Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vish-
+wanathan, and R. Garnett, editors, Advances in Neural Infor-
+mation Processing Systems, volume 30. Curran Associates,
+Inc., 2017. 1
+[39] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao
+Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao.
+Pyramid vision transformer: A versatile backbone for dense
+prediction without convolutions.
+In Proceedings of the
+IEEE/CVF International Conference on Computer Vision
+(ICCV), pages 568–578, October 2021. 7, 8
+[40] Wenhai Wang, Enze Xie, Xiang Li, Deng-Ping Fan, Kaitao
+Song, Ding Liang, Tong Lu, Ping Luo, and Ling Shao. PVT
+v2: Improved baselines with pyramid vision transformer.
+Computational Visual Media, 8(3):1–10, 2022. 7
+[41] Ross Wightman.
+Pytorch image models.
+:
+/ / github . com / rwightman / pytorch - image -
+models, 2019. 5, 6, 12
+[42] Ruibin Xiong, Yunchang Yang, Di He, Kai Zheng, Shuxin
+Zheng, Chen Xing, Huishuai Zhang, Yanyan Lan, Liwei
+Wang, and Tieyan Liu. On layer normalization in the trans-
+former architecture. In International Conference on Machine
+Learning, pages 10524–10533. PMLR, 2020. 6
+[43] Yixing Xu, Xinghao Chen, and Yunhe Wang.
+BiMLP:
+Compact binary architectures for vision multi-layer percep-
+trons. In Advances in Neural Information Processing Sys-
+tems, 2022. 1, 2, 4, 5, 6, 7, 8, 12
+
+[44] Zhe Xu and Ray C. C. Cheung.
+Accurate and compact
+convolutional neural networks with trained binarization. In
+30th British Machine Vision Conference 2019, BMVC 2019,
+Cardiff, UK, September 9-12, 2019, page 19. BMVA Press,
+2019. 3
+[45] Zhuliang Yao, Yue Cao, Yutong Lin, Ze Liu, Zheng Zhang,
+and Han Hu.
+Leveraging batch normalization for vision
+transformers. In Proceedings of the IEEE/CVF International
+Conference on Computer Vision, pages 413–422, 2021. 3
+[46] Sangdoo Yun, Dongyoon Han, Seong Joon Oh, Sanghyuk
+Chun, Junsuk Choe, and Youngjoon Yoo. CutMix: Regu-
+larization strategy to train strong classifiers with localizable
+features. In Proceedings of the IEEE/CVF international con-
+ference on computer vision, pages 6023–6032, 2019. 12
+[47] Ofir Zafrir,
+Guy Boudoukh,
+Peter Izsak,
+and Moshe
+Wasserblat. Q8BERT: Quantized 8bit BERT. In 2019 Fifth
+Workshop on Energy Efficient Machine Learning and Cogni-
+tive Computing - NeurIPS Edition (EMC2-NIPS), pages 36–
+39, 2019. 1
+[48] Ofir Zafrir, Ariel Larey, Guy Boudoukh, Haihao Shen, and
+Moshe Wasserblat. Prune once for all: Sparse pre-trained
+language models. arXiv preprint arXiv:2111.05754, 2021. 1
+[49] Hongyi Zhang, Moustapha Cisse, Yann N. Dauphin, and
+David Lopez-Paz. mixup: Beyond empirical risk minimiza-
+tion. In International Conference on Learning Representa-
+tions, 2018. 12
+[50] Wei Zhang, Lu Hou, Yichun Yin, Lifeng Shang, Xiao Chen,
+Xin Jiang, and Qun Liu. TernaryBERT: Distillation-aware
+ultra-low bit BERT.
+In Proceedings of the 2020 Confer-
+ence on Empirical Methods in Natural Language Processing
+(EMNLP), pages 509–521, Online, Nov. 2020. Association
+for Computational Linguistics. 1, 4
+[51] Zhun Zhong, Liang Zheng, Guoliang Kang, Shaozi Li, and
+Yi Yang. Random erasing data augmentation. In Proceedings
+of the AAAI conference on artificial intelligence, volume 34,
+pages 13001–13008, 2020. 12
+
+Output size
+BinaryViT
+
+bility of the tensor that will be the input for the classifier
+layer or the final layer, following the steps from [27, 43]
+and we assume the first layer has binary weights only for
+simplicity.
+
+
+
+
+
+C1 = 64
+R1 = 8
+N1 = 1
+E1 = 8
+
+Stage 1
+H
+
+4 × W
+
+
+
+× 3
+
+4
+
+B.1. Binary DeiT-S
+
+Following [27], for a binary DeiT-S, for the first layer,
+each output element can have a value range from [0,
+195,840], since P ·P ·C·max(x) = 16·16·3·255 = 195, 840
+where P is the patch size, C is the number of channels, and
+max(x) = 255 is the max value an input image can hold.
+If we want to have a zero mean, then the range would be
+[-97,920, 97,920]. Therefore, the current representational
+capability at that point is 97,920. From [27], normaliza-
+tion wouldn’t affect the representational capability, since
+normalization is just an element-wise affine transformation.
+For each binary fully-connected layer in the attention, for
+the query, key, value, and in the final projection layer, the
+element-wise representation capability for each of these lay-
+ers is D = 384 which is the base hidden dimension for
+DeiT-S. For the matrix multiplication between the binary at-
+tention probability and the binary value matrix, the element-
+wise representation capability for this is N = 196 which
+is the sequence length for DeiT-S throughout the whole
+model. For the FFN, it would be 4 · D = 4 · 384 = 1, 536
+for each binary fully connected layer in the FFN. If we cal-
+culate the total element-wise representational capability of
+the binary baseline ViT with DeiT-S backbone, R(DeiT-S),
+it would be (384 · 4 + 196 + 4 · 384 · 2) · 12 + 97, 920 =
+153, 216, considering the total number of fully connected
+layers per transformer block, and the total number of trans-
+former blocks in DeiT-S.
+
+
+
+
+
+C2 = 128
+R2 = 4
+N2 = 2
+E2 = 8
+
+Stage 2
+H
+
+8 × W
+
+
+
+× 4
+
+8
+
+
+
+
+
+C3 = 256
+R3 = 1
+N3 = 4
+E3 = 4
+
+Stage 3
+H
+16 × W
+
+
+
+× 8
+
+16
+
+
+
+
+
+C4 = 512
+R4 = 1
+N4 = 8
+E4 = 4
+
+Stage 4
+H
+32 × W
+
+× 4
+
+
+
+32
+
+Table 6. Architectural settings for BinaryViT where Ci is the base
+hidden dimension, Ri is the reduction ratio of the Bi-SR-MHA,
+Ni is the number of heads in the attention, and Ei is the expansion
+ration of the FFN in Stage i.
+
+A. Experimental Settings
+
+We train the binary ViT from scratch mainly follow-
+ing the hyperparameters from DeiT [36], using PyTorch
+[29] and we train the model with Adam [19, 28] optimizer
+for 300 epochs with a batch-size of 512, a weight-decay
+of 0.0, warmup-epochs of 0, and with an initial learning
+rate of 5e-4 for the cosine learning rate decay scheduler.
+Also, we do not train with any data augmentation such as
+Rand-Augment [6], random erasing [51], stochastic depth
+[16], CutMix [46], Mixup [49], and repeated augmenta-
+tion [4,14]. However, we still use Random Resize Cropping
+and horizontal flipping. For knowledge distillation, we use
+a full-precision DeiT-S [36] as our teacher model. Our opti-
+mizer and scheduler are from the Timm library [41] and our
+training loop/pipeline is based on the DeiT repository [36].
+
+B.2. Binary ResNet-34
+
+Following [27], for a binary ResNet-34, for the first
+layer, each output element can have a value range from [0,
+37,485], since K1·K1·C ·max(x) = 7·7·3·255 = 37, 485
+where K1 is the kernel size of the first convolutional layer.
+If we want to have a zero mean, then the range would be [-
+18,742, 18,742]. Therefore, the current representational ca-
+pability at that point is 18,742. After the first convolutional
+layer, the feature map goes through max-pooling which has
+no effect on the element-wise representational capability of
+the model. ResNet-34 has 4 stages with each stage con-
+taining different feature map resolutions and hidden dimen-
+sions. For stage 1 in ResNet-34, each convolutional layer
+would have an element-wise representational capability of
+3 · 3 · 64 = 576, considering the kernel size and the hidden
+dimension of one weight filter. During the transition from
+stage 1 to stage 2, there will be an average pooling layer
+in the residual with a kernel size of 2 × 2 with a stride of
+2 × 2, which can be seen as an information aggregation of
+4 neighboring patches if we ignore the element-wise divi-
+
+B. Calculation of representational capability
+
+Following [27, 43], we quantify the element-wise rep-
+resentational capability as the number of possible absolute
+values that each element in a tensor can have. We calculate
+the element-wise representational capability of these mod-
+els by calculating the element-wise representational capa-
+
+sion involve in average pooling. Therefore, the element-
+wise representational capability would be multiplied by
+4, so the current total element-wise representational capa-
+bility of the model up to this point can be calculated as
+(18, 742 + 576 · 3) · 4 = 81, 880, considering the number
+of convolutional layers in that stage. For stage 2 in ResNet-
+34, each convolutional layer would have an element-wise
+representational capability of 3 · 3 · 128 = 1, 152.
+Af-
+ter the transition from stage 2 to stage 3, the current total
+element-wise representational capability of the model up to
+this point can be calculated as (81, 880 + 1, 152 · 4) · 4 =
+345, 952.
+For stage 3 in ResNet-34, each convolutional
+layer would have an element-wise representational capabil-
+ity of 3 · 3 · 256 = 2, 304. Therefore, after the transition
+from stage 3 to stage 4, the current total element-wise rep-
+resentational capability of the model up to this point can be
+calculated as (345, 952 + 2, 304 · 6) · 4 = 1, 439, 104. For
+stage 4 in ResNet-34, each convolutional layer would have
+an element-wise representational capability of 3 · 3 · 512 =
+4608. After the feature map is finished getting processed
+in stage 4, there will be a global average pooling layer that
+aggregates all the information from the remaining patches
+before getting processed at the final classifier layer. For
+a 224 × 224 input image, the feature map resolution at
+stage 4 of ResNet-34 will be 7 × 7, so the total element-
+wise representational capability of the binary ResNet-34,
+R(ResNet-34), up until the final classifier layer, will be
+(1, 439, 104 + 4, 608 · 3) · 49 = 71, 193, 472.

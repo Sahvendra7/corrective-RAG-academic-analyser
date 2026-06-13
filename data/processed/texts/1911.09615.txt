@@ -1,0 +1,797 @@
+Sample-Efﬁcient Reinforcement Learning with
+Maximum Entropy Mellowmax Episodic Control
+
+Marta Sarrico
+Department of Bioengineering
+Imperial College London
+
+Kai Arulkumaran
+Department of Bioengineering
+Imperial College London
+
+arXiv:1911.09615v1 [cs.LG] 21 Nov 2019
+
+Andrea Agostinelli
+Department of Bioengineering
+Imperial College London
+
+Pierre Richemond
+Data Science Institute
+Imperial College London
+
+Anil A. Bharath
+Department of Bioengineering
+Imperial College London
+
+Abstract
+
+Deep networks have enabled reinforcement learning to scale to more complex
+and challenging domains, but these methods typically require large quantities of
+training data. An alternative is to use sample-efﬁcient episodic control methods:
+neuro-inspired algorithms which use non-/semi-parametric models that predict
+values based on storing and retrieving previously experienced transitions. One
+way to further improve the sample efﬁciency of these approaches is to use more
+principled exploration strategies. In this work, we therefore propose maximum
+entropy mellowmax episodic control (MEMEC), which samples actions according
+to a Boltzmann policy with a state-dependent temperature. We demonstrate that
+MEMEC outperforms other uncertainty- and softmax-based exploration methods
+on classic reinforcement learning environments and Atari games, achieving both
+more rapid learning and higher ﬁnal rewards.
+
+1
+Introduction
+
+Despite the successes of deep reinforcement learning (DRL) agents [1], these models have a sample-
+efﬁciency limitation: DRL agents typically require hundreds of times more experience than a human
+to reach similar levels, suggesting a large gap between current DRL algorithms and the operation
+of the human brain [33, 15]. Recently, new neuro-inspired episodic control (EC) algorithms have
+demonstrated rapid learning, as compared to state-of-the-art DRL methods [5, 27]. These algorithms
+were inspired by human long-term memory, which can be divided into semantic and episodic memory:
+the former is responsible for storing general knowledge and facts about the world, whilst the latter is
+related to recollecting our personal experiences [11]. EC, introduced by Lengyel & Dayan [17], is
+inspired by this biological episodic memory, and models one of the several different control systems
+used for behavioural decisions as suggested by neuroscience research [9]. As opposed to other RL
+systems, EC enables rapidly learning a policy from sparse amounts of experience.
+
+An alternative factor in the sample-efﬁciency of RL methods is the existence of an effective exploration
+policy that is able to collect diverse experiences from the environment to learn from. The deep Q-
+network (DQN) [21], a notable DRL algorithm, as well as current EC algorithms [5, 27], use the naive
+ϵ-greedy exploration policy [29]. More principled exploration methods, such as upper conﬁdence
+bound (UCB) [3, 8] and Thompson sampling (TS) [25], sample actions based on uncertainty over
+their consequences. Another alternative is to sample from a distribution over actions, such as the
+Boltzmann distribution [29], performing importance weighting of actions proportionally to the Gibbs-
+
+Boltzmann weights of their state-action values. Yet another solution is to use an alternative objective,
+yielding a policy that balances between maximising both the expected return and its entropy over
+states [2, 13]. Similarly to supervised learning settings, the latter approach corresponds to an entropic
+regularisation over the solution [10, 22, 23, 28].
+
+In this work, we hence propose maximum entropy mellowmax episodic control (MEMEC), which
+combines EC models with the maximum entropy mellowmax policy [2] for principled exploration.
+Without resorting to maximum entropy RL, hence decoupling exploration beneﬁts from the objective,
+we show that this softmax-based exploration strategy can still improve both the sample-efﬁciency
+and ﬁnal returns of EC methods, while retaining their simple, low-bias Monte Carlo returns. We test
+MEMEC on a wide variety of domains, where it shows improvements over the original EC methods,
+as well as the same EC methods with alternative exploration policies.
+
+2
+Background
+
+Reinforcement Learning: The RL setting is formalised by Markov decision processes (MDPs).
+MDPs are characterised by a tuple ⟨S, A, R, T, γ⟩, where S is the set of states, A is the set of actions,
+R is a reward function which is the immediate, intrinsic desirability of a certain state, T is the
+transition dynamics, and γ ∈[0, 1) is a discount factor that trades off the value of current and future
+rewards. The goal of RL is to ﬁnd the optimal policy, π∗, that maximizes the expected cumulative
+discounted return when followed from any state s ∈S.
+
+Q-learning [32], a widely used temporal difference (TD) method, can learn value functions by
+bootstrapping. The DQN uses Q-learning, updating a neural-network-based state-action value
+function, Qπ(s, a; θ), parameterised by θ. As a baseline across all environments we used a strong
+DRL method—the dueling double DQN (D3QN) [21, 30, 31] (further detailed in Section 7).
+
+Figure 1: Architecture of NEC (for Atari games): a convolutional neural network receives a state
+(4 frames of the game) as input and outputs a key h, an embedding of that state. Lookup: Key h is
+compared to the stored keys in the differentiable neural dictionary (DND) and the k most similar
+ones (k = 3 in this case) are retrieved. Qh is computed as a weighted sum of the Q-values associated
+with the retrieved keys.
+
+Episodic Control: EC models use a memory buffer that stores state-action pairs and their associated
+episodic returns, (s, a, R), with control performed by replaying the most rewarding actions based on
+the similarity between the current and stored states. Implementations of these EC methods include the
+non-parametric model-free EC (MFEC) [5], and the semi-parametric neural EC (NEC) [27]. Further
+details on MFEC and NEC can be found in Figure 1 and Section 7.
+
+3
+Exploration Strategies
+
+For both MFEC and NEC, in order to trade off exploration and exploitation in the environment,
+the agent follows an ϵ-greedy policy. This consists of a sampling strategy where the agent either
+uniformly picks over all actions with probability ϵ, or instead chooses the action that maximises the
+predicted return.
+
+Uncertainty-based: UCB and TS are two exploration strategies that sample actions based on
+predicted uncertainties over the value of the return, and hence require learning a distribution over
+each Q-value. Common practice is to assume a (sub-)Gaussian distribution over Q-values, which is
+both convenient and yields tight regret lower bounds [14].
+
+In UCB, the action that is chosen at each timestep is the one that is the maximum over the sum of the
+value (estimated mean of the distribution) and its uncertainty U(s, a) (a function of the estimated
+standard deviation of the distribution): argmaxa∈A Q(s, a) + U(s, a). TS can be implemented by
+sampling from a posterior over Q-functions: ˜Q(s, a) ∼N(Q(s, a), ˜σ(Q(s, a))
+∀a ∈A, where
+˜σ(Q(s, a)) is the estimated standard deviation of the Q-value, and we are assuming independence
+of state-action value functions. Then, the argmax action is chosen greedily from the sampled Q-
+function: argmaxa∈A ˜Q(s, a). The difﬁculty with these methods is that they require learning a
+probabilistic Q-function, and learning well-calibrated uncertainties using neural networks is still a
+challenging problem [24]. Furthermore, the actions are sampled independently per timestep, and so
+the resulting policy can be inconsistent over time [26].
+
+Softmax-based: An alternative which does not have these disadvantages is to use a softmax-based
+policy, which only requires learning the expected Q-values. By applying the Boltzmann operator
+(with inverse temperature β) to the Q-values, boltzβ(Q) =
+
+Pn
+i=1 QieβQi
+Pn
+i=1 eβQi , one can sample actions
+from the resulting Boltzmann distribution over actions, where more promising actions will be sampled
+more frequently. However, the Boltzmann operator is not a non-expansion (it is not Lipschitz with
+constant < 1) for all values of the temperature parameter [19]; critical to the proof of convergence
+in TD learning, the non-expansion property is a sufﬁcient condition to guarantee convergence to a
+unique ﬁxed point. As a solution, Asade & Littman [2] introduced the mellowmax operator (with
+
+n
+Pn
+i=1 eωQi)
+ω
+, as an alternative softmax function for value
+function optimisation, which is a non-expansion in the inﬁnity norm for all temperatures.
+
+hyperparameter ω), mmω(Q) =
+log( 1
+
+As the mellowmax operator can return the maximum (as ω →∞) or minimum (as ω →−∞) of a
+set of values, Asadi & Littman [2] also proposed optimising ω under a maximum entropy constraint.
+This results in the maximum entropy mellowmax policy: πmm(a|s) =
+eβQ(s,a)
+P
+
+a∈A eβQ(s,a) , which is
+of the same functional form as the Boltzmann policy, but where the optimal β can be solved for
+using a root-ﬁnding algorithm, such as Brent’s method [6]. The equation which is solved for is
+P
+
+a∈A eβ(Q(s,a)−mmω(Q(s,·))) (Q(s, a) −mmω(Q(s, ·))) = 0.
+
+MEMEC, which uses the maximum entropy mellowmax policy for exploration, hence beneﬁts
+from softmax-based exploration, where actions are chosen as a function of their estimated value,
+with a state-dependent temperature on the Boltzmann distribution over actions. As we show in our
+experiments, this approach outperforms both the original EC methods with ϵ-greedy exploration, as
+well as the alternative exploration methods outlined here. We do not train on a maximum entropy
+objective, thereby purely using the maximum entropy mellowmax policy for exploration.
+
+4
+Experiments
+
+Environments: We evaluated EC methods with different exploration strategies, as well as a D3QN
+baseline, in three sets of domains. Firstly, CartPole and Acrobot, two classic RL problems, im-
+plemented in OpenAI Gym [7]. Secondly, OpenRoom, and FourRoom, gridworld domains re-
+implemented from Machado et al. [20]. For these domains we trained the agents for 100,000 steps,
+and evaluated them every 500 steps. Thirdly, Pong, Space Invaders, Q*bert, Bowling, and Ms. Pac-
+Man, video games with high-dimensional visual observations from the Atari Learning Environment
+[4]. Due to computational resource limitations, Atari training was performed for 5,000,000 steps
+(20,000,000 frames) for MFEC and 3,500,000 steps (12,000,000 frames) for NEC; evaluation was
+performed every 100,000 steps. For Atari games, we use standard preprocessing for the state [21],
+and similarly repeat actions for 4 game frames (= 1 agent step). We used Gaussian random projections
+for MFEC, as this obtained better results than the variational autoencoder embeddings in the original
+work [5]. For all experiments we report the mean and standard deviation of each method, calculated
+over three random seeds.
+
+Hyperparameters: For all EC methods, we primarily used the original hyperparameters [5, 27],
+but chose to keep some consistent across MFEC and NEC for consistency. These were to use the
+more robust inverse distance weighted kernel (Equation 5) for MFEC and NEC, k = 11 nearest
+neighbours, and a discount factor γ = 0.99 across all domains. For the episodic memories, the buffer
+size was set to 150 for the room domains, 10,000 for the classic control domains and 100,000 (due
+to computational resource limitations) for the Atari games. We used the original hyperparameters
+
+for D3QN on Atari games [31], and tuned them manually for the other domains. The full details are
+present in Section 11.
+
+ω Hyperparameter: The ω hyperparameter in the mellowmax operator requires tuning per domain
+[2, 13]. With high ω, mmω acts as a max operator and with ω approaching zero mmω acts as a mean
+operator. Thus, ω should not be too large, as the agent will act greedily, nor too small, as the agent
+will behave randomly. To tune this hyperparameter we implemented a grid search with the following
+ω values: for the Gridworld and classic Control environments, ω ∈{5, 7, 9, 12}; for Atari domain,
+ω ∈{10, 20, 25, 30, 40, 50, 60}, depending on the game. As in prior work [2, 13], we show results
+for MEMEC with the best ω. We set ω to 7.5 for all non-Atari domains, 25 for Pong, 40 for Q*Bert
+and Space Invaders, 50 for Bowling and 60 for Ms. Pac-Man.
+
+Uncertainty-based Exploration: For the ﬁve simpler domains, we tested ϵ-greedy, UCB, TS, Boltz-
+mann and maximum entropy mellowmax exploration strategies. While UCB sometimes performed
+well, TS performed extremely badly. Upon closer examination, the uncertainty estimates over the
+Q-values as calculated via the covariance matrix deﬁned over the inverse distance kernel [27] embed-
+dings over the nearest neighbour keys were both relatively constant, meaning that UCB was close to
+ϵ-greedy with small ϵ, and relatively large, causing TS’ poor performance (high variance samples for
+the Q-values). We were unable to improve the uncertainty estimates by ﬁtting a Gaussian process to
+the nearest neighbours and optimising over δ in the inverse distance weighted kernel. Theoretically,
+UCB and TS often have similar frequentist regret bounds [16], but our experiments demonstrate how
+dependent these are on well-calibrated uncertainties.1 Due to computational limitations, and as a
+result of these experiments on the simpler domains, we only evaluated ϵ-greedy and mellowmax, as
+well as the D3QN baseline, on the Atari games.
+
+5
+Results
+
+Figure 2: Learning curve on Acrobot with MFEC-based MEMEC.
+
+Classic Control: All ﬁve methods solved Cartpole (see Section 8), as it is a relatively simple
+environment where even purely random exploration can reach highly rewarding states. In Figure 2
+we show the methods’ performance in Acrobot, using both MFEC and NEC. In both cases, MEMEC
+outperformed the other exploration strategies, not only getting to higher ﬁnal rewards, but starting to
+learn faster. The next best strategy—the Boltzmann policy—had high variance over random seeds.
+As discussed previously in Section 4, UCB performed poorly, which we believe is due to poorly
+calibrated uncertainties. The D3QN baseline learned more slowly, and converged to a suboptimal
+policy.
+
+Gridworld: MFEC performed best with softmax-based exploration strategies, whilst nearly all
+methods tended to perform poorly with NEC (see Section 9). Whilst MFEC with ϵ-greedy was able
+to solve OpenRoom, it had high variance for FourRoom. In contrast to most of our other results, NEC
+performed best with ϵ-greedy, but still had poor performance on FourRoom. D3QN was not able to
+consistently solve OpenRoom, and failed to solve FourRoom.
+
+Atari: Figure 3 and Table 1 show the performance of our method compared to the D3QN baseline
+and to the ϵ-greedy policy with EC for ﬁve different Atari games. Overall, MEMEC outperformed the
+other methods in these games most of the time, not only in terms of the maximum achieved reward,
+but also in terms of the learning speed (see Section 10 for additional learning curves). For Space
+
+1Despite this, we have retained the results for UCB in any experiments conducted with this method.
+
+Table 1: Final averaged rewards for the Atari games: the values indicate the mean of the last 5
+evaluations, averaged over 3 initial random seeds, and their corresponding standard deviations.
+
+Environments
+MFEC
+D3QN
+NEC
+D3QN
+ϵ-greedy
+Mellowmax
+ϵ-greedy
+Mellowmax
+Bowling
+62 ± .8
+68 ± .7
+68 ± .7
+68 ± .7
+26 ± 12
+11 ± 9
+9 ± 7
+22 ± 16
+22 ± 16
+22 ± 16
+Q*Bert
+3896 ± 710
+11610 ± 898
+11610 ± 898
+11610 ± 898
+3743 ± 1100
+3951 ± 1321
+5654 ± 483
+5654 ± 483
+5654 ± 483
+1480 ± 271
+Ms. Pac-Man
+4178 ± 510
+6968 ± 787
+6968 ± 787
+6968 ± 787
+2101 ± 56
+3900 ± 852
+6997 ± 256
+6997 ± 256
+6997 ± 256
+1851 ± 98
+Space Invaders
+672 ± 13
+1029 ± 157
+1029 ± 157
+1029 ± 157
+737 ± 29
+598 ± 110
+916 ± 228
+916 ± 228
+916 ± 228
+756 ± 30
+Pong
+17 ± 2
+17 ± 2
+17 ± 2
+7 ± 4
+6 ± 4
+−7 ± .9
+−11 ± .5
+−5 ± 6
+−5 ± 6
+−5 ± 6
+
+Figure 3: Learning curves for MFEC-based MEMEC agents on 4 Atari games.
+
+Invaders, Q*Bert and Ms. Pac-Man, our MEMEC agents, for both EC methods, outperformed the
+other algorithms, showing more rapid learning and higher ﬁnal scores. For Bowling, MFEC-based
+MEMEC performed similarly to ϵ-greedy, and somewhat worse in Pong. NEC-based agents—either
+with ϵ-greedy or mellowmax policies—failed to solve Bowling and Pong. We note that due to
+computational limitations we were unable to use the very large buffer sizes from the original works,
+which can also explain the inability to reproduce the performance of ϵ-greedy EC; it remains to be
+seen if using larger buffer sizes would similarly improve the performance of MEMEC.
+
+6
+Discussion
+
+In this work we have investigated the use of more principled exploration methods in combination with
+EC, and proposed MEMEC, a method that addresses one of the main limitations of state-of-the-art
+RL models, namely, sample efﬁciency. We show over a range of domains, including Atari games,
+that MEMEC can reliably achieve higher rewards faster, with stable performance across seeds.
+
+One limitation of mellowmax-based policies is its sensitivity to the value of ω across different
+domains [2, 13], and the subsequent searches used to ﬁnd optimal values, which are prohibitive in
+domains such as Atari. Implementing methods to automatically determine and tune ω will be an
+important area for future work.
+
+References
+
+[1] Kai Arulkumaran, Marc Peter Deisenroth, Miles Brundage, and Anil Anthony Bharath. Deep
+reinforcement learning: A brief survey. IEEE Signal Processing Magazine, 34(6):26–38, 2017.
+
+[2] Kavosh Asadi and Michael L Littman. An alternative softmax operator for reinforcement
+learning. In International Conference on Machine Learning, pages 243–252, 2017.
+
+[3] Peter Auer, Nicolo Cesa-Bianchi, and Paul Fischer. Finite-time analysis of the multiarmed
+bandit problem. Machine Learning, 47(2-3):235–256, 2002.
+
+[4] Marc G Bellemare, Yavar Naddaf, Joel Veness, and Michael Bowling. The arcade learning
+environment: An evaluation platform for general agents. Journal of Artiﬁcial Intelligence
+Research, 47:253–279, 2013.
+
+[5] Charles Blundell, Benigno Uria, Alexander Pritzel, Yazhe Li, Avraham Ruderman, Joel Z Leibo,
+Jack Rae, Daan Wierstra, and Demis Hassabis. Model-free episodic control. arXiv preprint
+arXiv:1606.04460, 2016.
+
+[6] Richard P Brent. Algorithms for minimization without derivatives. Courier Corporation, 2013.
+
+[7] Greg Brockman, Vicki Cheung, Ludwig Pettersson, Jonas Schneider, John Schulman, Jie Tang,
+and Wojciech Zaremba. OpenAI Gym. arXiv preprint arXiv:1606.01540, 2016.
+
+[8] Richard Y Chen, Szymon Sidor, Pieter Abbeel, and John Schulman. UCB exploration via
+Q-ensembles. arXiv preprint arXiv:1706.01502, 2017.
+
+[9] Nathaniel D Daw, Yael Niv, and Peter Dayan. Uncertainty-based competition between prefrontal
+and dorsolateral striatal systems for behavioral control. Nature Neuroscience, 8(12):1704, 2005.
+
+[10] Roy Fox, Ari Pakman, and Naftali Tishby. Taming the noise in reinforcement learning via soft
+updates. In Conference on Uncertainty in Artiﬁcial Intelligence, 2016.
+
+[11] Daniel L Greenberg and Mieke Verfaellie. Interdependence of episodic and semantic memory:
+evidence from neuropsychology. Journal of the International Neuropsychological Society, 16
+(5):748–753, 2010.
+
+[12] Hado V Hasselt. Double Q-learning. In Advances in Neural Information Processing Systems,
+pages 2613–2621, 2010.
+
+[13] Seungchan Kim, Kavosh Asadi, Michael Littman, and George Konidaris. DeepMellow: Re-
+moving the Need for a Target Network in Deep Q-Learning. In International Joint Conference
+on Artiﬁcial Intelligence, 2019.
+
+[14] Tze Leung Lai and Herbert Robbins. Asymptotically efﬁcient adaptive allocation rules. Ad-
+vances in Applied Mathematics, 6(1):4–22, 1985.
+
+[15] Brenden M Lake, Tomer D Ullman, Joshua B Tenenbaum, and Samuel J Gershman. Building
+machines that learn and think like people. Behavioral and Brain Sciences, 40, 2017.
+
+[16] Tor Lattimore and Csaba Szepesvári. Bandit algorithms. Cambridge University Press, 2018.
+
+[17] Máté Lengyel and Peter Dayan. Hippocampal contributions to control: the third way. In
+Advances in Neural Information Processing Systems, pages 889–896, 2008.
+
+[18] Long-Ji Lin. Self-improving reactive agents based on reinforcement learning, planning and
+teaching. Machine Learning, 8(3-4):293–321, 1992.
+
+[19] Michael L Littman and Csaba Szepesvári. A generalized reinforcement-learning model: Con-
+vergence and applications. In International Conference on Machine Learning, volume 96, pages
+310–318, 1996.
+
+[20] Marios C Machado, Marc G Bellemare, and Michael Bowling. A Laplacian framework for
+option discovery in reinforcement learning. In International Conference on Machine Learning,
+pages 2295–2304, 2017.
+
+[21] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G
+Bellemare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al.
+Human-level control through deep reinforcement learning. Nature, 518(7540):529, 2015.
+
+[22] Oﬁr Nachum, Mohammad Norouzi, Kelvin Xu, and Dale Schuurmans. Bridging the gap
+between value and policy based reinforcement learning. In Advances in Neural Information
+Processing Systems, pages 2775–2785, 2017.
+
+[23] Gergely Neu, Anders Jonsson, and Vicenç Gómez. A uniﬁed view of entropy-regularized
+Markov decision processes. arXiv preprint arXiv:1705.07798, 2017.
+
+[24] Ian Osband. Risk versus uncertainty in deep learning: Bayes, bootstrap and the dangers of
+dropout. In NIPS Workshop on Bayesian Deep Learning, 2016.
+
+[25] Ian Osband, Daniel Russo, and Benjamin Van Roy. (More) efﬁcient reinforcement learning via
+posterior sampling. In Advances in Neural Information Processing Systems, pages 3003–3011,
+2013.
+
+[26] Ian Osband, Charles Blundell, Alexander Pritzel, and Benjamin Van Roy. Deep exploration via
+bootstrapped DQN. In Advances in Neural Information Processing Systems, pages 4026–4034,
+2016.
+
+[27] Alexander Pritzel, Benigno Uria, Sriram Srinivasan, Adria Puigdomenech Badia, Oriol Vinyals,
+Demis Hassabis, Daan Wierstra, and Charles Blundell. Neural episodic control. In International
+Conference on Machine Learning, pages 2827–2836, 2017.
+
+[28] Pierre H Richemond and Brendan Maginnis. A short variational proof of equivalence between
+policy gradients and soft Q-learning. arXiv preprint arXiv:1712.08650, 2017.
+
+[29] Richard S Sutton and Andrew G Barto. Reinforcement learning: An introduction. MIT press,
+2018.
+
+[30] Hado Van Hasselt, Arthur Guez, and David Silver. Deep reinforcement learning with double
+Q-learning. In AAAI Conference on Artiﬁcial Intelligence, 2016.
+
+[31] Ziyu Wang, Tom Schaul, Matteo Hessel, Hado Hasselt, Marc Lanctot, and Nando Freitas.
+Dueling network architectures for deep reinforcement learning. In International Conference on
+Machine Learning, pages 1995–2003, 2016.
+
+[32] Christopher JCH Watkins and Peter Dayan. Q-learning. Machine Learning, 8(3-4):279–292,
+1992.
+
+[33] Yang Yu. Towards sample efﬁcient reinforcement learning. In International Joint Conference
+on Artiﬁcial Intelligence, pages 5739–5743, 2018.
+
+7
+Additional Background
+
+Deep Q-network: The DQN uses Q-learning, updating a neural-network based state-action value
+function, Q(s, a; θ), parameterised by θ.
+
+The deep Q-network receives the state s as input and outputs a vector with the state-action values
+Q(s, a, θ)
+∀a ∈A. In order to improve the stability of RL with function approximators, the
+original authors proposed using experience replay [18] and a target network [21]. The target network,
+parameterised by θ−, is equal to an older version of the online network and it is updated every τ
+steps. The TD target for the DQN is deﬁned by:
+
+yDQN
+t
+= rt+1 + γ max
+a
+Q(st+1, a; θ−
+t ).
+(1)
+
+The experience replay is a cyclic buffer that stores the (st, at, rt+1, st+1) transitions that the agent
+observes. Samples are retrieved from it uniformly at regular intervals to train the network.
+
+There have been several proposed extensions that improve this algorithm. Firstly, the max operator
+present in Q-learning is responsible for both the selection and evaluation of state-action values, and
+hence can result in overoptimistic estimated Q-values. In double Q-learning [12], an alternative
+update rule for Q-learning, the selection of actions and the evaluation of their values are performed by
+separate estimators. To do so, two value functions are implemented, parameterised by θ and θ′: One
+is used for the greedy selection of actions whereas the other is used to determine the corresponding
+value. For the double DQN algorithm, the online and target networks are used as the two estimators
+[30]. In this case, the TD target can be written as:
+
+yDDQN
+t
+= rt+1 + γQ(st+1, argmax
+a
+Q(st+1, a; θt); θ−
+t ).
+(2)
+
+Another extension based on the DQN is the dueling double DQN (D3QN) algorithm [31]. The
+dueling architecture extends the standard DQN by calculating separate advantage Aθ and value
+Vθ streams, sharing the same convolutional neural network as a base. This imposes the form that
+state-action values can be calculated as offsets (“advantages”) from the state value. The Q-function is
+then computed as:
+
+Qθ(s, a) = Vθ(s) + (Aθ(s, a) −1
+
+X
+
+a′
+Aθ(s, a′)).
+(3)
+
+|A|
+
+Model-free episodic control: In MFEC, the episodic controller QEC(s, a) is represented by a ﬁxed-
+size table for each action. Each entry corresponds to the state-action pair and the highest return
+ever obtained from taking action a from state s. Whenever a new state is encountered, the return is
+estimated based on the average of the observed returns from the k-nearest states s(i):
+
+d
+QEC(s, a) =
+
+1
+k
+Pk
+i=1 QEC
+s(i), a
+
+if (s, a) /∈QEC,
+QEC(s, a)
+otherwise .
+(4)
+
+The state-action value function QEC(s, a) is updated at the end of each episode, replacing the least-
+recently-used transitions with new state-action pairs and their corresponding episodic returns. If the
+pair (s, a) already exists in the table, the stored value will be updated to the maximum of the stored
+return and the newly observed return.
+
+For high-dimensional state spaces, the original authors used Gaussian random projections in order to
+reduce the dimensionality of the states before using them in the episodic controller.
+
+Neural Episodic Control: NEC consists of two components: a neural network for learning a feature
+mapping, and a differentiable neural dictionary (DND) per action (see Figure 1). The neural network
+receives as input the state s and outputs a key/embedding h. Each DND memory performs a lookup
+based on the current key h, by comparing it with the keys hi already stored in the DND, and retrieving
+the k most similar keys with their corresponding Qi values. The predicted Q(s, a) value, based on h,
+is the weighted sum of the retrieved Qi values: P
+
+i wiQi. Each weight wi is calculated by using the
+inverse distance weighted kernel:
+
+k (h, hi) =
+1
+
+∥h −hi∥2
+2 + δ
+.
+(5)
+
+Updating the DND involves appending new key-value pairs to the dictionary or, for cases where the
+same state already exists in that dictionary, updating the value of Q(s, a) as in Q-learning:
+
+Qi ←Qi + α
+
+R(n)(s, a) −Qi
+
+,
+(6)
+
+where α is the learning rate, and R(n) is the n-step return [29] bootstrapped from the predicted
+Q-values from NEC during each episode.
+
+The parameters of the neural network are trained by minimising the mean squared error loss between
+the predicted Q-values and the stored returns, using a random sample of
+
+st, at, R(n)
+t
+
+tuples stored
+in experience replay [18], in a similar fashion to the DQN algorithm.
+
+8
+Cartpole Results
+
+(a) MFEC-based algorithms.
+(b) NEC-based algorithms.
+
+Figure 4: Learning curves on Cartpole.
+
+9
+GridWorld Results
+
+(a) MFEC-based algorithms.
+(b) NEC-based algorithms.
+
+Figure 5: Learning curves on OpenRoom.
+
+(a) MFEC-based algorithms.
+(b) NEC-based algorithms.
+
+Figure 6: Learning curves on FourRoom.
+
+10
+Atari Results
+
+(a) Q*Bert
+(b) Pong
+
+(c) Ms. Pac-Man
+(d) Space Invaders
+
+Figure 7: Learning curves for NEC-based algorithms.
+
+Figure 8: Learning curves for MFEC-based algorithms on Pong.
+
+11
+Hyperparameters
+
+Table 2: Hyperparameters used for the Gridworld and the Classic Control Domains.
+
+Parameters name
+D3QN
+MFEC
+NEC
+ϵ initial
+1
+1
+1
+ϵ ﬁnal
+5 × 10−3
+5 × 10−3
+5 × 10−3
+
+ϵ anneal start (steps)
+1
+5 × 103
+5 × 103
+
+ϵ anneal end (steps)
+5 × 104
+25 × 103
+25 × 103
+Discount factor λ
+0.99
+0.99
+0.99
+Reward clip
+Yes
+No
+No
+Number of neighbours k
+—
+11
+11
+Kernel delta δ
+—
+10−3
+10−3
+
+Experience replay size
+105
+—
+105
+
+RMSprop learning rate
+25 × 10−5
+—
+7.92 × 10−6
+RMSprop momentum
+0.95
+—
+0.95
+RMSprop ϵ
+10−2
+—
+10−2
+
+Training start (steps)
+5 × 103
+—
+103
+Batch size
+32
+—
+32
+Target network update (steps)
+7.5 × 103
+—
+—
+Observation projection
+—
+None
+—
+Projection key size
+—
+None
+—
+Memory learning rate α
+—
+—
+0.1
+n-step return
+—
+—
+100
+Key size
+—
+—
+64
+
+Table 3: Hyperparameters used for the Atari games.
+
+Parameters name
+D3QN
+MFEC
+NEC
+ϵ initial
+1
+1
+1
+ϵ ﬁnal
+10−2
+5 × 10−3
+10−3
+
+ϵ anneal start (steps)
+1
+5 × 103
+5 × 103
+
+ϵ anneal end (steps)
+106
+25 × 103
+25 × 103
+
+Discount factor λ
+0.99
+0.99
+0.99
+Reward clip
+Yes
+No
+No
+Number of neighbours k
+—
+11
+11
+Kernel delta δ
+—
+10−3
+10−3
+
+Experience replay size
+106
+—
+105
+
+RMSprop learning rate
+25 × 10−5
+—
+7.92 × 10−6
+
+RMSprop momentum
+0.95
+—
+0.95
+RMSprop ϵ
+10−2
+—
+10−2
+
+Training start (steps)
+12.5 × 103
+—
+5 × 104
+
+Batch size
+32
+—
+32
+Target network update (steps)
+103
+—
+—
+Observation projection
+—
+Gaussian
+—
+Projection key size
+—
+128
+—
+Memory learning rate α
+—
+—
+0.1
+n-step return
+—
+—
+100
+Key size
+—
+—
+128

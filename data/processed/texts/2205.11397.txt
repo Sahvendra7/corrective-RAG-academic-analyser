@@ -1,0 +1,2255 @@
+Super Vision Transformer
+
+Mingbao Lin1,2†, Mengzhao Chen1†, Yuxin Zhang1, Chunhua Shen3, Rongrong Ji1
+
+and Liujuan Cao1*
+
+arXiv:2205.11397v5 [cs.CV] 19 Jul 2023
+
+1Key Laboratory of Multimedia Trusted Perception and Efficient Computing, Ministry of
+Education of China, School of Informatics, Xiamen, China.
+2Tencent Youtu Lab, Shanghai, China.
+3Zhejiang University, Hangzhou, China.
+
+*Corresponding author(s). E-mail(s):
+†These authors contributed equally to this work.
+
+Abstract
+
+We attempt to reduce the computational costs in vision transformers (ViTs), which increase quadrat-
+ically in the token number. We present a novel training paradigm that trains only one ViT model
+at a time, but is capable of providing improved image recognition performance with various com-
+putational costs. Here, the trained ViT model, termed super vision transformer (SuperViT), is
+empowered with the versatile ability to solve incoming patches of multiple sizes as well as pre-
+serve informative tokens with multiple keeping rates (the ratio of keeping tokens) to achieve good
+hardware efficiency for inference, given that the available hardware resources often change from
+time to time. Experimental results on ImageNet demonstrate that our SuperViT can consider-
+ably reduce the computational costs of ViT models with even performance increase. For example,
+we reduce 2× FLOPs of DeiT-S while increasing the Top-1 accuracy by 0.2% and 0.7% for
+1.5× reduction. Also, our SuperViT significantly outperforms existing studies on efficient vision
+transformers. For example, when consuming the same amount of FLOPs, our SuperViT sur-
+passes the recent state-of-the-art (SOTA) EViT by 1.1% when using DeiT-S as their backbones.
+The project of this work is made publicly available at
+
+Keywords: Hardware efficiency, supernet, vision transformer.
+
+1 Introduction
+
+2021) and many others (Huang et al, 2020; Liang
+et al, 2021; Xie et al, 2021; Zamir et al, 2022; Zheng
+et al, 2021). The basic idea behind ViTs is to break
+down an image as a series of local patches and
+use a linear projection to tokenize these patches
+as inputs. In particular, ViTs merit in its property
+of capturing the long-range relationships between
+different portions of an image with the mechanism
+of multi-head self-attention (MHSA). Therefore,
+increasing attention has been paid to developing
+ViTs in various vision tasks.
+
+Vision transformers (ViTs) initially introduced in
+2020 (Dosovitskiy et al, 2020) have spread widely
+in the field of computer vision and soon become
+one of the most pervasive and promising architec-
+tures in varieties of prevalent vision tasks, such
+as image classification (Dosovitskiy et al, 2020;
+Graham et al, 2021; Jiang et al, 2021), object detec-
+tion (Carion et al, 2020; Zhu et al, 2022), video
+understanding (Arnab et al, 2021; Bertasius et al,
+
+ࣁ૚ = 1
+
+ܘ૚,૚
+
+ख࡯ࡱ
+
+Down
+sampling
+
+ࣁ૛ = 0.75
+
+1
+
+2
+
+खࡷࡸ
+
+ܘ૚,૛
+
+3
+ۼ૜ = 4
+
+ࣁ૜ = 0.5
+
+Multi-token
+keeping rate
+
+ܘ૚,૜
+
+खࡷࡸ
+
+ࣁ૚ = 1
+
+Transformer Block
+
+Transformer Block
+
+Patch Embedding
+
+ࣁ૛ = 0.75
+
+ܘ૛,૚
+
+ख࡯ࡱ
+
+1
+
+2
+
+ܘ૛,૛
+
+खࡷࡸ
+
+3
+
+ܘ૛,૜
+
+खࡷࡸ
+
+ࣁ૜ = 0.5
+
+Multi-token
+keeping rate
+
+ۼ૚ = 16
+
+ࣁ૚ = 1
+
+ܘ૜,૚
+
+ख࡯ࡱ
+
+ࣁ૛ = 0.75
+
+Down
+sampling
+
+1
+
+2
+
+ܘ૜,૛
+
+खࡷࡸ
+
+3
+
+Multi-token
+keeping rate
+
+ܘ૜,૜
+
+ۼ૛ = 9
+
+खࡷࡸ
+
+ࣁ૜ = 0.5
+
+Fig. 1: Training framework of SuperViT. An image is arranged into multiple branches of different patch
+sizes. For each branch, various token keeping rates are considered in ViT training. Thus, the trained
+SuperViT is capable of better recognizing images with different computational costs.
+
+Recent studies focus more on an efficient
+ViT (Chavan et al, 2022; Chu et al, 2021a; Gra-
+ham et al, 2021; Li et al, 2022; Liu et al, 2021)
+since the excessive computational costs, which
+increase quadratically to the number of tokens,
+have severely barricaded the broader usage of
+ViTs in real-world applications. Note that the
+transformer’s token sequence length is inversely
+proportional to the square of the patch size, which
+denotes that models with smaller patch sizes are
+computationally more expensive. The most intu-
+itive way is to reduce the transformer’s token
+number by enlarging the patch size. However, it
+has been an experimental consensus in the litera-
+ture (Dosovitskiy et al, 2020) that a ViT model
+performs better with smaller-size patches as its
+inputs. For example, ViT-B (Dosovitskiy et al,
+2020) observes 77.91% Top-1 accuracy on Ima-
+geNet when the patch size is 16×16 while only
+73.38% is reached if the patch size is 32×32. Mod-
+ern ViT structures simply accept a fixed patch size
+w.r.t. all input images when training a ViT model.
+It remains unexplored to train ViT models with
+a larger patch size for an economic computation
+while injecting information of a smaller patch size
+to retain the performance.
+Luckily, images are often filled with redun-
+dant regions, such as backgrounds. This property
+
+has inspired many researchers to go further, and
+drop the less informative tokens after forward-
+ing the token sequence to the networks. Tang et
+al. (Tang et al, 2022) introduced a top-down token
+pruning paradigm. DynamicViT (Rao et al, 2021)
+and IA-RED2 (Pan et al, 2021) learn to score
+each token with a learnable prediction module,
+while EViT (Liang et al, 2022) utilizes off-the-
+shelf class attention to measure token importance.
+In DVT (Wang et al, 2021b), multiple ViTs are
+cascaded and each image’s preserved token num-
+ber is decided by an early-existing policy. Despite
+that these token drop methods decrease computa-
+tion costs, they sacrifice recognition accuracy. For
+example, the recent PS-ViT (Tang et al, 2022) and
+Evo-ViT (Liang et al, 2022) decrease the Top-1
+performance of DeiT-S (Touvron et al, 2021a) by
+0.4% although 1.6∼2.0G FLOPs are saved on Ima-
+geNet. Most existing methods train a ViT model
+on the premise of a fixed token keeping rate. It
+remains an open issue to train one ViT under mul-
+tiple token keeping rates such that the case of more
+token drops for computation savings can benefit
+performance increase from that of fewer drops.
+Above all, most existing methods are restricted
+to processing token sequence with a permanent
+patch size or excavating token redundancy with a
+fixed keeping rate. Once the training is finished,
+
+2 Related Work
+
+The pioneering ViT work dates back to (Dosovit-
+skiy et al, 2020) that applies a pure transformer in
+natural language processing (Vaswani et al, 2017)
+to image classification. However, due to the lack
+of inductive bias, its state-of-the-art performance
+
+MHSA(Xl−1)
+
+= Concat
+h
+Attention(Ql,h, Kl,h)Vl,hiH
+
+h=1Wl,
+
+(4)
+where Concat[·] concatenates its inputs and
+we
+have
+Ql
+=
+Concat[Ql,h]H
+h=1,
+Kl
+=
+Concat[Kl,h]H
+h=1, Vl = Concat[Vl,h]H
+h=1. Wl is a
+projection matrix. Attention(·, ·) is computed as:
+
+Attention(Ql,h, Kl,h) = [al,h
+cls; al,h
+1 ; ...; al,h
+N ]
+
+3 Methodology
+
+= Softmax
+Ql,h(Kl,h)T
+
+
+.
+
+√
+
+D
+
+3.1 Overview
+
+(5)
+In particular, al
+cls = PH
+h=1 al,h
+cls is known as the
+attention from [class] token to all patch tokens
+and often used to determine the information rich-
+ness of each token (Chen et al, 2022a; Liang et al,
+2022; Xu et al, 2022). After a series of MHSA-FFN
+transformations, the [class] token xcls
+L
+is extracted
+from the L-th transformer encoder and utilized for
+object category prediction. Taking classification
+as an example, xcls
+L
+is fed to a classifier consist-
+ing of a fully-connected layer and a softmax layer.
+Therefore, given an L-layer ViT model T with the
+input token sequence X0 ∈RN×D, the category
+prediction distribution is obtained as:
+
+Vision transformer (ViT) breaks down an image
+I ∈RH×W ×C into a set of N local patches with
+shape of P × P × C. We have N = (H·W )/(P ·P ).
+These patches are linearly projected into D-
+dimensional token vectors. Also, an extra [class]
+token, which learns global image information and
+is responsible for the final classification, is added to
+the token sets. As results, the input token sequence
+of a ViT model can be represented as:
+
+X0 = [x0
+cls; x0
+1; ...; x0
+N] + Epos,
+(1)
+
+where x0
+cls ∈RD denotes [class] token and x0
+i rep-
+resents the token of the i-th patch with i > 0.
+The Epos denotes the learnable position embed-
+ding. Then, all tokens are fed into a ViT model T
+with L sequentially-stacked transformer encoders,
+each of which consists of a multi-head self-attention
+(MHSA) layer and a feed-forward network (FFN).
+Denoting Xl−1 and Xl as the input and output
+of the l-th transformer encoder, the processing of
+MHSA and FFN is formulated as:1
+
+p = T(X0) = Softmax
+
+FC(xL
+cls)
+
+.
+(6)
+
+Discussion. The ViT model benefits from the
+MHSA that models the long-range dependencies
+between the input tokens. However, the main com-
+putational complexity also stems from the MHSA
+layer (Dosovitskiy et al, 2020; Liu et al, 2021) as
+O(MHSA) = 4ND2 + 2N 2D. We can see that the
+complexity of MHSA increases quadratically in the
+number of incoming tokens N. Consequently, the
+MHSA has become the computation bottleneck in
+the ViT model. The first naive manner is to reduce
+the transformer’s input sequence length by enlarg-
+ing the size of split patches. However, as analyzed
+in Sec. 1, the performance of a ViT model is closely
+
+Yl = Xl−1 + MHSA(Xl−1),
+(2)
+
+Xl = Yl + FFN(Yl).
+(3)
+
+1Layer normalization is usually inserted before MHSA and
+FFN. We omit it here for brevity.
+
+X0
+g =
+
+x0
+g,cls; x0
+g,1; ...; x0
+g,Ng
+
++ Eg,pos,
+(7)
+
+where x0
+g,cls and x0
+g,i(i > 0) represent the class
+token and the i-th token in the g-th input patch
+set. Then, we feed the token sequence {X0
+g}G
+g=1
+to the ViT one-by-one for a series of MHSA-FFN
+transformations described in Sec. 3.1. Finally, we
+obtain a distribution set of category predictions
+{pg}G
+g=1, where each prediction pg is derived by:
+
+3.2 Super Vision Transformer
+
+We aim to train only one ViT model that maintains
+computational costs at different levels. We present
+how our SuperViT is empowered with a better
+capability of image recognition and can adapt to
+the current availability of hardware resources. The
+overview of SuperViT is depicted in Figure 1, which
+mainly includes a part of multi-size patch splitting
+and a part of multi-token keeping rate.
+
+pg = T(X0
+g) = Softmax
+
+FC(xL
+g,cls)
+
+.
+(8)
+
+Then, the prediction distributions {pg}G
+g=1 can
+be used to formulate the learning objective, such as
+cross-entropy loss with the ground-truth labels for
+ViT training. The trade-off between computational
+budget and accuracy performance can hardly be
+made if a ViT model is trained under a single patch
+size such as P1×P1. Luckily, our SuperViT can well
+enhance the performance of P1×P1 at the test stage
+since information of smaller-size patches is injected
+during network training. Also, the performance of
+smaller-size patches can be enhanced by larger-size
+ones since images of different complexities require
+different patch sizes to be correctly classified (Chen
+et al, 2022a; Wang et al, 2021b).
+
+3.2.1 Multi-Size Patch Splitting
+
+The contradiction exists that larger-size patches
+reduces the computational costs while the recogni-
+tion benefits from smaller-size patches. To maintain
+good performance at low computation, we propose
+to inject information of larger-size patches into the
+training of a ViT model with a smaller-size input.
+That is, we intend to equip SuperViT with the
+ability to solve incoming patches of multiple sizes.
+To that end, as shown in Figure 1, the input
+image is copied into G parallel branches and each
+branch is responsible for a particular patch size in
+the image splitting. Consequently, we have a patch
+size set {Pg × Pg}G
+g=1 where Pg > Pg+1. Then, an
+input image I ∈RH×W ×C is split into G patch
+sets and the g-th set consists of local patches with
+a shape of Pg × Pg × C, leading to a sequence
+length of Ng = H·W
+
+3.2.2 Multi-Token Keeping Rate
+
+We further spend efforts to reduce computational
+costs of our SuperViT given that redundant regions
+widely exist in image content. As discussed in Sec. 1,
+most existing studies on dropping less informative
+tokens suffer poor performance since they train the
+ViT model with a fixed token keeping rate, which
+fails to adapt to images of different complexities.
+Therefore, we propose to strengthen our SuperViT
+with the ability to preserve informative tokens with
+multiple keeping rates.
+
+Pg·Pg . Modern ViT structures sim-
+ply accept a fixed size of input patches w.r.t. all
+training images such that the patch sequence can
+be embedded into tokens of the same dimension
+for training a ViT model in parallel. To embed
+patches of different shapes into the token vectors
+
+G
+X
+
+G
+X
+
+M
+X
+
+L =
+
+g=1
+CE(pg,1, y) +
+
+m=2
+KL(pg,m, pg,1),
+
+g=1
+
+(10)
+where CE(·, ·) denotes the cross-entropy loss and
+KL(·, ·) represents the Kullback-Leibler divergence.
+After calculating the training loss, we switch on
+the gradient computing to update our SuperViT.
+However, looping over all the G · M cases causes
+heavy training burden. Instead, we offer an alterna-
+tive where only four complexities are considered in
+each iteration to reduce the training consumption.
+Hardware Efficiency. Our training paradigm
+results in one single ViT model executable to recog-
+nize images at different computational costs. It can
+be well deployed upon various hardware platforms
+with different resource constraints. Even for a given
+hardware device, our SuperViT permits instant and
+adaptive accuracy-efficiency trade-offs at runtime
+once the battery conditions or workloads change by
+simply modifying the image patch size and token
+keeping rate. Therefore, the hardware efficiency of
+our SuperViT is very advantageous over the tra-
+ditional scenario that has to train numerous ViT
+models in advance, and dynamically download an
+appropriate model and offload the existing one.
+Though its three extra forward passes seem to
+increase training cost, SuperViT results in multiple
+subnets of good performance. Thus, more fair com-
+parison should be executed by looking at the total
+costs for the same number of individually trained
+networks, which is provided in Sec. 4.3 and demon-
+strates not only better performance of our subnets,
+but also more economic training consumption.
+
+pg,m = T(X0
+g | ηm) = Softmax
+
+FC(xL
+g,cls | ηm)
+
+,
+(9)
+
+For η1 = 1, we have pg,1 = pg = T(X0
+g). Similar
+to multi-size patch splitting, training a ViT model
+with multiple token keeping rates also benefits the
+performance while the less informative tokens are
+removed for computation savings.
+
+3.3 Training Objective
+
+Based on the proposed multi-size patch splitting
+and multi-token keeping rate, our SuperViT would
+result in a total of G × M different computational
+costs. Inspired by the one-shot training settings
+in traditional CNNs (Cai et al, 2019; Yang et al,
+2020b; Yu et al, 2018), in each training iteration, we
+first freeze updating our SuperViT and sequentially
+forward a token sequence with a particular patch
+size as well as token keeping rate to derive the
+corresponding category prediction distribution set
+{pg,m}g=1:G,m=1:M. Among these predictions, it
+is expected that pg,1 can fit best with the ground-
+truth label y since no token drop is performed
+
+4 Experiments
+
+4.1 Implementation Details
+
+We evaluate our SuperViT and compare it
+against state-of-the-art on ImageNet (Deng et al,
+2009). Following existing studies on ViT compres-
+sion (Liang et al, 2022; Rao et al, 2021; Xu et al,
+2022), we use DeiT (w/o distillation) (Touvron
+
+Table 1: Efficacy comparison between our SuperViT and its backbones including DeiT-T, DeiT-S, LV-
+ViT-T and LV-ViT-S. The proposed SuperViT is a framework on top of these backbones. Experiments
+are conducted on ImageNet.
+
+Model
+Sequence
+Keeping
+Top-1
+FLOPs↓
+Throughput↑
+Length
+Rate
+Acc.↑(%)
+(G)
+(img./s)
+DeiT-S (Backbone)
+14×14
+1.0
+79.8
+4.6
+2461
+SuperViT
+12×12
+0.7
+79.6(−0.2)
+2.2(↓52%)
+4996(↑2.03×)
+SuperViT
+12×12
+1.0
+79.9(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+SuperViT
+14×14
+0.5
+80.0(+0.2)
+2.3(↓50%)
+4767(↑1.94×)
+SuperViT
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+SuperViT
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+DeiT-T
+14×14
+1.0
+72.2
+1.3
+5013
+SuperViT
+8×8
+0.5
+73.9(+1.7)
+0.7(↓46%)
+13548(↑2.70×)
+SuperViT
+8×8
+0.7
+75.3(+3.1)
+1.0(↓23%)
+10669(↑2.13×)
+SuperViT
+8×8
+1.0
+75.8(+3.6)
+1.4(↑8%)
+7727(↑1.54×)
+SuperViT
+10×10
+0.5
+77.3(+5.1)
+1.2(↓8%)
+9657(↑1.93×)
+SuperViT
+10×10
+0.7
+78.3(+6.1)
+1.5(↑15%)
+7567(↑1.51×)
+SuperViT
+10×10
+1.0
+78.5(+6.2)
+2.3(↑77%)
+5173(↑1.03×)
+SuperViT
+12×12
+0.5
+78.9(+6.7)
+1.7(↑31%)
+6308(↑1.26×)
+DeiT-T (Backbone)
+14×14
+1.0
+72.2
+1.3
+5013
+SuperViT
+14×14
+1.0
+73.1(+0.9)
+1.3(↓0%)
+5013(↑1.00×)
+LV-ViT-S (Backbone)
+14×14
+1.0
+83.3
+6.6
+1748
+SuperViT
+12×12
+0.7
+82.6(−0.7)
+3.2(↓52%)
+3565(↑2.04×)
+SuperViT
+12×12
+1.0
+82.9(−0.4)
+4.7(↓29%)
+2357(↑1.35×)
+SuperViT
+14×14
+0.7
+83.2(−0.1)
+4.3(↓35%)
+2684(↑1.54×)
+SuperViT
+14×14
+1.0
+83.5(+0.2)
+6.6(↓0%)
+1748(↑1.00×)
+LV-ViT-T
+14×14
+1.0
+79.1
+2.9
+3178
+SuperViT
+8×8
+0.5
+76.6(−2.5)
+1.1(↓62%)
+9968(↑3.14×)
+SuperViT
+8×8
+0.7
+79.8(+0.7)
+1.4(↓52%)
+7836(↑2.47×)
+SuperViT
+8×8
+1.0
+80.7(+1.6)
+2.0(↓31%)
+5487(↑1.72×)
+SuperViT
+10×10
+0.5
+79.8(+0.7)
+1.7(↓41%)
+6792(↑2.13×)
+SuperViT
+10×10
+0.7
+81.7(+2.6)
+2.2(↓24%)
+5302(↑1.67×)
+SuperViT
+10×10
+1.0
+82.2(+3.1)
+3.3(↑14%)
+3615(↑1.14×)
+SuperViT
+12×12
+0.5
+81.1(+2.0)
+2.5(↓14%)
+4524(↑1.42×)
+SuperViT
+14×14
+0.5
+82.1(+3.0)
+3.4(↑17%)
+3368(↑1.06×)
+LV-ViT-T (Backbone)
+14×14
+1.0
+79.1
+2.9
+3178
+SuperViT
+14×14
+1.0
+79.7(+0.6)
+2.9(↓0%)
+3178(↑1.00×)
+
+et al, 2021a) and LV-ViT (Jiang et al, 2021) as
+the backbones. All the training strategies, such as
+data augmentation, regularization and optimizer,
+strictly follow the original settings of DeiT (Tou-
+vron et al, 2021a) and LV-ViT (Jiang et al, 2021).
+The sequence length in our multi-size splitting
+includes {8×8, 10×10, 12×12, 14×14} and the
+
+multi-token keeping rate includes {1.0, 0.7, 0.5}.
+We remove less informative tokens at the 4-th,7-
+th,10-th blocks for both DeiT and LV-ViT to
+follow compared methods, and train SuperViT on
+a workstation with 4 NVIDIA A100 GPUs.
+
+SuperViT
+DVT
+MSDNet
+RANet
+
+80
+
+4.2.1 Comparison with Backbones
+
+79
+
+To show the efficacy of our training paradigm, we
+first list our SuperViT under different sequence
+lengths (patch sizes) and token keeping rates in
+Table 1 and compare it with its backbones of DeiT-
+S and LV-ViT-S. For fair comparison, we also
+compare with DeiT-T and LV-ViT-T backbones
+since our computational costs are tiny in the cases
+of very small sequence lengths and keeping rates.
+Our efficacy is measured from two aspects includ-
+ing the Top-1 accuracy to reflect its effectiveness,
+and FLOPs consumption and model throughput to
+reflect its efficiency. The model throughput shows
+the number of processed images per second on a
+single A100 GPU (Liang et al, 2022; Wang et al,
+2021b). For an accurate throughput estimation, we
+repeatedly feed each model with a batch size of
+512 for 50 times. Then, the practical throughput
+is computed as 512×50/total inference time.
+From Table 1, we observe significant accuracy
+increase when maintaining similar FLOPs con-
+sumption and throughput with backbones. For
+example, with FLOPs of 4.6G and throughput
+of 2461, our SuperViT (14×14, 1.0) increases the
+accuracy of DeiT-S backbone from 79.8% (2-nd
+row of Table 1) to 80.6% (7-th row of Table 1), lead-
+ing to 0.8% improvement. Also, from the 22-nd
+row of Table 1, our SuperViT (14×14, 1.0) gains
+additional 0.2% accuracy improvement when using
+LV-ViT-S as the backbone. Besides, when main-
+taining similar accuracy, SuperViT merits in its
+significant FLOPs reduction (throughput increase).
+For example, with accuracy of 79.9% (SuperViT, 4-
+th row of Table 1) and 79.8% (DeiT-S, 2-nd row of
+Table 1), SuperViT saves 28% FLOPs and obtains
+1.37× throughput increase, meanwhile SuperViT
+reduces 35% FLOPs and increases throughput
+by 1.54× with accuracy of 83.2% (21-st row of
+Table 1) over 83.3% of LV-ViT-S (18-th row of
+Table 1). Compared to the tiny version of DeiT and
+LV-ViT, our SuperViT not only reduces FLOPs
+and increases throughput, but also significantly
+enhances the performance.
+It is worth noting that, for LV-ViT-S, SuperViT
+increases the accuracy only by 0.2%, comparing
+to the significant improvement of 0.9% for DeiT-
+T, 0.8% for DeiT-S and 0.6% for LV-ViT-T. This
+is due to the fact that LV-ViT-S is a relatively
+
+78
+
+Accuracy(%)
+
+77
+
+76
+
+75
+
+74
+
+73
+
+1.0
+1.5
+2.0
+2.5
+FLOPs(G)
+
+Fig. 2: Comparison between SuperViT and early-
+exiting compression methods including MSDNet,
+RANet and DVT. The proposed SuperViT uses
+DeiT-S as the backbone. Experiments are con-
+ducted on ImageNet.
+
+larger network that already achieves a very good
+performance of 83.3%, upon which, it is challenging
+to gain much better performance. Given this, the
+0.2% improvement is also meaningful.
+
+4.2.2 Comparison with Compressed
+Models
+
+We continue to compare our efficacy with many
+studies on model compression including early-
+existing compression (Huang et al, 2018; Wang
+et al, 2021b; Yang et al, 2020a) and token drop
+compression (Chavan et al, 2022; Liang et al, 2022;
+Pan et al, 2021; Rao et al, 2021; Tang et al, 2022;
+Xu et al, 2022; Yin et al, 2022). Early-existing
+compression methods dynamically choose different
+inference paths based on a particular criterion. Our
+SuperViT can also implement early exist since it
+adapts to multiple complexities. In this part, we
+give a simple scenario where the cheapest com-
+putation (8×8, 0.5) is always used to predict an
+incoming image and a second one (14×14, 0.7)
+is utilized again if the confidence of the first pre-
+diction is smaller than a threshold. By adjusting
+the threshold, our SuperViT achieves different
+accuracy-FLOPs trade-offs. Figure 2 plots the per-
+formance of our SuperViT built upon DeiT-S and
+methods including CNN-based MSDNet (Huang
+et al, 2018) and RANet (Yang et al, 2020a), as well
+as transformer-based DVT (Wang et al, 2021b).
+Our SuperViT consistently performs better than
+
+Table 2: Efficacy comparison between our Super-
+ViT and off-the-shelf studies on token drops. For
+fair comparison, all compared methods use the
+same backbones including DeiT-S and LV-ViT-S
+with our proposed SuperViT. Experiments are con-
+ducted on ImageNet.
+
+Methods
+Pre-trained
+Top-1
+FLOPs
+Acc. (%)
+(G)
+DeiT-S (Backbone)
+-
+79.8
+4.6
+SuperViT (Ours)
+%
+80.6
+4.6
+IA-RED2
+!
+79.1
+3.2
+A-ViT
+!
+78.6
+3.6
+ViT-Slim
+!
+79.9
+3.1
+Evo-ViT
+%
+79.4
+3.0
+EViT
+%
+79.5
+3.0
+SuperViT (Ours)
+%
+80.5
+3.0
+DynamicViT
+!
+79.3
+2.9
+PS-ViT
+!
+79.4
+2.6
+SuperViT(Ours)
+%
+80.0
+2.3
+LV-ViT-S (Backbone)
+-
+83.3
+6.6
+SuperViT (Ours)
+%
+83.5
+6.6
+DynamicViT
+!
+83.0
+4.6
+EViT
+%
+83.0
+4.7
+SuperViT (Ours)
+%
+83.2
+4.3
+
+4.2.3 Comparison with ViT Models
+
+In Figure 3, we compare the accuracy and FLOPs
+trade-off
+between
+our
+SuperViT
+built
+upon
+LV-ViT-S and various ViT models including
+DeiT (Touvron et al, 2021a), PVT (Wang et al,
+2021a), CoaT (Xu et al, 2021), CrossViT (Chen
+et al, 2021), Swin (Liu et al, 2021), T2T-ViT (Yuan
+et al, 2021), CaiT (Touvron et al, 2021b) and
+Shunted-ViT (Ren et al, 2022). The accuracy-
+FLOPs trade-off of our SuperViT consists of
+models with different sequence lengths and keep-
+ing rates in Table 1. Results in Figure 3 indicate
+that our SuperViT provides a better accuracy-
+FLOPs trade-off than majorities of existing ViT
+models. In fact, these ViTs focus on improving
+the structure of vanilla ViT or token interactions
+for accuracy improvement while our SuperViT
+introduces one new training paradigm. Thus, our
+SuperViT is orthogonal to these ViT variants,
+which increases the possibility of integrating our
+training paradigm into these ViT models. For
+example, when constructing our SuperViT upon
+LV-ViT-S, a better accuracy-FLOPs trade-off can
+be observed in Figure 3.
+
+the state-of-the-art competitor DVT (Wang et al,
+2021b). With similar accuracy, SuperViT results
+in significantly smaller FLOPs. This is attributed
+to the fact that the cheapest version of SuperViT
+already reaches good accuracy of 73.9% in Table 1.
+Therefore, most images can be well recognized even
+at very small costs.
+We go on the comparison with token drop
+compression, which reduces the number of tokens
+during network forwarding. For fair comparison,
+we pick up the results of our SuperViT from Table 1
+and compare with the recent state-of-the-arts (Cha-
+van et al, 2022; Liang et al, 2022; Pan et al, 2021;
+Rao et al, 2021; Tang et al, 2022; Xu et al, 2022;
+Yin et al, 2022). Results in Table 2 manifest that
+our SuperViT well outperforms previous methods
+in both accuracy performance and FLOPs reduc-
+tion by margins when DeiT-S and LV-ViT-S are
+used as backbones. For example, upon DeiT-S,
+our SuperViT significantly outperforms the recent
+state-of-the-art EViT (Liang et al, 2022) by 1.1%
+when consuming the same FLOPs of 3.0G. It is
+also worth stressing that, existing methods, some
+of which even heavily rely on a pre-trained model,
+deteriorate the baseline performance when per-
+forming token drops while our SuperViT leads to
+
+4.3 Ablation Study
+
+Multi-size and Multi-token. In Figure 4a, we
+first analyze the effectiveness of multi-size patch
+splitting and multi-token keeping rate respectively.
+As can be seen from the figure, the combination of
+multi-size patch splitting and multi-token keeping
+rate results in consistent performance increase com-
+pared to these only considering one of them. Our
+training objective in Eq. (10) adopts cross-entropy
+loss for the forwarding that does not perform token
+drops, while Kullback-Leibler divergence is used
+for the cases where token drops are performed.
+Figure 4b compares our training objective with the
+situation where the cross-entropy is considered for
+all cases. Results show that our training objective
+is of more benefit to SuperViT. Figure 4c compares
+
+Swin-B
+
+CaiT-S-48
+CaiT-S-36
+
+SuperViT
+
+Swin-S
+
+LV-ViT-S
+
+83
+
+T2T-ViT-24
+CaiT-S-24
+
+Shunted-M
+
+CoaT-Lite Small
+
+T2T-ViT-19
+
+CrossViT-B
+
+82
+
+DeiT-B
+
+T2T-ViT-14
+
+Swin-T
+
+PVT-Medium
+
+81
+
+CrossViT-S
+
+Accuracy(%)
+
+PVT-Small
+
+80
+
+DeiT-S
+
+Shunted-T
+
+79
+
+LV-ViT-T
+
+78
+
+77
+
+2.5
+5.0
+7.5
+10.0
+12.5
+15.0
+17.5
+20.0
+FLOPs(G)
+
+Fig. 3: Accuracy and FLOPs trade-off comparison between our SuperViT and popular ViT models. The
+proposed SuperViT uses LV-ViT-S as the backbone. Experiments are conducted on ImageNet.
+
+(14×14,0.7)
+
+80
+
+80
+
+(14×14,0.5)
+
+(14×14,1.0)
+
+(12×12,0.7)
+
+(12×12,1.0)
+
+(12×12,0.5)
+
+78
+
+Accuracy(%)
+
+Accuracy(%)
+
+(10×10,0.7)
+
+78
+
+(10×10,1.0)
+
+(10×10,0.5)
+
+76
+
+76
+
+patch size
+keeping rate
+patch size + keeping rate (ours)
+
+(8×8,1.0)
+
+all ce
+ce + kl (ours)
+
+74
+
+(8×8,0.7)
+
+74
+
+(8×8,0.5)
+
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+4.5
+FLOPs(G)
+
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+4.5
+FLOPs(G)
+
+(a)
+
+(b)
+
+(c)
+
+Fig. 4: Ablation studies of (a) multi-size and multi-token, (b) training objective, and (c) training
+complexities. We conduct ablations using DeiT-S as the backbone, and all the experiments are conducted
+on ImageNet.
+
+the performance of considering all G · M complex-
+ities and the alternative of using only four cases
+(see Sec.3.3). Results manifest that the former man-
+ifests slightly better performance. Nevertheless,
+considering all complexities takes about 8.8 (DeiT-
+S backbone) and 14.4 (LV-ViT-S backbone) days
+to train SuperViT on four NVIDIA A100 GPUs,
+
+while they drastically decrease to 4.1 and 6.5 days
+by using only four subnets at each iteration of the
+forward propagation. Thus, we encourage to uti-
+lize the alternative if the training resources are not
+enough, which is also our standard to implement
+all experiments of this paper.
+
+DeiT
+SuperViT
+
+Table 3:
+Comparison between our training
+paradigm and individual training (†). DeiT-S is
+used as the backbone. Experiments are conducted
+on ImageNet.
+
+80.5
+
+80.0
+
+Accuracy(%)
+
+79.5
+
+Sequence
+Keeping
+DeiT-S†
+SuperViT
+Length
+Rate
+Top-1 Acc.
+Top-1 Acc.(↑)
+8×8
+0.5
+71.6%
+73.9%(2.3%↑)
+8×8
+0.7
+73.5%
+75.3%(1.8%↑)
+8×8
+1.0
+74.8%
+75.8%(1.0%↑)
+10×10
+0.5
+74.8%
+77.3%(2.5%↑)
+10×10
+0.7
+76.7%
+78.3%(1.6%↑)
+10×10
+1.0
+77.4%
+78.5%(1.1%↑)
+12×12
+0.5
+76.5%
+78.9%(2.4%↑)
+12×12
+0.7
+78.0%
+79.6%(1.6%↑)
+12×12
+1.0
+78.7%
+79.9%(1.2%↑)
+14×14
+0.5
+78.0%
+80.0%(2.0%↑)
+14×14
+0.7
+79.2%
+80.5%(1.3%↑)
+14×14
+1.0
+79.8%
+80.6%(0.8%↑)
+
+79.0
+
+78.5
+
+78.0
+
+77.5
+
+77.0
+
+100
+200
+300
+400
+500
+600
+Training Epochs
+
+Fig. 5: Performance of our SuperViT (sequence
+length: 14×14, keeping rate: 1.0) at different train-
+ing epochs, and full-trained DeiT-S for 300 and
+600 epochs (sequence length: 14×14, keeping rate:
+1.0). Experiments are conducted on ImageNet.
+
+Therefore, we further train each individual sub-
+net from scratch. Compared with the traditional
+individual training paradigm, the superiorities of
+our SuperViT are three folds: First, significant per-
+formance improvement is observed. Table 3 shows
+the accuracy comparison between our SuperViT
+and its counterpart that trains each ViT model indi-
+vidually. As can be seen, under the same sequence
+length and keeping rate, our SuperViT increases
+the performance by 0.8% ∼2.5%. In particular,
+over 2.0% performance gains are obtained under
+a small keeping rate of 0.5. Second, our training
+paradigm is more economical in training consump-
+tion. For example, it takes around 4.1 days to
+train our SuperViT on a single workstation with
+4 NVIDIA A100 GPUs when using DeiT-S (Tou-
+vron et al, 2021a) as the backbone while about
+24.4 days are required for traditional individual
+training paradigm. Third, our SuperViT is more
+hardware efficient. As widely discussed in Sec. 3.3
+of the main paper, SuperViT can be executable
+on various hardware platforms equipped with dif-
+ferent resources since it can recognize images well
+at different computational costs. Also, SuperViT
+empowers instant and adaptive accuracy-efficiency
+trade-offs by simply adjusting the image patch size
+and token keeping rate as soon as the available
+resource on the same platform changes while tra-
+ditional methods have to carefully download an
+appropriate model and offload the existing one,
+which unfortunately lead to many additional data
+reading overloads in I/O swapping.
+
+Comparison with Individual ViT Train-
+ing. Recall that the proposed SuperViT requires
+three additional forward passes for each training
+iteration, which seems to increase the training
+time at each training iteration. Considering this,
+we perform experiments by training models with
+different training epochs. Figure 5 manifests the
+performance where we provide a total of 100, 150,
+200, 250, 300 training epochs for SuperViT, and
+300, 600 training epochs for DeiT-S. General speak-
+ing, the training time of 150 epochs for SuperViT
+is almost the same as that of 300 epochs for DeiT.
+In this case, the accuracy of SuperViT is 78.86%
+while DeiT obtains 79.82%. It seems that SuperViT
+has failed to surpass DeiT.
+Nevertheless, we argue that such a comparison
+is unfair. As stated in Sec. 4.1, the sequence length
+in our multi-size splitting includes {8×8, 10×10,
+12×12, 14×14} and the multi-token keeping rate
+includes {1.0, 0.7, 0.5}, resulting in a total of 12 dif-
+ferent computational costs. Our training paradigm
+sequentially forwards one of these 12 cases, which
+leads to only one SuperViT model that provides
+improved image recognition performance of 12 sub-
+nets with various computational costs. Therefore,
+we can make a save conclusion that a more fair
+comparison should be constructed by training 12
+individual ViT models of different complexities,
+reporting the accuracy performance of each model,
+and comparing overall training time costs.
+
+Table 4: Transferring ImageNet pre-trained DeiT-
+S/SuperViT to CIFAR-100 for classification and
+ADE20K using UperNet (Xiao et al, 2018) for
+segmentation.
+
+Dataset
+CIFAR-100
+ADE20K
+Model
+Top-1 Acc.(%)
+mIoU
+DeiT-S
+88.55
+42.96
+SuperViT
+89.33
+45.32
+
+Transferability. We further provide perfor-
+mance on downstream tasks including classification
+on CIFAR-100 dataset (Krizhevsky et al, 2009)
+and segmentation on ADE20K dataset (Zhou et al,
+2017). These experiments are performed and com-
+pared using ImageNet pre-trained DeiT-S and our
+SuperViT. Table 4 provides classification results on
+CIFAR-100. Compared with DeiT-S, the proposed
+SuperViT serves as a better pre-trained for the
+downstream classification, leading to performance
+increase from 88.55% to 89.33%. Table 4 also gives
+segmentation results on ADE20K. We observe con-
+sistent performance increase even for segmentation
+task, that is, SuperViT well increases the mIoU
+results from 42.96 of DeiT-S to 45.32. These results
+therefore well demonstrate that the transferability
+of our SuperViT is also superior to that of vanilla
+DeiT-S, and SuperViT is more appropriate for the
+downstream tasks.
+Token Type. Recall we use the class token as
+an indicator to reflect the information richness of
+each token, which is also adopted in many existing
+studies (Chen et al, 2022a; Liang et al, 2022; Xu
+et al, 2022). Then, we drop/preserve tokens with
+lower/higher values of attention. Herein, we try
+a different dropping strategy by removing 80%
+lower-attended regions, but also 20% high-attended
+regions. Table 5 compares the subnet performance
+of removing different token types. Not surprisingly,
+removing high-attended tokens causes a very poor
+performance, e.g., 78.9% v.s. 80.0% for sequence
+length of 14×14 and keeping rate of 0.5. These
+results confirm the correctness of using attention
+as an information richness indicator.
+Dropping Blocks. As stated in Sec. 4.1, for
+fair comparison, we follow existing studies to
+remove less informative tokens at the 4-th, 7-th and
+10-th blocks for both DeiT and LV-ViT. Herein, we
+conduct two other options for ablation by removing
+tokens at blocks 3/6/9 and blocks 4/6/8. Table 6
+manifests the performance of all subnets w.r.t. the
+
+Table 5: Subnet performance of removing different token types on ImageNet. DeiT-S is used as the
+backbone with Sequence Length: 14 × 14, Keeping Rate: 1.0, Top-1 Acc.: 79.8%, FLOPs: 4.6G and
+Throughput: 2461 img./s.
+
+Token Type
+Sequence
+Keeping
+Top-1
+FLOPs↓
+Throughput↑
+Length
+Rate
+Acc.↑(%)
+(G)
+(img./s)
+
+14×14
+0.5
+80.0(+0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.9(−0.9)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.6(−0.2)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.9(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+77.3(−2.5)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.3(−1.5)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.5(−1.3)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.9(−5.9)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.3(−4.5)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.8(−4.0)
+1.4(↓70%)
+7727(↑3.13×)
+14×14
+0.5
+78.9(−0.9)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+79.2(−0.6)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.1(+0.3)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+77.6(−2.2)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+78.1(−1.7)
+2.2(↓52%)
+4996(↑2.03×)
+20% High-attended
+12×12
+1.0
+79.0(−0.8)
+3.3(↓28%)
+3371(↑1.37×)
+80% Low-attended
+10×10
+0.5
+75.9(−3.9)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+76.6(−3.2)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+77.7(−2.1)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+72.6(−7.2)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+73.5(−6.3)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+74.9(−4.9)
+1.4(↓70%)
+7727(↑3.13×)
+
+All Low-attended
+
+5 Limitations and Future
+
+and outputs. More validations are expected to per-
+form on the pyramid structures (Liu et al, 2021;
+Wang et al, 2021a).
+
+We further discuss unexplored limitations, which
+will be our future focus. First, following most com-
+pared methods, we verify our SuperViT on the
+classification task while its efficacy on dense predic-
+tions such as detection and segmentation remains
+unexplored. Second, we construct SuperViT from
+two dimensions of image patch sizes and token keep-
+ing rates. More efforts can be made to take into
+account the transformer’s depth, width of token
+embedding and so on. Lastly, the vanilla DeiT and
+LV-ViT consist of plain structures where the num-
+ber of tokens maintains unchanged in their inputs
+
+6 Conclusion
+
+Here, we have presented a novel training paradigm
+to reduce the computational costs in vision trans-
+formers (ViTs). We first break down input images
+into multiple token sequences of different lengths
+first. In each training iteration, we sequentially
+feed each token sequence to the network where
+multiple token keeping rates are imposed as well to
+learn category prediction distributions at different
+complexities. Consequently, the trained ViT model,
+
+Table 6: Subnet performance of different block dropping scenarios on ImageNet. DeiT-S is used as
+the backbone with Sequence Length: 14 × 14, Keeping Rate: 1.0, Top-1 Acc.: 79.8%, FLOPs: 4.6G and
+Throughput: 2461 img./s.
+
+Dropping Blocks
+Sequence
+Keeping
+Top-1
+FLOPs↓
+Throughput↑
+Length
+Rate
+Acc.↑(%)
+(G)
+(img./s)
+
+14×14
+0.5
+80.0(+0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.9(−0.9)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.6(−0.2)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.9(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+77.3(−2.5)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.3(−1.5)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.5(−1.3)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.9(−5.9)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.3(−4.5)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.8(−4.0)
+1.4(↓70%)
+7727(↑3.13×)
+
+4/7/10
+
+14×14
+0.5
+79.3(−0.5)
+2.0(↓57%)
+5398(↑2.19×)
+14×14
+0.7
+80.1(+0.3)
+2.8(↓40%)
+3910(↑1.58×)
+14×14
+1.0
+80.5(+0.7)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.0(−1.8)
+1.4(↓70%)
+7489(↑3.04×)
+12×12
+0.7
+79.1(−0.8)
+2.0(↓57%)
+5423(↑2.20×)
+12×12
+1.0
+79.6(−0.2)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+75.9(−3.9)
+1.0(↓79%)
+11324(↑4.60×)
+10×10
+0.7
+77.7(−2.1)
+1.4(↓70%)
+8213(↑3.33×)
+10×10
+1.0
+78.2(−1.6)
+2.3(↓52%)
+5173(↑2.10×)
+8×8
+0.5
+72.0(−7.8)
+0.6(↓87%)
+15102(↑6.13×)
+8×8
+0.7
+74.6(−5.2)
+0.9(↓81%)
+11679(↑4.74×)
+8×8
+1.0
+75.5(−4.3)
+1.4(↓70%)
+7727(↑3.13×)
+
+3/6/9
+
+14×14
+0.5
+79.0(−0.8)
+2.1(↓55%)
+5479(↑2.18×)
+14×14
+0.7
+79.9(+0.1)
+2.8(↓40%)
+3890(↑1.58×)
+14×14
+1.0
+80.2(+0.4)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+77.8(−2.0)
+1.5(↓68%)
+7612(↑3.09×)
+12×12
+0.7
+78.8(−1.0)
+2.1(↓55%)
+5190(↑2.10×)
+12×12
+1.0
+79.1(−0.7)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+75.9(−4.0)
+1.1(↓76%)
+10482(↑4.26×)
+10×10
+0.7
+77.5(−2.3)
+1.4(↓70%)
+8110(↑3.29×)
+10×10
+1.0
+77.8(−2.0)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+72.0(−7.8)
+0.7(↓85%)
+13781(↑5.60×)
+8×8
+0.7
+74.3(−5.5)
+0.9(↓81%)
+11554(↑4.69×)
+8×8
+1.0
+74.9(−4.9)
+1.4(↓70%)
+7727(↑3.13×)
+
+4/6/8
+
+Table 7: Subnet performance of SuperViT trained on different proportions of the ImageNet. DeiT-S is
+used as the backbone with its performance displayed above the dash lines.
+
+Proportion
+Sequence
+Keeping
+Top-1
+FLOPs↓
+Throughput↑
+Length
+Rate
+Acc.↑(%)
+(G)
+(img./s)
+
+14×14
+1.0
+79.8
+4.6
+2461
+14×14
+0.5
+80.0(+0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.9(−0.9)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.6(−0.2)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.9(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+77.3(−2.5)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.3(−1.5)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.5(−1.3)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.9(−5.9)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.3(−4.5)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.8(−4.0)
+1.4(↓70%)
+7727(↑3.13×)
+
+100%
+
+14×14
+1.0
+73.6
+4.6
+2461
+14×14
+0.5
+74.3(+0.7)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+74.8(+1.2)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+74.7(+1.1)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+72.9(−0.7)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+73.8(+0.2)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+73.7(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+71.1(−2.5)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+72.1(−1.5)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+72.1(−1.5)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+67.6(−6.0)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+69.4(−4.2)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+69.9(−3.7)
+1.4(↓70%)
+7727(↑3.13×)
+
+50%
+
+14×14
+1.0
+55.7
+4.6
+2461
+14×14
+0.5
+58.0(+2.3)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+59.0(+3.3)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+58.7(+3.0)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+56.1(+0.4)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+57.3(+1.6)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+57.3(+1.6)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+53.9(−1.8)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+55.3(−0.4)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+55.5(−0.2)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+49.9(−5.8)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+51.7(−4.0)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+52.2(−3.5)
+1.4(↓70%)
+7727(↑3.13×)
+
+20%
+
+referred to as super vision transformer (SuperViT)
+in this paper, is demonstrated to provide a bet-
+ter image recognition at a computationally more
+economical manner compared with existing state-
+of-the-art methods. Only one SuperViT model is
+
+able to process images at different costs thus it
+also allows efficient hardware utilization in compar-
+ison with traditional methods that have to train
+numerous ViT models in advance.
+
+Table 8: Subnet performance of different patch dimension alignment methods on ImageNet. DeiT-S is
+used as the backbone with Sequence Length: 14 × 14, Keeping Rate: 1.0, Top-1 Acc.: 79.8%, FLOPs: 4.6G
+and Throughput: 2461 img./s.
+
+Alignment Methods
+Sequence
+Keeping
+Top-1
+FLOPs↓
+Throughput↑
+Length
+Rate
+Acc.↑(%)
+(G)
+(img./s)
+
+14×14
+0.5
+80.0(+0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.9(−0.9)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.6(−0.2)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.9(+0.1)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+77.3(−2.5)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.3(−1.5)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.5(−1.3)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.9(−5.9)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.3(−4.5)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.8(−4.0)
+1.4(↓70%)
+7727(↑3.13×)
+
+Bilinear Interpolation
+
+14×14
+0.5
+79.6(−0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.5(+0.7)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.6(+0.8)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.8(−1.0)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.5(−0.3)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.6(−0.2)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+77.4(−2.4)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.2(−1.6)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.4(−1.4)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.8(−6.0)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.4(−4.4)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.8(−4.0)
+1.4(↓70%)
+7727(↑3.13×)
+
+Bicubic Interpolation
+
+14×14
+0.5
+79.6(−0.2)
+2.3(↓50%)
+4767(↑1.94×)
+14×14
+0.7
+80.3(+0.5)
+3.0(↓35%)
+3654(↑1.48×)
+14×14
+1.0
+80.5(+0.7)
+4.6(↓0%)
+2461(↑1.00×)
+12×12
+0.5
+78.4(−1.4)
+1.7(↓64%)
+6308(↑2.56×)
+12×12
+0.7
+79.3(−0.5)
+2.2(↓52%)
+4996(↑2.03×)
+12×12
+1.0
+79.5(−0.3)
+3.3(↓28%)
+3371(↑1.37×)
+10×10
+0.5
+76.7(−3.1)
+1.2(↓74%)
+9657(↑3.88×)
+10×10
+0.7
+78.0(−1.8)
+1.5(↓68%)
+7567(↑3.01×)
+10×10
+1.0
+78.3(−1.5)
+2.3(↓50%)
+5173(↑2.10×)
+8×8
+0.5
+73.4(−6.4)
+0.7(↓85%)
+13548(↑5.50×)
+8×8
+0.7
+75.1(−4.7)
+1.0(↓79%)
+10669(↑4.33×)
+8×8
+1.0
+75.9(−3.9)
+1.4(↓70%)
+7727(↑3.13×)
+
+Individual Embedding
+
+Declarations
+
+2022ZD0118202), the National Science Fund for
+Distinguished Young Scholars (No. 62025603),
+
+References
+
+Arnab A, Dehghani M, Heigold G, et al (2021)
+Vivit: A video vision transformer. In: Int. Conf.
+Comput. Vis., pp 6836–6846
+Bertasius G, Wang H, Torresani L (2021) Is
+space-time attention all you need for video
+understanding? In: Int. Conf. Mach. Learn.
+Cai H, Gan C, Wang T, et al (2019) Once-for-all:
+Train one network and specialize it for efficient
+deployment. In: Int. Conf. Learn. Represent.
+Carion N, Massa F, Synnaeve G, et al (2020) End-
+to-end object detection with transformers. In:

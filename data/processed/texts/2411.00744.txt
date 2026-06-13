@@ -1,0 +1,2366 @@
+Ziting Wang†, Haitao Yuan†, Wei Dong†, Gao Cong†, Feifei Li‡
+
+†Nanyang Technological University, Singapore
+‡Alibaba Group, China
+†{haitao.yuan, wei dong,
+
+Abstract—Large Language Models (LLMs) have demonstrated
+impressive ability in generation and reasoning tasks but struggle
+with handling up-to-date knowledge, leading to inaccuracies or
+hallucinations. Retrieval-Augmented Generation (RAG) mitigates
+this by retrieving and incorporating external knowledge into
+input prompts. In particular, due to LLMs’ context window
+limitations and long-context hallucinations, only the most relevant
+“chunks” are retrieved. However, current RAG systems face three
+key challenges: (1) chunks are often retrieved independently
+without considering their relationships, such as redundancy and
+ordering; (2) the utility of chunks is non-monotonic, as adding
+more chunks can degrade quality; and (3) retrieval strategies fail
+to adapt to the unique characteristics of different queries.
+To overcome these challenges, we design a cost-constrained
+retrieval optimization framework for RAG. We adopt a Monte
+Carlo Tree Search (MCTS) based strategy to find the opti-
+mal chunk combination order, which considers the chunks’
+correlations. In addition, to address the non-monotonicity of
+chunk utility, instead of treating budget exhaustion as the
+termination condition, we design a utility computation strategy
+to identify the optimal chunk combination without necessarily
+exhausting the budget. Furthermore, we propose a configuration
+agent that predicts optimal configurations for each query do-
+main, improving our framework’s adaptability and efficiency.
+Experimental results demonstrate up to a 30% improvement
+over baseline models, highlighting the framework’s effectiveness,
+scalability, and suitability. Our source code has been released at
+
+Response:
+Designer: The Eiffel Tower was named after
+the engineer Gustave Eiffel, whose company
+designed and built the tower.
+Construction period: It was constructed
+between 1887 and 1889.
+Height: The Eiffel Tower stands at 324 meters
+tall.
+LLMs
+
+Query: "Who designed the Eiffel
+Tower and when was it
+constructed? Provide information
+on its height as well."
+
+arXiv:2411.00744v2 [cs.DB] 12 Mar 2026
+
+Chunk1: "The Eiffel Tower in Paris
+held the title of the world's tallest
+structure for over 40 years until
+1930.”
+
+Token
+256
+512
+512
+512
+768
+768
+913
+
+Score
+χ1
+χ1 + χ3
+χ3 + χ4
+χ4 + χ3
+χ1 + χ2 + χ4
+χ1 + χ4 + χ3
+χ1 + χ2 + χ3+ χ4
+
+0.3
+0.4
+0.8
+0.9
+0.6
+0.8
+0.9
+
+Chunk2:“It was the tallest man-
+made structure in the world for 41
+years until the completion of the
+Chrysler Building in New York in
+1930. ”
+
+Reranker Model
+
+Score
+
+Chunk χ3 0.8
+Chunk χ1 0.6
+Chunk χ4 0.4
+Chunk χ2 0.3
+
+Chunk3:" The Eiffel Tower
+constructed between 1887 and
+1889, it stands at 324 meters tall.”
+
+Chunk4:"It was named after the
+engineer Gustave Eiffel, whose
+company designed and built the
+item, even though several other
+designs were considered initially."
+
+Chunk Combination Order
+
+Chunk Scores
+
+Potential Chunks
+
+Fig. 1: Chunk combination order example.
+
+Q&A, as evidenced by results on knowledge-intensive tasks
+and broad industry adoption [19], [20].
+However, many existing RAG frameworks incur expensive
+computational costs. First, tuning-based RAG approaches [14],
+[21]–[24] require extensive instruction tuning to enhance
+LLMs’ abilities in context evaluation and utilization. These
+methods fine-tune models on specialized tasks like context
+ranking [14] or self-reflection [21] to improve retrieval quality
+and generation accuracy. While effective, they demand signif-
+icant computational cost for model training and specialized
+datasets. Similarly, graph-based RAG methods [6], [13], [25]–
+[27] rely on LLM inference to construct knowledge graphs or
+guide actions. While these graph-based approaches avoid tun-
+ing models, they impose significant computational overhead by
+requiring multiple LLM inferences for graph construction and
+chunk summarization, making them prohibitively expensive
+when scaling to large knowledge bases.
+Besides tuning-based and graph-based methods, rank-based
+RAG represents another prevalent approach [12], [15], [28],
+[29]. These methods assign a utility score to each chunk,
+indicating its relevance for answering the user query. These
+scores typically derive from similarity metrics between queries
+and chunks or from specialized reranker models [28], [30],
+[31], whose scores have demonstrated strong correlation with
+final response quality in production deployments [32], [33].
+Unlike tuning-based and graph-based methods that require
+
+I. INTRODUCTION
+
+Although LLMs have demonstrated exceptional capabilities
+in generative tasks, they still struggle with accessing up-to-date
+information [1]–[4], leading to hallucinations [5]. RAG has
+emerged as a crucial solution to address this issue, especially
+for tasks requiring updated external knowledge such as ques-
+tion answering tasks [2], [5]–[7], personalized agents [8], and
+time series analysis [9], [10]. External data is often too large to
+input directly into LLMs, so it is split into chunks stored in a
+vector database [11]–[15]. Users query these chunks to create
+prompts, making efficient and accurate search algorithms a
+key research focus in the information retrieval domain [1]–[5],
+[16]. Note that although Agentic RAG [17], [18] establishes a
+new paradigm for complex, multi-step tasks, it does not render
+standard RAG obsolete and may rely on standard RAG for
+subtasks. Moreover, standard RAG remains the default choice
+for efficient, single-turn information retrieval in enterprise
+
+Corresponding author: Haitao Yuan
+
+User Query
+Vector DB
+Potential
+
+Chunks
+Embedding
+Optimal Chunk
+
+Order
+Configuration Agent
+Policy Tree
+
+LLMs
+
+Search
+
+Online Configuration Inference
+
+Optimal Chunk Combination Order Search
+Chunks Retrieval
+
+Reranker
+
+Configuration
+
+Chunks
+Candidates
+
+Iterations
+
+Agent
+
+Coefficient
+
+Positive
+
+Lconstrastive
+
+Query
+
+Label
+
+Lclassification
+
+MCTS-Based Tree Search
+Lregression
+
+Negative
+
+Encoding Network
+
+Label
+
+Offline Contrastive Training
+
+Fig. 2: The architecture overview of CARROT framework.
+
+hallucinations. For example, as illustrated in Figure 1, when
+χ3 and χ4 are selected, adding chunk χ1 decreases utility,
+highlighting that utility scores are often non-monotonic.
+Challenge 3: Diversity of queries. Users’ queries have
+different types, requiring different ranking strategies due to
+their unique characteristics [15], [37]. Current RAG systems
+predominantly rely on a single reranker model [30], [38] to
+determine chunks’ utility scores. Although various reranker
+models have been developed, their performance varies sig-
+nificantly by query types, with no single model consistently
+outperforming others across all variations (as shown in our
+preliminary experiments in Fig. 5). Current RAG systems [12],
+[28] lack the flexibility to adapt to varying query intentions.
+Problem Statement. Is there a RAG framework that achieves
+both high efficacy and efficiency while maintaining acceptable
+computational costs?
+Our contributions. We answer this question by proposing
+a novel rank-based RAG framework named cost-constrained
+retrieval optimization (CARROT). On one hand, CARROT is
+a rank-based framework, thus having much higher efficiency
+than graph-based and tuning-based methods. On the other
+hand, it considers chunks correlation, non-monotonicity, and
+query intent diversity in the search process to enhance response
+quality. Additionally, to further reduce computational costs
+and make the framework practical, we minimize token cost
+by incorporating cost constraints in the search process.
+
+substantial LLM modifications and interactions, rank-based
+methods usually employ reranker models, offering reasonable
+computational efficiency. However, our empirical study in
+Table II reveals that existing rank-based methods underper-
+form in difficult query workloads and long-context scenarios,
+presenting three key challenges.
+Challenge 1: Relationships between chunks. There are two
+main methods to identify relevant chunks. The first uses
+approximate k-nearest neighbor (AKNN) to rank and select
+top-k chunks [34]. The second clusters chunks and returns
+all chunks in the most relevant clusters [6], [13]. However,
+AKNN disregards correlations entirely, and clustering treats all
+chunks in a cluster as equally relevant, leading to redundancy
+when chunks have overlapping information. For example, in
+Figure 1, querying the height and history of the Eiffel Tower
+using the AKNN method would select χ3 and χ1, which
+only provide historical details, failing to address the query
+fully. However, the clustering approach returns all chunks
+(χ1, χ2, χ3, χ4), causing redundancy. The optimal solution
+is to select χ3 and χ4, avoiding redundancy while meeting
+the query’s intent. In addition, previous work [35], [36]
+demonstrates that information position significantly affects
+RAG performance, a phenomenon known as “lost in the
+middle” [35]. For instance, placing χ4 before χ3 yields better
+results. However, finding the best chunk combination and order
+is challenging due to the exponentially growing search space,
+and we prove this problem is NP-hard in Section II.
+Challenge 2: Non-monotonicity of utility. Current solutions
+are typically based on the assumption that including more
+chunks will yield better final results. Specifically, in the
+AKNN-based approach, exactly k chunks are selected each
+time. In the clustering approach, a distance threshold between
+clusters and the query is fixed, and all clusters within this
+threshold are returned. Both of them return as many chunks
+as possible. However, in practice, the utility of chunks is not
+monotonic. More specifically, excessive chunks can dilute key
+information by adding marginally relevant content, creating
+noise that reduces clarity. Additionally, conflicting or nuanced
+differences across chunks may confuse the model, leading to
+
+• We propose the first RAG framework that explicitly consid-
+ers chunk combination order for the RAG task. Rather than
+treating each chunk independently or at the cluster level, we
+design an MCTS-based policy tree search to identify the op-
+timal chunk combination order. Unlike greedy methods that
+select the highest-scored chunk at each step, our approach
+iteratively samples and evaluates different paths, leveraging
+a UCB-based utility function to balance exploring new
+combinations with exploiting promising ones. This design
+addresses the exponential search space by focusing compu-
+tational resources on high-potential paths, while our parallel
+evaluation strategy scores multiple candidates simultane-
+ously for efficiency. Through these designs, we address
+
+Definition 2 (Optimal Chunk Combination Order Selection).
+Let Q denote the input query, {χ1, χ2, . . . , χk} the set of
+candidate chunks, B the cost budget, and W(Φ) the benefit
+of a chunk combination order Φ = ⟨χϕ1, . . . , χϕm⟩, where
+ϕi indicates the position of each chunk in the sequence. The
+objective is to identify the optimal chunk combination order ˆΦ
+that maximizes the overall benefit under the cost constraint:
+
+• We propose a contrastive learning-based configuration agent
+that dynamically predicts MCTS configurations per query,
+adapting reranker models and configurations to the specific
+query domain. This approach tailors retrieval for dynamic,
+domain-specific queries with flexibility and robustness, ad-
+dressing Challenge 3.
+
+ˆΦ = arg max
+Φ
+W(Φ)
+s.t.
+X
+
+• We conducted comprehensive experiments comparing our
+framework against both graph-based and rank-based meth-
+ods. The results validate the effectiveness, efficiency, and
+scalability of our approach, demonstrating a 30% perfor-
+mance improvement over baseline methods.
+
+χi∈Φ
+cost(χi) ≤B
+(1)
+
+Importantly, solving the above problem is non-trivial be-
+cause the benefit of a chunk combination cannot be obtained
+by simply summing the individual benefits of its constituent
+chunks. Instead, the overall benefit must be evaluated by
+invoking the reranker model on the whole combination (i.e.,
+W(Φ) ̸= P
+
+II. PRELIMINARIES
+We first introduce the definitions of chunks and chunk
+combination orders. We then formalize the chunk order opti-
+mization problem and give the NP-hard proof of the problem.
+RAG & Chunks. RAG improves generation models by re-
+trieving relevant context from external corpora, which is first
+divided into smaller, manageable units called chunks, typically
+stored in a vector database. The definition of chunk is given
+as follows:
+Definition 1 (Chunk). Let C represent a corpus of documents,
+and a chunk χ is defined as a contiguous block of text extracted
+from C. Formally, a chunk χ consists of a sequence of tokens
+(t1, t2, . . . , tn), where each ti is a token from C and the size
+n is set by users.
+Chunk Cost & Benefit. Similar to prior work [39], the cost of
+a chunk is defined as cost(χ) = |χ|, representing the number
+of tokens it contains; thus, longer chunks incur higher costs.
+The benefit of a chunk reflects its estimated contribution to
+the final response quality. In RAG systems, each chunk is
+embedded into a vector representation using an embedding
+model to capture its semantic information. Given a query Q,
+the vector database performs a similarity search to identify the
+most relevant chunks, which are then passed to the generator
+(e.g., a large language model) to produce the final response.
+In this phase, we measure the benefit of a chunk by its esti-
+mated contribution to the final response quality. We measure
+this using a reranker model: W(Q, χ) = Reranker(Q, χ),
+where the reranker is a neural model trained to predict the
+relevance between query Q and chunk χ. For simplicity, we
+use W(Q, χ) and W(χ) interchangeably when no ambiguity
+arises.
+Chunk Combination Order. In an RAG system, retrieval
+from the vector database often yields multiple chunks. How-
+ever, due to input constraints and hallucination of the genera-
+tion model, incorporating all of them is infeasible. Thus, it is
+necessary to select an optimal subset, referred to as a chunk
+combination, that fits within a given cost budget. Moreover,
+
+χi∈Φ W(χi)). To verify this, we conducted ex-
+periments to analyze the non-additivity of chunk benefits, as
+detailed in our technical report [40], which demonstrates that
+all tested reranker models exhibit non-additive scoring behav-
+ior. Furthermore, the problem is computationally challenging,
+as formally established by the following theorem.
+
+Theorem 1. The Optimal Chunk Combination Order Selection
+problem is NP-hard.
+
+The NP-hardness is proved via a polynomial-time re-
+duction from the Maximum Weighted Hyperclique Problem
+(MWHP) [41], which has been shown to be NP-hard, as
+discussed in the corresponding technical report [40].
+
+III. RELATED WORK
+
+1) Retrieval-augmented Generation: RAG [1], [10], [28],
+[42] is widely used to handle knowledge-intensive NLP tasks.
+Current studies [13]–[15], [21] focus on how to optimize RAG
+performance using different approaches, broadly classified as
+rank-based methods, graph-based methods, and tuning-based
+methods. In typical rank-based methods, a dense embedding-
+based retriever searches for relevant information from an
+external database, which is then used by the LLM generation
+process. To improve this pipeline, some studies [12], [43]
+have focused on training retrievers to better suit the generation
+needs of LLMs, developing multi-step retrieval methods, and
+filtering out irrelevant information. Although there are many
+advanced retrievers [1], [29], [42], [44], it is more promising
+to optimize the retriever and LLM together in an end-to-
+end process [7], [45]. For example, research [46], [47] has
+focused on training retrievers and LLMs together, either si-
+multaneously or in stages. For graph-based methods [6], [13],
+[25]–[27], studies try to use knowledge graphs to optimize
+external knowledge organization. However, these methods
+require frequent external LLM calls to generate the graph
+structure or guide actions, especially when the graph needs
+
+IV. SYSTEM OVERVIEW
+
+Existing RAG frameworks face three major challenges: cap-
+turing inter-chunk correlations, handling the non-monotonic
+utility of chunk order, and adapting to diverse query domains.
+
+B. MCTS-Based Policy Tree Search
+
+Enumerating all possible nodes in the policy tree T is
+infeasible due to the exponential growth of the search space.
+To efficiently explore this space, we employ an MCTS-based
+approach that incrementally expands nodes to construct a
+partial tree TMCTS, from which a solution can be derived
+without full enumeration. In each iteration, the algorithm
+selects nodes to expand, evaluates their potential, and uses
+the evaluation results to guide the next round of search. To
+incorporate cost constraints and improve efficiency, we design
+a cost-aware node utility function to guide node selection and
+introduce a parallel evaluation mechanism to accelerate the
+scoring process.
+Cost-aware Node Utility U(v). Because exhaustive explo-
+ration is infeasible, we guide the search with a UCB-style [52]
+heuristic that balances exploitation and exploration while
+accounting for cost. For each node v, the algorithm maintains
+the cumulative reward V (v) (aggregated over historical visits)
+and the visit count N(v). We use Nparent(v) to denote the visit
+count of v’s parent node. We define the cost-aware utility as
+
+V. CHUNK COMBINATION SEARCH
+
+Motivation. The optimal chunk combination order selection
+problem presents two fundamental challenges. First, the search
+space grows exponentially: for n candidate chunks, there
+exist Pn
+k=1 P(n, k) = Pn
+k=1
+n!
+(n−k)! ordered combinations
+(e.g., n = 10 yields over 9 million combinations), mak-
+ing exhaustive enumeration infeasible. Second, greedy strate-
+gies may fail due to the non-monotonic nature of chunk
+benefits. For example, while individual chunks may satisfy
+W(χ1) > W(χ2), their chunk combination orders could yield
+W(⟨χ2, χ3⟩) ≫W(⟨χ1, χ3⟩) in a real RAG scenario, as
+established in Section II. Once the greedy approach selects
+χ1 in the first step, it cannot backtrack to explore the superior
+combination ⟨χ2, χ3⟩, thus missing the globally optimal chunk
+combination order. To address these challenges, we design a
+policy tree to organize the combination space and formulate
+the chunk combination order selection task as an optimal node
+search problem in the policy tree. We employ an MCTS-based
+search algorithm that strategically explores only a small subset
+of promising paths instead of enumerating all possibilities. The
+key insight is that MCTS iteratively expands and evaluates
+nodes along high-potential paths, accumulating node benefits
+through backpropagation, and ultimately returns the node
+with the highest reranker-assigned benefit among the explored
+paths. Unlike greedy selection, MCTS’s exploration mecha-
+nism ensures that nodes with initially lower individual benefits
+can still be discovered if they lead to superior combinations.
+
+s
+
+ln Nparent(v)
+
+U(v) = V (v)
+
+N(v)
+−λ cost(Φv)
+
+N(v) + c
+
+B
+,
+(2)
+
+where c and λ are tuning parameters. This extends standard
+UCB to our budget-constrained setting.
+Algorithm Overview. As outlined in Algorithm 1, we ini-
+tialize the root node of the policy tree and iteratively refine
+the tree until the iteration budget is exhausted. Each iteration
+performs four phases: (1) Selection, traversing from root to
+an unexpanded node using node utility U(v); (2) Expansion,
+generating all possible child nodes within the cost budget;
+(3) Simulation, evaluating all children in parallel and assign-
+ing them node benefits W(Φv); and (4) Backpropagation,
+updating the cumulative reward V (·) and visit count N(·)
+along the path to the root using the obtained benefit W(Φv).
+After completing all iterations, we obtain the MCTS policy
+tree TMCT S and select the node with the maximum reranker-
+assigned benefit W(Φv) among all non-root nodes that satisfy
+the cost budget constraint. Notably, unlike traditional MCTS,
+which focuses on leaf nodes, our method considers nodes at all
+depths, as shorter combinations may outperform longer ones
+due to budget constraints or semantic coherence.
+Detailed Phases. We now describe the five phases of the
+MCTS-based policy tree search.
+(1) Selection (Function 1). Starting from the root, the algo-
+rithm recursively selects child nodes guided by the utility
+function U(v) (Eq. 2), which balances exploitation, explo-
+ration, and cost. At each step, among available children, we
+select the one with the highest U(v) value. The exploration
+
+A. Policy Tree Search Modeling
+
+Policy Tree. As illustrated in Figure 3, we construct a policy
+tree to represent all possible orders of chunk combinations
+retrieved from the vector database. The root node corresponds
+to the initial state with no selected chunks, while each child
+node is generated by appending one additional chunk to the or-
+dered sequence represented by its parent node. Thus, each non-
+root node corresponds to an ordered combination of chunks,
+incrementally built through this process. For example, if a node
+represents the combination Φv1 = ⟨χ1⟩, its child nodes may
+correspond to ordered extensions such as Φv2 = ⟨χ1, χ2⟩,
+Φv3 = ⟨χ1, χ3⟩, or Φv4 = ⟨χ1, χ4⟩.
+Remark. The entire policy tree does not need to be constructed
+and typically only a small portion of it is dynamically ex-
+panded during our MCTS-based search process.
+Optimal Node Search Modeling. Each non-root node vi
+in the policy tree T represents a chunk combination order
+
+Root
+
+R
+
+R
+
+χ1
+
+W=0.2
+V=0.2
+N=1
+
+…
+
+χ1+χ3
+
+W=0.2
+
+W=0.1
+
+χ2
+
+…
+
+…
+
+0.1
+W=0.2
+V=1.4
+N=4
+
+χ4
+χ1
+
+…
+χ4
+
+…
+W=0.2
+V=0.2
+N=1
+
+W=0.1
+V=0.1
+N=1
+
+W=0.7
+V=0.7
+N=1
+Parallel
+Evaluate
+
+χ1+χ4
+
+χ1+χ2
+χ1+χ3
+χ1+χ4
+
+W =0.3
+W =0.7
+W =0.2
+
+Potential
+Chunks
+
+Policy Tree
+Selection
+Expansion & Simulation
+Backpropagation
+Find Best
+
+Node
+
+Fig. 3: Workflow of MCTS-Based Policy Tree Search
+Algorithm 1: MCTS-Based Policy Tree Search
+
+Function 1: Selection
+
+Input: q: a query; D: a set of candidate chunks; B: total
+budget; Reranker: predicted reranker
+
+Input: vi: current tree node; B: total budget
+
+1 while vi.isFullyExpanded() do
+
+1 Initialize root node v0 with query q for the policy tree
+TMCT S;
+
+2
+foreach child nodes vj of vi do
+
+3
+compute utility
+
+2 while within iteration do
+
+r
+
+ln Nparent(vj )
+
+N(vj)
+−λ
+cost(Φvj )
+
+U(vj) =
+V (vj)
+N(vj) + c
+
+B
+;
+
+3
+vselected = Selection(v0, B);
+
+4
+{v1, . . . , vk} = Expansion(vselected, D, B);
+
+4
+vi = arg maxvj∈Children(vi) U(vj);
+
+5
+Simulation(vselected, {v1, . . . , vk}, Reranker);
+
+6
+BackPropagation({v1, . . . , vk});
+
+5 return vi
+
+7 return arg maxv∈TMCT S,cost(Φv)≤B W(Φv)
+
+Function 2: Expansion
+
+Input: v: unexpanded node to expand; D: set of candidate
+chunks; B: total budget
+// Create all possible child nodes
+
+term c
+p
+
+ln Nparent(v)/N(v) in U(v) ensures that less-visited
+nodes receive priority, preventing premature convergence to
+locally optimal paths. Selection proceeds until reaching an
+unexpanded node, ensuring both deep and broad exploration
+of the search space.
+(2) Expansion (Function 2). Upon reaching an unexpanded
+node v, all potential child nodes {v1, v2, . . . , vk} are generated
+by appending one additional chunk (each child cost does
+not exceed the budget B) to the current combination. Unlike
+standard MCTS, which expands a single child per iteration,
+our approach expands all possible children simultaneously to
+prepare for parallel evaluation. In particular, we initialize each
+new node’s cumulative reward and visit count to zero.
+(3) Simulation: Parallel Evaluation (Function 3). Instead of
+random
+rollouts,
+we
+evaluate
+all
+expanded
+nodes
+in
+parallel
+using
+the
+reranker
+[W(Φv1), . . . , W(Φvk)]
+=
+Reranker(Q, [Φv1, . . . , Φvk]),
+where
+W(Φvj)
+denotes
+the
+reranker-assigned benefit for combination Φvj. This design
+allows all k combinations to be scored in one model call (cost
+O(r)) rather than k separate calls (cost O(k · r)), leveraging
+transformer rerankers’ batch processing for substantial effi-
+ciency gains. For each vj, we record W(Φvj) and compute its
+token cost cost(Φvj).
+(4) Backpropagation (Function 4).
+Each
+child’s
+benefit
+W(Φvj) is propagated upward along the path to the root,
+updating cumulative rewards V (·) and visit counts N(·).
+Unlike traditional MCTS, which updates only the best path,
+we backpropagate all children independently, preserving
+richer exploration statistics to guide future iterations.
+(5) Final Node Selection. After all iterations, we perform
+a
+global
+search
+across
+explored
+nodes
+and
+select
+the
+one
+with
+the
+highest
+benefit
+under
+the
+cost
+budget:
+ˆv = arg maxv∈TMCT S, cost(Φv)≤B W(Φv). Unlike traditional
+MCTS methods, the final decision is based on the reranker-
+
+1 Expand v by using the candidate chunks in D to construct
+child nodes {v1, v2, . . . , vk} whose costs do not exceed the
+budget B;
+
+2 foreach child nodes vj do
+
+3
+calculate and record cost(Φvj);
+
+4
+initialize N(vj) = 0, V (vj) = 0;
+
+5 return {v1, v2, . . . , vk}
+
+Function 3: Simulation
+
+Input: v: parent node; {v1, . . . , vk}: expanded children;
+Reranker: predicted reranker
+// Parallel evaluation via reranker
+
+1 compute benefit
+[W(Φv1), . . . , W(Φvk)] = Reranker(Q, [Φv1, . . . , Φvk]);
+
+2 foreach child nodes vj do
+
+3
+record W(Φvj);
+
+Function 4: BackPropagation
+
+Input: {v1, v2, . . . , vk}: the expanded child nodes
+// Backpropagate each child
+
+1 foreach child nodes vj do
+
+2
+vcurrent = vj;
+
+3
+repeat
+
+4
+V (vcurrent) = V (vcurrent) + W(Φvj);
+
+5
+N(vcurrent) = N(vcurrent) + 1;
+
+6
+vcurrent = Parent(vcurrent);
+
+7
+until vcurrent is None;
+
+assigned benefit W(Φv) rather than the averaged reward
+V (v)/N(v), as W(Φv) more accurately reflects the true
+relevance between query and chunk combination order. When
+multiple nodes have identical W(Φv), we prefer nodes with
+more visits and greater depth.
+Complexity Analysis. Let N be the number of candidate
+chunks, B the token budget, s the fixed chunk token cost,
+
+Training pair
+Query1: “What is the capital city of
+Germany?” + Relevance Chunks
+Query2: “Which country is Berlin‘s
+capital?” + Relevance Chunks
+Label: Positive pair
+
+Ground Truth
+
+Feature
+Map Pair
+
+LConstrastive
+
+Query1
+Best reranker:jina-reranker-v1-turbo-en
+Best parameters
+(Iteration = 30, 𝜆= 0.1, C = 2.4)
+Query2
+Best reranker:jina-reranker-v1-turbo-en
+Best parameters
+
++
+
+Reranker
+
+LClassification
+
+Class
+
+Query3: " How to bake a
+chocolate cake?” + Relevance
+Chunks
+Query4: “What is the meaning of
+happiness?” + Relevance
+Chunks
+
++
+Classification
+
+Encoding Network
+
+Iteration,
+
+(Iteration = 24, 𝜆= 0.2, C = 2.6)
+
+λ,C
+LRegression
+
+Input
+Embeddings
+
+Regression
+
+Feature Map
+Joint Training
+
+Label: Negative pair
+
+Fig. 4: Overview of Configuration Agent
+
+WikiPassageQA
+
+MARCO
+
+(i) the N! combinatorial space makes supervised data col-
+lection infeasible; (ii) non-monotonic utility functions where
+W(A∪B) ̸= W(A)+W(B) are difficult for neural networks
+to approximate; (iii) predicting chunk combination orders re-
+quires structured outputs from the N! space, whereas predict-
+ing MCTS hyperparameters reduces to lightweight regression.
+Accordingly, we present the agent framework in Section VI-A
+and the learning pipeline in Section VI-B.
+A. Model Framework
+Design Rationale. A straightforward approach is to use a
+multilayer perceptron (MLP) classifier to predict the optimal
+reranker for each query. However, due to the high semantic
+and domain diversity of RAG queries, such classifiers of-
+ten perform poorly, as shown in our experimental result in
+Table VI. To overcome this limitation, we adopt a Siamese
+network trained with contrastive learning, which encourages
+similar query representations to be closer while pushing apart
+dissimilar ones, promoting cross-domain generalization [53].
+Figure 4 illustrates the overall architecture, which comprises
+two main modules for transforming the input into feature
+maps. First, the embedding module generates representations
+for input queries and their retrieved chunks. Then, the encod-
+ing network refines these embeddings into feature maps, which
+are used by classification or regression layers to produce the
+final configuration outputs. The following sections describe
+each component in detail.
+(1) Input Embedding. Given a query and its retrieved chunks
+from the vector database, we employ the BGE-M3 model [54]
+to generate 1024-dimensional embeddings for the query and
+the mean-pooled representation of retrieved chunks. Encoding
+the retrieved chunks enables the agent to capture query-related
+data characteristics, enhancing its sensitivity to contextual
+nuances. These embeddings preserve semantic information, fa-
+cilitating efficient comparison and classification by the encod-
+ing network. This design improves retrieval relevance across
+diverse query types by explicitly modeling the relationship
+between query intent and data distribution.
+(2) Feature Map Generation with Encoding Network. To op-
+timize reranker selection across diverse query types, we
+employ an encoding network that jointly learns classifica-
+tion and configuration representations. A Siamese network
+with three fully connected layers fuses query and chunk
+embeddings, capturing query–data correlations for context-
+dependent predictions. Both branches share weights with linear
+
+1.0
+
+1.0
+
+Best Reranker Proportion
+
+0.9
+
+0.9
+
+0.8
+
+0.8
+
+0.7
+
+0.7
+
+0.6
+
+0.6
+
+0.5
+
+0.5
+
+0.4
+
+0.4
+
+0.3
+
+0.3
+
+0.2
+
+0.2
+
+0.1
+
+0.1
+
+0.0
+
+0.0
+
+Academic Commerce Literature Healthcare
+Legal
+Others
+Domain
+
+Academic Commerce Literature Healthcare
+Legal
+Others
+Domain
+
+jina-v1-turbo
+jina-v2-multi
+
+bge-v2-m3
+bge-large
+
+bge-base
+gte-base
+
+Fig. 5: Best Reranker Distribution
+
+and r the maximum cost of a single batched reranker call.
+Any budget-feasible combination contains at most DB =
+min{N, ⌊B/s⌋} chunks.
+(1) Time Complexity: Each of the I iterations performs selec-
+tion, expansion, simulation, and backpropagation. (i) Selection
+traverses O(DB) levels with O(N) children per level, yielding
+O(DB · N) complexity; (ii) Expansion creates up to N
+children, contributing O(N); (iii) Simulation evaluates all ex-
+panded children in a single batched reranker call, costing O(r);
+(iv) Backpropagation updates O(N) children across O(DB)
+levels, giving O(DB · N). Thus, the total time complexity is
+O(I · (DB · N + r)). A smaller B reduces DB, shrinking the
+search space. In practice, I is predicted by the configuration
+agent. As shown in Fig. 9, I remains a small value, ensuring
+efficient search.
+(2) Space Complexity: Space is allocated to store the nodes of
+the tree. In the i-th iteration, we expand ki nodes, where ki ≤
+N. Over I iterations, this results in a total of PI
+i=1 ki ≤I ·N
+nodes, leading to a space complexity of O(I · N).
+
+VI. CONFIGURATION AGENT
+
+Motivation. The MCTS process requires critical configura-
+tions including reranker selection, iteration count, exploration
+coefficient, and cost coefficient. Our preliminary experiments
+(details in our technical report [40]) reveal that optimal
+configurations vary across queries and retrieved data. For
+instance, Fig. 5 shows that different query domains (Academic,
+Commerce, etc.) exhibit distinct best-performing rerankers,
+validating the necessity of adaptive configuration. Therefore,
+we design a configuration agent that predicts optimal MCTS
+configurations based on both query and chunk characteristics.
+A natural alternative is to directly predict chunk combination
+orders via a learned model. However, this is impractical:
+
+Input: Query embedding pairs (xi, xj), chunk embeddings
+(ci, cj), labels (yi, yj), params (pi, pj), similarity
+indicator Iij (0 for same class, 1 for different class)
+Output: models fθ, gθ and hθ
+1 Initialize fθ with projection head;
+
+2 for epoch = 1 to N do
+
+3
+for batch (xi, xj, ci, cj, Iij, yi, yj, pi, pj) do
+
+4
+zi ←fθ(xi ⊕ci), zj ←fθ(xj ⊕cj)
+ypred
+i
+←gθ(zi), ppred
+i
+←hθ(zi);
+
+5
+ypred
+j
+←gθ(zj), ppred
+j
+←hθ(zj);
+
+6
+Lcon ←
+(1 −Iij)∥zi −zj∥2 + Iij max(0, γ −∥zi −zj∥)2
+
+Lcla ←CE(ypred
+i
+, yi) + CE(ypred
+j
+, yj);
+// CE
+is the cross-entropy loss
+
+7
+Lreg ←∥ppred
+i
+−pi∥2 + ∥ppred
+j
+−pj∥2;
+
+8
+Update θ using ∇θ(Lcon + Lcla + Lreg);
+
+with different rerankers), we first generate their corresponding
+feature maps with the encoding model fθ. These feature maps
+are then utilized to compute the contrastive loss Lcon. As
+shown in Algorithm 6, the contrastive loss uses the similarity
+indicator Iij to handle both positive and negative pairs in a
+unified formulation. This loss function is designed to ensure
+that query-data pairs with the same reranker are brought closer
+together in the embedding space, while those with different
+rerankers are distanced.
+3) Whole training process: As shown in Algorithm 6, we
+implement the complete training process by designing a loss
+function Ltotal that combines contrastive, classification, and
+regression losses as follows: Ltotal(θ) = Lcon(θ) + Lcla(θ) +
+Lreg(θ). In particular, the contrastive loss Lcon(θ) encourages
+the embeddings of queries with the same optimal reranker
+to be close together, while pushing apart the embeddings of
+queries with different rerankers. The classification loss Lcla(θ)
+aids the model in correctly identifying the reranker using
+cross-entropy, and the regression loss Lreg(θ) minimizes the
+error in predicting the optimal MCTS configuration.
+Complexity Analysis We analyze the computational complex-
+ity of both training and inference procedures for the Configura-
+tion Agent. (1) During offline training, we adopt a contrastive
+learning framework that processes N training pairs in each
+batch. The computational cost of generating embeddings is
+O(N · TE), where TE denotes the embedding generation time
+for a single sample. Subsequently, each embedding is passed
+through our lightweight configuration network, incurring an
+additional cost of O(N ·TS), where TS represents the process-
+ing time per sample in this smaller network. Since the con-
+figuration network is significantly smaller and faster than the
+embedding network (e.g., BGE-M3), we have TS ≪TE. Thus,
+the total training time complexity is dominated by embedding
+generation: O(N · TE + N · TS) = O(N · TE). This implies
+that the training complexity scales linearly with the number of
+training samples. (2) For online inference, suppose the query
+workload size is |Q| and the network latency per query is
+
+Dataset
+#train
+#dev
+#test
+#p
+
+MARCO
+808,731 101,093 101,092 8,841,823
+WikiPassageQA
+3,332
+417
+416
+244,136
+HotpotQA
+90,564
+7,405
+14,810 5,000,000+
+
+C. The overall inference complexity is then O(C · |Q|). In
+our empirical study in Table VI, both classification prediction
+and parameter prediction process queries within an acceptable
+efficiency range.
+VII. EXPERIMENT
+
+The experimental study intends to answer the following
+questions:
+
+• RQ1: (1) How effective is our CARROT for the cost-
+constrained RAG pipeline compared to other methods? (2)
+Does CARROT consistently maintain its effectiveness across
+different LLMs?
+
+• RQ2: How efficient is CARROT compared to different
+baselines?
+
+• RQ3: How does CARROT perform with large-scale datasets
+when evaluating its scalability?
+
+• RQ4: How does the performance of CARROT vary across
+different cost budget constraints?
+
+• RQ5: What is the effectiveness of each component in
+CARROT?
+
+A. Experimental Setting
+
+Environment. We integrate our framework with the RAG
+framework LlamaIndex [32] and Faiss [55]. Experiments used
+dual Intel Xeon Gold 6326 CPUs (32 cores, 64 threads),
+512 GB DDR4 RAM, and 960 GB NVMe SSD. The con-
+figuration agent is implemented in PyTorch 2.4, with data
+collection and training performed on 8×A5000 GPUs. We
+choose OpenRouter [56] to deploy our inference service.
+Datasets. To evaluate the performance of CARROT across di-
+verse scenarios, we conduct experiments on three datasets with
+differing task focuses (Table I): (1) WikiPassageQA [57] is a
+question-answering benchmark containing 4,165 questions and
+over 100,000 text chunks, designed for non-factoid question
+answering and passage retrieval. (2) MARCO [58] is a compre-
+hensive dataset tailored for natural language processing tasks,
+primarily emphasizing question answering and retrieval. (3)
+HotpotQA [59] is a question-answering benchmark designed
+for multi-hop reasoning tasks, consisting of approximately
+113K QA pairs sourced from Wikipedia.
+Baselines. We compare CARROT against representative rank-
+based RAG methods, including RAPTOR [6], NaiveRAG [28],
+HYDE [29], and FLARE [17], to demonstrate improvements
+in retrieval relevance and response quality. We also evaluate
+graph-based approaches such as GraphRAG [13], Graph-
+CoT [25], and G-Retriever [60], highlighting our efficiency
+advantages. Finally, we include comparisons with tuning-based
+methods, despite their substantial computational overhead and
+infrastructure requirements. For instance, ColBERT [23] re-
+quires 3 hours to index 9M passages on four V100 GPUs,
+while RankRAG [14] and Self-RAG [21] demand 128 A100
+
+B. Performance Comparison
+
+1) RQ1-(1): Effectiveness Comparison Across Datasets and
+Chunk Sizes: As shown in Table II, we evaluate the ef-
+fectiveness of CARROT compared to various baselines on
+three datasets: WikiPassageQA, MARCO, and HotpotQA. The
+first two are single-hop datasets, while the last is a multi-
+hop dataset. For methods that support token-level budget
+constraints (e.g., RAPTOR, NaiveRAG, and HYDE), we fix
+the token budget to 1024. For other methods, we report results
+without budget limitations. To ensure fairness, all methods are
+built upon Llama3-8B. The experimental results lead to the
+following observations:
+(1) CARROT consistently outperforms all baselines across
+different datasets. Specifically, it achieves about 30% relative
+gain on both single-hop and multi-hop tasks. As expected, it
+does not surpass the CARROT upper, which represents a nearly
+exhaustive search over chunk combinations.
+
+WikiPassageQA
+MARCO
+HotpotQA
+
+Method
+256
+512
+1024
+On.↓
+256
+512
+1024
+On.↓
+256
+512
+1024 On.↓
+
+R1
+RL
+B-1
+R1
+RL
+B-1
+R1
+RL
+B-1
+R1
+RL
+B-1
+R1
+RL
+B-1
+R1
+RL
+B-1
+F1
+F1
+F1
+
+RAPTOR
+0.328 0.306 0.345 0.322 0.301 0.333 0.335 0.305 0.370 1024 0.386 0.356 0.371 0.393 0.366 0.370 0.338 0.316 0.328 1024 0.248 0.252 0.245 1024
+NaiveRAG
+0.327 0.302 0.333 0.321 0.297 0.321 0.334 0.303 0.338 1024 0.398 0.369 0.385 0.395 0.368 0.372 0.337 0.312 0.324 1024 0.243 0.248 0.240 1024
+HYDE
+0.311 0.301 0.323 0.306 0.286 0.311 0.318 0.290 0.328 1024 0.367 0.338 0.352 0.373 0.348 0.349 0.321 0.300 0.312 1024 0.228 0.235 0.225 1024
+ColBERT
+0.329 0.304 0.335 0.324 0.300 0.326 0.333 0.307 0.336 1024 0.376 0.357 0.358 0.375 0.349 0.351 0.324 0.309 0.319 1024 0.247 0.253 0.244 1024
+Graph-CoT
+0.362 0.343 0.324 0.359 0.341 0.321 0.364 0.345 0.326 14237 0.364 0.345 0.349 0.362 0.343 0.347 0.360 0.342 0.345 14576 0.294 0.297 0.295 14011
+G-Retriever
+0.356 0.337 0.318 0.353 0.335 0.315 0.358 0.339 0.320 13239 0.358 0.339 0.343 0.356 0.337 0.341 0.354 0.336 0.339 12428 0.281 0.284 0.282 13003
+FLARE
+0.367 0.348 0.330 0.364 0.346 0.327 0.370 0.351 0.333 16913 0.370 0.351 0.355 0.368 0.349 0.353 0.366 0.348 0.352 16584 0.305 0.307 0.305 15022
+GraphRAG
+0.337 0.315 0.311 0.322 0.302 0.291 0.331 0.290 0.304 1024 0.376 0.343 0.357 0.370 0.342 0.351 0.307 0.295 0.304 1004 0.298 0.318 0.291 1001
+HippoRAG2
+0.363 0.345 0.328 0.360 0.343 0.325 0.367 0.348 0.331 1024 0.367 0.348 0.352 0.365 0.347 0.350 0.363 0.346 0.349 1003 0.311 0.327 0.313 1028
+
+CARROT upper
+0.437 0.416 0.395 0.426 0.406 0.423 0.444 0.423 0.420
+923
+0.435 0.414 0.431 0.425 0.397 0.411 0.447 0.426 0.420
+822
+0.347 0.357 0.339 1011
+CARROT w/o Agent 0.390 0.364 0.337 0.372 0.347 0.379 0.388 0.362 0.368
+838
+0.401 0.374 0.389 0.393 0.372 0.377 0.393 0.364 0.368
+725
+0.299 0.312 0.307 1021
+CARROT
+0.432 0.401 0.392 0.413 0.381 0.394 0.419 0.386 0.397
+811
+0.425 0.391 0.413 0.419 0.386 0.400 0.423 0.393 0.405
+789
+0.320 0.349 0.336 1007
+
+TABLE III: Effectiveness Comparison Across Different LLMs (best in bold, second-best underlined)
+
+Dataset
+LLM
+RAPTOR NaiveRAG HYDE ColBERT Graph-CoT G-Retriever FLARE GraphRAG HippoRAG2 CARROT upper CARROT w/o Agent CARROT
+
+Llama3-8B
+0.328
+0.327
+0.311
+0.329
+0.362
+0.356
+0.367
+0.337
+0.363
+0.437
+0.390
+0.432
+DeepseekV3
+0.348
+0.347
+0.330
+0.348
+0.371
+0.368
+0.389
+0.358
+0.369
+0.463
+0.413
+0.459
+GPT-4o
+0.341
+0.340
+0.324
+0.344
+0.367
+0.371
+0.382
+0.351
+0.361
+0.454
+0.406
+0.449
+
+WikiPassageQA
+(Rouge-1 score ↑)
+
+Llama3-8B
+0.386
+0.398
+0.367
+0.376
+0.364
+0.358
+0.370
+0.376
+0.367
+0.435
+0.401
+0.425
+DeepseekV3
+0.409
+0.422
+0.389
+0.379
+0.419
+0.428
+0.429
+0.399
+0.410
+0.461
+0.425
+0.454
+GPT-4o
+0.401
+0.414
+0.382
+0.372
+0.411
+0.418
+0.422
+0.391
+0.402
+0.452
+0.417
+0.440
+
+MARCO
+(Rouge-1 score ↑)
+
+Llama3-8B
+0.248
+0.243
+0.228
+0.247
+0.294
+0.281
+0.305
+0.298
+0.311
+0.347
+0.299
+0.320
+DeepseekV3
+0.263
+0.258
+0.242
+0.262
+0.311
+0.298
+0.319
+0.316
+0.329
+0.368
+0.317
+0.341
+GPT-4o
+0.259
+0.254
+0.238
+0.256
+0.305
+0.291
+0.311
+0.307
+0.318
+0.355
+0.309
+0.331
+
+HotpotQA
+(F1 score ↑)
+
+TABLE IV: Cost Breakdown on WikiPassageQA (Llama3-8B).
+
+GraphRAG
+
+HYDE
+
+90
+
+HippoRAG2
+
+NaiveRAG
+
+GraphRAG
+
+Graph-CoT
+
+ColBERT
+
+80
+
+FLARE
+
+CARROT w/o Agent
+
+80
+
+HippoRAG2
+
+G -Retriever
+
+CARROT
+
+Method
+Offline Indexing
+Online
+Quality
+Time(s)
+Token
+Time(s) Token
+R1↑
+RL↑
+NaiveRAG
+61.2
+–
+2.3
+1024
+0.327 0.302
+HYDE
+66.1
+–
+28.7
+1024
+0.311 0.301
+ColBERT
+1731
+–
+2.5
+1024
+0.329 0.304
+G-Retriever
+1281.1
+–
+22.8
+13239 0.356 0.337
+FLARE
+70.0
+–
+45.5
+16913 0.367 0.348
+RAPTOR
+21301.0
+0.9M
+55.1
+1024
+0.328 0.306
+Graph-CoT
+28888.1
+2.1M
+61.3
+14237 0.362 0.343
+GraphRAG
+55003.2
+2.3M
+80.2
+1024
+0.337 0.315
+HippoRAG2 32401.3
+1.7M
+78.0
+1024
+0.363 0.345
+CARROT
+66.9
+–
+3.1
+811
+0.432 0.401
+
+70
+
+R aptor
+
+70
+
+Graph-CoT
+
+60
+
+60
+
+Time Cost (s)
+
+Latency (s)
+
+Raptor
+
+50
+
+50
+
+FLARE
+
+40
+
+40
+
+30
+
+30
+
+HYDE
+
+G-Retriever
+
+20
+
+20
+
+10
+
+10
+
+CARROT
+
+0
+
+NaiveRAG
+
+ColBERT
+
+WikiPassageQA
+MARCO
+HotpotQA
+
+0
+
+0.26
+0.28
+0.30
+0.32
+0.34
+0.36
+0.38
+0.40
+RougeL Score
+
+Datasets
+
+(a)
+Efficiency
+Comparison
+Across Datasets
+
+(b)
+Time
+Cost
+vs
+Response
+Quality Tradeoff
+
+3) RQ2: Efficiency Evaluation: As depicted in Figure 6a,
+we evaluate the retrieval efficiency by comparing the latency
+between different methods across the three datasets, with
+the chunk size set at 256. The results show that NaiveRAG
+requires the least time for retrieval as it directly invokes
+the reranker model and uses the vector index to calculate
+similarities. On the other hand, CARROT requires more time as
+it employs a configuration agent to predict optimal parameters
+and utilizes a policy tree to search for the optimal chunk
+combination. Conversely, CARROT w/o Agent, which operates
+with default parameter settings, demonstrates reduced re-
+trieval time compared to CARROT. Additionally, other baseline
+methods, which involve invoking LLMs to process retrieval,
+exhibit higher latency. For instance, RAPTOR and Graph-based
+methods, which use an external LLM for summarization or
+extraction, showed significantly reduced efficiency.
+Figure 6b demonstrates that CARROT achieves high re-
+sponse quality within acceptable time costs. The comparable
+latencies between NaiveRAG and CARROT result from key
+optimizations: (1) Minimal LLM calls: CARROT invokes the
+LLM only once at final inference after tree search completion.
+(2) Shallow search depth: optimal gold passages are typically
+covered by several chunks, resulting in shallow tree depths.
+(3) Parallel expansion: parallel mechanisms enable concurrent
+computation of multiple candidate nodes’ utility scores with-
+out significantly increasing external model calls.
+
+Fig. 6: Efficiency and Quality Trade-off Analysis
+
+(2) Optimal chunk sizes vary across methods and datasets. For
+instance, CARROT performs best with a chunk size of 256
+in the single-hop datasets and 512 in the multi-hop setting.
+Meanwhile, the CARROT upper achieves its best results with
+a chunk size of 1024 in the single-hop dataset while 512 in
+multi-hop dataset. Notably, the average number of tokens used
+in HotpotQA is higher than in single-hop datasets, likely due
+to the increased complexity of multi-hop reasoning, which
+benefits from larger chunk sizes that capture more context.
+(3) CARROT upper achieves better performance at a modest
+increase in cost. For example, on WikiPassageQA, the R1
+score improves from 0.432 to 0.437 while the average token
+usage increases from 811 to 923, demonstrating that exhaustive
+search with larger search spaces provides diminishing returns,
+validating the cost-quality trade-off of CARROT.
+2) RQ1-(2): Effectiveness Comparison Across LLMs: As
+shown in Table III, we evaluated CARROT across three LLMs:
+Llama3-8B [61], DeepseekV3 [65], and GPT-4o [66]. The
+evaluation utilizes Rouge-1 for WikiPassageQA, MARCO and
+F1 scores for HotpotQA, with a standardized cost constraint
+of 1024 tokens. The results indicate that CARROT consistently
+outperforms baseline methods across all LLMs, with particu-
+larly strong performance when integrated with DeepseekV3,
+highlighting our method’s generalizability.
+
+TABLE VI: Ablation Study of Components (WikiPassageQA)
+
+consistently outperforms all baseline methods regardless of
+budget constraints. Notably, CARROT consistently maintains
+average token consumption below designated budget thresh-
+olds. Furthermore, several baseline methods do not improve
+monotonically with larger budgets, empirically validating our
+observation in Challenge 2 that chunk utility does not follow a
+monotonic relationship with context length. In contrast, several
+baseline approaches either exceed the allocated budgets or
+consume them entirely, rendering such methods impractical
+for real-world deployment scenarios.
+Remark. For adaptable baselines like NaiveRAG and HYDE,
+we adapted these methods by limiting their token, stopping the
+addition of chunks when the output would exceed constraints.
+For graph-based methods such as GraphRAG and HippoRAG2,
+costs shown here reflect online token cost only; offline graph
+construction costs are discussed separately in Table IV.
+
+Methods (Chunk Size=256)
+Quality
+Online Cost
+
+R1↑
+RL↑
+Tok.
+Time
+
+Top-k+JinaV2
+0.327 0.302
+1024
+2.3
+w Agent-Only
+0.297 0.271
+795
+2.5
+w Beam Search
+0.380 0.354
+820
+3.0
+w Bandit
+0.362 0.337
+815
+2.9
+w MLP
+0.341 0.318
+992
+3.5
+w/o Agent
+0.390 0.364
+838
+2.6
+w/o Predicted Reranker
+0.367 0.342
+805
+2.7
+w/o Predicted C
+0.394 0.367
+815
+2.8
+w/o Predicted λ
+0.391 0.364
+812
+2.8
+w/o Parallel Expansion
+0.401 0.374
+840
+16.1
+
+CARROT
+0.432 0.401
+811
+3.1†
+
+†Latency breakdown: Embed 0.2s (6.5%), Retrieval 0.5s (16.1%), Config Agent 0.5s
+(16.1%), Simulation 1.5s (48.4%), Tree Ops 0.3s (9.7%), Other 0.1s (3.2%).
+
+Table IV decomposes computational costs into two dimen-
+sions: Offline Indexing and Online retrieval. Offline Indexing
+captures per-corpus preprocessing costs that must be repeated
+for each new corpus, e.g., GraphRAG requires 2.3M tokens
+for WikiPassageQA indexing. CARROT requires negligible
+per-corpus indexing of 66.9s. For online retrieval, CARROT
+achieves 811 tokens per query with R1=0.432, demonstrat-
+ing superior token efficiency compared to baselines, making
+CARROT suitable for large-scale deployments.
+Remark (One-time Data Collection and Pre-training Cost).
+CARROT requires 1.8 hours for data collection and about 7
+minutes for agent training, which is acceptable compared to
+training-based methods such as ColBERT (10+ hours) and G-
+Retriever (6.2 hours). This is a one-time cost and can be reused
+across deployments, as the configuration agent generalizes to
+unseen domains and different LLMs (Figure 11).
+4) RQ3: Scalability Evaluation: To evaluate the scala-
+bility of CARROT, we use the large-scale WikiPassageQA
+dataset and vary the number of chunks to assess performance
+under increasing data volumes. As shown in Figure 7, we
+randomly sample between 10K and 100K chunks from the
+full dataset and measure the retrieval latency across different
+baselines. Despite the tenfold increase in data size, CAR-
+ROT’s latency rises by only about 10%, demonstrating strong
+scalability in handling large-scale retrieval tasks. This stems
+from CARROT’s ability to effectively prune the search space,
+maintaining a favorable balance between performance and
+computational overhead. In contrast, graph-based and online
+reasoning methods exhibit significantly higher overhead.
+5) RQ4: Effectiveness Evaluation on Different Budgets:
+As demonstrated in Table V, we evaluate CARROT under
+various budget constraints to assess its performance. Ex-
+periments conducted across the three datasets with budget
+limits of 1024, 2048, and 8192 tokens reveal that CARROT
+
+C. RQ5: Ablation Study
+
+1) Ablation Studies on Different Components.: Table VI
+demonstrates that each component contributes substantially:
+removing the policy tree, configuration agent, or predicted
+parameters all cause significant performance decline. Notably,
+the parallel expansion mechanism enhances efficiency by
+reducing latency from 16.1s to 3.1s (80.7% reduction). The
+latency breakdown (Table VI footnote) reveals that the Simu-
+lation phase requiring reranker inference dominates (48.4%),
+while MCTS Tree Ops add only 9.7% overhead, confirming
+that MCTS introduces acceptable computational cost for its
+quality gains. To further justify MCTS necessity, we compare
+five search strategies: (1) Top-k+JinaV2 (k=10) applies a fixed
+reranker to top-k candidates without exploring chunk combi-
+nation orders, achieving R1=0.327; (2) Agent-Only extends
+the configuration agent to directly predict chunk combination
+order scores by adding a scoring head, bypassing MCTS
+search; it achieves the lowest quality because direct prediction
+cannot effectively consider chunk correlations; (3) Bandit [52]
+employs arm-level exploration but neglects chunk combi-
+nation order dependencies, achieving R1=0.362; (4) Beam
+Search [67] maintains top-k candidates per step yet remains
+limited by greedy local exploration, achieving R1=0.380; (5)
+CARROT with MCTS systematically explores chunk order de-
+pendencies via tree-based global search, achieving R1=0.432,
+a 32.1% gain over Top-k+JinaV2 with minimal overhead.
+2) Ablation Studies on Design Choices.: We conduct three
+ablation studies on key factors affecting RAG performance.
+(1) Validity of Reranker Scores as Simulation Reward.
+In CARROT’s policy tree search, the reranker assigns node
+
+0.450
+
+r = 0.83
+
+35
+
+60
+
+0.60
+
+Latency (s)
+
+50
+
+0.425
+
+30
+
+0.55
+
+RougeL Score
+
+40
+
+0.400
+
+25
+
+0.50
+
+30
+
+ROUGE -L
+
+20
+
+0.375
+
+0.45
+
+20
+
+15
+
+0.350
+
+0.40
+
+10
+
+10
+
+0.325
+
+0
+
+0.35
+
+5
+
+50k
+
+80k
+
+10k
+
+20k
+
+30k
+
+40k
+
+60k
+
+70k
+
+90k
+
+100k
+
+0.300
+
+0.30
+
+10
+20
+30
+40
+50
+60
+
+10
+20
+30
+40
+50
+60
+
+Number of Chunks
+
+0.25
+
+Chunk Candidates
+
+Chunk Candidates
+
+GraphRAG
+Graph-CoT
+FLARE
+
+G-Retriever
+Raptor
+HYDE
+
+NaiveRAG
+CARROT
+
+HippoRAG2
+ColBERT
+
+0.20
+
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+
+CARROT
+
+Graph-CoT
+
+FLARE
+
+R aptor
+
+NaiveRAG
+
+Reranker Score (Normalized)
+
+GraphRAG
+
+ColBERT
+
+G -Retriever
+
+HYDE
+
+HippoRAG2
+
+Fig. 7: Scalability Comparison (WikiPassageQA)
+
+Fig. 8: Reranker-Quality correlation
+
+Fig. 9: Quality/Efficiency vs. Candidates
+
+0.44
+
+0.50
+
+Llama3-8B
+
+Single-hop
+
+0.45
+
+DeepseekV3
+
+0.42
+
+Academic
+
+0.409
+0.389
+0.377
+0.391
+0.368
+0.382
+
+WikiPassageQA
+
+0.398
+0.371
+0.324
+
+Multi-hop
+
+0.45
+
+GPT
+-4o
+
+T
+rain Dataset
+
+0.40
+
+0.41
+
+Commerce
+
+0.386
+0.412
+0.378
+0.371
+0.376
+0.389
+
+0.40
+
+0.40
+
+ROUGE -L
+
+ROUGE -L
+
+T
+rain Domain
+
+0.38
+
+Marco
+
+0.376
+0.389
+0.318
+
+0.40
+
+0.382
+0.391
+0.396
+0.379
+0.388
+0.374
+
+Literature
+
+0.35
+
+0.36
+
+0.35
+
+0.39
+
+Healthcare
+
+0.379
+0.385
+0.372
+0.405
+0.387
+0.384
+
+0.30
+
+HotpotQA
+
+0.383
+0.369
+0.345
+
+0.34
+
+0.38
+
+Legal
+
+0.378
+0.371
+0.388
+0.389
+0.418
+0.375
+
+0.30
+
+0.32
+
+0.25
+
+HotpotQA
+
+Marco
+
+WikiPassageQA
+
+0.37
+
+Others
+
+0.383
+0.376
+0.381
+0.372
+0.378
+0.392
+
+0.25
+
+0.20
+
+Literature
+
+Others
+
+Healthcare
+
+Legal
+
+Commerce
+
+Academic
+
+R andom
+Score-Desc
+Score-Asc
+CARROT
+
+R andom
+Score-Desc
+Score-Asc
+CARROT
+
+Ordering Strategy
+
+Ordering Strategy
+
+T
+est Dataset
+
+T
+est Domain
+
+(a) Across LLMs
+
+(b) Across query types
+Fig. 10: Chunk order sensitivity analysis
+
+(b) Data Generalization
+Fig. 11: Data and Domain Generalization Evaluation
+
+(a) Domain Generalization
+
+benefits W(Φv) during the simulation phase to assess chunk
+combinations orders. Prior work [33], [38] has demonstrated
+high correlations between reranker scores and end-task quality;
+we empirically verify this property in our setting by sam-
+pling ∼50% queries from WikiPassageQA and enumerating
+diverse chunk combinations to collect reranker score, quality
+(ROUGE-L) pairs. As shown in Figure 8, we observe a
+Pearson correlation [68] of r=0.83, confirming that reranker-
+assigned benefits reliably reflect downstream quality.
+(2) Impact of Chunk Candidate Counts. As shown in
+Figure 9, our analysis of chunk candidate counts on WikiPas-
+sageQA demonstrates that CARROT achieves high response
+quality while requiring fewer iterations and thus fewer external
+model calls through its parallel expansion algorithm and pol-
+icy tree search mechanism. Across different chunk candidate
+counts, several methods require more external model calls to
+select their optimal retrieval output, whereas CARROT shows
+only a slight increase in external model call counts while
+maintaining them within an acceptable range and achieving
+response quality superior to baselines.
+(3) Sensitivity of Chunk Combination Order. To isolate
+the effect of chunk combination order, we fix the chunk selec-
+tion to top-5 chunks and vary only their ordering among four
+strategies: Random, Score-Descending (highest-first), Score-
+Ascending, and CARROT. As shown in Figure 10, CAR-
+ROT outperforms the highest-first heuristic by 11–15% rel-
+ative gain. Figure 10(a) shows consistent ∼11% performance
+gap between best and worst orderings across Llama3-8B,
+DeepseekV3, and GPT-4o. Figure 10(b) reveals that multi-hop
+queries exhibit higher order sensitivity (12% gap) than single-
+hop queries (11%), suggesting complex reasoning benefits
+more from optimal ordering.
+3) Generalizability Evaluation:
+To evaluate CARROT’s
+generalizability, we conduct experiments across both domain
+and dataset dimensions. For domain-level generalization, we
+
+Query: Is bougainvillea a shrub?
+
+1)Bougainvillea is a tropical vining
+
+3)During colder months, they are…
+
+The flowers are actually modified
+
+Score
+
+Score
+
+Score
+
+shrub that comes in a wide array of
+
+2)Bougainvillea are tropical and
+
+leaves, called bracts, that are long
+
+0.43
+
+0.21
+
+0.27
+
+bright and fanciful colors....
+
+must be protected from frost...
+
+lasting and bright... Bougainvillea
+
+Token
+
+Token
+
+Token
+
+2)Bougainvillea are tropical and
+
+1)Bougainvillea is a tropical vining
+
+899
+
+899
+
+8192
+
+are tropical and must be protected
+
+must be protected from frost...
+
+shrub that comes in a wide array of
+
+from frost...
+
+3)During colder months, they are…
+
+bright and fanciful colors....
+
+Adversely Order
+
+CARROT
+
+NaïveRAG
+
+Bougainvillea is a stunning tropical
+
+2)Bougainvillea are tropical and
+
+During colder months, they
+
+Score
+
+Score
+
+Score
+
+vining shrub known for its vibrant
+
+must be protected from frost...
+
+are… Bougainvillea are
+
+0.33
+
+0.32
+
+0.23
+
+array of bright and fanciful colors.
+
+N)The flowers are actually modified
+
+tropical and must be protected
+
+Token
+
+Token
+
+Token
+
+As a tropical plant, it requires
+
+leaves, called bracts, that are long
+
+from frost...
+
+1011
+
+8192
+
+8192
+
+protection from frost…
+
+lasting and bright...
+
+CARROT w/o Agent
+
+RAPTOR
+
+HYDE
+
+Fig. 12: Case Study for CARROT
+train the configuration agent on one domain’s training set and
+evaluate on other domains’ test sets using six distinct do-
+mains [25], creating a 6×6 generalization matrix (where each
+cell represents the ROUGE-L score as shown in Figure 11(a)).
+For dataset-level generalization, we train CARROT on one
+dataset and test on entirely different datasets (to verify cross-
+dataset transferability, with ROUGE-L for WikiPassageQA
+and MARCO, F1 for HotpotQA presented in Figure 11(b)).
+CARROT exhibits robust generalization across both dimen-
+sions, maintaining competitive performance on training do-
+mains while achieving comparable results on unseen domains
+and datasets, demonstrating practical applicability.
+
+D. Case Study
+Figure 12 presents qualitative examples comparing the re-
+trieval performance of CARROT against traditional baselines,
+illustrating how our method effectively addresses key chal-
+lenges: (1) Importance of Chunk Combination Order. To
+evaluate the impact of chunk combination order, we test a
+deliberately reordered version of CARROT’s output. The result
+shows a significant performance drop, with the ROUGE-1
+score declining from 0.43 to 0.21, confirming that the chunk
+combination order is critical for RAG inference.
+(2) Non-monotonic Utility of Chunk Selection. We compare
+CARROT with baselines such as RAPTOR, NaiveRAG, and
+
+VIII. CONCLUSION
+
+Considering non-monotonic chunk utility, chunk correla-
+tion, and diverse query domains, we propose CARROT, a
+learned cost-constrained retrieval optimization framework for
+RAG. We model chunk combination orders as a policy tree
+and apply MCTS to find the optimal combination within
+a cost constraint. A configuration agent predicts the best
+query configuration and reranker, while a parallel expansion
+strategy processes multiple nodes per iteration. Comprehensive
+experiments across three benchmark datasets demonstrate that
+CARROT significantly outperforms state-of-the-art methods
+under constrained costs, achieving up to 30% improvement
+while maintaining superior efficiency and scalability.
+
+ACKNOWLEDGMENT
+
+This research is supported by Singapore MOE AcRF Tier-
+2 grant MOE-T2EP20223-0004. Wei Dong is supported by
+the National Research Foundation, Singapore, and the Cyber
+Security Agency of Singapore under the National Cyberse-
+curity R&D Programme and the CyberSG R&D Programme
+Office (Award CRPO-GC3-NTU-001). Any opinions, findings,
+conclusions, or recommendations expressed in these materials
+are those of the author(s) and do not reflect the views of the
+National Research Foundation, Singapore, the Cyber Security
+Agency of Singapore, or the CyberSG R&D Programme
+Office. We also thank Jingyi for helpful feedback.
+
+AI-GENERATED CONTENT ACKNOWLEDGMENT
+
+We use LLMs solely for language refinement, including
+grammar checking, sentence rephrasing, and improving clarity.
+
+REFERENCES
+
+[1] X. Zhao, X. Zhou, and G. Li, “Chat2data: An interactive data analysis
+system with rag, vector databases and llms,” Proc. VLDB Endow.,
+vol. 17, no. 12, pp. 4481–4484, 2024.

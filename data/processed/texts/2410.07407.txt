@@ -1,0 +1,1932 @@
+Haocheng Xu, Faraz Tahmasebi, Ye Qiao, Hongzheng Tian, Hyoukjun Kwon, Sitao Huang
+University of California, Irvine
+{haochx5, tahmasef, yeq6, hyoukjun.kown,
+
+Fusion
+
+Abstract—Recent innovations in Transformer-based large lan-
+guage models have significantly advanced the field of general-
+purpose neural language understanding and generation. With
+billions of trainable parameters, deployment of these large models
+relies on high-performance hardware accelerators to efficiently
+deliver the required computation. Spatial architectures, such as
+TPUs, offer a promising solution to accelerating computation-
+intensive workloads. However, the design process for existing
+spatial architectures is predominantly manual, and it often involves
+time-consuming redesigns for new applications and new problem
+dimensions, which greatly limits the development of optimally
+designed accelerators for Transformer models. To address these
+challenges, we propose SAMT (Spatial Architecture Mapping for
+Transformers), a comprehensive framework designed to optimize
+the dataflow mapping of Transformer inference workloads onto
+spatial accelerators. We demonstrate the effectiveness of SAMT in
+improving the performance of spatial accelerators for Transformer
+models. We propose and leverage the dynamic operator fusion
+schemes for the Transformer models and co-search the optimal
+dataflow mapping strategies for spatial accelerators. SAMT
+significantly reduces inference latency by 12% to 91% and energy
+consumption by 3% to 23% for evaluated Transformer models
+compared to traditional spatial accelerator designs among edge,
+mobile and cloud settings.
+
+arXiv:2410.07407v1 [cs.AR] 9 Oct 2024
+
+SAMT (Ours)
+SAMT (Ours)
+
+FLAT*
+
+Flexible
+Dataflow
+Fixed
+Dataflow
+
+NVDLA
+ShiDianNao
+
+MAERI
+
+TPU
+Eyeriss
+
+GAMMA
+
+Non-Fusion
+
+Fig. 1: Lack of fusion exploration in spatial accelerators.
+Both traditional fixed dataflow accelerators (like ShiDianNao
+[15], NVDLA [2], Eyeriss [10], and TPU [17]) and flexible
+dataflow accelerators (like MAERI [24] and GAMMA [18])
+did not consider operator fusion opportunities. *FLAT [20]
+only considers one fusion while SAMT (ours) considers 64
+fusion schemes. Details of accelerators without fusion can be
+found in Fig. 8.
+
+I. INTRODUCTION
+
+①
+
+Machine learning (ML) workloads are gradually shifting
+from simple multilayer perceptrons (MLPs), feed-forward mod-
+els, and convolutional neural networks (CNNs) to large-scale
+Transformer-based models [32]. Transformer-based models
+have delivered superior model performance (e.g., accuracy)
+compared to previous models such as CNNs in various
+application domains including computer vision [14] and natural
+language processing (NLP) using large language models
+(LLMs) such as GPT-4 [25] and Llama2 [29]. Their success
+was achieved with billions of trainable parameters with a large
+and complex computation graph in attention layers, which is
+the backbone of Transformer [32]. Unlike CNNs which mainly
+consist of convolutions, self-attention blocks include multiple
+batched matrix multiplication (BMM) blocks and memory-
+bound operators (e.g., softmax) [22], which leads to overall
+lower arithmetic intensity compared to CNNs. In addition,
+Transformer layers involve complex operator dependencies
+as shown in Fig. 2. Such new characteristics of Transformer
+workload motivate specialized accelerator architectures for
+Transformers to exploit new optimization opportunities implied
+by the specific dependency patterns and low arithmetic intensity
+in Transformers.
+
+𝑊𝑄
+𝑋
+𝑄
+
+②
+
+MatMul
+
+𝐴= 𝑄∙𝐾
+
+MatMul
+MatMul
+
+MatMul
+
+𝑊𝐾
+𝑋
+𝐾
+
+MatMul
+
+Softmax
+
+④
+
+𝑆= 𝑠𝑜𝑓𝑡𝑚𝑎𝑥(𝐴)
+
+𝑊𝑉
+𝑋
+𝑉
+
+MatMul
+MatMul
+
+MatMul
+MatMul
+
+③
+
+𝑂= 𝑐𝑜𝑛𝑐𝑎𝑡(𝑉∙𝑆)
+
+⑤
+⑥
+
+𝑊𝑂
+MLP1
+𝑌= 𝑊𝑂∙𝑂
+MLP2
+𝐹
+
+MatMul
+
+Fig. 2: Major Computation Steps in a Transformer layer
+
+In addition, recent trend in the usage of large language
+models such as ChatGPT [25] indicate that the input sequence
+length is sharply increasing for complex tasks such as document
+summarization [7], presentation generation [34], and video
+
+• We develop a fused dataflow mapping optimization
+framework, SAMT, which maps Transformer inference
+workloads to spatial accelerators with a fixed or flexible
+dataflow.
+
+• We thoroughly explore all the possible operator fusion
+opportunities in Transformer blocks and show new op-
+timization opportunities in the expanded fusion space,
+which on average lead to 21% and 15% lower latency
+and energy consumption, respectively, compared to state-
+of-the-art works with operator fusion.
+
+• We develop an operator fusion explorer (OFE), which
+automatically identifies the optimal fusion scheme for a
+given Transformer inference workload and a target spatial
+accelerator.
+
+• We extend an analytical cost model, MAESTRO, to
+support operator fusion (MAESTRO
+FUSION) that can
+evaluate the performance of fused and non-fused operators
+running on spatial accelerators.
+
+• We propose a mapping space explorer (MSE), a genetic
+algorithm based mapper that identifies Pareto-optimal
+mapping strategies that support both fixed and flexible
+dataflow accelerators.
+
+II. BACKGROUND
+
+To better understand the need and challenges for accelerating
+Transformer models with spatial accelerators, we elaborate on
+the details from model, mapping, and hardware perspectives
+in this section.
+
+A. Spatial Accelerators and Dataflow Mapping
+
+As shown in Fig. 4, a spatial accelerator architecture consists
+of a PE (processing element) array, local scratchpad memory
+S1 within each PE, a shared scratchpad memory S2, and
+NoCs (network-on-chips) that interconnect PE array and shared
+scratchpad memory S2. PEs serve as computation units within
+accelerators, containing ALUs (arithmetic logic units) or MAC
+(multiply-accumulate units) with a local scratchpad S1. Similar
+to cache memory, scratchpad memory is used to reduce the
+number of accesses for off-chip memory S3 and it provides
+the flexibility for the hardware designers to customize data
+layout and the process of reading/writing the data. The spatial
+accelerators have different inter-PE communication patterns as
+well. With the flexibility of spatial accelerators, we can further
+
+Percentage of memory operations
+
+1
+
+400
+
+1400
+
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+
+350
+
+1200
+
+Arithmetic Intensity
+
+300
+
+Arithmetic Intensity
+
+1000
+
+250
+
+800
+
+200
+
+600
+
+150
+
+400
+
+100
+
+200
+
+50
+
+0
+
+0
+
+128
+256
+512
+1024
+2048
+4096
+8192 16384 32768 65536
+
+128
+256
+512
+1024
+2048
+4096
+8192 16384 32768 65536
+
+128
+256
+512
+1024
+2048
+4096
+8192 16384 32768 65536
+
+Sequence Length
+
+Sequence Length
+
+Sequence Length
+
+(b) Percentage of Memory Operations
+(a) Arithmetic Intensity of Transformer Models
+
+(c) Arithmetic Intensity of Transformer Operators
+
+Fig. 3: (a) Arithmetic intensity with different sequence length l for BERT-Base model (embedding size d = 768 and number of
+heads nh = 12) and GPT3-Medium model’s prefilling stage (d = 768 and number of heads nh = 12) (b) The percentage of the
+memory operations for the operations (for example, A and S in Fig. 2) that scale with the sequence length. (c) Arithmetic
+intensity for different operators within the same transformer model.
+
+Dataflow contains three typical mechanisms: parallelization
+strategy, loop order, and tiling strategy. The parallelization
+strategy specifies spatial and temporal mappings for each
+dimension. For example, setting a chunk size of one in a
+temporal dimension uniformly distributes data indices across
+all Processing Elements (PEs), facilitating spatial data reuse
+within the same timestep. The sequence of parallel and temporal
+loops in a loop nest directs data movement and impacts data
+mapping to PEs over time. Alterations in loop order can
+drastically change data’s stationary behavior. Tiling subdivides
+mapping dimensions into smaller segments, increasing mapping
+flexibility and overcoming the limitations of traditional loop
+nests. Unlike standard loops, which complete all inner loops
+before progressing, tiling allows for dynamic loop execution.
+This can reduce peak memory demands per PE and enable
+strategic exploitation of partial temporal reuse opportunities.
+
+PE
+
+PE
+
+PE
+
+PE
+
+S1
+
+S1
+
+S1
+
+S1
+
+PE Array
+
+NoC BW
+
+PE
+
+PE
+
+PE
+
+PE
+
+S1
+
+S1
+
+S1
+
+S1
+
+Shared
+Scratchpad S2
+
+Off-Chip
+Mem BW
+
+PE
+
+PE
+
+PE
+
+PE
+
+Off-Chip
+Memory
+(DRAM/HBM)
+
+S1
+
+S1
+
+S1
+
+S1
+
+PE
+
+PE
+
+PE
+
+PE
+
+S1
+Local Scratchpad S1
+
+S1
+
+S1
+
+S1
+
+Fig. 4: Abstraction of spatial accelerator architecture
+
+(a)
+
+(b)
+
+for(i=0;i<M;i++)
+
+TemporalMap (Size, Offset) M
+SpatialMap (Size, Offset) N
+Cluster (Size)
+
+for(j=0;j<N;j++)
+
+for(k=0;k<K;k++)
+
+C(i,j) + = A(i,k) * B(k,j)
+
+In Fig. 5, we provide an example of how to map a
+GEMM with fixed dataflow using dataflow directives in
+MAESTR FUSION. Fig. 5 (a) describes a matrix multipli-
+cation between matrix A (M × K) and matrix B (K × N)
+and produce a matrix C = A ⊗B with dimension M = 3,
+N = 3, K = 3. Fig. 5 (b) shows how we can use dataflow
+directives to describe the mapping of GEMM. TemporalMap
+indicates that data will change over time and remain static
+over PEs. SpatialMap implies data will change over space
+(across PEs). Cluster controls how many PEs will be grouped
+into a cluster. Size means mapping size, which tells us how
+much data is mapped onto each PE or how many PEs are
+mapped onto each cluster. Offset means Temporal Offset, which
+means the mapping update over time, or Spatial Offset, which
+means spatial mapping across the PEs with offset. Fig. 5 (c)
+shows the dataflow directives for this GEMM in (a). We used
+three directives to describe the GEMM: Inter-Cluster Mapping,
+Cluster, and Intra-Cluster Mapping.
+
+(c)
+(d)
+
+Inter-Cluster Mapping:
+
+Computation Order
+
+TemporalMap (1, 1) M
+SpatialMap (1, 1) N
+TemporalMap (4, 4) K
+Cluster(4)
+Intra-Cluster Mapping:
+
+Inter-Cluster Mapping
+
+Computation Order
+
+N M N K
+
+1 1 4
+
+Parallelize Dimension
+
+K M N K
+4 1 1 1
+
+TemporalMap (1, 1) M
+TemporalMap (1, 1) N
+SpatialMap (1, 1) K
+
+Intra-Cluster Mapping
+
+Cluster Size
+Tile Size
+
+Fig. 5: Example of mapping in MAESTRO FUSION
+
+explore data reuse opportunities. Most layers in the transformer
+involve tensor-tensor MAC operations and provide a huge
+space for data reuse opportunities along different dimensions
+of the tensors [30]. These data reuse opportunities could be
+temporal, spatial, or temporal-spatial. As we can tell from
+the Fig. 6, PEs in spatial accelerators can communicate directly
+using special NoC and provide three types of data reuse,
+temporal reuse, spatial reuse, and spatial−temporal reuse,
+via multicasting, broadcasting, forwarding, and reduction as
+part of the NoC.
+We define dataflow as the mechanism to leverage the maxi-
+mum data reuse opportunity in domain-specific accelerators.
+
+Cluster: it will divide the entire PE array into different
+clusters, each cluster has an equal amount of PEs. For example,
+we can assume the current accelerator has 6 PEs in total, and
+Fig. 10 (c) and (d) indicate that these 6 PEs are divided into
+2 groups and each group has 3 PEs. This enables exploration
+
+C. Lack of fusion exploration in flexible dataflow accelerator
+
+There are several hardware-aware compiler frameworks [4],
+[9] for fusion optimization. However, they can not directly
+target flexible dataflow spatial accelerators. FLAT [20] tries
+to target fixed dataflow accelerators and perform inter-layer
+fusion; however, it is limited to activation-to-activation fusion
+and does not fully explore all the fusion schemes. There are
+two main reasons why fusion exploration has been limited
+on spatial accelerators: 1) Most spatial accelerators suffered
+from model performance due to integer arithmetic; 2) Non-
+linear operators in transformer models like softmax and layer
+norm do not naturally support tiling due to the nature that it
+requires global views of the data(for example, softmax needs
+the maximum of the row and summation of the row). That
+means if we fused the naive safety softmax with other adjacent
+operators, a very large local memory will be needed to store
+all the data for softmax calculation, which is not practical in
+the real world.
+Luckily, a recent study [33] enables lossless 8-bit weight
+and activation quantization for LLMs which further expands
+the usage of spatial accelerators in transformer models. The
+difficulty of fusing non-linear operators has also been addressed
+by the recent GPU work FlashAttention [11], [12].
+To the best of our knowledge, there is no prior work that
+removes all limitations on the fusion exploration of dataflow
+accelerators. Despite increasing the design search space, fusion
+exploration brings great optimization opportunities. The goal
+of this work is to introduce such a framework that finds the
+best fusion scheme with arbitrary dataflow to be exploited
+by a flexible hardware accelerator, where it introduces a
+novel approach to computing attention in Transformer models,
+particularly emphasizing the importance of operation fusion to
+handle the intensive memory requirements and computational
+challenges of one-head attention mechanisms.
+
+B. Computation in Transformer and the low arithmetic intensity
+challenge
+
+Transformer models typically consist of two main blocks,
+which are usually referred to as the attention block and the feed-
+forward module, each of which is followed by a LayerNorm
+and a residual connection [32].
+As illustrated in Fig. 2, attention blocks and feed-forward
+module first project the sequence input X of dimension d × l
+(d and l represent the embedding size and sequence length,
+respectively) by different weight matrices WQ, WK, WV of
+dimension d×d to get the so-called query Q, key K, and value
+V matrices of dimension d × l. The Q matrix and transposed
+K matrix will yield an activation matrix A of size l × l. Then
+attention score S will be calculated based on the softmax value
+of the activation matrix A. To get the output of the attention
+block, it will multiply the value matrix V with the attention
+score S, resulting in a matrix O with a dimension of d × l.
+Finally, to get the output Y of the entire attention block, it
+projects the matrix O by one more weight matrix WO. After the
+attention block, the intermediate tensor will be passed into two
+consecutive linear projection layers MLP with a given hidden
+dimension dF F N plus two GELU (Gaussian Error Linear Unit)
+non-linear activation layers in between.
+To understand the reason behind the limits of tokens in the
+recent transformer models as we discussed in I, we profiled the
+arithmetic intensity I, which is calculated by dividing FLOPs
+(the number of floating-point operations) by MOPs (the number
+of memory access counts) (assuming that each memory access
+will fetch one-byte data):
+
+I = FLOPs
+
+III. SAMT SPATIAL ACCELERATOR MAPPING FOR
+TRANSFORMER
+
+MOPs
+(1)
+
+Based on the motivation toward thorough exploration of
+fused mappings in Transformer layers enabled by recent
+integer arithmetic algorithms discussed in Section II, we
+develop a fused mapping optimization framework, SAMT,
+as illustrated in Fig. 7. SAMT receives workload description,
+target accelerator hardware design parameters, and dataflow
+
+As shown in Fig. 3(a), the arithmetic intensity first increases
+then decreases after reaching sequence length l = 512 for
+both the BERT-Base and the GPT3-Medium models. The
+main reason for this drop in arithmetic intensity is that some
+operations’ (like A = Q⊗K and S = Softmax(A)) memory
+access count will scale up quadratically with the sequence
+
+…
+
+…
+
+…
+
+PE2
+PE2
+PE2
+c
+b
+a
+
+PE2
+PE2
+PE2
+c
+c
+c
+
+PE2
+PE2
+PE2
+a
+b
+c
+
+..
+
+…
+
+…
+
+PE1
+PE1
+PE1
+b
+a
+
+…
+
+PE1
+PE1
+PE1
+b
+b
+b
+
+PE1
+PE1
+PE1
+a
+b
+c
+
+…
+
+…
+
+PE0
+PE0
+PE0
+a
+..
+
+…
+
+..
+
+PE0
+PE0
+PE0
+a
+a
+a
+
+PE0
+PE0
+PE0
+a
+b
+c
+
+Time
+1
+2
+3
+0
+
+Time
+1
+2
+3
+0
+
+Time
+1
+2
+3
+0
+
+a) Temporal Reuse
+b) Spatial Reuse
+c) Spatial-Temporal Reuse
+
+Fig. 6: Understanding data reuse in spatial architecture: Temporal reuse happens when PEs access the same data across time
+via on-chip scratchpads or buffers. In Fig. 6(a), PE0, PE1, and PE2 stored the same data a, b, and c for the timestamps 1, 2, 3,
+and so on. Spatial reuse occurs when multiple PEs access the same data at the same time via multicasting. In Fig. 6(b), all
+the PEs receive the same data a at timestamp 1, data b at timestamp 2, and data c at timestamp 3. Spatial-temporal reuse
+forwards the data to the adjacent PEs in a skewed manner via neighbor-to-neighbor connections with forward buffers. In Fig.
+6(c), PE0 sends the data a to adjacent PE1 from timestamp 1 to 2 and PE1 sends the data to PE2 from timestamp 2 to 3.
+
+cluster mapping describes the dimension (N) to map spatially
+and the following three determine the order of computation
+and the corresponding tiling size.
+We define the fused operator in TABLE I as our smallest
+primitives and encode the entire fusion scheme into a binary
+code. For example, as shown in Fig.9, fusion scheme 110110
+means we are using two newly fused operators, Op12 and Op45.
+Op12 means fusing the original two fused operators Op1 and
+Op2. Op12 needs to read matrix WQ, WK, X from the off-chip
+memory S3 and will compute S = Softmax(WQ ⊗WK ⊗
+X), following by writing S back to the off-chip memory S3.
+Compared to the non-fused version, it will reduce the entire
+memory footprint by 5dl + 2l2 with larger S2 requirements.
+Similarly, Op45 will reduce the entire memory footprint by
+3dl. OFE will generate all the fusion schemes to be further
+evaluated.
+We can fuse some adjacent operators to reduce the interme-
+diate tensor’s memory footprint and increase the data reuse.
+The new fused operators are defined in TABLE I and can
+be visualized in Fig. 2. As illustrated in Fig. 2, the original
+computation to get the intermediate results A is: 1) loading
+input X twice and weight matrices WQ and WK with the
+input tensor memory footprint of 2dl + 2d2; 2) multiplying the
+X with WQ and WK separately, and storing the intermediate
+results Q and K with the memory footprint of 2dl; 3)loading
+the intermediate results Q and K with the same footprint; 4)
+multiplying Q and K to get the intermediate results A and
+storing it with the memory footprint of l2. As we can see from
+step 1), the input tensor has been loaded twice for two different
+projection operators; and, from step 3), the intermediate tensors
+Q and K have been stored and loaded without any further
+calculation, which is a waste of data movement. However, if
+we fused those operators together, which aligned with our
+definition of fused Op 1, we will see the result will be the
+same but it will only cost one input tensor X load and skip
+storing and loading the intermediate tensors Q and K. This
+
+configuration (fixed or flexible) as inputs. Using those inputs,
+SAMT reports optimized fused mapping and corresponding
+latency, energy, and memory access count. SAMT consists
+of OFE, MSE, and MAESTRO
+FUSION. We discuss each
+component in SAMT in detail.
+
+A. OFE: Operator Fusion Explorer
+
+As we discussed in II, the main source of latency and energy
+benefits from operator fusion is based on the conversion of
+costly S2/DRAM accesses into efficient inter-PE communi-
+cation. However, the amount of benefits are dependent on
+the model parameters (embedding size, sequence length, and
+hidden dimension), as listed in TABLE.I. Also, S2 memory size
+is another major consideration because it constraints available
+fusions (one or combination of what is listed in TABLE.I.
+Therefore, we develop OFE, Operator Fusion Explore, which
+systematically explores the complex design space of the fused
+dataflow and accelerator hardware parameters.
+The design space for finding the optimal dataflow mapping
+given a fused or non-fused transformer model is large. As
+mentioned in I, mapping the projection layer of Llama2-13B
+[29] can result in O(1011) different dataflow mappings. Inspired
+by previous works’ effectiveness of genetic algorithms for
+exploring such complex mapping space [18], [19], [27], [31],
+we also adopt a genetic algorithm (Algorithm 1) with an
+extended search space with fusion.For that, we develop new
+gene encoding for each operator into a 4 by 2 dimension
+of the genome as illustrated in Fig. 5(d). Here we define
+genome as a design choice of the entire mapping space for
+dataflow. As shown in Fig.5(d), there are two levels of mapping
+corresponding to the inter-cluster and intra-cluster mapping.
+In the intra-cluster mapping, the first column describes the
+dimension (K) to parallelize and the following three columns
+describe the computation order and the tiling size for each
+TemporalMap or SpatialMap. In the inter-cluster mapping, the
+same terminology applies here. The first column in the inter-
+
+Transformers
+
+HW Configs
+
+Dataflow Types
+TPU-like
+
+Output
+
+S1
+
+S2
+
+Bert
+GPT
+
+NVDLA-like
+etc.
+Flexible
+
+NoC
+
+PE
+
+LLAMA
+etc.
+
+Fixed Dataflow
+
+Operator Fusion Explorer
+
+Computation Order
+Parallelize Dimension
+Cluster Size Tile Size
+Transformer Layers
+
+Fused Layers
+
+Latency
+Energy
+
+MAESTRO_FUSION
+
+Memory Access Count
+
+N M N K
+
+K M N K
+4 1 1 1
+
+Cost Model
+
+1 1 4
+
+Fusion Check
+
+N M N K
+
+K M N K
+4 1 1 1
+
+Optimized tile size for
+
+Intra-Cluster Mapping
+……
+
+Inter-Cluster Mapping
+
+8 2 4
+
+Can be
+fused?
+
+each layer
+
+Inter-Cluster Mapping
+
+Intra-Cluster Mapping
+
+Mapping Space Explorer
+
+N
+
+Y
+
+Crossover
+Mutation
+Reoder
+
+Crossover
+Mutation
+Reorder
+
+M M N K
+
+K M N K
+8 4 8 2
+
+2 4 4
+
+Flexible Dataflow
+
+Fuse
+layers
+
+Inter-Cluster Mapping
+
+Intra-Cluster Mapping
+
+Latency
+Energy
+
+K M N K
+
+N M K N
+4 4 2 8
+
+child
+parent
+
+Memory Access Count
+
+elites
+
+Check next
+fusion scheme
+
+4 1 4
+
+Inter-Cluster Mapping
+
+Intra-Cluster Mapping
+
+……
+
+Optimized dataflow
+mapping for each layer
+
+Fitness Score
+Selection
+
+SAMT: Spatial Accelerator Mapping for Transformer
+
+Fig. 7: SAMT: Spatial Transformer Architecture Mapping Framework
+
+fusion will reduce the global memory S3 read and write by 5dl
+with a bit of shared scratchpad S2 pressure. We will explore
+the trade-off between the fusion scheme and the on-chip buffer
+size in the later.
+
+We enable two types of outputs here: fixed-dataflow type
+and flexible dataflow type. Fixed dataflow means the same
+dataflow mapping except the tiling sizes will be applied to each
+operator in the entire model; flexible dataflow means different
+dataflow mappings will be enabled for different operators in
+the transformer model.
+
+B. MSE: Mapping Space Explorer
+
+As described in Algorithm 1, for each fusion scheme, we
+can get the Mapping Candidates through OFE and MAE-
+STRO FUSION with local scratchpad size S1, shared scratch-
+pad size S2, NoCs bandwidth B, number of PEs P, trans-
+former model matrix dimensions Mi, Ni, Ki and FusedOp
+(comes from OFE). Then for each Mapping Candidates,
+we perform a genetic search algorithm. As illustrated in Fig. 7,
+after initializing the population of the mapping candidates, we
+perform Crossover, Mutation, and Reorder. Crossover: it
+will randomly select two genomes (mappings) from the parent
+pool and interchange the tile size for those two genomes;
+Mutation: it will randomly generate a new dimension to
+parallelize if accelerator types allow and a new tile size for
+one dimension of the mappings; Reorder: it will swap the tile
+size of two dimensions from two mappings randomly. After
+evolution, MAESTRO FUSION will provide a performance
+analysis (latency, energy, PE utilization, etc.) and a fitness
+function will be applied based on the target optimization
+(latency, energy, S1 size, S2 size, etc.). Here we picked latency
+as our first optimization goal and energy as the second. The
+selection process will keep track of the current best mapping
+strategy. After selection, we update the parents pool and elites
+pool before entering the next iteration.
+
+Parallelizing
+Dimension
+Computation Order
+
+Dataflow
+Mapping
+Style
+
+Cluster
+Size
+Inter-
+Cluster
+
+Intra-
+Cluster
+
+Inter-
+Cluster
+
+Intra-
+Cluster
+
+TTS-NMK
+NVDLA-like
+N
+K
+N→K→M
+N→M→K
+64
+
+TTS-MNK
+Eyeriss-like
+M
+K
+M→N→K
+M→N→K
+12
+
+TTS-NMK
+
+TPU-like
+N
+K
+N→M→K
+N→M→K
+256
+
+TST-MNK
+ShiDianNao-like
+M
+N
+M→N→K
+M→N→K
+8
+
+Flexible
+M or N
+or K
+
+M or N
+or K
+any
+any
+tile size of
+last dim.
+
+Fig. 8: Dataflow mapping styles of different types of spatial
+accelerators
+
+C. MAESTRO FUSION: Cost Model
+After enabling the dynamic fusion scheme for the transformer
+model, we need to evaluate the performance of the spatial accel-
+erators to find the optimal dataflow mapping. We tried to lever-
+age the detailed analytical modeling framework, MAESTRO
+
+Output
+Tensor
+Fused
+
+Memory
+Reduced
+
+ID
+Fused Op
+Orignal Ops
+Memory
+Fused
+Input Tensor
+Fused
+
+Memory
+Orginal
+Input Tensor
+Original
+Output Tensor
+Original
+
+1
+A = WQ ⊗X ⊗WK ⊗X
+Q = WQ ⊗X,
+K = WK ⊗X,
+A = Q ⊗K
+2d2 + l2 + dl
+2d2 + dl
+l2
+2d2 + l2 + 6dl
+2d2 + 4dl
+l2 + 2dl
+5dl
+
+2
+S = Softmax(Q ⊗K)
+A = Q ⊗K,
+S = Softmax(A)
+l2 + 2dl
+2dl
+l2
+3l2 + 2dl
+l2 + 2dl
+2l2
+2l2
+
+3
+O = V ⊗Softmax(A)
+S = Softmax(A),
+O = V ⊗S
+l2 + 2dl
+l2 + dl
+dl
+3l2 + 2dl
+2l2 + dl
+l2 + dl
+2l2
+
+4
+O = (WV ⊗X) ⊗S
+V = WV ⊗X,
+O = V ⊗S
+d2 + l2 + 2dl
+d2 + l2 + dl
+dl
+d2 + l2 + 4dl
+d2 + 2dl + l2
+2dl
+2dl
+
+5
+Y = (W0 ⊗(V ⊗S))
+O = V ⊗S,
+Y = W0 ⊗O
+d2 + l2 + 2dl
+d2 + l2 + dl
+dl
+d2 + l2 + 4dl
+d2 + 2dl + l2
+2dl
+2dl
+
+6
+F = a2 ⊗GELU(a1 ⊗Y + b1) + b2
+L1 = GELU(a1 ⊗Y + b1),
+L2 = GELU(a2 ⊗L1 + b2)
+2((dF F N + l)d)
+2dF F Nd + dl
+dl
+2(dF F N(l + d) + dl)
+dF F Nd + dl
+dF F Nl
+2dF F Nl
+
+*l : Sequence Length, *d : Embedding Size, *dF F N : Hidden Dimension of Linear Projection Layer
+
+Algorithm 1 SAMT Kernel Fusion Algorithm
+
+extended fused operator support by converting the S2/DRAM
+access to more efficient inter-PE communication and can report
+the latency of the given model, energy usage of the hardware
+accelerator, and memory access count on S1 scratchpad
+and S2 scratchpad given the hardware configurations. The
+efficiency of MAESTR FUSION lies in its swift analysis
+of diverse forms of data reuse within the accelerator. This
+comprehensive set of metrics offers valuable insights into the
+performance characteristics of the spatial accelerator. Inputs
+to MAESTR FUSION are made of a transformer model
+description and hardware resource details, provided in the
+form of lists, while the mapping is articulated through a
+data-centric representation. This representation encompasses
+three directives, facilitating a succinct and compiler-friendly
+depiction of mappings.
+
+1: Input: Matrix dimensions for each layer of the transformer model: Mi,
+Ni, Ki; The local scratchpad size: S1; The shared scratchpad size S2;
+The bandwidth for NoC: B; The total number of PEs: P; The type of
+accelerator: Arch, Generation for search: α; Target1 and Target2 the
+optimization goal (chosen from latency, energy, S1 size, S2 size, P).
+2: Output: Datacentric Mapping descriptions for the optimal mapping strategy
+
+3: Dataflow Candidates = Get Dataflow( Arch )
+4: for Fusion id = 1 →Num Funsion Scheme do
+5:
+FusedOp = Get Fused Operators(Fusion id)
+6:
+Mapping Candidates = MAESTRO FUSION ( S1, S2, B, P, Mi,
+Ni, Ki, FusedOp )
+7:
+for i = 1 →Dataflow Candidates do
+8:
+while Current Iteration <α do
+9:
+( P.D., C.O., T.S ) = Crossover( Mapping Candidates )
+10:
+( P.D., T.S. ) = Mutation( Mapping Candidates )
+11:
+( C.O ) = Reorder( Mapping Candidates )
+12:
+Update Childs()
+13:
+if Childs Fitness(Target1, Target2) >Threshold then
+14:
+Update Elites()
+15:
+Update Parents()
+16:
+end if
+17:
+end while
+18:
+end for
+19: end for
+
+D. How different mapping affects data reuse
+
+For each mapping, which refers to the specific dataflow
+strategy, we can describe it using computation order, parallelism,
+and tiling strategy. Each mapping determines how much data
+will be used at each PE at the time of processing. These data
+need to be moved from the off-chip memory to the shared
+scratchpad S2, and from the shared scratchpad S2 to the local
+scratchpad S1, as shown in Fig. 4. Data reuse happens when
+some portion of data remains in the local scratchpad S1 or
+shared scratchpad S2. Operator fusion further increases the
+chance to keep some of the data in on-chip memory rather
+than sending it back to the off-chip memory.
+For a mapping, if the dimension of the matrix is larger than
+the physical dimension of the PE array, then the matrix must
+be tiled. As shown in Fig. 10, it shows the impact of different
+tile sizes for mapping a GEMM (a 3 × 3 matrix A multiplied
+with a 3×3 matrix B) on a spatial architecture with 6 PEs. We
+use TM, TN and SK to represent the temporal mapping for M
+and N dimension and spatial mapping for K dimension. As
+computation order and parallelizing dimension are fixed in both
+inter-cluster and intra-cluster in this example, different cluster
+sizes and tiling sizes will affect the data reuse opportunity.
+In Fig. 10 (a), a non-cluster mapping has been applied here.
+
+𝑂𝑝45: 𝑊𝑂⊗𝑊𝑉⊗𝑆
+
+Op
+1
+2
+3
+4
+5
+6
+
+Code
+1
+1
+0
+1
+1
+0
+
+𝑂𝑝12: 𝑆𝑜𝑓𝑡𝑚𝑎𝑥(𝑊𝑄⊗𝑊𝐾⊗𝑋)
+
+Fig. 9: Example of new fused operators in OFE
+
+[23], to describe regular transformer operators and our proposed
+fused operators in OFE. However, the original MAESTRO does
+not support fused operators from OFE. Thus, we expanded
+the native MAESTRO to MAESTRO FUSION to enable
+dataflow directives given a fused operator. MAESTR FUSION
+
+TN=1
+
+SK=3
+
+Off-Chip
+Mem. Bandwidth
+Edge [1]
+256
+256B
+20 MB
+16 GB/s
+80 GB/s (DRAM)
+Mobile [5]
+4098
+512B
+40 MB
+40 GB/s
+80 GB/s (DRAM)
+Cloud [17]
+65536
+2048B
+100 MB
+800 GB/s
+1000 GB/s (HBM)
+
+Config
+# of PEs
+S1
+Size
+
+S2
+Size
+
+NoC
+Bandwidth
+
+1
+2
+3
+4
+5
+6
+
+TemporalMap(1, 1) M
+TemporalMap(1, 1) N
+SpatialMap (3, 3) K
+
+1 2 3
+TM=1
+
+1
+2
+3
+
+T
+
+×
+=
+
+A
+B
+C
+
+(b) Non-tiled Mapping with Cluster Size of 3
+
+TemporalMap(1, 1) M
+SpatialMap (1, 1) N
+TemporalMap(3, 3) K
+Cluster(3)
+TemporalMap(1, 1) M
+TemporalMap(1, 1) N
+SpatialMap (1, 1) K
+
+TN=1
+
+SK=3
+
+Cluster1
+
+TABLE III: Latency and Energy Reduction under Various S2
+Scratchpad Sizes
+
+1
+2
+3
+
+TM=1
+
+1 4
+2 5
+3 6
+
+Cluster2
+
+×
+=
+
+4
+5
+6
+
+S2 Size
+(MB)
+Fusion Code
+Latency Reduced
+(Million Cycles)
+Energy Reduced
+(µJ)
+
+(c) Non-Optimal Tiled Mapping with Cluster Size of 2
+
+TemporalMap(2, 2) M
+SpatialMap (2, 2) N
+TemporalMap(2, 2) K
+Cluster(2)
+TemporalMap(2, 2) M
+TemporalMap(2, 2) N
+SpatialMap (1, 1) K
+
+Cluster1
+
+TN=2
+
+SK=2
+
+12
+110101
+24.64
+52.74
+15
+110101
+27.79
+59.47
+17
+111101
+31.98
+68.45
+20
+111111
+35.13
+75.18
+
+1
+2
+
+Cluster2
+
+1 1 3
+2 2 4
+
+TM=2
+
+3
+4
+
+×
+=
+
+Cluster3
+
+5
+6
+
+(d) Optimized Tiled Mapping with Cluster Size of 2
+
+TemporalMap(2, 2) M
+SpatialMap (1, 1) N
+TemporalMap(2, 2) K
+Cluster(2)
+TemporalMap(1, 1) M
+TemporalMap(1, 1) N
+SpatialMap (1, 1) K
+
+Cluster1
+
+TN=1
+
+SK=2
+
+1
+2
+
+when calculating the output matrix, thus we spatially map the
+K dimension within the cluster of PEs for the accelerators that
+support spatial reduction (TPU-like, Eyeriss-like, NVDLA-like).
+These accelerators support spatial reduction through forward-
+and-store or reduction trees. However, the ShiDianNao-style
+accelerators, do not support spatial reduction, thus we spatially
+map the N dimension within the cluster instead of the K
+dimension. Listed in Fig. 8, we summarized the important
+mapping information of different types of accelerators. For
+example, TTS −NMK represents that intracluster mapping
+style is temporally map N and K dimensions and spatially
+map K dimension, which aligns with fixed dataflow NVDLA-
+like accelerators. The parallelizing dimension, computation
+order, and cluster size for those accelerators are fixed except
+for the flexible one. Thus, given the type of accelerator Arch
+(e.g., NVDLA-like, TPU-like, Fleixble), we can determine the
+data-centric directives for the mapping space of a transformer
+model.
+
+1 3 5
+2 4 6
+
+Cluster2
+
+TM=2
+
+3
+4
+
+×
+=
+
+Cluster3
+
+5
+6
+
+Fig. 10: Different Mapping Strategies
+
+Only 3 PEs (number 1 to 3) are spatially mapped onto the
+K dimension, which is the column of matrix A and the row
+of the matrix B. With this mapping, the entire accelerator is
+computing one entry of the matrix C and leaving 3 PEs (from
+number 3 to 6) idle. In Fig. 10 (b), we fully map 3 PEs from
+each cluster onto the K dimension. All 6 PEs are utilized
+to compute two entries of matrix C. However, this non-tiled
+mapping does not provide the optimal performance. In Fig. 10
+(c), we split 6 PEs into 3 clusters. 2 PEs from each cluster
+are spatially mapped onto K dimension and yet fully cover
+the K dimension, which is called the tiled-mapping. However,
+this time we temporally map the M and N dimensions with
+size 2, which means each PE will compute two different data
+across the time. This will yield an underutilization of cluster
+3 because there is not enough data in the N dimension to
+allocate for cluster 3. Finally, Fig. 10 (d) shows an optimized
+tiled mapping strategy with a cluster size of 2. All 2 PEs in
+each cluster will be fully utilized and this enables maximum
+data reuse.
+
+IV. EVALUATION
+
+In this section, we show that SAMT framework can find
+Pareto-front solutions given different Transformer models and
+spatial accelerators.
+We evaluated five types of accelerators as shown in Fig. 8.
+For consistent comparison, each accelerator was configured
+with identical hardware settings (refer to the Edge setting
+in Table II), including 256 Processing Elements (PEs), 256
+Bytes for S1, 20 MB for S2, and a Network on Chip (NoC)
+bandwidth of 16 GB/s. We used the GPT-2 transformer model
+in this analysis, which has an embedding size of 768 and a
+sequence input length of 1024). Fig. 11 (a)-(d) demonstrates
+how different accelerator designs and the integration of operator
+fusion techniques influence latency improvements. Specifically,
+Fig. 11 (a) highlights that the TTS-NMK accelerators (as per
+the setup in Fig. 8) experience a 14% latency reduction with a
+flexible dataflow approach without fusion, and between 15%
+and 22% with basic fusion primitives. Further, Fig. 11 (b) to
+(d) indicate latency improvements ranging from 12% to 26%
+using flexible dataflow without fusion, and from 13% to 34%
+
+E. Hardware design space and dataflow mapping space
+
+To enable flexible spatial accelerator design, our frame-
+work defines four key configurations in Algorithm 1 for the
+hardware specification: number of PEs P, shared scratchpad
+size S2, local scratchpad size S1, and network-on-chip (NoC)
+bandwidth B. Even though it is impossible to do an apple-to-
+apple comparison with previous accelerator works, we try to
+normalize the hardware configurations across different works
+for a fair comparison. We evaluated all the different mapping
+strategies previous works can provide, and assign the same
+hardware configurations to all the accelerators under compar-
+ison. For example, in GEMM, the K dimension is reduced
+
+3.50
+
+35.00
+
+Latency (Million Cycles)
+
+Latency (Million Cycles)
+
+Latency (Million Cycles)
+
+50.00
+
+3.00
+
+30.00
+
+40.00
+
+2.50
+
+25.00
+
+2.00
+
+20.00
+
+30.00
+
+1.50
+
+15.00
+
+20.00
+
+1.00
+
+10.00
+
+10.00
+
+0.50
+
+5.00
+
+0.00
+
+0.00
+
+0.00
+
+Non-Fused
+Fused Op1
+Op2/Op3
+Op4/Op5
+Op6
+
+Non-Fused
+Fused Op1
+Op2/Op3
+Op4/Op5
+Op6
+
+Non-Fused
+Fused Op1
+Op2/Op3
+Op4/Op5
+Op6
+
+TTS-NMK Dataflow
+Flexible Dataflow
+
+TTS-NMK Dataflow
+Flexible Dataflow
+
+TTS-MNK Dataflow
+Flexible Dataflow
+
+(a) Latency of TTS-NMK vs Flexible Dataflow
+(b) Latency of TTS-MNK vs Flexible Dataflow
+(c) Latency of TTS-NMK vs Flexible Dataflow
+
+300
+
+8
+
+290.00
+
+7
+
+280.00
+
+Latency (Million Cycles)
+
+Latency (Million Cycles)
+
+250
+
+log10(Energy(nJ))
+
+6
+
+270.00
+
+200
+
+5
+
+260.00
+
+250.00
+
+150
+
+4
+
+240.00
+
+3
+
+100
+
+230.00
+
+2
+
+50
+
+220.00
+
+1
+
+210.00
+
+0
+
+0
+
+Non-Fused
+Fused Op1
+Op2/Op3
+Op4/Op5
+Op6
+
+TTS-NMK
+TTS-MNK
+TTS-NMK
+TST-MNK
+Flexible
+Dataflow
+
+TTS-NMK
+TTS-MNK
+TTS-NMK
+TST-MNK
+Flexible
+Dataflow
+
+TST-MNK Dataflow
+Flexible Dataflow
+
+Non-Fusion
+Fusion
+
+Non-Fusion
+Fusion
+
+(d) Latency of TST-MNK vs Flexible Dataflow
+(e) Latecny of Fusion vs Non-Fusion
+(f) Energy of Fusion vs Non-Fusion
+
+Fig. 11: Evaluation Results of Latency and Energy Consumption under Various Settings
+
+Edge
+Mobile
+Cloud
+
+5.1
+
+Log(ENERY(NJ))
+
+5.05
+
+SAMT
+
+5
+
+4.95
+
+4.9
+
+4.85
+
+TPU
+-Like
+
+4.8
+
+NVDLA-Like
+
+4.75
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+
+Log(LATENCY(CYCLES))
+
+Fig. 12: The Pareto-Front Solutions Found by SAMT
+
+Fig. 13: Latency vs. Energy of different dataflow accelerators
+across different platforms
+
+with basic fusion strategies. Finally, Fig. 11(e) and (f) show
+that under the same hardware configurations, flexible dataflow
+combined with optimal fusion can lead to up to 91% latency
+reduction and up to 23% energy savings compared to fixed
+dataflow without fusion.
+TABLE III shows the trade-off between the latency and
+energy reduction because of operator fusion and S2 scratchpad
+size. As S2 size increases, we can incorporate a more
+aggressive fusion scheme, which means more operators will be
+fused and that requires a larger S2 capacity. In short, larger S2
+further reduces the runtime latency and energy consumption.
+Fig. 12 shows the Pareto-front solution sets found by SAMT,
+where each point represents a fusion scheme supported and
+enabled by OFE. This figure illustrates the strong correlation
+between latency and energy within out hardware setting. Given
+the hardware constraints, especially the size of S2, we observe
+various fusion schemes could lead to optimal latency reduction,
+
+which aligns well with the findings from TABLE III. We notice
+that, within S2 limits, for example, S2 less than 25 MB, the
+different fusion schemes along the dashed line demonstrate
+the potential to reduce latency without increasing energy
+consumption.
+Fig. 13 shows the optimal fixed dataflow and flexible
+dataflow accelerators with fusion reported by SAMT in the
+edge, mobile, and cloud settings as detailed in Table.II. In
+each of those settings, SAMT consistently identifies solutions
+that achieve the lowest latency while maintaining relatively
+low energy consumption, which aligns with our prioritization
+of latency first and energy second. The figure highlights
+the advantages of employing flexible dataflow accelerators
+compared to fixed dataflow accelerators (NVDLA-like and
+TPU-like) when SAMT can successfully determine the optimal
+dataflow mapping for them with the fusion.
+
+V. RELATED WORK
+
+Previous research has addressed deep learning accelerator
+loop ordering and mapping strategies, primarily through
+compiler optimizations. These efforts typically target multiple
+platforms and favor architectures with broader applicability.
+While some of these works incorporate dataflow mappings as
+one aspect of optimization, they often do not explicitly explore
+the design of dedicated specialized accelerators, as we do in
+our current study.
+Additionally, there are works that specifically focus on
+optimizing dataflow mapping and exploring the design space for
+accelerators. However, many of these efforts lack considerations
+at the operator fusion level. Moreover, the majority of them
+are tailored for Convolutional Neural Networks (CNNs),
+whereas our research explicitly targets transformer networks,
+incorporating detailed analysis of the heavily leveraged operator
+fusion scheme.
+
+B. Accelerator Mappings
+
+Kao et al. [18] introduced the GAMMA framework, designed
+to automate the hardware mapping of Deep Neural Network
+(DNN) models onto accelerators. By employing Genetic
+Algorithms, they sought to optimize the mapping process,
+thereby enhancing the efficiency and performance of DNN
+accelerators. The utilization of genetic algorithms involves a
+heuristic search strategy inspired by natural selection processes,
+leading to iterative refinement of hardware mappings. It is
+noteworthy, however, that GAMMA primarily focuses on
+mapping strategies for Convolutional Neural Networks (CNNs),
+and its applicability to mainstream transformer models is
+limited due to distinct parallelization and data reuse schemes
+inherent to these models.
+MAERI [24] focuses on the evaluation of spacial acceler-
+ator architectures that employ a tiled general matrix-matrix
+multiplication (GEMM) kernel. The study introduces a frame-
+work dedicated to identifying optimized mappings, including
+dataflow and tile sizes, for a tiled GEMM tailored to a given
+spatial accelerator and workload combination. The evaluations,
+conducted across five spatial accelerators, demonstrate that the
+systematically generated tiled GEMM mappings outperform
+various GEMM workloads on diverse accelerators, emphasizing
+the potential for high performance achieved through thoughtful
+optimization.
+The FLAT framework, as introduced by Kao et al. [20],
+presents a dataflow optimization strategy addressing attention
+bottlenecks in neural network models. Attention mechanisms,
+integral for capturing intricate data relationships, often intro-
+duce operational intensity and other bottlenecks on existing
+hardware. FLAT employs a tiling technique and limited operator
+fusion to augment data reuse opportunities, thereby reducing
+memory requirements and increasing arithmetic intensity.
+On the other hand, our SAMT framework further refines
+the operator fusion scheme. It facilitates the co-optimization
+between various transformer models and hardware configura-
+tions, ultimately determining the optimal fixed or flexible (if
+hardware-supported) dataflow mapping.
+
+A. Compiler Optimization
+
+TVM [9] is an open-source machine learning compiler
+framework that automates the process of optimizing neural
+network models for a variety of hardware targets, including
+CPUs, GPUs, and specialized accelerators. It uses a deep
+learning-based approach to determine efficient operator fusion,
+optimizing the performance of the computational graph by
+considering the cache size and memory hierarchy of the
+target hardware. Although TVM provides extensive support for
+multiple hardware platforms, its optimization strategies focus
+mainly on traditional computing units and do not intrinsically
+consider the unique needs of emerging spatial architectures for
+Transformer models. Unlike SAMT, TVM does not explicitly
+adjust its strategy based on the different data flows and hardware
+configurations required by space accelerators (such as the
+number of PEs, NoC architecture, and memory bandwidth).
+XLA [4] is another compiler that can convert high-level rep-
+resentations of neural networks into optimized machine code for
+CPUs, GPUs, and other ML accelerators. XLA’s strength lies in
+its ability to tightly integrate with computation graph, enabling
+significant performance boosts. However, XLA’s optimizations
+are generally confined to CPU and GPU architectures with
+
+In this work, we shed a light to the unexplored design space
+in the intersection of operator fusion and flexible dataflow for
+addressing low arithmetic intensity challenges in Transformer
+models. We explored all the possible operator fusion in Trans-
+former blocks enabled by recent integer arithmetic algorithms
+on non-trivial operators such as softmax and presented benefits
+from the new operator fusion space.
+We codified our methodologies into a framework SAMT
+that consists of operator fusion explorer OFE, an extended
+MAESTRO cost-model supporting operator fusion MAE-
+STRO FUSION, and genetic algorithm-based mapping space
+explorer MSE. Our framework not only leverages the dynamic
+operator fusion schemes for the transformer models but also
+co-search the optimal dataflow mapping strategies for spatial
+accelerators. Our evaluation shows that such a comprehensive
+approach leads to significant latency and energy benefits: reduce
+inference latency by 12% to 91% and energy consumption
+by 3% to 23%. Such promising results motivate future
+works to consider the extended fusion and dataflow mapping
+optimization for Transformer accelerators, which can be built
+on top of our SAMT framework.
+
+REFERENCES
+
+[1] “Advanced neural network processing for low-power devices.” [Online].
+Available:
+[2] “
+[3] “
+to/chatgpt?pivots=programming-language-chat-completions.”
+[4] “
+[5] “Unlocking
+on-device
+generative
+ai
+with
+an
+npu
+and
+heterogeneous
+computing.”
+[Online].
+Available:
+
+assets/documents/Unlocking-on-device-generative-AI-with-an-NPU-
+and-heterogeneous-computing.pdf
+[6] M. Alwani, H. Chen, M. Ferdman, and P. Milder, “Fused-layer cnn
+accelerators,” in 2016 49th Annual IEEE/ACM International Symposium
+on Microarchitecture (MICRO).
+IEEE, 2016, pp. 1–12.
+[7] A. Bertsch, U. Alon, G. Neubig, and M. Gormley, “Unlimiformer:
+Long-range transformers with unlimited length input,” in Advances
+in Neural Information Processing Systems, A. Oh, T. Neumann,
+A.
+Globerson,
+K.
+Saenko,
+M.
+Hardt,
+and
+S.
+Levine,
+Eds.,
+vol.
+36.
+Curran
+Associates,
+Inc.,
+2023,
+pp.
+35 522–35 543.
+[Online].
+Available:
+files/paper/
+2023/file/6f9806a5adc72b5b834b27e4c7c0df9b-Paper-Conference.pdf
+[8] J. Cai, Y. Wei, Z. Wu, S. Peng, and K. Ma, “Inter-layer scheduling space
+definition and exploration for tiled accelerators,” in Proceedings of the
+50th Annual International Symposium on Computer Architecture, 2023,
+pp. 1–17.
+[9] T. Chen, T. Moreau, Z. Jiang, L. Zheng, E. Yan, H. Shen, M. Cowan,
+L. Wang, Y. Hu, L. Ceze et al., “{TVM}: An automated {End-to-End}
+optimizing compiler for deep learning,” in 13th USENIX Symposium
+on Operating Systems Design and Implementation (OSDI 18), 2018, pp.
+578–594.
+[10] Y.-H. Chen, T. Krishna, J. S. Emer, and V. Sze, “Eyeriss: An energy-
+efficient reconfigurable accelerator for deep convolutional neural net-
+works,” IEEE Journal of Solid-State Circuits, vol. 52, no. 1, pp. 127–138,
+2017.
+[11] T. Dao, “Flashattention-2: Faster attention with better parallelism and
+work partitioning,” 2023.
+[12] T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R´e, “Flashattention: Fast
+and memory-efficient exact attention with io-awareness,” 2022.
+[13] T. Dettmers, M. Lewis, Y. Belkada, and L. Zettlemoyer, “Llm.int8():
+8-bit matrix multiplication for transformers at scale,” 2022.

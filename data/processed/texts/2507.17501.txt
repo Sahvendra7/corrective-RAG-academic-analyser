@@ -1,0 +1,2548 @@
+DNT: A DEEPLY NORMALIZED TRANSFORMER
+THAT CAN BE TRAINED BY MOMENTUM SGD
+
+Xianbiao Qi1, Marco Chen2, Wenjie Xiao3, Jiaquan Ye1, Yelin He1, Chun-Guang Li4,
+
+Zhouchen Lin5
+
+1Intellifusion Inc., 2Tsinghua University, 3Johns Hopkins University,
+
+4Beijing University of Posts and Telecommunications, 5Peking University
+
+ABSTRACT
+
+arXiv:2507.17501v1 [cs.LG] 23 Jul 2025
+
+Transformers have become the de facto backbone of modern deep learning, yet
+their training typically demands an advanced optimizer with adaptive learning rate
+like AdamW, rather than a momentum SGDW (mSGDW). Previous works show
+that it is mainly due to a heavy-tailed distribution of the gradients. In this paper,
+we introduce a Deeply Normalized Transformer (DNT), which is meticulously
+engineered to overcome this limitation enabling seamless training with vanilla
+mSGDW while yielding comparable performance to the Transformers trained
+via AdamW. To be specific, in DNT, we strategically integrate normalization
+techniques at proper positions in the Transformers to effectively modulate the
+Jacobian matrices of each layer, balance the influence of weights, activations, and
+their interactions, and thus enable the distributions of gradients concentrated. We
+provide both theoretical justifications of the normalization technique used in our
+DNT and extensive empirical evaluation on two popular Transformer architectures
+to validate that: a) DNT outperforms its counterparts (i.e., ViT and GPT), and b)
+DNT can be effectively trained with vanilla mSGDW.
+
+1
+INTRODUCTION
+
+Transformer (Vaswani et al., 2017) has revolutionized numerous domains in artificial intelligence and
+as the de facto backbone of modern deep learning has demonstrated remarkable capabilities across
+natural language processing (Radford et al., 2018; 2019; Brown et al., 2020; Dubey et al., 2024;
+Team, 2023; Liu et al., 2024), computer vision (Dosovitskiy et al., 2020; Liu et al., 2022; Dehghani
+et al., 2023), AIGC (Ramesh et al., 2021; Peebles & Xie, 2023), and multi-modal applications (Li
+et al., 2022; Liu et al., 2023a).
+
+Nowadays it is widely accepted that Adam (Kingma & Ba, 2014) or its descendant
+AdamW (Loshchilov & Hutter, 2019) are the standard optimizer for training Transformers; whereas
+the classical SGD (Robbins & Monro, 1951) and its variants (Nesterov, 1983; 1998; Johnson & Zhang,
+2013), e.g., momentum SGD (mSGD), usually under-perform when training Transformers. Indeed,
+Adam is used as the optimizer in most recent studies on Large Language Models (LLMs) (Dubey
+et al., 2024; Team, 2023; Liu et al., 2024) and multi-modal models (Li et al., 2022; Liu et al., 2023a),
+despite of its heavier load on GPU memory than mSGD. Naturally, an interesting question arises:
+
+Can Transformers be trained via mSGD to yield performance matched to that is
+trained via Adam? Or, under what conditions?
+
+0.016
+
+0.014
+
+Wk in ViT
+
+Wv in ViT
+
+Wq in ViT
+
+0.005
+
+Wk in V-DNT
+
+Wv in V-DNT
+
+Wq in V-DNT
+
+0.014
+
+0.012
+
+0.012
+
+0.004
+
+0.010
+
+0.010
+
+0.003
+
+0.008
+
+Density
+
+Density
+
+Density
+
+0.008
+
+0.006
+
+0.006
+
+0.002
+
+0.004
+
+0.004
+
+0.001
+
+0.002
+
+0.002
+
+0.000
+
+0.000
+
+0.000
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+0.010
+
+Wv in ViT
+
+W1 in ViT
+
+W2 in ViT
+
+0.007
+
+0.005
+
+Wv in V-DNT
+
+W1 in V-DNT
+
+W2 in V-DNT
+
+0.006
+
+0.008
+
+0.004
+
+0.005
+
+0.006
+
+0.003
+
+Density
+
+Density
+
+Density
+
+0.004
+
+0.003
+
+0.004
+
+0.002
+
+0.002
+
+0.002
+
+0.001
+
+0.001
+
+0.000
+
+0.000
+
+0.000
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Absolute Value of Gradient
+×10 4
+
+FIGURE 1: Distributions of the absolute values of the entries in gradients for ViT with PreNorm
+(marked in blue) and our V-DNT (marked in orange), where V-DNT denotes the vision variant of our
+DNT. We observe that the gradients in our V-DNT are typically quite small and well concentrated;
+whereas the gradient distributions of the standard ViT have a long tail.
+
+Adam uses a normalized term between the first-order term (i.e. gradients) and the square-root of the
+second-order term. Owing the normalization, Adam is robust to the heavy-tail distribution of the
+gradients. On contrary, mSGD directly uses the first-order gradient with momentum to update the
+weight, and thus it is hard to keep step with each others when updating the weights. This explains
+why Adam has become the standard optimizer for training Transformer in practice. Consequently, an
+interesting question turns out to be: can we help mSGD to relieve the heavy-tail distribution problem
+of the gradients in training Transformers? How?
+
+It turns out that we need to incorporate an effective strategy to mitigate the heavy-tail gradients
+problem in training the Transformer. Motivated by analyzing the Jacobian matrix of different modules,
+we propose to add or adjust the positions of normalization operations in the Transformer to relieve the
+heavy-tail gradient problem. Roughly speaking, we need to use the properly positioned normalization
+operator to amend the Jacobian matrix of ∂y
+
+∂x largely less affected by the weights, the activations, or
+the joint influence of the weights and the activations.
+
+Visualized results show that our designed architecture, a Deeply Normalized Transformer, termed
+as DNT, exhibits a more concentrated gradient distribution than its counterpart which has a heavy-
+tailed gradient distribution, as illustrated in orange in Figure 1. In this paper, we provide not only
+the theoretical justification of the properly positioned normalization operator in our DNT but also
+empirical evaluations to further validate that our DNT outperforms its counterparts, i.e., ViT and
+GPT, on ImageNet classification and OpenWebText tasks. Since that the distributions of DNT are
+concentrated, training it with the vanilla mSGD can yield performance on par with that with Adam
+optimizer.
+
+To the best of our knowledge, this is the first work to show that using a vanilla mSGD can train a Trans-
+former to achieve performance comparable to that of using Adam—provided that the Transformer
+architecture is properly modified to mitigates the heavy-tail gradient problem.
+
+2
+PRELIMINARIES
+
+Theorem 1 (Concentration of norm). Let x be an isotropic random vector in Rd. Then, we have
+E∥x∥2
+2 = d. Moreover, if x and y are two independent isotropic random vectors, then E⟨x, y⟩2 = d.
+
+Theorem 2 (Almost orthogonality of high-dimensional independent vectors). Let us normalize the
+random vectors x and y in Theorem 1, setting x :=
+x
+∥x∥2 and y :=
+y
+∥y∥2 , in a high-dimensional
+space, the independent and isotropic random vectors x and y, tend to be almost orthogonal,
+
+Theorem 1 establishes that ∥x∥2 ≍
+√
+
+d, ∥y∥2 ≍
+√
+
+d and ⟨x, y⟩≍
+√
+
+d with high probability, which
+implies that cosine of the angle θ between two random vectors x and y satisfies cos(θ) ≍
+1
+√
+
+d.
+Theorem 2 implies that in high-dimensional space (i.e., d is very large), two random vectors are
+almost orthogonal. Thus, given z = x + y where x and y are two high-dimensional random vectors,
+we have ∥z∥2 ≍
+p
+
+∥x∥2
+2 + ∥y∥2
+2.
+
+Jacobian of normalization. Normalization (Ioffe & Szegedy, 2015; Ba et al., 2016; Zhang &
+Sennrich, 2019) is a technique widely used in deep learning. It is used to stabilize and accelerate
+the training process. For example, LayerNorm is defined as LN(x) = γ ⊙
+√
+
+dy
+√
+
+∥y∥2
+2+ϵ + β, and y =
+
+I −1
+
+d11⊤
+x, where ϵ > 0 is a smoothing factor, d is the feature dimension of x, γ and β are two
+learnable Rd vectors, γ and β are usually initialized to 1 and 0. Most recently, some recent LLMs
+(Touvron et al., 2023; Chowdhery et al., 2023; Team, 2023; Liu et al., 2024) uses RMSNorm (Zhang &
+Sennrich, 2019) to replace LayerNorm, where RMSNorm is defined as: RMSN(x) = γ ⊙
+√
+
+dx
+√
+
+∥x∥2
+2+ϵ.
+
+Compared to LayerNorm, RMSNorm does not use the centering term and the bias term.
+
+The Jacobian matrix of RMSNorm with respect to x is calculated as follows
+
+∂x
+=
+√
+
+∥x∥2
+2 + ϵ
+diag(γ)
+
+I −
+xx⊤
+
+
+.
+
+∂RMSN(x)
+
+d
+q
+
+∥x∥2
+2 + ϵ
+
+We use RMSNorm as our default normalization technique when we discuss normalization, but our
+analysis can be generalized to the other normalization methods. Here we use a numerator layout for
+all our derivation throughout this paper.
+
+Stochastic Gradient Descent (SGD) (Robbins & Monro, 1951) is a classical and fundamental
+optimization algorithm in machine learning for training models by minimizing their cost functions.
+However, the vanilla SGD often suffers from slow convergence, especially in complex optimization
+landscapes with ravines, saddle points, or local minima. To address these limitations, momentum
+SGD (Nesterov, 1983; 2013; Sutskever et al., 2013) was introduced as an extension of the basic SGD
+algorithm.
+
+Momentum SGD (Nesterov, 1983; 2013; Sutskever et al., 2013) introduces a velocity term m that
+accumulates gradients over time, i.e.,
+
+mt+1 = µmt + ∇L(wt), wt+1 = wt −αtmt+1
+
+where µ ∈[0, 1) is the momentum coefficient that determines how much of the previous velocity
+is retained and αt is the learning rate for the time step t. Unlike in the vanilla SGD, mSGD allows
+the optimization to build up a “momentum” in direction of persistent gradient descent, which can
+effectively dampen the oscillations in high-curvature directions.
+
+3
+THEORETICAL JUSTIFICATION ON WHY DNT CAN BE TRAINED WITH
+MOMENTUM SGD
+
+3.1
+PROBLEM 1: WHAT IS THE ROOT CAUSE OF HEAVY-TAIL DISTRIBUTION OF GRADIENTS?
+
+Previous works (Zhang et al., 2020; Simsekli et al., 2019) have pointed out that a heavy-tailed
+distribution of the stochastic gradients is a root cause of SGD’s poor performance. Here, we would
+like to investigate this issue by analyzing the backpropagation in the backward process of the
+Transformer.
+
+Suppose xl+1 = f(xl) and we have obtained
+∂L
+∂xl+1 in a backpropagation process, then we can
+calculate ∂L
+
+∂xl using a numerator layout as
+
+∂L
+∂xl =
+∂L
+∂xl+1
+∂xl+1
+
+∂xl ,
+
+where ∂xl+1
+
+∂xl
+is usually called as the Jacobian matrix.
+
+∂xl , for any a forward layer with xl = W lxl−1, we can compute
+∂L
+∂W l as
+
+Having had ∂L
+
+∂xl xl−1⊤=
+∂L
+∂xl+1
+∂xl+1
+
+∂L
+∂W l = ∂L
+
+∂xl xl−1⊤.
+(1)
+
+From Equation 1, we observe that the heavy-tail problem in gradients is indeed closely related to
+the large diversity of the singular values in the Jacobian matrix ∂xl+1
+
+∂xl . The Jacobian matrix can
+have highly diverse singular values for several reasons: 1) the weight matrix contains very diverse
+singular values; 2) the activations span widely, leading to Jacobians with very uneven singular value
+distributions. When a matrix has a wide range of singular values (i.e., a very large condition number),
+it means that the transformation stretches the input very differently along different directions. During
+backpropagation, it will cause a heavy-tail problem in the gradients.
+
+Therefore, one reasonable solution to relieve the heavy-tail problem is to constrain the uneven
+singular value distribution of the Jacobian matrix via controlling the weight matrix and activations.
+This is the basic idea in our paper.
+
+3.2
+PROBLEM 2: MITIGATE THE HEAVY-TAIL GRADIENT PROBLEM BY ANALYZING THE
+JACOBIAN MATRIX
+
+In this subsection, we will describe how we use different normalizations—adding or adjusting the
+position of the normalizations—to constrain the Jacobian matrix to relieve the heavy-tail gradient
+problem. Note that we do not claim that we discover any new normalization methods, instead,
+we give our understanding on how each normalization affects the Jacobian matrix. We refer the
+readers to (Loshchilov et al., 2025; Zhu et al., 2025; Qi et al., 2025b; 2023) for more discussions
+about normalization. We will use red, green, blue, purple, magenta to denote its relationship with
+InputNorm, PreNorm, MidNorm, PostNorm and QKNorm, individually.
+
+PreNorm
+SA/FFN
++
+
+SA/FFN
+MidNorm
++
+
+WE/PE
+InputNorm
+Blocks
+
+(A) InputNorm
+
+(B) PreNorm
+
+(C) MidNorm
+
+Wq
+QKNorm
+
+A
+
+Wk
+QKNorm
+
+Wv
+
+MatMul
+
+SA/FFN
++
+PostNorm
+
+(D) PostNorm
+
+(E) QKNorm
+
+FIGURE 2: Five different normalization methods. The only difference between them is the position
+of normalization. In (A), WE/PE indicates word embedding and patch embedding.
+
+3.2.1
+INPUTNORM
+
+Definition of InputNorm. InputNorm in Transformer is defined as the normalization that is applied
+after the first word embedding in NLP or the first patch embedding in vision Transformer. As shown
+in Figure 2 (d), InputNorm is defined as
+x0 = InputNorm(h), where h = Embedding(i),
+(2)
+where i is the input and Embedding(·) denotes word embedding or patch embedding. For a standard
+residual block in Transformer, we have the following equation
+
+Each xl will be the input into some modules, such as normalization, self-attention and feed-forward
+layers. The Jacobian matrices of some modules are sensitive to the norm of the input, such as
+LayerNorm and the dot-product self-attention.
+
+Under the assumption that random vectors are almost orthogonal in high dimension, we have that
+
+r
+
+( ∥x0∥2
+2 + ∥f(x0)∥2
+2 + · · · + ∥f(xl)∥2
+2).
+(3)
+
+∥xl+1∥2 ≍
+
+Proposition 1 (Effect of norm of input embedding on gradients). In a high-dimensional settings
+when all parameters and activations are high-dimensional, if the norm of x0 is very large, it will
+lead to gradient vanishing problem in all subsequent layers, provided that InputNorm is not used.
+
+It means that if the norm of x0 is large, then the norm ∥xl+1∥2 in each layer will also be large. If
+∥xl+1∥2 is the input into a normalization layer, according to the Jacobian equation of normalization
+∂RMSN(xl+1)
+
+∂xl+1
+=
+√
+
+∥xl+1∥2
+2+ϵ diag(γ)
+
+I −xl+1xl+1⊤
+
+∥xl+1∥2
+2+ϵ
+
+, the gradient flow in each layer will be
+
+d
+√
+
+significantly affected by the norm of x0. Thus, we need to constrain the norm of x0 before it is used
+as the input into the following layer.
+Remark 1. The norm of x0 has a large influence of the gradient flow of the subsequent layers. If it is
+very large, it will lead to gradient vanishing, and if it is very small, it may lead to gradient exploding.
+Meanwhile, the network is also sensitive to the change of the norm of x0.
+
+3.2.2
+PRENORM
+
+Definition of PreNorm. A PreNorm in Transformer is defined as the normalization that is applied
+before the self-attention or the feed-forward components. As shown in Figure 2 (b), PreNorm is
+defined as
+Y = Self-Attention(X′), where x′ = PreNorm(x).
+(4)
+A single-head self-attention is defined as
+Y = WvXA,
+
+where P = X⊤Wq
+⊤WkX,
+A = softmax(
+P
+√
+
+dq ), A is called as the attention matrix and
+P
+√
+
+dq is
+
+called as the logit, A ∈Rn×n, X ∈Rd×n, Wq ∈Rdq×d, Wk ∈Rdq×d, Wv ∈Rdv×d. Here, our
+goal is to calculate ∂vec(Y )
+
+∂vec(X).
+
+By vectorization of Y = WvXA, we have
+
+∂vec(Y ) = (A⊤⊗Wv)∂vec(X) + (In ⊗WvX)∂vec(A).
+Bringing together all these terms, we have that
+
+
+( X⊤Wk
+⊤Wq ⊗In)C + (In ⊗X⊤Wq
+⊤Wk)
+
+.
+
+∂vec(Y )
+∂vec(X) = (A⊤⊗Wv) + (In ⊗Wv X ) J
+p
+
+dq
+
+(5)
+For simplicity, we denote
+
+J = blockdiag
+
+diag(A:,1) −A:,1A⊤
+:,1, . . . , diag(A:,n) −A:,nA⊤
+:,n
+
+.
+
+A detailed derivation process can be found in (Qi et al., 2025a). Different from (Qi et al., 2025a), This
+paper is to analyze the influence of X, rather than W ⊤
+q Wk in the self-attention module. According
+to the Jacobian matrix in Equation 5, we have the following proposition.
+Proposition 2 (PreNorm can stabilize the gradient in self-attention module.). If X′ = g ⊙X with
+each column in x′
+i having a magnitude gi, according to Equation 4, with the same Wq, Wk, Wv,
+Y = Self-Attention(X) and Y ′ = Self-Attention(X′). Then we have ∂vec(Y )
+
+∂vec(X) = ∂vec(Y ′)
+
+∂vec(X′).
+
+3.2.3
+MIDNORM
+
+Definition of MidNorm. A MidNorm in Transformer is defined as the normalization that is applied
+after the self-attention and feed-forward components and meanwhile before the residual shortcut. As
+shown in Figure 2 (b), MidNorm is defined as
+
+y = MidNorm(z), where z = W2 ReLU(W1x).
+(6)
+
+In the self-attention, Wv and Wo can be seen as similar function as W1 and W2 in FFN. If we only
+use single-head attention, then we have z = WoWvx.
+
+The Jacobian matrix of an FFN can be computed as:
+Jz(x)
+=
+∂FFN(x;W1,W2)
+
+∂x
+=
+W2 diag (1 (W1x > 0))W1.
+The
+Jacobian
+matrix
+of
+an
+RMSNorm
+layer
+is
+∂y
+∂z
+=
+√
+
+
+. The joint Jacobian matrix of an FFN and an RMSNorm is
+
+d
+∥z∥2 diag(γ)
+
+I −zz⊤
+
+∥z∥2
+2
+
+W2 diag (1 (W1x > 0))W1
+
+∂z
+∂z
+∂x =
+√
+
+d diag(γ)
+
+I −zz⊤
+
+∂y
+∂x = ∂y
+
+.
+(7)
+
+∥z∥2
+2
+
+∥W2 ReLU(W1x)∥2
+
+Proposition 3 (The effect of MidNorm). Let W = W2 diag (1(W1x>0))W1
+
+∥W2 ReLU(W1x)∥2
+, in a high-dimensional
+settings when W1, W2 and x are high-dimensional and random, the singular values of W will be
+only related to the shape of W1 and W2, and will be independent to the magnitude of W1 and W2.
+
+According to Proposition 3, we have the following remark.
+
+Remark 3. MidNorm can effectively guarantee that the norms of W1, W2, Wv, and Wo will not
+affect the Jacobian matrix as shown in Equation 7. It means that even the magnitudes of these weight
+matrices are very large, it will not magnify the gradient.
+
+3.2.4
+POSTNORM
+
+Definition of PostNorm. A PostNorm in Transformer is defined as the normalization that is applied
+after the residual block. As shown in Figure 2 (d), PostNorm is defined as
+
+xl+1 = PostNorm(zl+1), where zl+1 = xl + f(xl; W l+1).
+(8)
+
+Proposition 4 (PostNorm is sensitive to the vector norm of activation). If zl+1 in Equation 8 is very
+large, then it will significantly decrease the gradient.
+
+∂zl+1 =
+√
+
+d
+∥zl+1∥(I −zl+1zl+1⊤
+
+Proof. From Equation 8, we have ∂xl+1
+
+∥zl+1∥2
+2 ). If ∥zl+1∥is very large, according
+
+to
+∂L
+∂zl+1 =
+∂L
+∂xl+1 ∂xl+1
+
+∂zl+1 , we have that the gradient of
+∂L
+∂zl+1 will be largely decreased.
+
+In a classical Transformer (Vaswani et al., 2017), if f(x; W1, W2) = W2 ReLU(W1x), along with
+the training process, σ(W1) and σ(W2) will usually become too large. In this way, ∥f(xl; W l+1)∥2
+will be very large, it means zl+1 in Equation 8 will be very large. Therefore, we have that PostNorm
+under this circumstance will lead to gradient vanishing.
+
+Remark 4. We need to be very careful when using PostNorm, we must ensure that the norm of the
+input vector to PostNorm is within a reasonable range, otherwise the network is likely to cause a
+gradient vanishing when zl being very large or a gradient exploding zl when zl being very small.
+
+3.2.5
+QKNORM
+
+Definition of QKNorm. A QKNorm (Henry et al., 2020) in Transformer is defined as the normal-
+ization that is applied on queries and keys in the self-attention block. As shown in Figure 2 (e),
+self-attention with QKNorm (Dehghani et al., 2023) is defined as
+
+Y = WvXA′, where A′ = softmax( P ′
+
+in which q′
+i and k′
+i are the i-th column and the j-th column in Q′ and K′, individually, and we have
+
+q′
+i = QKNorm(Wqxi) = γq ⊙
+√dhWqxi
+
+dh diag(γq)
+Wqxi
+∥Wqxi∥2
+
+∥Wqxi∥2
+=
+p
+
+,
+
+(10)
+
+k′
+j = QKNorm(Wkxj) = γk ⊙
+√dhWkxj
+
+dh diag(γk)
+Wkxj
+∥Wkxj∥2
+
+∥Wkxj∥2
+=
+p
+
+,
+
+where dh is the head dimension. To facilitate the derivation, we denote Q = WqX and K = WkX
+as before, and use qi and kj to denote the i-th column and the j-th column in Q and K, individually.
+Thus, we have that q′
+i = QKNorm(qi) and k′
+j = QKNorm(kj).
+
+Moreover, we have that P ′
+ij = q′⊤
+i k′
+j, where P ′
+ij is a scalar, and the gradient is computed as follows,
+
+∂P ′
+ij
+∂x = k′⊤
+j
+∂q′
+i
+∂x + q′⊤
+i
+∂k′
+j
+∂x
+
+dh diag(γk)q′⊤
+i (I −k′
+jk′
+j
+∥k′
+j∥2
+2
+)
+Wk
+∥Wkxi∥2
+.
+
+dh diag(γq)k′⊤
+j (I −q′
+iq′
+i
+∥q′
+i∥2
+2
+)
+Wq
+∥Wqxi∥2
++
+p
+
+=
+p
+
+(11)
+Proposition 5 (Effect of QKNorm). In a high-dimensional settings, i.e., when all Wq, Wk and x
+
+are high-dimensional and random, in Equation 11, the gradient term of
+∂P ′
+ij
+∂x is independent of the
+magnitudes Wq and Wk.
+
+According to the Proposition, we have the following remark.
+Remark 5. QKNorm can mitigate the joint effect of W ⊤
+q Wk to the gradient of the self-attention
+layer. The fast increasing of the singular values of W ⊤
+q Wk has been revealed to be a reason leading
+to model crash. Our analysis shows that QKNorm can effectively mitigate the reason to cause model
+crash brought by W ⊤
+q Wk.
+
+Though QKNorm can mitigate the problem brought by W ⊤
+q Wk, it cannot fully replace the role
+of PreNorm because PreNorm can jointly deal with the problem of Wq, Wk and Wv because the
+gradient of Wv is also affected by the value of X.
+
+3.3
+DNT: A NETWORK THAT CAN RELIEVE THE HEAVY-TAIL GRADIENT PROBLEM
+
+PreNorm
+SA with
+QKNorm
+MidNorm
++
+PreNorm
+FFN
+MidNorm
++
+
+WE/PE
+InputNorm
+
+N
+
+FIGURE 3: DNT architecture. The second PreNorm marked with dashed and rounded corners is
+optional. By default, we do not use the second PreNorm.
+
+Having analyzed the effects of different normalizations, we use four types of normalizations, including
+InputNorm, PreNorm, MidNorm and QKNorm, except for PostNorm. The reason why we do not use
+PostNorm is that it may bring in some training problem. Finally, we illustrate our DNT in Figure 3.
+
+Our DNT model commences with word embeddings or patch encodings (WE/PE). Then, the initial
+representations undergo the InputNorm processing, establishing the normalized embeddings for
+subsequent operations. The core transformer block consists of N blocks. In each block, prior to self-
+attention, a PreNorm is applied, followed by a self-attention augmented with query-key normalization
+(i.e., QKNorm). Subsequently, a MidNorm processes the attention outputs before integrating via a
+residual connection. In the second sub-block, a selective PreNorm precedes the feed-forward network
+(FFN), after FFN, there is a MidNorm, and a final residual connection completes the information
+flow. This entire structure is replicated N times to form the complete network.
+
+X0, X1, . . . , XL
+
+X0, X1, . . . , XL
+
+InputNorm
+Wq, Wk, Wv, Wo, W1, W2
+
+PreNorm
+Wq, Wk, Wv
+
+(A) Influence of InputNorm.
+
+(B) Influence of PreNorm.
+
+X0, X1, . . . , XL
+
+Q, K
+
+QKNorm
+Wq, Wk
+
+MidNorm
+Wv, Wo, W1, W2
+
+(C) Influence of MidNorm.
+
+(D) Influence of QKNorm.
+
+FIGURE 4:
+Influence of different normalizations.
+For instance, InputNorm stabilizes
+Wq, Wk, Wv, Wo, W1, W2 by constraining X0, X1, . . . , XL.
+
+will significantly affect the gradient of each layer in the Transformer, but we introduce InputNorm
+to resolve the influence of x0; b) PreNorm can constrain the norm of each column in activations
+X in each timestep, and thus amend the Jacobian matrix of self-attention to not be significantly
+affected by the magnitude of X; c) MidNorm will amend the Jacobian matrix of each sub-block
+(i.e., the sub-block with self-attention and the sub-block with FFN) in our DNT to not be affected by
+the magnitude of W1, W2, Wv and Wo; d) QKNorm can relieve or even remove the influence of
+the magnitude of Wq and Wk on the Jacobian matrix of self-attention, and thus reduce the risk of
+problems, such as rank collapse (Noci et al., 2022), entropy collapse (Zhai et al., 2023), or spectral
+energy concentration (Qi et al., 2025a) caused by W ⊤
+q Wk.
+
+In DNT, we use four different types of normalizations. We observe that nGPT (Loshchilov et al.,
+2025) also uses some of the normalizations mentioned above. Here, we would like to emphasize
+the differences between DNT and nGPT that: a) DNT provides theoretical justifications for each
+normalization in different position; b) DNT uses InputNorm rather than PostNorm, whereas nGPT
+use many PostNorms but not InputNorm; c) nGPT normalizes the activations or the weights into
+spheres, whereas DNT only normalizes the activations but does not requires activations on spheres.
+
+We term our model as Deeply Normalized Transformer (DNT for short), because it is designed by
+properly adding or positioning normalization operators in the conventional Transformer. For vision
+problem, we term it as V-DNT, and for language problem, we term it as L-DNT. The key difference
+between V-DNT and L-DNT is that V-DNT uses patch embedding, but L-DNT uses word embedding
+and mask for attention computation.
+
+4
+EXPERIMENTS
+
+We conducted experiments with two popular Transformer architectures: Vision Transformer (ViT)
+and Generative Pretrained Transformer (GPT). Our implementation leverages established reposito-
+ries: timm (Wightman, 2019) for ViT and nanoGPT (Karpathy, 2022) for GPT models. For ViT
+experiments, we utilized two model scales: ViT-Large (307M parameters) and ViT-Huge (632M),
+following the configurations described in (Dosovitskiy et al., 2020). The data augmentation strategy
+aligns with (Xie et al., 2024) to ensure fair comparison with previously reported results. For GPT
+experiments, we employed the nanoGPT implementation focusing on GPT2-Small (124M) and
+GPT2-Large (774M) variants due to computational constraints. The results of our baselines align
+with previous work, including Sophia (Liu et al., 2023b) on OpenWebText and MAE (He et al., 2022)
+on ImageNet. Training was conducted using PyTorch (Paszke et al., 2019) with bfloat16 precision on
+A800 GPUs, employing a cosine learning rate schedule.
+
+4.1
+VISUALIZATION OF GRADIENTS OF DNT AND TRANSFORMER WITH PRENORM
+
+OpenWebText Val Loss
+
+ImageNet Validation Accuracy
+
+3.30
+
+AdamW-GPT2-Small
+
+80.0
+
+AdamW-L-DNT-Small
+
+3.25
+
+mSGDW-GPT2-Small
+
+mSGDW-L-DNT-Small
+
+3.20
+
+60.0
+
+3.15
+
+3.10
+
+Accuracy
+
+Val Loss
+
+40.0
+
+3.04
+
+2.99
+
+20.0
+
+2.94
+
+AdamW-ViT-Large
+
+AdamW-V-DNT-Large
+
+2.89
+
+mSGDW-ViT-Large
+
+mSGDW-V-DNT-Large
+
+0.0
+
+2.84
+
+0k
+25k
+50k
+75k
+100k
+125k
+150k
+175k
+200k
+Step
+
+0
+20
+40
+60
+80
+100
+120
+140
+160
+Epoch
+
+FIGURE 5: Validation loss (Left ) on OpenWebText and recognition accuracy (Right) on ImageNet.
+We compare L-DNT-Small (124M) to GPT2-Small (124M), and V-DNT-Large (307M) to ViT-Large
+(307M). By effectively relieving the heavy-tail gradient problem, our DNT network trained with
+naive mSGDW can achieve competitive performance to AdamW (Val loss 2.849 vs. 2.863 on
+OpenWebText, Acc 81. 5% vs. 82. 1% on ImageNet). However, in classical Transformer with
+PreNorm, the performance of mSGDW under-performs AdamW significantly (Val loss 2.906 vs 2.867
+on OpenWebText, Acc 78.2% vs 81.7% on ImageNet). See Appendix H for the training parameters.
+
+The visualization is shown in Figure 1, we can see that, DNT network can well relieve the problem
+of heavy tail of gradient distribution. For instance, in the Transformer, the absolute values of
+gradients almost distribute even across [0, 10−4], but the absolute values of gradients in DNT mainly
+concentrate around [0, 10−5].
+
+4.2
+MSGDW ACHIEVES PERFORMANCE ON PAR WITH ADAMW.
+
+We also give a quantitative comparison of the standard Transformer and DNT trained with Adam
+and mSGD on OpenWebText and ImageNet in Table 1. We can see that training our DNT model via
+mSGDW achieves a similar result to that is trained with AdamW. We can also see that using mSGDW
+to train our DNT model greatly outperforms the performance of using mSGDW to train the standard
+Transformer. In Figure 5, we display the validation loss on OpenWebText and the training accuracy
+on ImageNet along with the training process. Note that we didn’t tune the learning rate too much.
+We just followed the learning rate settings of the previous works Karpathy (2022); Liu et al. (2023b).
+We believe tuning learning rate will bring in some differences. But overall, DNT network can enable
+mSGDW compete with AdamW.
+
+TABLE 1: Quantitative comparison of standard ViT/GPT2 and V-DNT/L-DNT trained with AdamW
+and mSGDW on OpenWebText and ImageNet. Results on ImageNet is based on 150 epochs, and
+results on OpenWebText is based on 200K steps.
+
+ImageNet (Acc. ↑)
+OpenWebText (Val Loss. ↓)
+
+Optimizer
+Types of Model
+307M
+632M
+124M
+774M
+1436M
+
+AdamW
+ViT/GPT2
+81.7
+80.8
+2.867
+2.492
+2.435
+
+AdamW
+V-DNT/L-DNT
+82.1
+81.9
+2.863
+2.481
+2.396
+
+mSGDW
+ViT/GPT2
+78.2
+73.5
+2.906
+2.544
+2.472
+
+mSGDW
+V-DNT/L-DNT
+81.5
+81.2
+2.849
+2.503
+2.408
+
+4.3
+COMPARISION OF GPU MEMORY USED BY MSGDW AND ADAMW
+
+We compare the memory usage by mSGDW and AdamW. The results are shown in Table 2.
+
+TABLE 2: Comparision of GPU memory used by mSGDW and AdamW trained on 1.4B DNT
+model. DNT+AdamW means the network usage and the optimizer usage of GPU memory. † denotes
+Theoretical calculated values, and ‡ denotes practically observed values.
+
+AdamW
+mSGDW
+DNT+AdamW
+DNT+mSGDW
+
+Memory
+11.5† GB
+5.7† GB
+≈67‡ GB
+≈61‡ GB
+
+4.4
+ABLATION STUDY
+
+We conduct ablation study of five different normalization methods. Figure 7 in the Appendix C
+illustrates these five different network settings. Let us brief introduce these five settings below:
+
+• Setting 1: Standard transformer with prenorm, which we abbreviate as S1;
+
+• Setting 2: S1 + QKNorm;
+
+• Setting 3: S2 + InputNorm;
+
+• Setting 4: 2 PreNorms + MidNorm + QKNorm + InputNorm;
+
+• Setting 5: only 1 PreNorm before self-attention + MidNorm + QKNorm + InputNorm.
+
+We use momentum mSGDW for all training in this subsection. All models were trained with the
+same hyper-parameters. The results are shown in Figure 6.
+
+OpenWebText Val Loss
+
+ImageNet Validation Accuracy
+
+3.13
+
+S1
+
+S1
+
+80.0
+
+S2
+
+S2
+
+3.10
+
+S3
+
+S3
+
+70.0
+
+S4
+
+S4
+
+3.07
+
+S5
+
+S5
+
+60.0
+
+3.03
+
+50.0
+
+Accuracy
+
+3.00
+
+Val Loss
+
+40.0
+
+2.97
+
+30.0
+
+2.94
+
+20.0
+
+2.90
+
+10.0
+
+2.87
+
+0.0
+
+2.84
+
+100k
+120k
+140k
+160k
+180k
+200k
+Step
+
+0
+20
+40
+60
+80
+100
+120
+140
+160
+Epoch
+
+FIGURE 6: Ablation study of different settings using mSGD optimizer on ImageNet and OpenWeb-
+Text. Left side shows accuracy curve of Huge vision model (632M) on ImageNet. Right side shows
+the validation loss of language model (124M) on OpenWebText.
+
+We have the following observations,
+
+• On the OpenWebText dataset, the original PreNorm setting (S1) shows the worst performance. The
+performance of S2 is similar to that of S1. S3 with input obtained a better performance. Finally, S4
+and S5 obtained the best performance. Meanwhile, the performance of S4 and S5 is similar.
+
+• On the ImageNet dataset, the original PreNorm setting (S1) is significantly worse than the other
+four Settings. S3 achieves the best setting, and S4 and S5 also obtain excellent performance.
+
+5
+CONCLUSION
+
+We have introduced a novel architecture, Deeply Normalized Transformer (DNT), which enables
+efficient training with vanilla momentum SGDW (mSGDW), achieving performance on par with
+AdamW-optimized Transformers. Unlike traditional approaches that rely on sophisticated optimizers
+to address the challenges of heavy-tailed gradient distributions, our DNT properly integrated nor-
+malization techniques into the architecture of Transformer to regulate the Jacobian matrices of each
+block, effectively balance the contributions of weights, activations, and their interactions, and thus
+make the gradient distribution concentrated. Our findings demonstrated that a properly designed
+architecture can make a simple optimizers like mSGDW just as effective as sophisticated ones and
+opened new opportunities for creating more efficient, scalable, and accessible Transformer models.
+
+REFERENCES
+
+Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv preprint
+arXiv:1607.06450, 2016.
+
+Jeremy Bernstein, Yu-Xiang Wang, Kamyar Azizzadenesheli, and Animashree Anandkumar. signsgd:
+Compressed optimisation for non-convex problems. In International Conference on Machine
+Learning, pp. 560–569. PMLR, 2018.
+
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal,
+Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are
+few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.
+
+Xiangning Chen, Chen Liang, Da Huang, Esteban Real, Kaiyuan Wang, Hieu Pham, Xuanyi Dong,
+Thang Luong, Cho-Jui Hsieh, Yifeng Lu, et al. Symbolic discovery of optimization algorithms.
+Advances in neural information processing systems, 36, 2024.
+
+Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav Mishra, Adam
+Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, et al. Palm:
+Scaling language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113,
+2023.
+
+Mostafa Dehghani, Josip Djolonga, Basil Mustafa, Piotr Padlewski, Jonathan Heek, Justin Gilmer,
+Andreas Peter Steiner, Mathilde Caron, Robert Geirhos, Ibrahim Alabdulmohsin, et al. Scaling
+vision transformers to 22 billion parameters. In International Conference on Machine Learning,
+pp. 7480–7512. PMLR, 2023.
+
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas
+Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, et al. An image
+is worth 16x16 words: Transformers for image recognition at scale. In International Conference
+on Learning Representations, 2020.
+
+Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha
+Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3 herd of models.
+arXiv preprint arXiv:2407.21783, 2024.
+
+John Duchi, Elad Hazan, and Yoram Singer. Adaptive subgradient methods for online learning and
+stochastic optimization. Journal of machine learning research, 12(7), 2011.
+
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image
+recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition,
+pp. 770–778, 2016.
+
+Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Dollár, and Ross Girshick. Masked
+autoencoders are scalable vision learners. In Proceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, pp. 16000–16009, 2022.
+
+G Hinton. Rmsprop: divide the gradient by a running average of its recent magnitude. COURSERA:
+Neural Networks for Machine Learning, 13, 2012.
+
+Roger A Horn and Charles R Johnson. Matrix analysis. Cambridge university press, 2012.
+
+Sergey Ioffe and Christian Szegedy. Batch normalization: Accelerating deep network training by
+reducing internal covariate shift. In International conference on machine learning, pp. 448–456.
+PMLR, 2015.
+
+Rie Johnson and Tong Zhang. Accelerating stochastic gradient descent using predictive variance
+reduction. Advances in neural information processing systems, 26, 2013.
+
+Keller Jordan, Yuchen Jin, Vlado Boza, You Jiacheng, Franz Cesista, Laker Newhouse, and Jeremy
+Bernstein. Muon: An optimizer for hidden layers in neural networks, 2024. URL
+//kellerjordan.github.io/posts/muon/.
+
+Andrej Karpathy. NanoGPT. 2022.
+
+Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. arXiv preprint
+arXiv:1412.6980, 2014.
+
+Yann LeCun, L eon Bottou, Yoshua Bengio, et al. Gradient-based learning applied to document
+recognition. PROCEEDINGS OF THE IEEE, pp. 1, 1998.
+
+Junnan Li, Dongxu Li, Caiming Xiong, and Steven Hoi. Blip: Bootstrapping language-image pre-
+training for unified vision-language understanding and generation. In International conference on
+machine learning, pp. 12888–12900. PMLR, 2022.
+
+Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao,
+Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report. arXiv preprint
+arXiv:2412.19437, 2024.
+
+Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. Advances in
+neural information processing systems, 36:34892–34916, 2023a.
+
+Hong Liu, Zhiyuan Li, David Hall, Percy Liang, and Tengyu Ma. Sophia: A scalable stochastic
+second-order optimizer for language model pre-training. arXiv preprint arXiv:2305.14342, 2023b.
+
+Ze Liu, Han Hu, Yutong Lin, Zhuliang Yao, Zhenda Xie, Yixuan Wei, Jia Ning, Yue Cao, Zheng
+Zhang, Li Dong, et al. Swin transformer v2: Scaling up capacity and resolution. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 12009–12019, 2022.
+
+Ilya Loshchilov and Frank Hutter. Fixing weight decay regularization in adam. In International
+Conference on Learning Representations, 2019.
+
+Ilya Loshchilov, Cheng-Ping Hsieh, Simeng Sun, and Boris Ginsburg. ngpt: Normalized transformer
+with representation learning on the hypersphere. The Thirteenth International Conference on
+Learning Representations, 2025.
+
+Yurii Nesterov. A method for unconstrained convex minimization problem with the rate of conver-
+gence o (1/kˆ 2). In Doklady an ussr, volume 269, pp. 543–547, 1983.
+
+Yurii Nesterov. Introductory lectures on convex optimization: A basic course, volume 87. Springer
+Science & Business Media, 2013.
+
+Yurri Nesterov. Introductory lectures on convex programming volume i: Basic course. 1998.
+
+Lorenzo Noci, Sotiris Anagnostidis, Luca Biggio, Antonio Orvieto, Sidak Pal Singh, and Aurelien
+Lucchi. Signal propagation in transformers: Theoretical perspectives and the role of rank collapse.
+Advances in Neural Information Processing Systems, 35:27198–27211, 2022.
+
+William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of
+the IEEE/CVF International Conference on Computer Vision, pp. 4195–4205, 2023.
+
+Xianbiao Qi, Jianan Wang, Yihao Chen, Yukai Shi, and Lei Zhang. Lipsformer: Introducing
+lipschitz continuity to vision transformers. In The Eleventh International Conference on Learning
+Representations, 2023.
+
+Xianbiao Qi, Yelin He, Jiaquan Ye, Chun-Guang Li, Bojia Zi, Xili Dai, Qin Zou, and Rong Xiao.
+Taming transformer without using learning rate warmup. The Thirteenth International Conference
+on Learning Representations, 2025a.
+
+Xianbiao Qi, Jiaquan Ye, Yelin He, Chun-Guang Li, Bojia Zi, Xili Dai, Qin Zou, and Rong
+Xiao.
+Stable-transformer: Towards a stable transformer training, 2025b.
+URL
+//openreview.net/forum?id=lkRjnNW0gb.
+
+Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et al. Improving language
+understanding by generative pre-training. 2018.
+
+Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language
+models are unsupervised multitask learners. OpenAI blog, 1(8):9, 2019.
+
+Aditya Ramesh, Mikhail Pavlov, Gabriel Goh, Scott Gray, Chelsea Voss, Alec Radford, Mark Chen,
+and Ilya Sutskever. Zero-shot text-to-image generation. In International conference on machine
+learning, pp. 8821–8831. Pmlr, 2021.
+
+Herbert Robbins and Sutton Monro. A stochastic approximation method. The annals of mathematical
+statistics, pp. 400–407, 1951.
+
+Noam Shazeer and Mitchell Stern. Adafactor: Adaptive learning rates with sublinear memory cost.
+In International Conference on Machine Learning, pp. 4596–4604. PMLR, 2018.
+
+Umut Simsekli, Levent Sagun, and Mert Gurbuzbalaban. A tail-index analysis of stochastic gradient
+noise in deep neural networks. In International Conference on Machine Learning, pp. 5827–5837.
+PMLR, 2019.
+
+Ilya Sutskever, James Martens, George Dahl, and Geoffrey Hinton. On the importance of initialization
+and momentum in deep learning. In International conference on machine learning, pp. 1139–1147.
+PMLR, 2013.
+
+Terence Tao. Topics in random matrix theory, volume 132. American Mathematical Soc., 2012.
+
+Qwen Team. Qwen technical report. arXiv preprint arXiv:2309.16609, 2023.
+
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay
+Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation
+and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing
+systems, 30, 2017.
+
+Roman Vershynin. High-dimensional probability: An introduction with applications in data science,
+volume 47. Cambridge university press, 2018.
+
+Jing Wang and Anna Choromanska. A survey of optimization methods for training dl models:
+Theoretical perspective on convergence and generalization. arXiv preprint arXiv:2501.14458,
+2025.
+
+Ross
+Wightman.
+Pytorch
+image
+models.
+
+pytorch-image-models, 2019.
+
+Yang You, Igor Gitman, and Boris Ginsburg. Large batch training of convolutional networks. arXiv
+preprint arXiv:1708.03888, 2017.
+
+Huizhuo Yuan, Yifeng Liu, Shuang Wu, Xun Zhou, and Quanquan Gu. Mars: Unleashing the power
+of variance reduction for training large models. arXiv preprint arXiv:2411.10438, 2024.
+
+Shuangfei Zhai, Tatiana Likhomanenko, Etai Littwin, Dan Busbridge, Jason Ramapuram, Yizhe
+Zhang, Jiatao Gu, and Joshua M Susskind. Stabilizing transformer training by preventing attention
+entropy collapse. In International Conference on Machine Learning, pp. 40770–40803. PMLR,
+2023.
+
+Biao Zhang and Rico Sennrich.
+Root mean square layer normalization.
+Advances in Neural
+Information Processing Systems, 32, 2019.
+
+Jingzhao Zhang, Sai Praneeth Karimireddy, Andreas Veit, Seungyeon Kim, Sashank Reddi, Sanjiv
+Kumar, and Suvrit Sra. Why are adaptive methods good for attention models? Advances in Neural
+Information Processing Systems, 33:15383–15393, 2020.
+
+Jiachen Zhu, Xinlei Chen, Kaiming He, Yann LeCun, and Zhuang Liu. Transformers without
+normalization. arXiv preprint arXiv:2503.10622, 2025.
+
+A
+PROOF OF PROPOSITION 2, 3 AND 5
+
+Propostion 1 and Proposition 4 are very easy to prove, we have given a brief proof in the main body.
+Therefore, in the appendix, we only provide the proof of Proposition 2, 3 and 5.
+
+A.1
+PROOF OF PROPOSITION 2 ON PRENORM
+
+Proof. A single-head self-attention can be defined as
+Y = WvXA,
+
+where P = X⊤Wq
+⊤WkX,
+A = softmax(
+P
+√
+
+dq ). A is called as the attention matrix and
+P
+√
+
+dq is
+
+called as the logit, A ∈Rn×n, X ∈Rd×n, Wv ∈Rdv×d . Here, our goal is to calculate ∂vec(Y )
+
+∂vec(X).
+
+By vectorization of Y = WvXA, we have
+∂vec(Y ) = (A⊤⊗Wv)∂vec(X) + (In ⊗WvX)∂vec(A).
+
+Bringing in all the terms, we get the following formula
+
+∂vec(Y )
+∂vec(X) = (A⊤⊗Wv) + (In ⊗WvX) J
+p
+
+
+(X⊤Wk
+⊤Wq ⊗In)Cdn + (In ⊗X⊤Wq
+⊤Wk)
+
+,
+
+dq
+
+where Cdn is the communication matrix.
+
+∂vec(A) = In ⊗WvX, ∂vec(A)
+
+where ∂vec(Y )
+
+∂vec(P ) =
+J
+√
+
+dq , and we have
+
+J = blockdiag(diag(A:,1) −A:,1A⊤
+:,1, . . . , diag(A:,n) −A:,nA⊤
+:,n).
+
+J is a function of A, and A is a function of X associated with softmax function. Obviously, ∂vec(Y )
+
+∂vec(X)
+is a high-order function of X and J makes the analysis more complex.
+
+Here, we give an analysis of the Jacobian matrix of the linear attention module, where A =
+P
+√
+
+dq and
+
+P = X⊤Wq
+⊤WkX. For the linear attention, we have the Jacobian matrix as,
+
+∂vec(Y )
+∂vec(X) = (A⊤⊗Wv) + (In ⊗WvX)
+p
+
+
+(X⊤Wk
+⊤Wq ⊗In)C + (In ⊗X⊤Wq
+⊤Wk)
+
+.
+(12)
+
+dq
+
+Obviously, if the norm of each feature vector for each token is large, the magnitude of each element
+in ∂vec(Y )
+
+∂vec(X) will have large probability to be large, and the singular value of ∂vec(Y )
+
+∂vec(X) may be magnified
+second-orderly by the norm of each column in X.
+
+if X′ = g ⊙X with each column in x′
+i having a magnitude gi, with the same Wq, Wk, Wv, we have
+Y = Y ′ given Y = Self-Attention(X) and Y ′ = Self-Attention(X′) because we will obtain the
+same input as the self-attention after the PreNorm.
+
+After PreNorm, we have PreNorm(X) = PreNorm(X′), according to Equation ??, we have
+∂vec(Y )
+∂vec(X) = ∂vec(Y ′)
+
+∂vec(X′).
+
+Until here, we have prove the Proposition 1.
+
+Furthermore, we would like to conduct a deeper analysis of the gradient of the loss with respect to
+the weights. In a backpropagation, since we have obtained
+∂L
+∂vec(Y ), we would like to further analyze
+
+∂L
+∂vec(Wq),
+∂L
+∂vec(Wk),
+∂L
+∂vec(Wv).
+
+For the weight matrix Wq, we have
+∂L
+∂vec(Wq) =
+∂L
+∂vec(Y )
+∂vec(Y )
+∂vec(A)
+∂vec(A)
+∂vec(P )
+∂vec(P )
+∂vec(Wq),
+
+
+(WkX)⊤⊗X⊤
+C.
+(13)
+
+For the weight matrix Wk, we have
+
+∂L
+∂vec(Wk) =
+∂L
+∂vec(Y )
+∂vec(Y )
+∂vec(A)
+∂vec(A)
+∂vec(P )
+∂vec(P )
+∂vec(Wk),
+
+
+X⊤⊗(WqX)⊤
+.
+(14)
+
+=
+∂L
+∂vec(Y ) (In ⊗WvX)
+J
+p
+
+dq
+
+For the weight matrix Wv, we know that vec(Y ) =
+
+(XA)⊤⊗I
+
+vec(Wv), thus we have
+
+∂L
+∂vec(Wv) =
+∂L
+∂vec(Y )
+∂vec(Y )
+∂vec(Wv),
+
+=
+∂L
+∂vec(Y )
+
+(A⊤X⊤) ⊗I
+
+.
+(15)
+
+We can see that in Equations 13 14 15, the gradients of loss with respect to Wq, Wk, Wv are all
+related to X. After PreNorm, X is in a relatively stable range, thus, we can promise the range of
+value X will not greatly affect the gradients of Wq, Wk, Wv.
+
+In conclusion, normalization of X can help stablize the gradient of the loss function with respect to
+Wq, Wk, Wv, and meanwhile help make ∂vec(Y )
+
+∂vec(X) more stable and flat.
+
+A.2
+PROOF OF PROPOSITION 3 ON MIDNORM
+
+Proof. Starting with the definition W1 =
+W
+∥y∥where y = W x and W ∈Rm×n, let’s derive the
+relationship between singular values:
+
+For a random matrix W with i.i.d. entries (mean 0, variance σ2
+W ) and a random vector x with i.i.d.
+entries (mean 0, variance σ2
+x):
+
+E[∥y∥2] = E[∥W x∥2] = E[xT W T W x]
+
+Using the trace property:
+
+E[xT W T W x] = E[tr(xT W T W x)] = E[tr(W xxT W T )]
+
+With x and W independent, and E[xxT ] = σ2
+xIn:
+
+E[tr(W xxT W T )] = E[tr(W σ2
+xInW T )] = σ2
+xE[tr(W W T )]
+
+For W with i.i.d. entries, E[tr(W W T )] = m · n · σ2
+W
+Therefore:
+E[∥y∥2] = σ2
+x · m · n · σ2
+W = m · n · σ2
+W · σ2
+x
+
+By concentration of measure principles, ∥y∥2 concentrates around its expectation with high probabil-
+ity:
+
+∥y∥2 ≈E[∥y∥2] = m · n · σ2
+W · σ2
+x
+
+Taking the square root:
+
+∥y∥≈√m · n · σW · σx with high probability
+
+For the SVD of W = UΣV T , where Σ contains singular values σi(W ), the singular values of W1
+are:
+
+W
+
+
+= σi(W )
+
+σi(W1) = σi
+
+Substituting our concentration result:
+
+σi(W1) ≈
+σi(W )
+√m · n · σW · σx
+
+For large random matrices with i.i.d. entries, random matrix theory (Horn & Johnson, 2012; Tao,
+2012) tells us that the largest singular value follows:
+
+σ1(W ) ≈(√m + √n)σW
+
+Substituting this into our expression:
+
+σ1(W1) ≈(√m + √n)σW
+√m · n · σW · σx
+=
+√m + √n
+√m · n · σx
+.
+(16)
+
+This derivation result in Equation 16 shows that in high dimensions, the largest singular value of
+W1 becomes essentially deterministic, depending only on the dimensions of W and the statistical
+property σx (standard variance of each entry in x) of the random vector x. If m = n, then we have,
+σ1(W1) ≈
+2
+√m·σx .
+
+A.3
+PROOF OF PROPOSITION 5 ON QKNORM
+
+Proof. Self-attention with QKNorm (Dehghani et al., 2023) is defined as:
+
+Y = WvXA,
+
+where A′ = softmax( P ′
+
+√dh ), P ′ = Q′⊤K′, and q′
+i and k′
+i are the i-th column and the j-th column in
+Q′ and K′ individually, and we define
+
+q′
+i = RMSN(Wqxi) = γq ⊙
+√dhWqxi
+
+dh diag(γq)
+Wqxi
+∥Wqxi∥2
+,
+
+∥Wqxi∥2
+=
+p
+
+k′
+j = RMSN(Wkxj) = γk ⊙
+√dhWkxj
+
+dh diag(γk)
+Wkxj
+∥Wkxj∥2
+.
+
+∥Wkxj∥2
+=
+p
+
+To facilitate our derivation, we will use Q = WqX and K = WkX as before, we use qi and
+kj to denote the i-th column and the j-th column in Q and K individually. Thus, we can denote
+q′
+i = RMSN(qi) and k′
+j = RMSN(kj).
+
+Therefore, according to the product rule and chain rule, we can denote the Jacobian matrix of Y with
+respect to X as follows:
+
+∂vec(Y )
+∂vec(X) = (A′⊤⊗Wv) + (In ⊗WvX) ∂vec(A′)
+
+∂vec(X)
+
+= (A′⊤⊗Wv) + (In ⊗WvX) ∂vec(A′)
+
+∂vec(P ′)
+∂vec(P ′)
+
+∂vec(X)
+
+∂vec(P ′)
+
+= (A′⊤⊗Wv) + (In ⊗WvX) ∂vec(A′)
+
+∂vec(Q′)
+∂vec(Q′)
+∂vec(X′) + ∂vec(P ′)
+
+∂vec(K′)
+∂vec(K′)
+∂vec(X′)
+
+
+
+∂vec(P ′)
+
+∂vec(P ′)
+
+= (A′⊤⊗Wv) + (In ⊗WvX) ∂vec(A′)
+
+∂vec(Q′)
+∂vec(Q′)
+
+∂vec(Q)
+∂vec(Q)
+∂vec(X) + ∂vec(P ′)
+
+∂vec(K′)
+∂vec(K′)
+
+∂vec(K)
+∂vec(K)
+∂vec(X)
+
+
+
+∂vec(P ′)
+
+To derive out ∂vec(Y )
+
+∂vec(X), we need to derive out each term in the above equation.
+
+Since we know P ′ = Q′⊤K′, then we have,
+
+Similarly, we have
+∂vec(P ′)
+∂vec(Q′) = (K′⊤⊗I) · CdN
+
+where CdN is the communication matrix.
+
+We have,
+
+∂vec(Q) = blockdiag
+∂q′
+1
+∂q1
+, ∂q′
+2
+∂q2
+, . . . , ∂q′
+N
+∂qN
+
+Q = ∂vec(Q′)
+
+
+,
+
+JQ′
+
+∂vec(K) = blockdiag
+∂k′
+1
+∂k1
+, ∂k′
+2
+∂k2
+, . . . , ∂k′
+N
+∂kN
+
+JK′
+K = ∂vec(K′)
+
+
+
+where
+∂q′
+i
+∂qi
+=
+√dh
+∥qi∥diag(γq)
+
+I −qiq⊤
+i
+∥qi∥2
+
+
+.
+
+We have,
+
+∂vec(Q)
+∂vec(X) = I ⊗Wq,
+
+∂vec(K)
+∂vec(X) = I ⊗Wk.
+
+we also have
+
+∂qi
+∂xi
+=
+√dh
+∥qi∥diag(γq)
+
+I −qiq⊤
+i
+∥qi∥2
+
+∂q′
+i
+∂xi
+= ∂q′
+i
+∂qi
+
+dh diag(γq)
+
+I −qiq⊤
+i
+∥qi∥2
+
+
+Wq =
+p
+
+
+Wq
+∥Wqxi∥,
+
+∂kj
+∂xj
+=
+√dh
+∥kj∥diag(γk)
+
+!
+
+!
+
+∂k′
+j
+∂xj
+= ∂k′
+j
+∂kj
+
+I −kjk⊤
+j
+∥kj∥2
+
+I −kjk⊤
+j
+∥kj∥2
+
+Wk
+∥Wkxi∥.
+
+Wk =
+p
+
+dh diag(γk)
+
+In Proposition 3, we have proved that in a high-dimensional setting, the singular values of
+W
+∥W x∥is
+independent to the magnitude of W . Thus, until now, we have proved the Proposition 5.
+
+Further, we would like to discuss the Jacobian matrix ∂vec(Y )
+
+∂vec(X) after QKNorm. We have,
+
+∂vec(Y )
+∂vec(X) = (A′⊤⊗Wv)+(In⊗WvX) J
+√dh
+
+Q (I ⊗Wq) + (I ⊗Q′⊤)J K′
+K (I ⊗Wk)
+
+.
+
+
+(K′⊤⊗I) · CdNJ Q′
+
+(17)
+
+It should be noted that
+
+• K′ and Q′ are two normalized terms that have relatively stable range of values.
+
+• the Jacobian matrix of JQ′
+
+Q is relatively independent to the magnitude of Q and JK′
+K is relatively
+independent to the magnitude of K in a high-dimensional setting.
+
+• QKNorm cannot fully replace the value of PreNorm because ∂vec(Y )
+∂vec(X) in Equation 17 is directly
+affected by X.
+
+QKNorm will elliviate the influence of the magnitude of Wq and Wk on the ∂vec(Y )
+
+∂vec(X). In the traditional
+
+self-attention, ∂vec(Y )
+
+∂vec(X) is largely affected by W ⊤
+q Wk. However, after QKNorm, ∂vec(Y )
+
+∂vec(X) will only
+be affected by independent Wq or Wk instead of the joint term W ⊤
+q Wk. This is important for the
+training stability because the singular values of W ⊤
+q Wk will increase extremely fast when both
+singular values of Wq and Wk are increasing.
+
+B
+EXPERIMENTAL DETAILS
+
+TABLE 3: Model configurations, peak learning rate and weight decay for different optimizers.
+
+Acronym
+Size
+d_model
+n_head
+depth
+AdamW
+mSGDW
+
+LR
+WD
+LR
+WD
+
+L-DNT-Small
+124M
+768
+12
+12
+6e-4
+0.1
+1.0
+1e-4
+
+L-DNT-Large
+774M
+1280
+20
+36
+6e-4
+0.1
+1.0
+1e-4
+
+L-DNT-XL
+1436M
+1536
+24
+48
+6e-4
+0.1
+1.0
+1e-4
+
+V-DNT-Large
+307M
+1024
+16
+24
+1e-3
+0.1
+0.5
+2e-4
+
+V-DNT-Huge
+632M
+1280
+16
+32
+1e-3
+0.1
+0.1
+1e-3
+
+We conducted experiments on two popular architectures: Vision Transformer (ViT) and Generative
+Pretrained Transformer (GPT). Our implementation leverages established repositories: timm (Wight-
+man, 2019) for ViT and nanoGPT (Karpathy, 2022) for GPT models. We utilized five model
+configurations: L-DNT-Small (124M parameters), L-DNT-Large (774M parameters), L-DNT-XL
+(1436M parameters), V-DNT-Large (307M parameters), and V-DNT-Huge (632M parameters). Model
+specifications including hidden dimension (d_model), number of attention heads (n_head), and net-
+work depth are detailed in Table 3. Training was conducted using PyTorch (Paszke et al., 2019) with
+bfloat16 precision GPUs, employing a cosine learning rate schedule.
+
+All language models were trained on OpenWebText, using GPT-2 tokenizer. The training dataset
+contains 9B tokens, with a validation set of 4.4M tokens, following the train-validation split from
+nanoGPT. We employed distributed data parallel training with gradient accumulation. All models
+were trained using bfloat16 precision. The 124M models were trained on machines with 8 GPUs,
+774M models were trained with 16 A800 GPUs, while 1436M models were trained with 32 GPUs.
+Our global batch sizes for 125M, 770M and 1436M models are 480, 512 and 512 individually. In
+Sophia (Liu et al., 2023b), they use 480 global batch size for all models. For all language models,
+we used 2000 steps or learning rate warmup to the maximum learning rate, and then used a cosine
+learning rate decay. It takes around four days to train 200K steps for the 1.4B model on 32 GPUs.
+
+All vision models were trained on ImageNet dataset. We trained each 150 epoches as (Xie et al.,
+2024). We used a learning rate warmup of 60 epochs to the maximum learning rate, and then used a
+cosine learning rate decay.
+
+For our experiments, we focused on comparing AdamW and mSGDW optimizers. The hyperpa-
+rameters for AdamW were carefully tuned, with β1 = 0.9 and β2 = 0.95, following the dominant
+configuration in LLM pre-training literature. For weight decay, we used 0.1 for AdamW as (Karpathy,
+2022; Liu et al., 2023b). We used the recommended learning rate by nanoGPT for AdamW in GPT.
+Since our DNT is robust to large learning rate, we use 6e-4 for all our L-DNT models and 1e-3 for all
+our V-DNT models for AdamW. For mSGDW, we simply use a rough grid search for the learning
+rate, we cannot search a fine-grained learning rate and weight decay due to its requiring a lot of
+resources. For the momentum in mSGDW, we used a default 0.9 for all experiments. We use the
+implementation of mSGDW from timm (Wightman, 2019). This implementation is a decoupled
+weight decay regularization used in AdamW (Loshchilov & Hutter, 2019). Note that mSGDW is not
+directly to add a weight decay in the original implementation of mSGD in the official PyTorch, it
+will have performance problem.
+
+TABLE 4: Training configurations for ViT and V-DNT.
+
+training config
+ViT-L/H (2242)
+ViT-L/H (2242)
+V-DNT-L/H (2242)
+V-DNT-L/H (2242)
+
+optimizer
+AdamW
+mSGDW
+AdamW
+mSGDW
+
+learning rate schedule
+cosine decay
+
+peak learning rate
+1e-3
+0.5/0.1
+1e-3
+0.5/0.1
+
+minimum learning rate
+1e-8
+1e-8
+1e-8
+1e-8
+
+weight decay
+0.1
+2e-4/1e-3
+0.1
+2e-4/1e-3
+
+optimizer momentum
+β1, β2 = 0.9, 0.99
+µ = 0.9
+β1, β2 = 0.9, 0.99
+µ = 0.9
+
+warmup epoches
+60
+60
+60
+60
+
+weight init
+Truncated Xavier
+
+batch size
+1024
+
+training epochs
+150
+
+randaugment
+(9, 0.5)
+
+mixup
+0.8
+
+cutmix
+1.0
+
+random erasing
+0
+
+label smoothing
+0.1
+
+stochastic depth
+0.1/0.5
+
+gradient clip
+None
+
+exp. mov. avg. (EMA)
+no
+
+TABLE 5: Training configurations for GPT and L-DNT.
+
+training config
+GPT2-S/L/XL
+GPT2-S/L/XL
+L-DNT-S/L/XL
+L-DNT-S/L/XL
+
+optimizer
+AdamW
+mSGDW
+AdamW
+mSGDW
+
+learning rate schedule
+cosine decay
+
+peak learning rate
+6e-4/2.5e-4/1.5e-4
+1.0
+6e-4
+1.0
+
+minimum learning rate
+6e-5
+6e-5
+6e-5
+6e-5
+
+weight decay
+0.1
+1e-4
+0.1
+1e-4
+
+optimizer momentum
+β1, β2 = 0.9, 0.95
+µ = 0.9
+β1, β2 = 0.9, 0.95
+µ = 0.9
+
+warmup steps
+2000
+0
+2000
+0
+
+weight init
+Xavier
+
+tokens seen each update
+480K/512K/512K
+
+max iters
+200K
+
+batch size
+480/512/512
+
+sequence length
+1024
+
+dropout
+0.0
+
+bfloat16
+True
+
+gradient clipping
+1.0
+
+FIGURE 7: Five different settings of normalizations evaluated in the ablation study.
+
+PreNorm
+SA
++
+PreNorm
+FFN
++
+
+WE/PE
+
+N
+
+(A) Setting 1
+
+PreNorm
+SA with
+QKNorm
++
+PreNorm
+FFN
++
+
+WE/PE
+
+N
+
+(B) Setting 2
+
+PreNorm
+SA with
+QKNorm
++
+PreNorm
+FFN
++
+
+WE/PE
+InputNorm
+
+N
+
+(C) Setting 3
+
+PreNorm
+SA with
+QKNorm
+MidNorm
++
+PreNorm
+FFN
+MidNorm
++
+
+WE/PE
+InputNorm
+
+N
+
+(D) Setting 4
+
+PreNorm
+SA with
+QKNorm
+MidNorm
++
+FFN
+MidNorm
++
+
+WE/PE
+InputNorm
+
+N
+
+(E) Setting 5
+
+C
+FIVE DIFFERENT NETWORK SETTINGS
+
+Figure 7 illustrates five different network settings. We have conducted a ablation study for these five
+settings in the main body part.
+
+D
+COMPARISION OF MSGDW AND ADAMW ON LARGER MODELS
+
+We further compare larger V-DNT and L-DNT models and original ViT and GPT2 models on
+ImageNet and OpenWebText using mSGDW and AdamW. The results are shown in Figures 8, 9
+and 10.
+
+OpenWebText Val Loss
+
+3.50
+
+AdamW-GPT2-Large
+
+AdamW-L-DNT-Large
+
+3.39
+
+mSGDW-GPT2-Large
+
+mSGDW-L-DNT-Large
+
+3.27
+
+3.16
+
+3.04
+
+Val Loss
+
+2.93
+
+2.81
+
+2.70
+
+2.58
+
+2.47
+
+0k
+25k
+50k
+75k
+100k
+125k
+150k
+175k
+200k
+Step
+
+FIGURE 8: L-DNT-Large (774M) training with 200K in total on OpenWebText.
+
+OpenWebText Val Loss
+
+3.30
+
+AdamW-GPT2-1.4B
+
+AdamW-L-DNT-1.4B
+
+3.20
+
+mSGDW-GPT2-1.4B
+
+mSGDW-L-DNT-1.4B
+
+3.10
+
+2.99
+
+2.89
+
+Val Loss
+
+2.79
+
+2.69
+
+2.58
+
+2.48
+
+2.38
+
+0k
+25k
+50k
+75k
+100k
+125k
+150k
+175k
+200k
+Step
+
+ImageNet Validation Accuracy
+
+80.0
+
+70.0
+
+60.0
+
+50.0
+
+Accuracy
+
+40.0
+
+30.0
+
+20.0
+
+AdamW-ViT-Huge
+
+AdamW-V-DNT-Huge
+
+10.0
+
+mSGDW-ViT-Huge
+
+mSGDW-V-DNT-Huge
+
+0.0
+
+0
+20
+40
+60
+80
+100
+120
+140
+160
+Epoch
+
+FIGURE 10: V-DNT-Huge (632M) on ImageNet
+
+E
+A BRIEF INTRODUCTION TO SOME EXISTING OPTIMIZERS
+
+Optimization methods in deep learning can be broadly categorized into first-order methods and second-
+order methods, each with distinct characteristics and applications. First-order optimization algorithms
+dominate deep learning due to their computational efficiency, particularly for high-dimensional and
+large-scale problems. First-order methods rely primarily on gradient information to find the minimum
+or maximum of a function. Based on learning rate selection strategies, these methods can be divided
+into optimizers with fixed step size and optimizers with adaptive learning rate.
+
+Stochastic Gradient Descent (SGD) (Robbins & Monro, 1951) serves as the foundational algorithm
+for neural network optimization. It updates parameters in the opposite direction of the gradient of
+the objective function. While simple and effective, vanilla SGD can struggle with navigating ravines
+and saddle points in the loss landscape. Momentum SGD (mSGD) (Nesterov, 1983) addresses the
+limitations of vanilla SGD by accelerating gradient descent in relevant directions while dampening
+oscillations. This method augments the gradient direction with a fraction of the update vector from
+the previous step, allowing faster convergence and helping escape local minima. Other notable
+variants include signSGD (Bernstein et al., 2018), which uses only the sign of gradients for updates;
+SVRG (Johnson & Zhang, 2013), which reduces variance in stochastic gradients; LARS (You et al.,
+2017), which adjusts learning rates layer-wise.
+
+adaptive method. Défossez et al. provides a unified formulation for adaptive methods like AdaGrad,
+Adam, and AdaDelta.
+
+The field continues to evolve with recent innovations including MUON (Jordan et al., 2024),
+LION (Chen et al., 2024), Sophia (Liu et al., 2023b), and Mars (Yuan et al., 2024). These methods
+represent the cutting edge of adaptive optimization techniques, further advancing efficiency and
+performance in training deep learning models.
+
+Wang & Choromanska (2025) give a detailed analysis and survey of optimization methods, we would
+like to recommend the audience to refer to their paper for a full reference.
+
+Remark. This paper is orthogonal to these works discussed in this section. Our primary contribution
+is to demonstrate that vanilla mSGD can achieve strong performance on a Transformer architecture
+when it does not have a heavy-tail problem in gradients. Notably, the optimizers discussed here can
+also be effectively applied to our proposed DNT network.

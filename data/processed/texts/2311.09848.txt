@@ -1,0 +1,828 @@
+Diffusion-Augmented Neural Processes
+
+Lorenzo Bonito
+University of Cambridge
+
+James Requeima
+Vector Institute
+
+arXiv:2311.09848v1 [cs.LG] 16 Nov 2023
+
+Aliaksandra Shysheya
+University of Cambridge
+
+Richard E. Turner
+University of Cambridge
+
+Abstract
+
+Over the last few years, Neural Processes have become a useful modelling tool
+in many application areas, such as healthcare and climate sciences, in which data
+are scarce and prediction uncertainty estimates are indispensable. However, the
+current state of the art in the field (AR CNPs; Bruinsma et al., 2023) presents a few
+issues that prevent its widespread deployment. This work proposes an alternative,
+diffusion-based approach to NPs which, through conditioning on noised datasets,
+addresses many of these limitations, whilst also exceeding SOTA performance.
+
+1
+Introduction and Motivation
+
+Neural Processes are a class of meta-learning models which, by combining deep neural networks
+with features inspired by Gaussian processes, are able to operate in the small data regime, and also
+deliver reliable uncertainty estimates alongside their predictions. Since their original conception
+(CNPs; Garnelo et al., 2018a), these models have garnered an increasing amount of popularity, with
+multiple improvements on the original formula having been developed throughout the past 5 years.
+
+Autoregressive CNPs (Bruinsma et al., 2023) are the latest addition to (and current state of the art
+in) the NP Family. Albeit extremely performant, these models present three main issues: (i) Whilst
+predictives far down the autoregressive chain do achieve high complexity, variables generated early
+on in the AR process are still limited to elementary Gaussian distributions (ii) Predictions are not
+consistent (i.e. are not marginalisation- and ordering-invariant with respect to the target set Dt)
+(iii) Deployment computational costs are prohibitive, scaling poorly in most practical applications.
+
+The work described in this paper proposes (Section 2) and, subsequently, implements and benchmarks
+(Section 3) a novel, diffusion-inspired (Ho et al., 2020) data augmentation approach to NPs which
+aims to directly overcome all three of these intrinsic weaknesses of AR CNPs. The resulting Diffusion-
+Augmented Neural Processes are able, through clever conditioning on multiple noised data sources,
+to produce correlated, highly non-Gaussian and consistent predictions at every input location, whilst
+also attaining state-of-the-art performance in our experiments and requiring less compute during
+deployment (depending on the specific choice of architecture and on the learning task at hand).
+
+2
+Diffusion-Augmented Neural Processes
+
+The key idea at the basis of DANPs revolves around two main steps:
+
+• An augmented dataset is produced by generating a series of modified target fidelity levels through
+an AR process in which the zeroth fidelity level consists of the original target outputs, and all
+subsequent ones are obtained by adding Gaussian noise onto the previous level (Subsection 2.1).
+
+• The augmented dataset is modelled by a NP model, in an AR denoising process wherein the
+noisiest fidelity level is first generated from the original context set Dc, and each subsequent
+fidelity is then obtained by conditioning on both Dc and the previously-obtained fidelities. This
+operation is repeated until the original, noise-free target points are recovered (Subsection 2.2).
+
+By applying this autoregressive denoising procedure, the augmented dataset is used to induce a
+non-Gaussian and complex distribution on the observed data. Crucially, this technique cleverly solves
+the first problem highlighted above for standard AR CNPs, as the first variables generated in the AR
+chain are, while definitely normally distributed, not actually of interest themselves. Additionally,
+since each fidelity level is modelled jointly, the ordering of the target inputs has no influence on the
+final predictions, meaning consistency is also retained, provided that the marginalisation invariance
+property is satisfied (which is always the case, as long as the locations of the points in the added
+fidelity levels are independent of the original target set).
+
+As explained in more mathematical detail in the following, the introduced data augmentation serves the
+purpose of a latent variable, which, when integrated out at test time, induces complex dependencies
+without the need for variational inference (unlike in the case of “Latent” NPs; Garnelo et al., 2018b).
+
+One should also note that, unlike the similarly-named Neural Diffusion Processes (Dutordoir et al.,
+2023) (which are generative diffusion models whose denoising process is parameterised by a NP),
+the proposed DANPs are NP models designed to produce conditional predictives directly (without
+in-filling), and thus take a distinct modelling approach and employ a widely different architecture.
+
+2.1
+Data Augmentation Through Noising
+
+In the regular NP setting, a task ψ = (Dc, Dt) consists of a context set Dc = {(x(c)
+n , y(c)
+n )}Nc
+n=1
+and a target set Dt = {(x(t)
+n , y(t)
+n )}Nt
+n=1, and the model learns to predict p({y(t)
+n }Nt
+n=1| Dc, {x(t)
+n }Nt
+n=1)
+through exposure to a series of such context set and target points pairings. For a DANP, an augmented
+task bψ = (Dc, Dt, Da) is produced by generating an auxiliary context dataset Da:
+
+Da =
+
+{(x(t)
+n,1, y(t)
+n,1)}Nt,1
+n=1, . . . , {(x(t)
+n,F , y(t)
+n,F )}Nt,F
+n=1
+
+(1)
+
+through an autoregressive noising procedure, in which, starting from the zeroth fidelity level (the
+original target set), each element of {y(t)
+n,f+1}Nt
+n=1 is generated, given the corresponding element of
+
+{y(t)
+n,f}Nt
+n=1, through the expression y(t)
+n,f+1 = √1 −β y(t)
+n,f + ϵnβ (where ϵn ∼N(0, 1) and β is a
+noise variance hyperparameter). This procedure is exemplified (for the case of a sawtooth wave
+and F = 2) in Figure 1 below, where Dc is depicted in blue, Dt in orange, and the first and second
+elements of Da (D1
+a and D2
+a in the following) in green and red respectively.
+
+1.50
+
+True function
+Original targets
+Original context
+
+Noised function #1
+Auxiliary context #1
+
+Noised function #2
+Auxiliary context #2
+
+1.25
+
+1.00
+
+0.75
+
+0.50
+
+y
+
+0.25
+
+0.00
+
+−0.25
+
+−0.50
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+Figure 1: A typical training task based on a sawtooth wave.
+
+2.2
+Model Architecture and Training
+
+Armed with appropriately augmented training datasets, let us now take a closer look at the modelling
+approach taken by DANPs. In an effort to simplify notation, we shall henceforth denote {x(t)
+n,f}Nt
+n=1
+as x(t)
+f
+and, similarly, {y(t)
+n,f}Nt
+n=1 as y(t)
+f
+(where, for f = 0, these expressions are understood to refer
+
+to the elements contained in the original target set Dt). The joint predictive is then defined as:
+
+pθ
+
+y(t)
+0 | x(t)
+0 , Dc
+
+=
+Z
+pθ
+
+y(t)
+0 | x(t)
+0 , Dc, Da
+
+pθ(Da| Dc) dDa
+
+s=1
+1
+S pθ
+
+y(t)
+0 | x(t)
+0 , Dc, Da,s
+
+(2)
+
+≈
+XS
+
+where the ≈sign denotes a Monte-Carlo approximation obtained by conditioning on different
+instances Da,s of the auxiliary context dataset Da =
+
+D1
+a, . . . , DF
+a
+
+. Each Da,s is obtained by
+repeating (with different random states) the following autoregressive sampling procedure (all auxiliary
+inputs x(t)
+F through x(t)
+1
+are sampled independently and uniformly from the appropriate range):
+
+D F
+a =
+
+x(t)
+F , y(t)
+F
+
+;
+y(t)
+F ∼pθ
+
+y(t)
+F | x(t)
+F , Dc
+
+
+...
+Df
+a =
+
+x(t)
+f , y(t)
+f
+
+;
+y(t)
+f
+∼pθ
+
+y(t)
+f | x(t)
+f , Dc, Df+1:F
+a
+
+(3)
+
+where the notation Df:F
+a
+is employed as a shorthand for the collection ((x(t)
+f , y(t)
+f ), . . . , (x(t)
+F , y(t)
+F )),
+
+and the tuples (x(t)
+f , y(t)
+f ) are utilised in lieu of the more cumbersome {(x(t)
+n,f, y(t)
+n,f)}Nt
+n=1. To
+summarise the approach, the procedures set out in Equations 2 and 3 are exemplified through
+the diagram presented in Figure 2 below (for the case of F = 2).
+
+Figure 2: DANP architecture diagram for F = 2.
+
+pθ is parameterised using a NP, which, tasked with jointly modelling all fidelity levels, is constructed
+to handle a context set with F + 1 channels (1 for Dc and F for Da), and to produce F + 1-channel
+target predictions given F + 1-channel target locations. Notably, when dealing with a specific fidelity
+level f ′, all target inputs {x(t)
+f }f̸=f ′ are replaced by an empty tensor, and, consequently, the resulting
+
+target predictions {y(t)
+f }f̸=f ′ are also empty (which is crucial to ensure that gradient computations
+are not affected by data that should not be available to the model at a given training instance).
+
+Training
+Much like the regular NPs they aim to extend, DANPs are also trained through a maximum
+likelihood objective. However, since the latter present multiple layers (each dealing with a differently-
+noised version of the same data), a new technique needs to be introduced: task masking. When
+training a given layer f, the augmented task bψ should be masked to take the following form:
+bψf = (Dc, Df
+t , Df+1:F
+a
+), where Df
+t = Df
+a if f ̸= 0, and simply equals Dt otherwise (i.e. in the
+case of the last/output layer). In other words, at layer f, the model should learn to condition on Dc
+and on all the noisier fidelity levels Df+1:F
+a
+to predict (as targets) the input-output pairs contained
+within fidelity level f (so that the AR procedures detailed in Equation 3 may be carried out as
+required during deployment). In practice, this means that, for each training batch, a layer index
+f is first randomly selected from {0, . . . , F}, and each augmented task within the batch is then
+masked accordingly. Subsequently, a batched forward pass is carried out, the relevant log-likelihood
+pθ(y(t)
+f | x(t)
+f , Dc, Df+1:F
+a
+) is computed, and its gradients employed for backpropagation.
+
+3
+Experimental Results
+
+The performance of the proposed DANP model was benchmarked through 1D regression tasks on
+synthetic datasets. Three functional forms were considered: sawtooth waves, square waves and
+
+samples from Gaussian processes. As evidenced by the average likelihoods presented in Table 1
+below, DANPs easily outperform AR ConvCNPs on all three meta-datasets, and achieve the best
+results of all NP models on the first two (being outperformed by ConvGNPs on the GP dataset, which
+is unsurprising, considering GNPs are designed to directly parameterise GPs). For the sake of brevity,
+a more comprehensive visual breakdown of these findings is included below only for the sawtooth
+dataset, with further results and experiment setups being detailed in Appendices A and B respectively.
+
+Table 1: Average likelihoods attained by DANPs and other NP models on 1D regression tasks.
+
+DANP
+ConvCNP
+ConvGNP
+AR ConvCNP
+
+Sawtooth
+82.26 ±2.51
+32.23 ±2.80
+38.02 ±3.36
+63.23 ±2.81
+
+Square Wave
+97.16 ±4.90
+13.55 ±1.51
+10.30 ±1.31
+23.25 ±2.19
+
+GP
+39.52 ±2.88
+7.19 ±1.12
+45.38 ±3.26
+29.11 ±2.29
+
+As shown in Figure 3, by making use of the auxiliary context sets, the DANP is able to produce
+especially accurate predictions (which is, in this case, particularly impressive, since only two context
+points are given). Additionally, the model attains higher likelihoods than its counterparts not only on
+tasks with average context set sizes, but across virtually all explored values of |Dc| (Figure 4).
+
+Original context
+Auxiliary context #1
+Auxiliary context #2
+Original targets
+Prediction
+Prediction sample
+
+1.50
+
+1.25
+
+1.00
+
+0.75
+
+y
+
+0.50
+
+0.25
+
+0.00
+
+−0.25
+
+−0.50
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+Figure 3: Example of DANP predictives in layers 0 (left), 1 (middle) and 2 (right) for a sawtooth
+benchmark task with |Dc| = 2. The deployment process starts in layer 2 and ends in layer 0.
+
+80
+
+60
+
+Likelihood
+
+40
+
+20
+
+DNP
+ConvCNP
+AR ConvCNP
+ConvGNP
+
+0
+
+0
+5
+10
+15
+20
+25
+30
+Context set size
+
+Figure 4: Comparison of sawtooth regression DANP performance against relevant baselines. Each
+data point reports the average likelihood obtained across 10 tasks with a specific context size |Dc|.
+
+Computational Costs
+To tackle a task with target set size Nt = |Dt|, an AR CNP performs Nt
+forward passes (FPs), whilst a DANP with F +1 layers taking S samples performs S(F + 1). Hence,
+as Nt increases, the number of FPs scales linearly in the former approach, but remains constant in the
+latter. Thus, assuming a FP requires approximately the same amount of operations in both scenarios,
+it is computationally cheaper to deploy a DANP than an AR CNPs when predictions must be made at
+a large number of target locations (which happens to be the case in most practical scenarios).
+
+4
+Conclusion
+
+In summary, the proposed Diffusion-Augmented Neural Processes achieve all three goals set out in
+the introduction, managing to not only successfully address the technical shortcomings of AR CNPs,
+but to also outperform them in all three 1D regression tasks examined thus far. To further confirm the
+validity of these findings, more regression experiments shall be conducted in the future, involving real
+1D and 2D data from a variety of subject areas (climate sciences applications are especially enticing).
+
+5
+Acknowledgements
+
+Aliaksandra Shysheya is supported by an EPSRC Prosperity Partnership EP/T005386/1 between the
+EPSRC, Microsoft Research and the University of Cambridge. Richard E. Turner is supported by
+Google, Amazon, ARM, Improbable and EPSRC grant EP/T005386/1.
+
+References
+
+Wessel Bruinsma, Stratis Markou, James Requeima, Andrew Y. K. Foong, Tom Andersson, Anna
+Vaughan, Anthony Buonomo, Scott Hosking, and Richard E. Turner. Autoregressive Conditional
+Neural Processes. In 11th International Conference on Learning Representations, 2023.
+
+Vincent Dutordoir, Alan Saul, Zoubin Ghahramani, and Fergus Simpson. Neural Diffusion Processes.
+In 40th International Conference on Machine Learning. PMLR, 2023.
+
+Marta Garnelo, Dan Rosenbaum, Christopher Maddison, Tiago Ramalho, David Saxton, Murray
+Shanahan, Yee Teh, Danilo Rezende, and Ali Eslami. Conditional Neural Processes. In 35th
+International Conference on Machine Learning, 2018a.
+
+Marta Garnelo, Jonathan Schwarz, Dan Rosenbaum, Fabio Viola, Danilo J. Rezende, S. M. Ali
+Eslami, and Yee Whye Teh. Neural Processes. ICML 2018 Workshop on Theoretical Foundations
+and Applications of Deep Generative Models, 2018b.
+
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising Diffusion Probabilistic Models. In Advances
+in Neural Information Processing Systems, volume 33, 2020.
+
+A
+Additional Results
+
+A.1
+Influence of Number of Samples
+
+As demonstrated in Figure 5, increasing the number of Monte-Carlo samples (the S mixture com-
+ponents in Equation 2) vastly boosts DANP performance in the low-context regime, at the price of
+increased computational costs.
+
+80
+
+60
+
+Likelihood
+
+40
+
+100 Samples
+500 Samples
+1k Samples
+5k Samples
+10k Samples
+50k Samples
+
+20
+
+0
+
+0
+5
+10
+15
+20
+25
+30
+Context set size
+
+Figure 5: Comparison of sawtooth regression DANP performance as the number S of Monte-Carlo
+samples increases. Each data point reports the average likelihood obtained across 10 tasks with a
+specific context size |Dc|.
+
+Since, as the context set size |Dc| increases, this effect becomes less and less relevant, in an effort to
+attain the best possible results whilst also saving on precious compute, the data presented in Table 1
+and Figure 4 above (as well as in Figures 7 and 9 below) have been collected by deploying the same
+models with varying values of S based on context size. Namely:
+
+• For the sawtooth meta-dataset, 50k samples were drawn for 0 ≤|Dc| ≤5, and 5k were taken for
+6 ≤|Dc| ≤30.
+• For the square wave meta-dataset, 50k samples were drawn for 0 ≤|Dc| ≤5, and 5k were taken
+for 6 ≤|Dc| ≤30.
+• For the GP meta-dataset, 50k samples were drawn for 0 ≤|Dc| ≤9, and 5k were taken for
+10 ≤|Dc| ≤30.
+
+A.2
+Square Wave Meta-Dataset
+
+Similar plots to those included in the main text for the sawtooth meta-dataset are presented, for the
+square wave meta-dataset, in Figures 6 and 7 below. Identical considerations to those made above
+still hold true.
+
+2.0
+
+Original context
+Auxiliary context #1
+Auxiliary context #2
+Original targets
+Prediction
+Prediction sample
+
+1.5
+
+1.0
+
+0.5
+
+y
+
+0.0
+
+−0.5
+
+−1.0
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+Figure 6: Example of DANP predictives in layers 0 (left), 1 (middle) and 2 (right) for a square wave
+benchmark task with |Dc| = 3. The deployment process starts in layer 2 and ends in layer 0.
+
+DNP
+ConvCNP
+AR ConvCNP
+ConvGNP
+
+120
+
+100
+
+80
+
+Likelihood
+
+60
+
+40
+
+20
+
+0
+
+0
+5
+10
+15
+20
+25
+30
+Context set size
+
+Figure 7: Comparison of square wave regression DANP performance against relevant baselines. Each
+data point reports the average likelihood obtained across 10 tasks with a specific context size |Dc|.
+
+A.3
+GP Meta-Dataset
+
+Similar plots to those included in the main text for the sawtooth meta-dataset are presented, for the
+GP meta-dataset, in Figures 8 and 9 below. Identical considerations to those made above still hold
+true.
+
+Original context
+Auxiliary context #1
+Auxiliary context #2
+Original targets
+Prediction
+Prediction sample
+
+2.0
+
+1.5
+
+1.0
+
+0.5
+
+0.0
+
+y
+
+−0.5
+
+−1.0
+
+−1.5
+
+−2.0
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+−2
+−1
+0
+1
+2
+x
+
+Figure 8: Example of DANP predictives in layers 0 (left), 1 (middle) and 2 (right) for a GP benchmark
+task with |Dc| = 17. The deployment process starts in layer 2 and ends in layer 0.
+
+100
+
+DNP
+ConvCNP
+AR ConvCNP
+ConvGNP
+
+80
+
+60
+
+Likelihood
+
+40
+
+20
+
+0
+
+0
+5
+10
+15
+20
+25
+30
+Context set size
+
+Figure 9: Comparison of GP regression DANP performance against relevant baselines. Each data
+point reports the average likelihood obtained across 10 tasks with a specific context size |Dc|.
+
+B
+Experiments Setup
+
+B.1
+Data Generators
+
+To create the three meta-datasets, different functions of each form are generated as follows:
+
+• For the sawtooth dataset, each task’s true function is generated by first sampling a wave frequency
+ω ∼U(2, 4), a direction d (−1 or 1 with equal probability) and a phase shift ϕ ∼U
+1
+
+ω, 1
+
+, and
+then combining these variables through the following expression:
+
+f(x) = [ω(dx −ϕ)] mod 1
+(4)
+
+• For the square wave dataset, each task’s true function is produced by first sampling a wave
+frequency ω ∼U(1, 3) and a phase shift ϕ ∼U
+1
+
+ω, 1
+
+, and then combining these variables
+through the following expression:
+
+f(x) = J[⌊ωx −ϕ⌋] mod 2 = 0K
+(5)
+
+where ⌊·⌋indicates the floor function, and JPK is the Iverson bracket of P, which takes on a
+value of 1 if the statement P is true, and 0 otherwise.
+• For the GP dataset, each task’s true function is simply sampled from a Gaussian process with an
+Exponentiated Quadratic (EQ) kernel with lengthscale ℓ= 0.25.
+
+During training, the number of context points in each task is randomly selected to be any integer
+between 0 and 30. During testing, on the other hand, each of the three test meta-datasets utilised for
+benchmarking is composed of 310 tasks, evenly split across context sizes |Dc| comprised between 0
+and 30 (i.e. 10 tasks for each). In all cases, the cardinality |Dt| of the original target set is fixed at
+50. This setup allows for a highly granular analysis of DANP performance across varying context
+sizes (which, as evidenced by the results, proves crucial in drawing specific conclusions about the
+behaviour of different models). One should also note that, to ensure proper deployment, the AR
+ConvCNP model is trained on context sizes between 0 and 80 (where this upper limit arises from the
+sum of the maximum context set size of 30 and the target set size of 50).
+
+B.2
+Model Architectures
+
+All models compared in this paper (including both the baselines and the DANPs) utilise a U-Net
+architecture with 6 channels, each with size 64 and stride 2. Additionally, all models were trained for
+500 epochs (each consisting of 214 tasks), using a batch size of 16 and the Adam optimiser with a
+learning rate of 0.0003.
+
+Lastly, three more hyperparameters must be specified for each of the three DANPs analysed above:
+
+Table 2: DANP hyperparameters for each meta-dataset.
+
+Base Model
+Number of Noise
+Levels F
+Noise Variance β
+
+Sawtooth
+ConvGNP
+3
+0.08526
+
+Square Wave
+ConvGNP
+3
+0.153
+
+GP
+ConvGNP
+2
+0.2115
+
+The seemingly peculiar values of β given above were selected in such a way as to yield, upon
+compounding of the noise through the layers, a pre-specified noise variance in the last fidelity level
+(0.02, 0.06 and 0.08 for sawtooth, square wave and GP respectively). More specifically, through
+simple algebra, one can show that the noising process described in the main text leads to the signal at
+the last fidelity F taking on the following form:
+
+2 y0 + δF ;
+δF ∼N
+
+0, β −β (1 −β)F
+(6)
+
+F
+
+yF = (1 −β)
+
+which means that, given desired values for F and for the noise variance σ2 in fidelity level F, the
+appropriate value for β can easily be obtained by numerically solving the following equation:
+
+σ2 = β −β (1 −β)F
+(7)

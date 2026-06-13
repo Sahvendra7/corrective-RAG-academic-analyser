@@ -1,0 +1,598 @@
+ZPD Teaching Strategies for Deep Reinforcement
+Learning from Demonstrations
+
+Daniel Seita, David Chan, Roshan Rao, Chen Tang, Mandi Zhao, John Canny
+University of California, Berkeley
+
+arXiv:1910.12154v1 [cs.LG] 26 Oct 2019
+
+Abstract
+
+Learning from demonstrations is a popular tool for accelerating and reducing
+the exploration requirements of reinforcement learning. When providing expert
+demonstrations to human students, we know that the demonstrations must fall
+within a particular range of difﬁculties called the “Zone of Proximal Development
+(ZPD)” [6, 33]. If they are too easy the student learns nothing, but if they are too
+difﬁcult the student is unable to follow along. This raises the question: Given
+a set of potential demonstrators, which among them is best suited for teaching
+any particular learner? Prior work, such as the popular Deep Q-learning from
+Demonstrations (DQfD) algorithm has generally focused on single demonstrators.
+In this work we consider the problem of choosing among multiple demonstrators
+of varying skill levels. Our results align with intuition from human learners: it
+is not always the best policy to draw demonstrations from the best performing
+demonstrator (in terms of reward). We show that careful selection of teaching
+strategies can result in sample efﬁciency gains in the learner’s environment across
+nine Atari games.
+
+1
+Introduction
+
+When a child follows an adult teaching by example, we want the child to gradually develop skills
+without assistance. Intuitively, an effective teaching method might provide examples that are within a
+“comfort zone” for the student — just difﬁcult enough to learn from, but not so difﬁcult that the student
+cannot beneﬁt from the teaching. This intuition is formalized in “Zone of Proximal Development
+(ZPD)” theory, an epistemological theory built on a human cognitive model ﬁrst proposed by social
+psychologist Lev Vygotsky [6, 33]. According to ZPD theory, learning examples are placed on a
+spectrum with problems that a learner can solve on their own on one side, and problems a learner
+cannot solve on the other. According to Vygotsky, when presenting a student with examples, those
+examples must be “in the Zone of Proximal Development,” a set of problems which are difﬁcult for
+the learner to solve alone, but can be solved with guidance.
+
+In the proposed work, we investigate the application of ZPD in deep reinforcement learning contexts
+where a learner agent has access to several teacher agents or demonstrators. The primary question we
+explore is the following: which among a given set of teachers should the agent “select” to best improve
+learning? While there has been substantial work on reinforcement learning with demonstrators (e.g.,
+DQfD [11] and DDPGfD [31]), to our knowledge there is no work investigating which among a set
+of teachers should be selected for teaching. We focus on off-policy Deep Q-learning algorithms with
+experience replay [17] to act both as teacher agents, and as a student agent. We evaluate on nine Atari
+2600 benchmarks [2]. Our contributions include:
+
+1. A ZPD-based algorithm that allows for dynamic selection of teachers for a given student
+agent.
+
+2. Results showing that choosing the appropriate teaching strategy, which may not always be a
+single teacher, improves sample efﬁciency and may improve ﬁnal reward.
+
+2
+Related Work
+
+We focus on applying ZPD concepts in off-policy deep reinforcement learning algorithms with
+experience replay, which allows sharing of samples between learners and teachers. Prominent
+examples of (deep) off-policy algorithms include the seminal Deep Q-Network (DQN) [19] and its
+notable extensions, such as Double DQN [30] which we employ in this work. Other improvements are
+accounted for in algorithms such as Rainbow [10] which combined multiple algorithmic components
+and showed complementary beneﬁts. For simplicity, we use Double DQN (DDQN) as the base
+algorithm, but the algorithm we propose is broadly applicable to any off-policy, experience replay
+based agent.
+
+Despite various advances in deep reinforcement learning, sample efﬁciency and exploration remain
+known challenges. A common ingredient to improve sample efﬁciency is using a demonstrator
+(equivalently in this work, a teacher). DAgger [24] is a popular approach, but requires a teacher
+to be continually present to label student-generated states with actions. Arguably a more practical
+alternative is to assume a ﬁxed batch of data from (potentially multiple) demonstrators, without
+requiring any further teacher interaction, and to see how much an agent can learn from the data.
+If the agent does not do any environment interaction, the setting is known as batch reinforcement
+learning [8, 1, 15].
+
+We similarly focus on off-policy learning with demonstrations, but allow the agent to take environment
+steps in addition to using demonstrator samples for learning. A prominent example of this for discrete
+control is Deep Q-learning from Demonstrations (DQfD) [11], the most relevant prior work, which
+seeded a learner agent with a small batch of human demonstrator data and showed performance gains
+on Atari games. Follow-up work, including Ape-X DQfD [23, 13] and R2D3 [21] scaled the idea to
+handle a larger stream of samples and a wider variety of environments. In continuous control several
+algorithms have built upon the Deep Deterministic Policy Gradients (DDPG) [16] algorithm such as
+in [31, 20, 32] to effectively leverage demonstrations for sparse reward tasks. Schmitt et al. [28] apply
+a similar idea in the actor-critic setting by adding an auxiliary cross-entropy loss function from [25]
+to encourage learner policies to be closer to a teacher’s policy, and additionally consider an ensemble
+of teachers specialized to different tasks. None of these prior works, though, primarily focuses on
+determining which among a set of teachers we should select for using samples.
+
+The problem setting we consider can more generally be viewed as that of using a neural network
+teacher to accelerate the training of a neural network student. One of the most straightforward
+methods is to train a student model so that its ﬁnal layer matches that of the teacher network. This is
+known as distillation and has been applied in classiﬁcation [12, 9] and reinforcement learning [25] to
+decrease the size of neural networks and to improve task generalization. The method we propose
+is distinct but complementary to distillation. We focus on teaching via samples in a shared replay
+environment rather than matching ﬁnal neural network layers, but the method of selecting appropriate
+teachers could be used for distillation based approaches, forming a curriculum [3] over teachers.
+
+3
+Methods
+
+In a setup mirroring DQfD [11], we train student agents using DDQN [30] as the base algorithm,
+where training is based on a mixture of self-generated on-policy data and off-policy data from a
+teacher. Unlike in DQfD, we update the distribution of teacher data according to a “teaching strategy”
+fselect which draws experience from different teachers depending on the performance of the student.
+This teacher experience is blended in a mini-batch with student experience according to a second
+function fblend. This differs from the classical literature in that the teacher experience now comes
+from a dynamic distribution instead of a ﬁxed distribution drawn from the best performing teacher
+agent. An outline of the method is given in Algorithm 1.
+
+Algorithm 1 The Student-Teacher Framework
+
+1: Input: A set of data from teacher snapshots, {DT1, . . . , DTN } corresponding to the teacher’s
+training run, student policy πθ, student replay buffer DS, gradient update frequency u.
+2: TZPD := fselect(πθ)
+3: for steps t ∈{1, 2, . . .} do
+4:
+Take an environment step using πθ, store resulting sample in DS
+5:
+if t mod u = 0 then
+6:
+Dminibatch := fblend(DTZPD, DS)
+7:
+Compute gradient update with Dminibatch
+8:
+TZPD := fselect(πθ)
+9:
+end if
+10: end for
+
+3.1
+Background
+
+We use the standard Markov Decision Process (MDP) formulation for reinforcement learning [29].
+An MDP consists of a ﬁve-tuple (S, A, P, R, γ) where at each time step t, the agent is at a state
+st ∈S from the set of possible states. For our benchmark Atari environments, the states are of
+dimensions R84×84×4, and represent gray-scale environment images, consisting of four frames. The
+agent takes a (discrete) action at ∈A from the set of possible actions, which in the Atari environments
+are game dependent. The environment dynamics map the state-action pair into a successor state
+st+1 ∼P(·|st, at), and the agent receives a scalar reward signal rt = R(st, at). The objective
+is to ﬁnd a policy π : S →A that maximizes the expected discounted return E[P∞
+t=0 γtrt] with
+γ ∈(0, 1].
+
+3.2
+The Student and Teacher Agents
+
+We consider the RL framework with student, S, and teacher, T, agents and denote policies as πψ
+with parameters ψ, which could represent either the student or the teacher. In our experiments we use
+the same neural network architecture for S and T, but this is not an assumption of the method, which
+treats the teacher as a black-box demonstrator.
+
+In this paper we use a set of snapshots of a standard DDQN [30] agent pre-trained on the benchmark
+environment to serve as teachers. The teacher training uses the following loss function JT for a given
+sample (s, a, r, s′) to adjust its Q-network Q:
+
+JT (Q) =
+
+R(s, a) + γQ(s′, a′
+max; ψ′) −Q(s, a, ; ψ′)
+2
+(1)
+
+where a′
+max = arg maxa∈A Q(s′, a; ψ), and ψ and ψ′ are parameters of the current and target
+networks, respectively.
+
+In the proposed algorithm, S can draw samples from both self-generated environment data, and from
+the teacher T. We train the student with a modiﬁed DDQN loss to account for the off-policy teacher
+samples which are injected into the student’s replay buffer. The modiﬁed loss is the sum:
+JS(Q) = JT (Q) + λEJE(Q) + λ2JL2(Q)
+(2)
+where JE(Q) is the additional large margin classiﬁcation loss [22], as used by DQfD [11]:
+
+h
+Q(s, a) + ℓ(aE, a)
+i
+−Q(s, aE)
+(3)
+
+JE(Q) = max
+a∈A
+
+and JL2(Q) is an L2 weight regularization of the Q-network. The λE and λ2 are hyper-parameters
+controlling a trade-off between these loss values.
+
+While we have designed the DDQN agents to closely model the original DQfD paper [11], our
+implementation differs in two major ways:
+
+• We do not use the pre-training phase from DQfD in order to improve the generality of our
+results, and to explore training agents de novo.
+• We do not use prioritization of the replay buffer [27] in any form in order to closely examine
+the effect of having a ﬁxed minibatch sampling ratio (discussed in Section 3.4) on the
+performance of the model.
+
+While it is possible to use an ensemble of fully trained teacher agents as teachers, we instead draw
+our teachers from a set of snapshots generated during the training of a single teacher DDQN network
+T. During the teacher training, we store snapshots of its parameters at regular time intervals with
+respect to environment steps. This results in a set of N saved snapshots {T1, . . . , TN} from the
+training history of T, each corresponding to a different policy. For the k-th teacher policy πTk
+from the training history, we denote a dataset of m states (induced by running the policy πTk in the
+environment) as
+
+DTk = {sk
+0, sk
+1, . . . , sk
+m} ∼πTk.
+(4)
+
+To make results more reproducible and to facilitate comparisons among different teaching methods,
+we take DTk to be a set of samples that the teacher agent experienced in a window around the time
+that the snapshot was saved.
+
+3.3
+Student/Teacher Matching with fselect
+
+The ZPD teacher selection function fselect is a critical feature of Algorithm 1. This function
+determines the distribution across teachers from which we sample experience. In our experiments,
+we draw only from a delta distribution across the teachers, and refer to the selected teacher as the
+ZPD teacher TZPD. We leave exploring prioritized sampling across multiple teachers to future work.
+
+We propose deﬁning fselect as a “ﬁxed snapshots ahead” strategy, with an integer hyperparameter
+k. For any student S, that student is matched to a snapshot Tmatch, the teacher with the reward
+closest to the one that the student achieves. We refer to the snapshot Tmatch as the “matched” teacher
+snapshot. The fselect function sets the ZPD teacher (the snapshot from which experience is drawn)
+to be snapshot Tmatch+k, capped at the last snapshot if it exceeds the total number of snapshots.
+Intuitively, the currently matched snapshot tells us the teacher snapshot that is roughly on par with
+the student, and so the next ZPD snapshot may be some ﬁxed interval ahead, with higher rewards
+indicating that we are using teachers that are more skilled at a given task. Another interpretation
+of this matching function is as a curriculum [3] where the learner initially starts with a teacher that
+provides “easier” samples, before moving on to harder teachers.
+
+While it is possible that updating the ZPD teacher at each time-step would provide the best perfor-
+mance, for efﬁciency, we update the ZPD teacher infrequently. A call to fselect triggers when the
+student’s average reward (over a window of 100 episodes) exceeds that of the matched teacher’s
+reward, the latter of which is the average over a window of 100 episodes the teacher experienced at
+the time the snapshot was saved.
+
+In this work, we examine ﬁxed snapshot ahead strategies for k ∈{0, 2, 5, 10} and call these “k ahead”
+methods. We additionally test with two baselines: a “best ahead” where the ZPD snapshot is ﬁxed
+throughout student training to be the teacher snapshot with highest reward, and a “random ahead”
+where the next ZPD snapshot is chosen at random among the set of all teacher snapshots with higher
+reward than the student.
+
+3.4
+Minibatch Sampling with fblend
+
+Once a ZPD teacher, TZPD, is selected, we can treat the corresponding dataset DTZPD of samples as a
+distinct “ZPD teacher” replay buffer. We then sample from both DS and DTZPD in each minibatch
+update of the DQfD algorithm. When sampling, however, we need to decide how many samples to
+draw from the teacher’s replay buffer (off-policy examples) and how many to draw from the replay
+buffer of the student (on-policy examples). This trade-off is made according to the strategy fblend,
+a binomial distribution representing the probability that a sample in the minibatch is drawn from a
+particular replay buffer.
+
+In this work, we use a ﬁxed ratio of student-teacher samples per mini-batch. While prior work has
+tested using a ratio of 25% teacher samples in a minibatch as in Ape-X DQfD [23] or even smaller
+ratios of 1/256 as in R2D3 [21], we use a 50% ratio to test the effect of using more off-policy teacher
+data per minibatch. These ratios are held constant throughout student training, up to the point when
+the student surpasses every teacher snapshot. When this occurs, we anneal fblend, in a linear decay
+towards no teacher samples. At this point, the student has little to learn from the teachers.
+
+Figure 1:
+Learning curves for all nine games tested, comparing: 10 ahead, best ahead, and the
+original DDQN teacher. For 10 ahead and best ahead, we test with both a 4:1 and a 2:1 ratio of
+steps:updates, as discussed in Section 4. Learning curves are over two random seeds. Results suggest
+that the 2:1 throughput case is at or exceeds the level of the 4:1 case across games.
+
+Table 1: Hyperparameters used when training teachers and then students. In addition to values listed
+here, both the student and teachers used an Adam [14] learning rate of 10−4, batch size 32, target
+network sync-ing period of 10,000 steps, and discount factor γ = 0.99.
+
+Hyperparameter
+Teacher
+Student
+Environment steps
+6,000,000
+6,000,000
+Replay buffer size
+1,000,000
+250,000
+Steps between gradient updates
+4
+2
+Student-teacher minibatch ratio
+N/A
+50-50
+L2 regularization weight λL2
+N/A
+10−5
+
+Supervised loss weight λE
+N/A
+10−1 or 10−2
+
+Supervised loss margin ℓ
+N/A
+0.8
+Size of ZPD teacher buffer DTZPD
+N/A
+≈250000
+
+4
+Experimental Setup
+
+We evaluate our methods using the Atari [2] benchmarks for the following nine games: Alien,
+BeamRider, Boxing, Breakout, Pong, Qbert, Robotank, Seaquest, and SpaceInvaders. These include
+several widely-used games (Pong and Breakout in particular) and others for which DDQN can
+get reasonable performance. We run into a limitation for complex games with sparse rewards,
+such as Montezuma’s Revenge and Private Eye. For those games, training a teacher agent via
+deep reinforcement learning is famously difﬁcult, and successful learning normally requires some
+combination of human demonstrators, the underlying game state, or advanced exploration strategies
+with massively parallel data collection [26, 5]. Since we compare performance of students versus
+teachers, we wish to have teachers follow the same base algorithm of DDQN, so we did not test on
+games for which DDQN performs extremely poorly.
+
+For all teacher DDQN training runs, we saved 23 snapshots, spaced out over 250,000 environment
+training steps out of the 6 million total steps taken, where each environment step is exactly 4 frames,
+following OpenAI gym [4] conventions. The ﬁrst teacher snapshot was saved at 400,000 steps, the
+second at 750,000 steps, and continued until the 23rd at 5,900,000 steps. We use 30 random no-op
+actions to begin each environment. For each teacher selection method, we benchmark with two
+random seeds and average the results.
+
+We test the following six fselect methods: 0 ahead, 2 ahead, 5 ahead, 10 ahead, best ahead, and
+random ahead (discussed in Section 3.3). For the DQfD lambda hyperparameter λE, which controls
+the strength of the imitation loss, we tuned values in {0, 0.001, 0.01, 0.1, 1.0} for all nine games with
+the 0.8 large margin loss from [11]. In contrast to their work, we found that λE = 1.0 was too large
+and resulted in deﬁcient student performance, perhaps because we use relatively more off-policy data.
+Based on initial tuning, six games worked best with λ = 0.1 and the other three (BeamRider, Pong,
+Robotank) worked best with λ = 0.01. Our main hyperparameters are shown in Table 1, where we
+borrow some relevant hyperparameters from DQfD [11] to minimize tuning, and reduce the size of
+the experience replay buffer [34].
+
+We also tuned the number of environment steps taken by the student in between gradient updates.
+The standard in DQN is to use 4 environment steps for every gradient update. With 50% of the
+minibatch coming from demonstrator samples, doing a 4:1 step:update ratio means that each new
+student environment step sample is consumed, in expectation, half as many times as in the no-teacher
+case. A 2:1 ratio allows the student to use environment samples at the same rate, and to consume
+teacher samples at twice the rate. We thus tested both 4:1 and 2:1 ratios across all games and teaching
+methods. Figure 1 shows a representative set of results, suggesting that students trained with a 2:1
+ratio outperform those with a 4:1 ratio. Thus, for all results we use a 2:1 ratio, and leave examining
+the step-to-update ratio for “student throughput” to future work.
+
+5
+Results
+
+Figure 2 plots the learning curves, averaged over two random seeds, for all nine games and all
+teaching strategies tested. Traditional methods such as DQfD rely on the best ahead style of teaching
+— they choose a constant teacher achieving the highest ﬁnal reward. We can see that by dynamically
+altering the teaching strategy, in almost all cases the best ahead strategy is sub-optimal with respect
+to both ﬁnal reward and sample efﬁciency. Table 2 summarizes this observation.
+
+The learning curves and tables suggest that the strongest teaching methods are the random ahead, 5
+ahead, and 10 ahead methods. This result not only supports our overall hypothesis that a dynamic
+ZPD style strategy can improve performance, but also indicates that it may not be necessary to use
+the very highest-rewarding expert available in all circumstances. One possible explanation for these
+results is that with high-quality samples from the teacher with highest reward, running a DQfD-style
+algorithm may overﬁt to that teacher’s samples (as overﬁtting has been shown in deep Q-learning [7]).
+Also intriguing is the performance of the random ahead method. The diversity of samples introduced
+by the method could aid in avoiding overﬁtting to a given teacher or a given skill range. We believe
+that it is interesting future work to further explore these random teaching methods, as additional
+exploration could yield insights into the learning process of Deep Q Networks.
+
+Another clear result is that, as expected, the best teaching methods for a particular game outperform
+the teacher itself. This is despite the 50-50 minibatch ratio, which uses a relatively large amount
+of off-policy data as compared to DQfD [11], Ape-X DQfD [23], and especially R2D3 [21], which
+complicates learning as Q-learning algorithms normally need signiﬁcant on-policy experience [8].
+
+Table 2: A ranking of the various methods across the nine games, combining all trials from Figure 2.
+We indicate the number of times the method “won”, i.e., had highest reward (over two random seeds)
+for a given game.
+
+Method
+BA
+RA
+0A
+2A
+5A
+10A
+Average
+0
+2
+0
+0
+3
+4
+Last 100
+1
+3
+1
+0
+3
+1
+
+5.1
+Per-Game Analysis
+
+The results indicate that the best strategy for making use of teacher samples appears to be game-
+dependent. From Table 2, the best ahead method is only highest in one case, Pong, when considering
+the average of the last 100 episodes. The learning curves indicate Pong is unique: all teaching
+methods, with the exception of 0 ahead, have near identical performance. This phenomenon is
+surprising when considering that, for example, the 2 ahead method will initially query samples from
+a ZPD teacher that attains roughly -17 reward. Episodic rewards for Pong range from -21 to 21, so
+this suggests that using samples from teachers with low game rewards can nonetheless be beneﬁcial.
+
+Breakout is another interesting case study. The learning curves suggest that the best ahead and the
+10 ahead strategies are the two weakest strategies for the learner. One hypothesis for why Breakout
+may be better suited to a shorter ZPD “advancement interval” is because more advanced agents are
+frequently in states that might not be beneﬁcial to a learner. Upon observing trained teacher DDQN
+policies, we noticed that they often got stuck in an endless cycle of hitting the ball back and forth in
+the same pattern in an effort to get the last few remaining bricks. Figure 3 shows a representative
+example from Breakout. Advanced agents are frequently in complex states, which intuitively might
+not be as helpful to beginning learners. Thus, for faster learning, it may initially make more sense to
+use samples from a a slightly weaker agent.
+
+Figure 2: Results for fselect methods as described in Section 3.3 on the nine Atari games we use.
+Learning curves represent the average reward over a window of 100 past episodes as a function of
+environment steps (six million total) as suggested in [18]. Curves are then re-averaged over two
+random seeds per fselect function. Each seed for a game is run with the same teacher and the same
+set of datasets generated from that teacher to reduce the variability in results. The black dashed lines
+represent the performance of the DDQN teacher agent, run only once per game. Results suggest that
+using the best ahead matching, indicated in bright gold above, is not the clear best choice for any of
+the games tested.
+
+Other interesting results come from Robotank and Seaquest. While results suggest that using any
+of the selection functions results in improvements over a teacher (which may in large part be due
+to more frequent gradient updates), there exists a wide range in performance among the selection
+methods. Thus, careful tuning may be beneﬁcial, and it would be interesting to see the effects of
+teaching methods when training for more environment steps.
+
+Figure 4 provides some intuition on the matching process for various fselect methods. The ﬁgure
+shows, for the same Space Invaders teacher, reward curves for the student under a representative
+best ahead, 5 ahead, and random ahead training run. We can see that the best ahead method uses the
+same ZPD teacher with reward 1007.5. The 5 ahead method starts with a ZPD teacher at reward 600
+and then gradually the reward increases to the reward of the ﬁnal snapshot. The ZPD reward is not
+monotonically increasing because it is not generally the case that reward always increases throughout
+the 23 saved snapshots.
+
+Figure 3: A representative example of a set of Breakout frames that an expert agent frequently
+encounters. Here, the agent moves back and forth repeatedly in the same pattern and the ball does
+not hit any remaining bricks. The game only exits this “deadlock” due to either the 1% chance of a
+random action from the epsilon greedy policy or the 10K episode step limit.
+
+Figure 4:
+Examples of learner reward curves and corresponding ZPD reward values for Space
+Invaders for fselect functions: best ahead (left), 5 ahead (middle), and random ahead (right). The
+plots only show the curves for the period when the learner has lower reward than its ZPD teacher. At
+an environment step, the reward of the learner and the reward of its ZPD teacher is plotted, showing
+that the best ahead method always uses a ZPD teacher with the highest possible reward, while the
+random method uses ZPD teachers with varying reward levels (that exceed the reward of the learner).
+
+It is interesting to see in Figure 4 that the random ahead strategy experiences a more diverse reward
+range from its ZPD teachers. We believe that investigating this phenomenon in future work is
+important; can we understand and quantify the beneﬁt one gets from randomizing a teacher?
+
+6
+Concluding Remarks
+
+In this work, we have proposed an approach that merges the Zone of Proximal Development (ZPD)
+theory from psychology with modern deep reinforcement learning practices. We demonstrated an
+algorithm for determining which of several teachers should be selected to provide samples for a
+learner, and demonstrated results on Atari environments suggesting that it is not ideal to solely rely
+on the highest-reward teacher.
+
+In this work we also raise a number of interesting questions for consideration in future work. For
+example, can we choose a dynamic fselect function which does more than take a ﬁxed number of k
+steps ahead? One possibility would be deﬁning a function which relies on the overlap of the state
+distribution of the teacher and learner. We would also like to explore how the proposed method
+may be used in combination with ideas from batch-constrained learning [8], or Random Ensemble
+Mixtures [1] to better train agents entirely off-policy.
+
+While it is only a single step towards developing complex teaching strategies, this work shows that
+deﬁning teaching strategies should serve as an important step in the deep learning from demonstration
+pipeline, and that by choosing naive methods we are ignoring signiﬁcant possible performance gains.
+
+References
+
+[1] Rishabh Agarwal, Dale Schuurmans, and Mohammad Norouzi. Striving for Simplicity in Off-policy Deep
+Reinforcement Learning. arXiv:1907.04543, 2019.
+
+[2] M. G. Bellemare, Y. Naddaf, J. Veness, and M. Bowling. The Arcade Learning Environment: An Evaluation
+Platform for General Agents. Journal of Artiﬁcial Intelligence Research, 2013.
+
+[3] Yoshua Bengio, Jerome Louradour, Ronan Collobert, and Jason Weston. Curriculum Learning. In
+International Conference on Machine Learning (ICML), 2009.
+
+[4] Greg Brockman, Vicki Cheung, Ludwig Pettersson, Jonas Schneider, John Schulman, Jie Tang, and
+Wojciech Zaremba. Openai gym, 2016.
+
+[5] Yuri Burda, Harrison Edwards, Amos Storkey, and Oleg Klimov. Exploration by Random Network
+Distillation. In International Conference on Learning Representations (ICLR), 2019.
+
+[6] Seth Chaiklin. The Zone of Proximal Development in Vygotsky’s Analysis of Learning and Instruction.
+Vygotsky’s Educational Theory in Cultural Context, 2003.
+
+[7] Justin Fu, Aviral Kumar, Matthew Soh, and Sergey Levine. Diagnosing Bottlenecks in Deep Q-learning
+Algorithms. In International Conference on Machine Learning (ICML), 2019.
+
+[8] Scott Fujimoto, David Meger, and Doina Precup. Off-Policy Deep Reinforcement Learning without
+Exploration. In International Conference on Machine Learning (ICML), 2019.
+
+[9] Tommaso Furlanello, Zachary C. Lipton, Michael Tschannen, Laurent Itti, and Anima Anandkumar. Born
+Again Neural Networks. In International Conference on Machine Learning (ICML), 2018.
+
+[10] Matteo Hessel, Joseph Modayil, Hado van Hasselt, Tom Schaul, Georg Ostrovski, Will Dabney, Dan
+Horgan, Bilal Piot, Mohammad Azar, and David Silver. Rainbow: Combining Improvements in Deep
+Reinforcement Learning. In Association for the Advancement of Artiﬁcial Intelligence (AAAI), 2018.
+
+[11] Todd Hester, Matej Vecerik, Olivier Pietquin, Marc Lanctot, Tom Schaul, Bilal Piot, Dan Horgan, John
+Quan, Andrew Sendonaris, Gabriel Dulac-Arnold, Ian Osband, John Agapiou, Joel Z. Leibo, and Audrunas
+Gruslys. Deep Q-Learning From Demonstrations. In Association for the Advancement of Artiﬁcial
+Intelligence (AAAI), 2018.
+
+[12] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the Knowledge in a Neural Network. In NIPS
+Deep Learning Workshop, 2014.
+
+[13] Dan Horgan, John Quan, David Budden, Gabriel Barth-Maron, Matteo Hessel, Hado van Hasselt, and
+David Silver. Distributed Prioritized Experience Replay. In International Conference on Learning
+Representations (ICLR), 2018.
+
+[14] Diederik P. Kingma and Jimmy Ba. Adam: A Method for Stochastic Optimization. In International
+Conference on Learning Representations (ICLR), 2015.
+
+[15] Aviral Kumar, Justin Fu, George Tucker, and Sergey Levine. Stabilizing Off-Policy Q-Learning via
+Bootstrapping Error Reduction. In Neural Information Processing Systems (NeurIPS), 2019.
+
+[16] Timothy P Lillicrap, Jonathan J Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval Tassa, David
+Silver, and Daan Wierstra. Continuous Control With Deep Reinforcement Learning. In International
+Conference on Learning Representations (ICLR), 2016.
+
+[17] Long-Ji Lin. Self-Improving Reactive Agents Based on Reinforcement Learning, Planning and Teaching.
+Machine Learning, 8(3), May 1992.
+
+[18] Marlos C. Machado, Marc G. Bellemare, Erik Talvitie, Joel Veness, Matthew Hausknecht, and Michael
+Bowling. Revisiting the Arcade Learning Environment: Evaluation Protocols and Open Problems for
+General Agents. arXiv:1709.06009, 2017.
+
+[19] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G. Bellemare,
+Alex Graves, Martin Riedmiller, Andreas K. Fidjeland, Georg Ostrovski, Stig Petersen, Charles Beattie,
+Amir Sadik, Ioannis Antonoglou, Helen King, Dharshan Kumaran, Daan Wierstra, Shane Legg, and Demis
+Hassabis. Human-Level Control Through Deep Reinforcement Learning. Nature, 518(7540):529–533, 02
+2015.
+
+[20] Ashvin Nair, Bob McGrew, Marcin Andrychowicz, Wojciech Zaremba, and Pieter Abbeel. Overcoming
+Exploration in Reinforcement Learning with Demonstrations. In IEEE International Conference on
+Robotics and Automation (ICRA), 2018.
+
+[21] Tom Le Paine, Caglar Gulcehre, Bobak Shahriari, Misha Denil, Matt Hoffman, Hubert Soyer
+nd Richard Tanburn, Steven Kapturowski, Neil Rabinowitz, Duncan Williams, Gabriel Barth-Maron,
+Ziyu Wang, Nando de Freitas, and Worlds Team. Making Efﬁcient Use of Demonstrations to Solve Hard
+Exploration Problems. arXiv:1909.01387, 2019.
+
+[22] Bilal Piot, Matthieu Geist, and Olivier Pietquin. Boosted bellman residual minimization handling expert
+demonstrations. In Joint European Conference on Machine Learning and Knowledge Discovery in
+Databases, pages 549–564. Springer, 2014.
+
+[23] Tobias Pohlen, Bilal Piot, Todd Hester, Mohammad Gheshlaghi Azar, Dan Horgan, David Budden, Gabriel
+Barth-Maron, Hado van Hasselt, John Quan, Mel Veˇcerík, Matteo Hessel, Rémi Munos, and Olivier
+Pietquin. Observe and Look Further: Achieving Consistent Performance on Atari. arXiv:1805.11593,
+2018.
+
+[24] Stephane Ross, Geoffrey J Gordon, and J Andrew Bagnell. A Reduction of Imitation Learning and
+Structured Prediction to No-Regret Online Learning. In International Conference on Artiﬁcial Intelligence
+and Statistics (AISTATS), 2011.
+
+[25] Andrei A. Rusu, Sergio Gomez Colmenarejo, Caglar Gulcehre, Guillaume Desjardins, James Kirkpatrick,
+Razvan Pascanu, Volodymyr Mnih, Koray Kavukcuoglu, and Raia Hadsell. Policy Distillation. In
+International Conference on Learning Representations (ICLR), 2016.
+
+[26] Tim Salimans and Richard Chen. Learning Montezuma’s Revenge From a Single Demonstration. Deep
+Reinforcement Learning Workshop, NeurIPS, 2018.
+
+[27] Tom Schaul, John Quan, Ioannis Antonoglou, and David Silver. Prioritized Experience Replay. In
+International Conference on Learning Representations (ICLR), 2016.
+
+[28] Simon Schmitt, Jonathan J. Hudson, Augustin Zidek, Simon Osindero, Carl Doersch, Wojciech M.
+Czarnecki, Joel Z. Leibo, Heinrich Kuttler, Andrew Zisserman, Karen Simonyan, and S. M. Ali Eslami.
+Kickstarting Deep Reinforcement Learning. arXiv:1803.03835, 2018.
+
+[29] Richard S. Sutton and Andrew G. Barto. Introduction to Reinforcement Learning. MIT Press, Cambridge,
+MA, USA, 2nd edition, 2018.
+
+[30] Hado van Hasselt, Arthur Quez, and David Silver. Deep Reinforcement Learning With Double Q-Learning.
+In Association for the Advancement of Artiﬁcial Intelligence (AAAI), 2016.
+
+[31] Matej Vecerik, Todd Hester, Jonathan Scholz, Fumin Wang, Olivier Pietquin, Bilal Piot, Nicolas Heess,
+Thomas Rothorl, Thomas Lampe, and Martin Riedmiller. Leveraging Demonstrations for Deep Reinforce-
+ment Learning on Robotics Problems with Sparse Rewards. arXiv:1707.08817, 2017.
+
+[32] Mel Vecerik, Oleg Sushkov, David Barker, Thomas Rothorl, Todd Hester, and Jon Scholz. A Practical Ap-
+proach to Insertion with Variable Socket Position Using Deep Reinforcement Learning. arXiv:1810.01531,
+2018.
+
+[33] L. S. Vygotsky. Mind in Society: The Development of Higher Psychological Processes. Harvard University
+Press, 1978.
+
+[34] Shangtong Zhang and Richard S. Sutton. A Deeper Look at Experience Replay. In Deep Reinforcement
+Learning Symposium, NeurIPS, 2017.

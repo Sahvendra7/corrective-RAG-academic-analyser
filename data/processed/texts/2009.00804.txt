@@ -1,0 +1,779 @@
+Zhihui Zhang1⋆, Jingwen Leng1⋆◦, Lingxiao Ma2, Youshan Miao3, Chao Li,1 Minyi Guo1◦
+
+{zhihui.zhang, {lichao,
+
+Abstract—Graph neural networks (GNN) represent an emerging line of deep learning models that operate on graph structures. It is
+becoming more and more popular due to its high accuracy achieved in many graph-related tasks. However, GNN is not as well
+understood in the system and architecture community as its counterparts such as multi-layer perceptrons and convolutional neural
+networks. This work tries to introduce the GNN to our community. In contrast to prior work that only presents characterizations of GCNs,
+our work covers a large portion of the varieties for GNN workloads based on a general GNN description framework. By constructing the
+models on top of two widely-used libraries, we characterize the GNN computation at inference stage concerning general-purpose and
+application-speciﬁc architectures and hope our work can foster more system and architecture research for GNNs.
+
+arXiv:2009.00804v2 [cs.AR] 24 Dec 2021
+
+Index Terms—Graph neural networks, computation analysis, deep learning, characterization.
+
+!
+
+1
+INTRODUCTION
+G
+
+RGCN
+GEMM
+
+ResNet-50
+SpGEMM
+
+GCN
+
+GAT
+IndexSelect
+
+Reduction
+
+GEMM &
+
+Other
+
+GEMM
+
+RAPH neural networks (GNN) start to gain momentum
+as researchers are considering important tasks involv-
+ing the graph structure such as social media. Deep learning
+(DL) has achieved great success in domains with grid data
+structure, e.g., images and sequences, which, however, only
+represents a small portion of the real-world data. In contrast,
+graph structure reﬂects the vast majority of real-world data
+such as molecular structure and knowledge graph.
+Graph representation learning is one of the most im-
+portant graph-related problems [1]. It converts the irregular
+graph structure to embedding vectors, which are the com-
+pressed representations of vertices (i.e. vertex embedding)
+and the entire graph (i.e. graph embedding). A downstream
+task such as molecular property prediction can then take
+in the regular embeddings rather than the raw graph for
+efﬁcient processing. As such, the quality of the embeddings
+directly determines the accuracy of downstream tasks.
+Traditional graph representation methods like Deep-
+Walk [2] and node2vec [3] mostly rely on hand-crafted
+or intuition-based algorithms. In contrast, GNNs extend
+the graph analytics with DL’s end-to-end learning capa-
+bility, which has led to better accuracies in a variety of
+domains including molecular science, recommendation, and
+transportation. To realize the full potential of GNNs, we
+should adapt the existing software and hardware platforms
+to GNNs’ unique characteristics.
+The combination of DL and graph analytics makes GNN
+a new computation paradigm, which is quite different from
+their counterparts such as multi-layer perceptrons (MLP)
+and convolutional neural networks (CNN). Figure 1 com-
+pares the graphics processing unit (GPU) kernel distribu-
+tion for ResNet-50 and three popular GNNs. It is well
+understood that CNNs are dominated by convolutional
+layers, which are implemented through general matrix mul-
+tiplication (GEMM) on GPU. In contrast, the computation-
+
+ElementWise
+
+Other
+
+IndexSelect
+
+Reduction
+
+BatchNorm
+
+ElementWise
+
+Transpose
+
+GEMM
+
+ElementWise
+
+GEMV
+
+GEMV
+
+ElementWise
+
+Fig. 1: Kernel breakdown of CNN (ResNet-50) and three GNN models.
+intensive GEMM kernel is not the hotspot in the three
+GNNs, which also demonstrate model-speciﬁc patterns.
+In this work, we aim to introduce GNN to our com-
+munity. In contrast to prior work [4] that only presents
+characterizations of GCN [5], we select ﬁve representative
+GNN models that cover a large portion of the varieties for
+GNN workloads on the basis of a general GNN description
+framework and our model review. By constructing the mod-
+els on top of two widely-used libraries, we characterize the
+efﬁciency of the GNN computation at inference stage on the
+existing GPU architecture and suggest directions for GNN-
+speciﬁc accelerators. We hope that our analysis can help
+architects and system designers have a better understanding
+of GNN computation and foster more future work.
+
+2
+GNN BENCHMARK SUITE CONSTRUCTION
+This section describes our methodology of constructing
+a representative GNN benchmark suite. We use a general
+description framework to perform a detailed review of the
+recently published GNN models. The result identiﬁes a few
+common patterns across the surveyed models, which lets us
+choose ﬁve models to cover almost all patterns.
+Model Survey. A multi-layered GNN model is designed
+to learn the embeddings (i.e., vectors) for each vertex and
+edge in a graph. The input for a GNN layer is the graph
+
+edge𝑠𝑐𝑎𝑡𝑡𝑒𝑟
+edge𝓁+1
+
+vertex𝓁
+
+Scatter
+
+b
+a
+b
+c
+d
+b
+b
+e
+d
+e
+d
+f
+e
+d
+e
+f
+
+1
+2
+3
+4
+5
+6
+7
+8
+
+a
+b
+c
+d
+e
+
+ApplyEdge
+
+MLP
+(dense)
+
+f
+
+edge𝓁+1
+
+Gather
+
+vertex𝓁+1
+vertex𝓁
+vertex𝑔𝑎𝑡ℎ𝑒𝑟
+
+1
+0
+a
+
+ApplyVertex
+
+3
+1+2+4
+b
+
+2+5
+0
+c
+
+∥
+
+7
+5+3+6
+d
+
+GRU
+(dense)
+
+4
+7+8
+e
+
+edge+src: 21
+
+!
+
+%
+
+%
+
+MLP: 36
+
+!
+
+!
+
+'()*+,-./0,1,234+(5
+
+edge: 1
+
+MLP: 26
+GRU: 10
+
+#
+
+&'()*+(,-
+
+!
+
+edge + src&dst: 7
+src&dst: 6
+
+sum / mean / max: 44
+
+$
+
+$
+
+!
+
+!
+
+Fig. 3: The proportion of operations used in each stage of SAGA-NN.
+
+"
+
+!
+
+#
+
+#
+
+!
+
+!
+
+TABLE 1: The SAGA-NN stage breakdown of the selected models.
+
+!
+
+"
+
+"
+
+Model
+Scatter
+ApplyEdge
+Gather
+ApplyVertex
+GCN [5]
+-
+-
+sum(in edges)
+MLP
+GAT [10]
+src&dst
+MLP
+attention(in edges)
+MLP
+GGNN [6]
+src&dst
+MLP
+sum(all edges), vertex
+GRU
+R-GCN [11]
+edge+src
+MLP
+sum(in edges), vertex
+sum
+GraphSAGE [12]
+-
+-
+LSTM(in edges), vertex
+MLP
+Coverage
+85%
+100%
+100%
+100%
+
+!
+
+!
+
+!
+
+!
+
+BA';D
+
+>='8@
+
+@A?B<C
+
+0=<>:?
+
+;->?
+
+89-<
+
+89:;
+
+6/78
+
+8-'<=<<:
+
+69':;::7
+
+98&1;
+
+6;4
+
+78693:
+
+1256
+
+./01
+
+.2&34330
+
+Fig. 4: Execution statistics of selected models with the different datasets.
+
+Studied Models. In the end, we select ﬁve representative
+GNN models in Table 1, which cover almost 100% of
+the operations used in the 53 surveyed models. In other
+words, the 53 models can be viewed as recombination of
+different stages in the ﬁve models. We study and analyze
+those models on existing GNN execution library DGL [8]
+and PyG [9]. However, the two libraries do not explicitly
+implement SAGA-NN so we refactor the codes following
+the SAGA-NN description framework for a more systematic
+analysis. We focus more on DGL analysis because the PyG
+currently does not support GraphSAGE. We also select 6
+commonly used datasets from the literature, with the num-
+ber of vertices ranging from 5 K to about 1 M in Table 2.
+
+structure in the form of adjacency matrix, together with the
+vertex (edge) embedding matrix vertexl (edgel). The layer
+generates the transformed embedding matrix vertexl+1 and
+edgel+1 for the next layer, as shown in Figure 2. We re-
+viewed 53 GNN models published in recent top conferences
+and journals, spanning across molecular science, recommen-
+dation, and transportation domains. Since GNNs mix the
+graph and DL computation, the surveyed models demon-
+strate signiﬁcant variability, which poses a great challenge
+for the analysis of their computational characteristics.
+Model Decomposition. To overcome the diversity chal-
+lenge, we adopt the recent GNN description framework
+SAGA-NN [7], which deﬁnes four stages in a GNN layer
+(Scatter, ApplyEdge, Gather, and ApplyVertex.). The
+current popular GNN libraries DGL [8] and PyG [9] also
+implicitly follow a similar framework. We express and de-
+compose the surveyed models into different stages in the
+SAGA-NN framework. We then categorize each stage’s op-
+erations to mine common patterns and simplify the analysis.
+We use GGNN [6] in Figure 2 as an example to illustrate
+the different stages. In the ﬁrst Scatter stage, each edge
+concatenates its source and destination vertex embeddings
+as edgescatter. In the second ApplyEdge stage, each edge
+transforms edgescatter with a MLP operation to produce the
+new edge embedding edgel+1. In the third Gather stage,
+each vertex ﬁrst sums the edgel+1 of all its inedges (incom-
+ing edges) to output vertexgather, and then concatenates it
+with the vertex’s existing embedding vertexl as the input
+for the next stage. In the fourth ApplyVertex stage, each
+vertex transforms this input with a GRU (Gated Recurrent
+Unit) operation to the new vertex embedding vertexl+1.
+Survey Result. For the surveyed 53 models, we decompose
+them into different SAGA-NN stages. Figure 3 summarizes
+the operation distribution in each stage. The results show
+that although GNNs have a tremendous design space (diversity),
+there exist a few commonly used operations in each stage. GNNs
+can adopt a mix of source/destination vertex embedding,
+and edge embedding in the Scatter stage. For the Gather
+stage, some models use the simple sum/mean/max opera-
+tion while others use more complex attention/LSTM (Long
+short-term memory) operations. Some models bypass the
+ApplyEdge or ApplyVertex, while most models use MLP
+operations. The survey insight suggests that we can cover
+the large GNN space by carefully selecting a few models.
+
+3
+GNN COMPUTATION ANALYSIS ON GPU
+
+We study the computational characteristics of the se-
+lected GNN models on the contemporary GPU. We conduct
+an end-to-end analysis to examine the model difference and
+the impact of the dataset. We then analyze the stage-level
+characteristics in detail, which lets us identify the possible
+bottleneck and suggest new optimizations.
+
+TABLE 2: The evaluated datasets for the vertex classiﬁcation task.
+
+edgeℓ+1
+
+40
+
+vertex𝑔𝑎𝑡ℎ𝑒𝑟
+edge #
+
+Total Exe. Time
+
+3
+
+40
+
+3
+
+10
+
+1
+2
+3
+4
+5
+6
+
+b
+
+c
+
+1 0 3 ······
+
+0.6
+
+20
+
+Ratio
+
+20
+
+a
+0
+1
+0
+0
+0
+0
+
+2 3 5 ······
+
+(a) Scatter.
+
+(b) ApplyEdge.
+
+2 3 5 ······
+
+0
+
+0
+
+vertex #
+
+1
+6
+
+4 1 7 ······
+
+b
+1
+0
+1
+0
+0
+0
+
+0.4
+
+(c) Gather.
+60
+
+3 1 4 ······
+
+2
+
+×
+=
+
+60
+
+Percentage
+
+10
+
+2
+
+5
+
+2 3 3 ······
+
+(d) ApplyVertex.
+
+c
+0
+0
+0
+0
+0
+1
+
+4 0 0 ······
+
+40
+
+40
+
+0.2
+
+6 8 6 ······
+
+2 8 6 ······
+
+d
+0
+0
+0
+1
+1
+0
+
+a
+d
+
+20
+
+20
+
+4
+
+1
+
+2 3 3 ······
+
+edge-to-vertex adjacency matrix
+
+(b)
+
+10
+
+0
+
+0
+
+0.0
+
+GGNN
+
+GGNN
+
+RGCN
+
+RGCN
+
+GCN
+
+GCN
+
+GAT
+
+GAT
+
+SAGE
+
+SAGE
+
+GraphSAGE
+
+GGNN
+
+RGCN
+
+GCN
+
+GAT
+
+Fig. 7: (a) GCN time with/without fusion. (b) The fused Gather can be imple-
+mented by multiplying the graph adjacency matrix and edge embedding matrix.
+
+Fig. 5: Stage time breakdown.
+
+Fig. 6: Stage execution statistics.
+
+We also observe that GCN is the simplest model with
+less number of instructions and FLOPs. The rest four models
+have similar instruction counts for the same graph but
+their FLOPs are quite different. This variability can be
+attributed to their different model complexity: GraphSAGE
+is more complicated with the LSTM-based Gather stage
+while GGNN uses GRU cell in the ApplyVertex stage.
+Next, we perform a detailed stage-level analysis for a deeper
+understanding of these models.
+
+200
+
+"!$
+
+10
+
+2
+
+1
+
+10
+
+100
+
+"!%
+
+9:;.
+)<=5>?6.
+
+0.1
+
+-1
+
+0
+
+10
+
+0
+
+"!&
+
+10
+
+Degree
+Invocation
+
+Scatter
+Gather
+ApplyV
+Total
+
+Scatter
+Gather
+ApplyV
+Total
+
+300
+200
+100
+0
+83.03
+
+Fig. 9: The inference time (ms) on difference architectures.
+
+@AB
+
+3
+
+"!"
+
+x10
+
+(b)
+
+(a)
+
+'()*
+
+Fig. 8: (a) Degree distributions of BGS. (b) The number of degrees in the graph
+and invocations in the Gather stage. (c) Time distribution of kernels in the Gather
+stage of GraphSAGE.
+and more and more GNN models are being developed
+with complex functions in those two stages to capture more
+information on the vertex, edge, and graph.
+Library. We observe a similar result on PyG, especially for
+ApplyEdge/ApplyVertex that both leverage PyTorch’s
+existing features for efﬁcient computation. Their greatest
+difference lies in Scatter and Gather stages. For example,
+PyG lets users customize the data movement in Scatter
+while DGL moves all data (embeddings of the edge and its
+vertices) by default. As such, PyG performs better when part
+of the data is fetched (e.g., RGCN). Moreover, the PyG does
+not support the LSTM-based Gather stage.
+Summary. Table 3 summarizes the characteristics of each
+stage. It shows that although GNNs have a large design
+space, the stage-level characteristics are relatively stable
+across different models. In other words, our stage-level
+characterization can lay the foundation for future hard-
+ware/software acceleration of GNNs.
+
+the TPU has to rely on CPU for the data movement. On the
+large dataset MUTAG, the GPU outperforms TPU with the
+sparse stage fusion due to the higher graph sparsity.
+Forward Looking. In summary, we think it is important
+for GNN accelerators to support both sparse and dense
+matrix operations for efﬁcient GNN acceleration. Efﬁcient
+data movement for the graph structure is also indispensable
+to avoid unnecessary data copy between processors. As
+such, an ideal GNN accelerator in our outlook consists of
+three key components: data movement component, dense
+operation component, and sparse operation component.
+Meanwhile, the current execution paradigm for GNN is
+stage-by-stage and layer-by-layer. We believe that there is
+a huge design space to break this sequential paradigm by,
+for example, ﬁne-grained pipelining the different stages. We
+leave those for our future work.
+
+5
+CONCLUSION
+We systematically study the computation characteristics
+of graph neural networks. We ﬁrst construct a representative
+GNN benchmark based on the extensive model review and
+a general GNN description framework. We then analyze
+their computational efﬁciency and microarchitectural char-
+acteristics on the existing GPU architecture. Our analysis
+suggests that the GNN is a unique workload with the mixed
+features from graph analytics and DL computation, which
+warrants more future research.
+
+4
+IMPLICATIONS FOR HARDWARE ACCELERATION
+We now study the feasibility and challenges for the GNN
+accelerator, which can further improve the performance or
+energy efﬁciency of GNNs, on the basis of our previous
+analysis. Instead of building an accelerator from scratch,
+we take the existing DL accelerator TPU, and study its
+performance of running the GNN models. Based on the
+detailed stage-level analysis, we shed light on the efﬁcient
+GNN accelerator design. We use TensorFlow 1.12 on top of
+one Google Cloud TPU v2 for this part of the experiments.
+Projection Methodology. Because both DGL and PyG only
+support CPU and GPU platforms, we adopt a micro-
+benchmark based methodology to project the performance
+of running a typical GNN model on the TPU. We extract the
+parameters for the regular computation and run them on
+the TPU. For the irregular data movement, we use the time
+of our local CPU due to the lack of native TPU support.
+Figure 9 shows the result of two datasets. We report both
+the dense and sparse performance on the CPU/GPU, and
+report only the dense performance of TPU because it does
+not support the sparse GEMM.
+Result Analysis. We show a counter-intuitive result in
+Figure 9. The TPU does not achieve the best performance
+on both datasets (Total bar), although it does achieve the
+best dense GEMM performance (ApplyV bar). On the small
+dataset Cora, TPU performs worse than the GPU because
+
+ACKNOWLEDGMENTS
+We thank the anonymous reviewers for their construc-
+tive feedback. This work was supported by National Key
+R&D Program of China (2018YFB1305900), the National
+Natural Science Foundation of China Grant (61702328,
+61832006, and 61972247), Microsoft Research Asia Collab-
+orative Research Grant. Any opinions, ﬁndings, and conclu-
+sions in this paper are those of the authors only.
+
+REFERENCES
+
+TABLE 3: The characteristics of different GNN computation stages.

@@ -1,0 +1,2245 @@
+Improving Variable-Length Generation in Diffusion Language Models via
+Length Regularization
+
+Zicong Cheng 1 Ruixuan Jia 1 Jia Li 1 Guo-Wei Yang 2 Meng-Hao Guo 1 Shi-Min Hu 1
+
+2.5
+
+Abstract
+
+Average Confidence
+
+Observed Data
+
+ln(L) (Best Fit, R 2=0.895)
+
+0.0
+
+Diffusion Large Language Models (DLLMs) are
+inherently ill-suited for variable-length genera-
+tion, as their inference is defined on a fixed-length
+canvas and implicitly assumes a known target
+length. When the length is unknown, as in real-
+istic completion and infilling, naively comparing
+confidence across mask lengths becomes system-
+atically biased, leading to under-generation or
+redundant continuations. In this paper, we show
+that this failure arises from an intrinsic length-
+induced bias in generation confidence estimates,
+leaving existing DLLMs without a robust way to
+determine generation length and making variable-
+length inference unreliable. To address this issue,
+we propose LR-DLLM, a length-regularized infer-
+ence framework for DLLMs that treats generation
+length as an explicit variable and achieves reli-
+able length determination at inference time. It
+decouples semantic compatibility from length-
+induced uncertainty through an explicit length
+regularization that corrects biased confidence esti-
+mates. Based on this, LR-DLLM enables dynamic
+expansion or contraction of the generation span
+without modifying the underlying DLLM or its
+training procedure. Experiments show that LR-
+DLLM achieves 51.3% on HumanEval-
+Infilling under fully unknown lengths (+13.4%
+vs. DreamOn) and 51.5% average on
+four-language McEval (+14.3% vs. DreamOn).
+
+L (R 2=0.738)
+
+arXiv:2602.07546v1 [cs.CL] 7 Feb 2026
+
+2.5
+
+5.0
+
+0
+50
+100
+150
+200
+250
+Mask Length (L)
+
+Figure 1. Average confidence as a function of mask length L
+(log-scaled x-axis). The observed trend is well characterized by
+a logarithmic dependence (∝log 𝐿), while a linear fit provides a
+noticeably poorer approximation.
+
+tion scenarios such as fill-in-the-middle (FIM), where both
+prefix and suffix context are available. However, despite
+these advantages, popular DLLMs remain fundamentally
+designed for fixed-length generation, implicitly assuming
+that the target span length is known in advance.
+
+This assumption is frequently violated in realistic settings.
+In practical completion and infilling tasks, the length of the
+missing span is often unknown and variable, and forcing
+inference to operate on a pre-fixed canvas can lead to system-
+atic failures. When the chosen length is shorter than required,
+DLLMs tend to under-generate, producing incomplete or
+semantically invalid outputs; when the length is overesti-
+mated, they exhibit redundant continuations. Therefore,
+variable-length generation remains a critical bottleneck that
+limits the applicability of DLLMs in real-world scenarios
+
+Existing attempts at variable-length generation in DLLMs
+can be broadly divided into training-based and training-free
+approaches, yet both suffer from limitations for solving this
+challenge. On the one hand, training-based methods typically
+introduce specialized objectives or auxiliary components,
+which require additional retraining and interfere with the
+model’s original language modeling capability.
+On the
+other hand, training-free approaches are typically more
+lightweight, but often rely on special control tokens or only
+allow one-sided adjustments, which restrict flexibility (Li
+et al., 2025). As a result, current solutions still fall short of
+being simultaneously training-free, model-agnostic, and task-
+agnostic (Table 1). In this paper, we focus on developing a
+training-free variable-length generation that preserves model
+
+1. Introduction
+
+DLLMs are emerging as a promising alternative to autore-
+gressive language models (Xie et al., 2025; Nie et al., 2025;
+Zhu et al., 2025a; Bie et al., 2025), offering a different
+generation paradigm based on bidirectional denoising over
+a fixed-length canvas, rather than left-to-right factorization.
+In particular, DLLMs are well suited for conditional genera-
+
+1Tsinghua University 2Proxseer Inc..
+
+Preprint. February 10, 2026.
+
+Table 1. Comparison of key properties across variable-length
+generation methods. († Task-agnostic here refers to the ability to
+support both fill-in-the-middle (FIM) and standard left-to-right
+completion.)
+
+scoring candidate lengths at inference time.
+
+• We propose LR-DLLM, a training-free inference frame-
+work that leverages this criterion via efficient probing
+and greedy bidirectional adjustment, validating its su-
+periority across diverse benchmarks.
+
+Method
+Training-free
+Model-agnostic
+Task-agnostic†
+GSM8K
+
+DAEDAL
+✓
+✗
+✗
+63.3
+DreamOn
+✗
+✗
+✓
+-
+FlexMDM
+✗
+✗
+✓
+67.0
+dLLM-Var
+✗
+✗
+✗
+70.9
+LR-DLLM
+✓
+✓
+✓
+75.1
+
+2. Preliminary and Notation
+
+2.1. Preliminary
+
+We study conditional generation problems in which the
+output must satisfy a hard context constraint, but the number
+of tokens to be generated is not specified. Given an observed
+context c, the goal is to generate a token span y ∈V∗of
+unknown length and form a completed sequence x = 𝑔(c, y)
+that respects the constraint induced by c, where 𝑔(·, ·) is
+a deterministic, task-specific composition function. As a
+simple example, infilling corresponds to a prefix–suffix
+context c = (p, s) with completion x = p∥y∥s. We denote
+the (unknown) target span length by 𝐿★:= |y|.
+
+generality while enabling flexible length adaptation.
+
+We propose LR-DLLM, a training-free framework for dy-
+namic variable-length decoding in diffusion LLMs that treats
+generation length as an explicit inference variable. Rather
+than fixing the canvas length a priori, LR-DLLM probes
+candidate lengths and leverages the model’s own generation
+confidence to search for a more appropriate length. Specifi-
+cally, it first evaluates a small set of exponentially spaced
+candidate lengths (e.g., 𝐿∈{1, 2, 4, 8, . . . }) and selects the
+one maximizing the calibrated confidence as an initial guess.
+Starting from this initialization, the framework greedily
+expands or contracts the generation span in a bidirectional
+manner, guided solely by confidence feedback from the un-
+derlying DLLM. The entire procedure operates at inference
+time and requires no retraining or architectural modification,
+making it directly applicable to existing diffusion backbones.
+
+2.2. Notation
+
+Table 2 summarizes the notation used throughout the paper.
+
+Table 2. Notation used in the paper.
+
+Symbol
+Description
+
+V
+Vocabulary
+x = (𝑥1, . . . , 𝑥𝑇)
+Token sequence of length 𝑇
+|x|
+Length of sequence x
+a∥b
+Concatenation of two sequences
+⟨mask⟩
+Special mask token
+⟨mask⟩𝐿
+Mask block of length 𝐿
+p, s
+Prefix and suffix context
+y
+Generated token span
+𝐿★
+(Unknown) target span length, 𝐿★= |y|
+
+A key challenge is comparing confidence across different
+lengths. Naively selecting the length with the highest average
+confidence fails due to an intrinsic length-induced bias in
+DLLMs: confidence drifts approximately logarithmically
+with canvas length, independent of semantic compatibility.
+As a result, raw confidence conflates semantic fit with length-
+dependent uncertainty. We address this by introducing a
+log 𝐿regularizer that corrects for length bias, yielding a
+calibrated confidence–length criterion. The regularization
+coefficient is estimated via lightweight probing, enabling
+reliable cross-length comparison and robust bidirectional
+length adjustment during inference.
+
+3. LR-DLLM
+
+LR-DLLM is a training-free method for variable-length
+generation. Unlike standard DLLM, which assumes a fixed
+mask length, the target span length under prefix–suffix con-
+straints is unknown. LR-DLLM resolves it by modeling
+span length as an inference-time variable. It relies on a
+length–confidence signal derived from the model’s uncer-
+tainty estimates to guide length selection. Using this signal,
+LR-DLLM combines a lightweight probing-based initializa-
+tion with inference-time refinement for the precise length.
+
+Experiments show that LR-DLLM achieves 51.3%
+on HumanEval-Infilling with unknown lengths (+13.4%
+over DreamOn) and 51.5% average on the four-
+language McEval benchmark (+14.3%), highlighting its
+strong generality across models and tasks.
+
+In summary, our key contributions are:
+
+• We identify an intrinsic length-induced bias in DLLM
+confidence estimates, demonstrating that naive confi-
+dence comparisons across lengths are unreliable for
+unknown-length generation.
+
+3.1. Overview
+
+Given a prefix–suffix context (p, s), LR-DLLM performs
+variable-length generation by explicitly treating the remain-
+ing span length as an inference-time decision variable. Cru-
+cially, this requires correcting the intrinsic bias of confidence
+
+• We introduce a length-regularized criterion incorpo-
+rating a log 𝐿term, providing a principled signal for
+
+pute AVGconf(𝐿; p, s) are obtained from a single standard
+inference pass of the underlying diffusion model.
+
+estimates with respect to length; without explicit length reg-
+ularization, confidence scores across different candidate
+lengths are not directly comparable, making reliable length
+selection impossible.
+
+Length-confounded
+confidence.
+The
+quantity
+AVGconf(𝐿; p, s) varies with the mask length 𝐿for
+two distinct reasons. On the one hand, it reflects whether a
+span of length 𝐿is semantically compatible with the given
+prefix and suffix. On the other hand, it is systematically
+influenced by the number of masked positions itself, because
+changing 𝐿alters the uncertainty structure of masked
+prediction even under an identical context. To disentangle
+these effects, we model the observed span-level confidence
+as
+
+At each step, LR-DLLM uses the proposed length–
+confidence signal to determine (i) how much content remains
+to be generated and (ii) when it is appropriate to commit a
+new token. Overall, LR-DLLM consists of two stages:
+
+• Stage I (Initialization by probing). A small set of
+candidate lengths is probed to estimate an instance-
+specific length regularization coefficient and to select
+an initial remaining length that is calibrated to the given
+context.
+
+AVGconf(𝐿; p, s) = 𝑆(𝐿; p, s) + 𝑅(𝐿; p, s),
+(3)
+
+• Stage II (Inference-time refinement). During gen-
+eration, the remaining length is locally refined using
+the length-regularized confidence signal. A token is
+committed once the current length becomes locally
+preferred under this criterion. This process repeats
+until the span is fully generated or a global budget is
+reached.
+
+where 𝑆(𝐿; p, s) captures the context–length compatibil-
+ity that we seek to evaluate, and 𝑅(𝐿; p, s) represents a
+systematic shift induced by length.
+
+Length–confidence signal.
+While 𝑆(𝐿; p, s) is not di-
+rectly observable, the aggregate confidence AVGconf(𝐿; p, s)
+is. We therefore estimate and subtract the length-induced
+bias term 𝑅(𝐿; p, s).
+As shown in Appendix E, under
+mild assumptions this bias admits a logarithmic form
+𝑅(𝐿; p, s) = 𝑘log 𝐿, where the coefficient 𝑘is instance-
+dependent and may vary across contexts. This yields our
+length–confidence signal:
+
+3.2. Length-Confidence Signal
+
+To select an appropriate masked span length during inference,
+we require a scalar signal that allows us to compare different
+candidate lengths under the same prefix–suffix context. A
+natural choice is to measure how confidently the model can
+fill a masked block of a given length. In this subsection,
+we formalize such a confidence measure and show how to
+correct it for a systematic length-induced bias.
+
+CL(𝐿; p, s) := AVGconf(𝐿; p, s) −𝑘log 𝐿,
+(4)
+
+which removes the systematic length effect from the raw
+confidence score. The resulting signal serves as a practical
+proxy for the semantic compatibility 𝑆(𝐿; p, s) and enables
+direct comparison between candidate lengths. In the follow-
+ing subsections, we describe how LR-DLLM estimates the
+coefficient 𝑘and selects an initial length (Stage I), and how
+it performs greedy bidirectional length adjustment during
+inference (Stage II).
+
+Span-level confidence from token uncertainty.
+Let c =
+(p, s) denote the prefix–suffix context, and let 𝑞𝜃(· | x, c)
+be the token distribution produced by the DLLM inference
+procedure for a masked position. We quantify the confidence
+at a masked position 𝑖using the negative entropy of this
+distribution:
+
+conf(𝑖; x, c) :=
+∑︁
+
+𝑣∈V
+𝑞𝜃(𝑣| x, c)
+log 𝑞𝜃(𝑣| x, c) .
+(1)
+
+3.3. Stage I: Parameter Estimation and Length Selection
+
+Our
+length–confidence
+signal
+is
+CL(𝐿; p, s)
+=
+AVGconf(𝐿; p, s) −𝑘log 𝐿.
+In deployment, the coef-
+ficient 𝑘is previously unknown and may vary between
+instances. Stage I therefore performs two tasks: First, it
+estimates an instance-specific ˆ𝑘with a small number of
+probes, and then selects an initialization length 𝐿rem that is
+already adapted to the given context. The full procedure is
+provided in Algorithm 1.
+
+Intuitively, a lower-entropy distribution indicates that the
+model is more certain about the token to be generated at that
+position.
+
+Given a length-𝐿masked template x(0) (𝐿) = p∥⟨mask⟩𝐿∥s,
+we aggregate the token-level confidences over the 𝐿masked
+positions and define the span-level confidence as their aver-
+age:
+
+AVGconf(𝐿; p, s) := 1
+
+∑︁
+
+𝑖∈M(𝐿)
+conf(𝑖; x, c),
+(2)
+
+𝐿
+
+Exponential probing of candidate lengths.
+Given a max-
+imum probing length MAX_LENGTH, we probe a compact
+set of exponentially spaced lengths Lexp = {1, 2, 4, . . . , 2𝑚}
+where 2𝑚≤MAX_LENGTH.
+For each 𝐿∈Lexp, we
+
+where M(𝐿) denotes the index set of the masked block. In
+practice, all masked token distributions required to com-
+
+Algorithm 2 Stage II: Greedy Variable-Length Inference
+with Local Length Search
+
+Algorithm 1 Stage I: Estimate ˆ𝑘and Choose Initial Length
+via Length-Confidence Signal
+
+Require: Context (p, s), initial remaining length 𝐿rem, budget
+MAX_GEN, signal CL(𝐿; p, s) = AVGconf(𝐿; p, s) −ˆ𝑘log 𝐿
+Ensure: Generated span ˆy and completed sequence ˆx
+
+Require: Context
+(p, s),
+maximum
+probing
+length
+MAX_LENGTH
+Ensure: Estimated slope ˆ𝑘and initial remaining length 𝐿rem
+
+1: ˆy ←∅,
+𝑛gen ←0,
+𝑡←0
+2: while 𝐿rem > 0 and 𝑛gen + 𝐿rem ≤MAX_GEN do
+3:
+// (1) Local search: adjust remaining length
+4:
+repeat
+5:
+N ←{max(1, 𝐿rem −1), 𝐿rem, 𝐿rem + 1}
+6:
+𝐿best ←arg maxℓ∈N CL(ℓ; p, s)
+7:
+if 𝐿best ≠𝐿rem and 𝑛gen + 𝐿best ≤MAX_GEN then
+8:
+𝑡←𝑡+ 1; 𝐿rem ←𝐿best
+9:
+else
+10:
+𝑡←𝑡+ 1; 𝐿rem ←min 𝐿best, MAX_GEN −𝑛gen
+
+
+1: Lexp ←{1, 2, 4, . . . , 2𝑚} where 2𝑚≤MAX_LENGTH
+2: for 𝐿∈Lexp do
+3:
+x(0) (𝐿) ←p∥⟨mask⟩𝐿∥s
+4:
+𝐴(𝐿) ←AVGconf(𝐿; p, s)
+// one inference pass
+5: end for
+6: Fit 𝐴(𝐿) ≈𝛼+ 𝑘log 𝐿and obtain ˆ𝑘
+7: for 𝐿∈Lexp do
+8:
+CL(𝐿) ←𝐴(𝐿) −ˆ𝑘log 𝐿
+9: end for
+10: 𝐿rem ←arg max𝐿∈Lexp CL(𝐿)
+11: return ˆ𝑘, 𝐿rem
+
+11:
+end if
+12:
+until 𝐿rem unchanged
+13:
+// (2) Commit one token at the left boundary
+14:
+x(0) ←p∥⟨mask⟩𝐿rem ∥s
+15:
+Obtain token distributions for the masked positions by one
+inference step on x(0)
+
+form the masked template x(0) (𝐿) = p∥⟨mask⟩𝐿∥s and run
+a single inference pass to obtain the average confidence
+We denote 𝐴(𝐿) := AVGconf(𝐿; p, s) for brevity. This ex-
+ponential schedule keeps the probing cost logarithmic in
+MAX_LENGTH while still covering a wide range of lengths.
+
+16:
+ˆ𝑦𝑡←Sample
+
+𝑃(𝑥𝑖| x(0))
+for the leftmost masked position 𝑖
+
+
+17:
+ˆy ←ˆy∥ˆ𝑦𝑡;
+p ←p∥ˆ𝑦𝑡
+18:
+𝑛gen ←𝑛gen + 1;
+𝐿rem ←𝐿rem −1
+19: end while
+20: ˆx ←p∥ˆy∥s
+21: return ˆy, ˆx
+
+Estimating ˆ𝑘from the long-span regime.
+To estimate
+the length coefficient, we fit a linear model using the probed
+generation lengths.
+
+Local length refinement.
+Given the current prefix–suffix
+context (p, s) and remaining length 𝐿rem, we consider a
+small neighborhood of candidate lengths around the current
+value (i.e., one-step expansion or contraction, with boundary
+handling at 𝐿rem=1). We evaluate the length–confidence
+signal CL(ℓ; p, s) on these candidates and greedily move
+𝐿rem to the best-scoring neighbor if it improves the score.
+This local refinement is repeated until no neighboring length
+yields a higher signal, at which point the current 𝐿rem is
+treated as locally stable for the present context.
+
+𝐴(𝐿) ≈𝛼+ 𝑘log 𝐿,
+(5)
+
+where the fitted slope yields the instance-specific ˆ𝑘. The
+intuition is that when the masked span is sufficiently long,
+the context-dependent component of 𝐴(𝐿) changes slowly
+with 𝐿, so the remaining systematic variation is dominated
+by the length bias log 𝐿.
+
+Selecting an initial length.
+With ˆ𝑘, we compute CL(𝐿) =
+𝐴(𝐿) −ˆ𝑘log 𝐿for all 𝐿∈Lexp and choose
+
+Token commitment and problem reduction.
+Once the
+remaining length is locally stable, we perform one inference
+pass on the template p∥⟨mask⟩𝐿rem∥s to obtain token distri-
+butions over the masked block, then materialize a single
+token at the left boundary of the masked region (i.e., the
+masked position adjacent to the prefix). We append this
+token to the prefix, record it in the generated span, and
+decrement the remaining length by one:
+
+𝐿rem = arg max
+𝐿∈Lexp CL(𝐿).
+(6)
+
+This produces a strong, context-adaptive initialization, which
+significantly reduces the refinement cost in Stage II and
+improves robustness.
+
+3.4. Stage II: Adjust during Inference
+
+Stage I provides an instance-specific estimate ˆ𝑘and an initial
+remaining length 𝐿rem. Stage II then performs inference-
+time refinement by treating the remaining length 𝐿rem as a
+first-class variable that can be updated as the prefix grows.
+At a high level, Stage II alternates between two operations:
+(i) adjust 𝐿rem by a small amount if doing so improves the
+length–confidence signal under the current context, and (ii)
+commit one token once the current length is locally preferred.
+The complete procedure is given in Algorithm 2.
+
+p ←p∥ˆ𝑦𝑡,
+𝐿rem ←𝐿rem −1.
+(7)
+
+This reduces the original infilling instance to a smaller
+subproblem with the same suffix s and an updated prefix,
+after which we re-enter the local refinement step.
+
+Termination.
+Stage II always terminates; we provide a
+formal justification and complexity analysis in Appendix F.
+
+4. Experiment
+
+LR-DLLM yields consistent improvements across every
+backbone, indicating strong model-agnostic generalization.
+
+In this section, we conduct extensive experiments to demon-
+strate that LR-DLLM exhibits strong generalization across
+models and broad applicability across tasks. Our empirical
+study is organized around the following research questions:
+
+On average, LR-DLLM substantially increases mean
+across models, despite their very different starting points. For
+LLaDA-8B, the mean rises from 23.4 to 36.7, corresponding
+to a 56.8% relative improvement; for LLaDA-1.5, it improves
+from 31.2 to 36.1, a 15.7% gain. LLaDA-MoE increases
+from 35.1 to 40.8, a 16.2% gain, while the Dream-family
+models benefit even more: Dream-7B jumps from 22.5 to
+44.8, nearly doubling performance with a 99.1% relative
+improvement, and DreamCoder-7B increases from 39.1 to
+51.3, a 31.2% gain. The fact that LR-DLLM improves both
+weaker and stronger backbones suggests that the proposed
+inference mechanism provides broadly useful inductive bias
+rather than exploiting model-specific quirks.
+
+• RQ1: How does LR-DLLM perform on infilling tasks?
+
+• RQ2: How well does LR-DLLM generalize across
+different programming languages for infilling?
+
+• RQ3: How well does LR-DLLM generalize to general-
+purpose benchmarks beyond infilling?
+
+• RQ4: What is the impact of the log 𝐿regularization
+term on the performance of LR-DLLM?
+
+• RQ5: What is the contribution of Stage II to the overall
+effectiveness of LR-DLLM?
+
+The gains concentrate on the most length-sensitive regime,
+namely Multi-line infilling, where fixed masking frequently
+leads to under-generation or redundant continuations. Across
+models, LR-DLLM yields the largest improvements in this
+setting, with consistent gains also observed for Single-line
+infilling. These trends directly validate the core design of
+LR-DLLM: by treating span length as an explicit inference
+variable and enabling bidirectional length adjustment, the
+method mitigates both semantic gaps and redundancy when
+the target length is unknown.
+
+4.1. Experimental Settings
+
+Datasets. We evaluate LR-DLLM on both code infilling
+and general-purpose reasoning tasks. For infilling, we use
+HumanEval-Infilling (Bavarian et al., 2022).
+To assess
+multilingual infill robustness, we additionally adopt McE-
+val (Chai et al., 2025), covering four programming languages:
+C++, Python, JavaScript, and Rust. For general-purpose
+evaluation, we consider HumanEval (Yadav & Mondal,
+2025) for code generation, GSM8K (Cobbe et al., 2021) and
+MATH500 (Lightman et al., 2024) for math reasoning.
+
+LR-DLLM further demonstrates improved reliability over
+existing variable-length baselines.
+On DreamCoder-7B,
+the training-based DreamOn exhibits inconsistent behav-
+ior across span regimes, improving some settings while
+degrading Multi-line infilling. In contrast, LR-DLLM con-
+sistently improves Random Span, Single-line, and Multi-line
+infilling simultaneously, resulting in the strongest overall
+performance. This uniform gain across heterogeneous span
+lengths indicates more robust length selection, achieved by
+explicitly correcting length-induced confidence bias rather
+than relying on heuristic or initialization-dependent length
+priors.
+
+Models. For code infilling, we test representative diffusion-
+based code models, including LLaDA-8B (Nie et al., 2025),
+LLaDA-1.5 (Zhu et al., 2025a), LLaDA-MoE-7B (Zhu et al.,
+2025b), Dream (Ye et al., 2025), and DreamCoder (Xie et al.,
+2025). For general-purpose benchmarks, we evaluate the
+subset of these models that are trained or tuned for broader
+instruction-following and reasoning capabilities.
+
+Baselines. On fill-in-the-middle (FIM) infilling, we com-
+pare against two training-based variable-length approaches,
+DreamOn (Wu et al., 2025) and FlexMDM (Kim et al., 2025).
+For general-purpose tasks, we include DAEDAL (Li et al.,
+2025) as a representative training-free baseline.
+
+Overall, these results show that LR-DLLM consistently de-
+livers large and robust gains, especially on long and challeng-
+ing infilling instances. Importantly, these improvements are
+achieved with a modest inference-time overhead: while LR-
+DLLM performs local probing and bidirectional adjustment,
+the average number of additional forward calls per generated
+token remains small and bounded across benchmarks (Ta-
+ble 9). This indicates that LR-DLLM effectively optimizes
+the generation span with an approximately constant average
+cost, rather than incurring unbounded or length-proportional
+overhead.
+
+Metrics. For coding-related tasks (including infilling and
+code generation), we report
+For GSM8K and
+MATH500, we use accuracy as evaluation metric.
+
+4.2. Main Results on Code Infilling (RQ1)
+
+Table 3 presents the main results on HumanEval-Infilling.
+Unless otherwise specified, the Baseline infills with a fixed
+length of 64 [MASK] tokens, whereas all variable-length
+methods (including LR-DLLM, DreamOn, and FlexMDM)
+are evaluated under the same adjustment budget with
+MAX_LENGTH=128, allowing automatic expansion and con-
+traction during inference. Under this controlled comparison,
+
+Table 3. HumanEval-Infilling Within each backbone, bold denotes the best score in the corresponding column. Shaded cells
+indicate results obtained by LR-DLLM on the same backbone. Mean is averaged over Random Span, Single-line, and Multi-line. For
+DreamOn, we set the initial mask length to 1 to isolate its variable-length adjustment capability.
+
+Model
+Method
+HumanEval-Infilling
+
+Random Span
+Single-line
+Multi-line
+Mean
+
+LLaDA-8B
+Baseline
+16.0
+48.3
+21.1
+23.4
++FlexMDM
+–
+65.0
+–
+–
++LR-DLLM
+19.1
+69.4
+35.9
+36.7
+
+LLaDA-1.5
+Baseline
+16.5
+48.8
+32.2
+31.2
++LR-DLLM
+20.5
+68.9
+34.6
+36.1
+
+LLaDA-MoE
+Baseline
+14.6
+48.8
+38.4
+35.1
++LR-DLLM
+21.5
+71.3
+41.4
+40.8
+
+Dream-7B
+Baseline
+8.17
+48.2
+21.9
+22.5
++LR-DLLM
+19.6
+76.7
+46.3
+44.8
+
+DreamCoder-7B
+Baseline
+14.3
+55.5
+43.2
+39.1
++DreamOn
+21.6
+73.5
+36.1
+37.9
++LR-DLLM
+23.2
+81.6
+53.8
+51.3
+
+23.3). These consistent, large relative gains on Multi-line
+support our central claim: explicitly optimizing span length
+via bidirectional adjustment is critical for robust infilling
+when the missing span length is unknown.
+
+4.3. Cross-Language Generalization for Infilling (RQ2)
+
+Table 4 evaluates cross-language infilling on McEval. Un-
+less otherwise specified, the Baseline fills a fixed span
+of 32 [MASK] tokens, while all variable-length methods
+(including LR-DLLM and DreamOn) use the same adjust-
+ment budget with MAX_LENGTH=256, enabling automatic
+expansion and contraction at inference time. Within this
+unified setting, LR-DLLM consistently improves perfor-
+mance across all four languages and for both Single-line and
+Multi-line infilling, demonstrating strong cross-language
+generalization without language-specific tuning.
+
+Compared with the training-based DreamOn baseline, LR-
+DLLM is also markedly more robust under cross-language
+shift. On DreamCoder-7B, DreamOn yields uneven transfer:
+while it improves Python, it significantly degrades Single-
+line performance on C++ from 57.3 to 39.1 and on Rust
+from 52.2 to 27.2, leaving the overall mean unchanged at
+37.2. In contrast, LR-DLLM improves DreamCoder-7B
+consistently across all languages and settings, including
+large Multi-line gains such as JavaScript from 12.5 to 38.8
+(a 210.4% increase) and Rust from 6.52 to 21.7 (a 232.8%
+increase). This suggests that LR-DLLM provides a more
+stable, model-agnostic way to handle length uncertainty than
+methods that rely on training-time heuristics.
+
+Averaged over languages and settings, LR-DLLM delivers
+sizable relative gains on every diffusion backbone. The mean
+score of LLaDA-8B increases from 37.0 to 44.2, correspond-
+ing to a relative improvement of 19.5%; LLaDA-MoE rises
+from 41.0 to 51.8, a 26.3% gain; Dream-7B improves from
+35.8 to 47.9, yielding a 33.8% gain; and DreamCoder-7B
+jumps from 37.2 to 51.5, which translates to a 38.4% gain.
+Although the absolute baseline performance varies substan-
+tially across models, LR-DLLM consistently provides strong
+improvements, indicating that our length-aware inference
+mechanism is not tied to a particular backbone or training
+recipe.
+
+4.4. Results on General-Purpose Benchmarks (RQ3)
+
+Table 5 reports results on GSM8K, HumanEval, and
+MATH500.
+We compare fixed-length generation with
+different mask lengths 𝐿∈{32, 64, 128}, DAEDAL ini-
+tialized with 𝐿=1, and LR-DLLM under the same diffusion
+backbones. Overall, LR-DLLM consistently improves over
+fixed-length decoding across tasks and models, and it also sur-
+passes DAEDAL on the LLADA backbones where DAEDAL
+is applicable.
+
+The gains are especially pronounced on the Multi-line setting,
+where fixed masking most frequently causes length mismatch.
+For instance, on LLaDA-MoE, Multi-line accuracy more
+than doubles across multiple languages: JavaScript increases
+from 12.5 to 28.8, improving by 130.4%; Python rises from
+11.1 to 26.7, improving by 140.5%; and Rust climbs from
+7.61 to 25.0, improving by 228.5%.
+Dream-7B shows
+the same trend, with Multi-line improving by 93.1% on
+JavaScript (17.5 to 33.8) and by 162.4% on Python (8.88 to
+
+The most significant gains appear on MATH500. On LLaDA-
+8B, LR-DLLM raises MATH500 from 26.4 to 39.8, a 50.8%
+relative improvement over DAEDAL, and it also improves
+GSM8K from 63.3 to 75.1 by 18.6%.
+On LLaDA-1.5,
+LR-DLLM boosts MATH500 from 24.0 to 38.6, achieving
+
+Table 4. Multilingual code infilling results. (%) on Single-line and Multi-line infilling across four programming languages
+(JavaScript, Python, C++, and Rust). Within each backbone, bold denotes the best score in the corresponding column. Shaded cells
+indicate results obtained by applying LR-DLLM to the same backbone. Mean is the sample-size-weighted average over the eight
+language–setting columns. For DreamOn, we set the initial mask length to 1.
+
+Model
+Method
+JavaScript
+Python
+C++
+Rust
+Mean
+Single
+Multi
+Single
+Multi
+Single
+Multi
+Single
+Multi
+
+Diffusion Models
+LLaDA-8B
+Baseline
+62.5
+16.3
+68.9
+10.0
+57.3
+23.1
+51.1
+7.61
+37.0
+LLaDA-8B
++LR-DLLM
+68.8
+27.5
+70.0
+22.0
+68.3
+25.6
+60.9
+12.0
+44.2
+
+LLaDA-MoE
+Baseline
+62.5
+12.5
+84.4
+11.1
+61.0
+31.7
+57.6
+7.61
+41.0
+LLaDA-MoE
++LR-DLLM
+76.3
+28.8
+85.6
+26.7
+75.6
+32.9
+64.1
+25.0
+51.8
+
+Dream-7B
+Baseline
+53.8
+17.5
+66.7
+8.88
+61.0
+13.4
+39.1
+8.70
+35.8
+Dream-7B
++LR-DLLM
+75.0
+33.8
+72.2
+23.3
+82.9
+24.4
+59.8
+14.1
+47.9
+
+DreamCoder-7B
+Baseline
+66.3
+12.5
+73.3
+10.0
+57.3
+20.7
+52.2
+6.52
+37.2
+DreamCoder-7B
++DreamOn
+62.5
+18.8
+82.2
+23.3
+39.1
+15.9
+27.2
+7.60
+37.2
+DreamCoder-7B
++LR-DLLM
+78.8
+38.8
+77.8
+30.0
+76.8
+28.0
+62.0
+21.7
+51.5
+
+Autoregressive (AR) Models
+DeepSeek-Coder-6.7B
+Baseline
+64.0
+40.0
+66.0
+32.4
+60.0
+33.8
+54.7
+33.2
+47.9
+
+Table 5. We compare fixed-length generation with different mask
+lengths (𝐿∈{32, 64, 128}), DAEDAL with initial 𝐿=1, and LR-
+DLLM under the same backbones. “–” denotes results not available
+(the method is not applicable or not reported).
+
+w/o log L reg.
+w/ log L reg.
+
+100
+
+100
+
+(Single-line)
+
+(Multi-line)
+
+75.6
+78.9
+76.7
+81.6
+
+75
+
+75
+
+53.8
+
+50
+
+50
+
+35.0
+36.1
+46.7
+
+Benchmark
+Fixed-Length
+DAEDAL
+LR-DLLM
+32
+64
+128
+
+25
+
+25
+
+0
+
+0
+
+LLADA-8B
+GSM8K
+40.2
+48.0
+67.9
+63.3
+75.1
+HumanEval
+12.2
+18.9
+26.2
+27.4
+31.7
+MATH500
+22.6
+22.6
+23.6
+26.4
+39.8
+LLADA-1.5
+GSM8K
+41.2
+49.4
+71.0
+66.5
+76.7
+HumanEval
+16.5
+18.3
+22.0
+32.3
+34.8
+MATH500
+24.0
+22.0
+23.4
+24.0
+38.6
+Dream-7B
+GSM8K
+24.0
+52.7
+75.9
+–
+76.6
+HumanEval
+12.8
+25.9
+48.3
+–
+53.6
+MATH500
+14.2
+24.2
+38.6
+–
+41.4
+
+Dream-7B
+
+Dream-7B
+
+DreamCoder-7B
+
+DreamCoder-7B
+
+Figure 2. Ablation of the log 𝐿regularization term in LR-DLLM
+on HumanEval-Infilling All methods use the same
+length adjustment budget with MAX_LENGTH=128.
+
+Meanwhile, GSM8K remains essentially unchanged, with
+LR-DLLM achieving 76.6 compared with the best fixed-
+length result of 75.9, indicating that LR-DLLM can preserve
+strong performance on less length-sensitive benchmarks
+while substantially improving the most length-critical ones.
+
+4.5. Ablation on log 𝐿Regularization (RQ4)
+
+a 60.8% relative improvement, while increasing GSM8K
+from 66.5 to 76.7 by 15.3%. These results suggest that
+explicit length optimization is especially beneficial for math-
+intensive reasoning, where suboptimal length often manifests
+as incomplete derivations or redundant steps.
+
+Fig. 2 ablates the log 𝐿regularization term in LR-DLLM
+on HumanEval-Infilling. Introducing log 𝐿regularization
+yields consistent gains across both backbones, and the im-
+provements are notably larger in the Multi-line setting, which
+is more sensitive to length ambiguity. In contrast, Single-
+line shows smaller but still positive changes, suggesting that
+when the target span is short and well constrained, length
+selection is less of a bottleneck.
+
+DAEDAL cannot be applied to non-LLADA diffusion back-
+bones, so no DAEDAL results are reported for Dream-7B.
+Nevertheless, LR-DLLM still delivers striking improvements
+over the best fixed-length setting on Dream-7B, most notably
+on HumanEval, where performance jumps from 48.3 at
+𝐿=128 to 53.6, a 11.0% relative gain, and on MATH500,
+where it increases from 38.6 to 41.4, a 7.3% relative gain.
+
+Qualitatively, these trends align with the role of the log 𝐿
+term as an explicit complexity penalty during inference:
+it discourages unnecessarily long candidate spans, thereby
+
+Training-based methods.
+DreamOn trains special edit
+tokens (e.g., <expand>, <delete>) and applies custom
+inference rules to insert or remove masked positions (Wu
+et al., 2025).
+AnyOrder redesigns denoising to jointly
+predict tokens and inter-token mask counts for flexible
+length (Kim et al., 2025). Flexible changes token positions
+during generation to adjust the number of masks, also
+requiring training-time modifications (Zhang et al., 2025a).
+dLLM-var is another training-based approach that relies on
+explicit termination signals (e.g., EOS-style stopping) for
+variable-length generation (Yang et al., 2025b), which is less
+convenient for arbitrary-span FIM or settings without a clear
+EOS boundary. Overall, these methods improve flexibility
+but incur extra training cost and may reduce compatibility
+with strong off-the-shelf DLLMs. In contrast, LR-DLLM
+is training-free and preserves the original DLLM denoising
+rule while enabling stable bidirectional length adjustment.
+
+w/o Stage II
+w/ Stage II
+
+100
+
+100
+
+(Single-line)
+
+(Multi-line)
+
+63.8
+68.3
+76.7
+81.6
+
+75
+
+75
+
+32.3
+35.6
+46.7
+53.8
+
+50
+
+50
+
+25
+
+25
+
+0
+
+0
+
+Dream-7B
+
+Dream-7B
+
+DreamCoder-7B
+
+DreamCoder-7B
+
+Figure 3. Effect of Stage II (mid-span adjustment) in LR-DLLM
+on HumanEval-Infilling for Dream-7B and DreamCoder-
+7B.
+
+reducing redundant continuation and helping the model
+commit to a more coherent span that better matches the
+prefix–suffix context. This effect becomes most pronounced
+for Multi-line infilling, where the search space over plausible
+lengths is widest and naive confidence-based selection is
+most prone to over-generation.
+
+Training-free methods.
+Beyond-Fixed studies training-
+free variable-length generation via inference-time heuristics
+for selecting or adjusting the length canvas (Li et al., 2025).
+While avoiding retraining, such heuristics can be sensitive
+to initialization and brittle under large length variance in
+FIM. LR-DLLM is also training-free, but treats length as an
+explicit inference variable and supports both expansion and
+contraction, reducing sensitivity to the initial mask length.
+
+4.6. Ablation on Stage II (RQ5)
+
+Fig. 3 ablates Stage II (mid-span adjustment) in LR-DLLM
+on HumanEval-Infilling. Across both backbones, enabling
+Stage II yields substantial and consistent gains, with the im-
+provements most pronounced on Multi-line, where failures
+often arise from local inconsistencies inside long spans (e.g.,
+drifting variables, broken control flow, or mismatched inter-
+mediate states) rather than only boundary length mismatch.
+On Dream-7B, Stage II increases Single-line from
+63.8 to 76.7 (+12.9; +20.2% relative) and boosts Multi-line
+from 32.3 to 46.7 (+14.4; +44.6% relative). A similar pattern
+holds for DreamCoder-7B: Single-line rises from 68.3 to
+81.6 (+13.3; +19.5% relative), and Multi-line increases from
+35.6 to 53.8 (+18.2; +51.1% relative).
+
+5.2. Diffusion Large Language Models (DLLMs)
+
+DLLMs conduct iterative denoising with bidirectional con-
+text and have recently shown strong performance on general
+and code generation. Representative large-scale DLLMs
+include the LLADA family (Nie et al., 2025; Zhu et al.,
+2025a;b), DEER (Cheng et al., 2025) and Dream (Ye et al.,
+2025). However, most DLLM inference pipelines remain
+fixed-length, which restricts their applicability to realis-
+tic FIM and completion where output length is not given.
+Our work complements these DLLMs by enabling variable-
+length inference without modifying or retraining the un-
+derlying model, making existing DLLMs directly usable in
+unknown-length constrained generation.
+
+These trends suggest that Stage II contributes more than
+coarse length correction: it actively refines the span interior,
+fixing mid-span errors that would otherwise persist even
+when the overall length is plausible. As a result, LR-DLLM
+achieves markedly better Multi-line coherence, indicating
+that mid-span refinement is a crucial complement to Stage I’s
+boundary-driven length adjustment.
+
+6. Conclusion
+
+We presented LR-DLLM, a training-free framework for
+unknown-length constrained generation in diffusion LLMs.
+By treating length as an explicit inference variable and op-
+timizing a debiased length–confidence signal, LR-DLLM
+supports bidirectional length adjustment (expansion and con-
+traction) without modifying the base model. Beyond infill-
+ing, we evaluate LR-DLLM on general-purpose benchmarks
+(MATH500, GSM8K, and HumanEval), demonstrating that
+it also improves standard left-to-right generation.
+
+5. Related Work
+
+5.1. Variable-Length Generation in Diffusion Large
+Language Models (DLLMs)
+
+Unlike autoregressive models (Guo et al., 2025; Yang et al.,
+2025a; Zhang et al., 2025b), most DLLMs assume a fixed-
+length canvas, which conflicts with variable-length FIM.
+Current methods are either training-based or training-free.
+
+7. Impact Statement
+
+Kim, J., Lee, C. K., Domingo-Enrich, C., Du, Y., Kakade,
+S. M., Ngotiaoco, T., Chen, S., and Albergo, M. S.
+Any-order flexible length masked diffusion.
+CoRR,
+abs/2509.01025, 2025.
+
+This paper presents work whose goal is to advance the field
+of machine learning. There are many potential societal
+consequences of our work, none of which we feel must be
+specifically highlighted here.
+
+Li, J., Dong, X., Zang, Y., Cao, Y., Wang, J., and Lin, D.
+Beyond fixed: Training-free variable-length denoising
+for diffusion large language models, 2025. URL
+//arxiv.org/abs/2508.00819.
+
+References
+
+Bavarian, M., Jun, H., Tezak, N., Schulman, J., McLeavey,
+C., Tworek, J., and Chen, M. Efficient training of language
+models to fill in the middle. CoRR, abs/2207.14255, 2022.
+
+Li, X. L., Thickstun, J., Gulrajani, I., Liang, P., and
+Hashimoto, T. B. Diffusion-lm improves controllable
+text generation. In Koyejo, S., Mohamed, S., Agarwal,
+A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances
+in Neural Information Processing Systems 35: Annual
+Conference on Neural Information Processing Systems
+2022, NeurIPS 2022, New Orleans, LA, USA, November
+28 - December 9, 2022, 2022.
+
+Bie, T., Cao, M., Chen, K., Du, L., Gong, M., Gong, Z., Gu,
+Y., Hu, J., Huang, Z., Lan, Z., Li, C., Li, C., Li, J., Li, Z.,
+Liu, H., Liu, L., Lu, G., Lu, X., Ma, Y., Tan, J., Wei, L.,
+Wen, J.-R., Xing, Y., Zhang, X., Zhao, J., Zheng, D., Zhou,
+J., Zhou, J., Zhou, Z., Zhu, L., and Zhuang, Y. Llada2.0:
+Scaling up diffusion language models to 100b, 2025. URL
+
+Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker,
+B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and
+Cobbe, K. Let’s verify step by step. In The Twelfth Inter-
+national Conference on Learning Representations, ICLR
+2024, Vienna, Austria, May 7-11, 2024. OpenReview.net,
+2024. URL
+id=v8L0pN6EOi.
+
+Chai, L., Liu, S., Yang, J., Yin, Y., Jin, K., Liu, J., Sun, T.,
+Zhang, G., Ren, C., Guo, H., Wang, N., Wang, B., Wu,
+X., Wang, B., Li, T., Yang, L., Duan, S., Zhang, Z., and
+Li, Z. Mceval: Massively multilingual code evaluation.
+In The Thirteenth International Conference on Learning
+Representations, ICLR 2025, Singapore, April 24-28,
+2025. OpenReview.net, 2025.
+
+Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., Zhou,
+J., Lin, Y., Wen, J.-R., and Li, C. Large language dif-
+fusion models, 2025. URL
+abs/2502.09992.
+
+Chen, X., Huang, S., Guo, C., Wei, C., He, Y., Zhang, J., Li,
+H. H., and Chen, Y. Dpad: Efficient diffusion language
+models with suffix dropout. CoRR, abs/2508.14148, 2025.
+
+Song, Y., Liu, X., Li, R., Liu, Z., Huang, Z., Guo, Q., He,
+Z., and Qiu, X. Sparse-dllm: Accelerating diffusion llms
+with dynamic cache eviction. CoRR, abs/2508.02558,
+2025.
+
+Cheng, Z., Yang, G.-W., Li, J., Deng, Z., Guo, M.-H.,
+and Hu, S.-M. Deer: Draft with diffusion, verify with
+autoregressive models. arXiv preprint arXiv:2512.15176,
+2025.
+
+Wu, Z., Zheng, L., Xie, Z., Ye, J., Gao, J., Feng, Y., Li, Z.,
+W., V., Zhou, G., and Kong, L. Dreamon: Diffusion lan-
+guage models for code infilling beyond fixed-size canvas,
+2025. URL
+2025/dreamon.
+
+Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H.,
+Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano,
+R., Hesse, C., and Schulman, J. Training verifiers to solve
+math word problems. CoRR, abs/2110.14168, 2021.
+
+Xie, Z., Ye, J., Zheng, L., Gao, J., Dong, J., Wu, Z., Zhao,
+X., Gong, S., Jiang, X., Li, Z., and Kong, L. Dream-coder
+7b: An open diffusion language model for code. CoRR,
+abs/2509.01142, 2025.
+
+Feng, G., Geng, Y., Guan, J., Wu, W., Wang, L., and
+He, D. Theoretical benefit and limitation of diffusion
+language model. CoRR, abs/2502.09622, 2025. doi:
+10.48550/ARXIV.2502.09622. URL
+org/10.48550/arXiv.2502.09622.
+
+Xiong, Z., Cai, Y., Li, Z., and Wang, Y. Unveiling the
+potential of diffusion large language model in controllable
+generation. CoRR, abs/2507.04504, 2025.
+
+Guo, D., Yang, D., Zhang, H., Song, J., Wang, P., Zhu,
+Q., Xu, R., Zhang, R., Ma, S., Bi, X., et al. Deepseek-
+r1 incentivizes reasoning in llms through reinforcement
+learning. Nature, 645(8081):633–638, 2025.
+
+Yadav, D. and Mondal, S. Evaluating pre-trained large
+language models on zero shot prompts for parallelization
+of source code. J. Syst. Softw., 230:112543, 2025.
+
+He, G., Nie, S., Zhu, F., Zhao, Y., Bai, T., Yan, R., Fu,
+J., Li, C., and Yuan, B. Ultrallada: Scaling the context
+length to 128k for diffusion large language models. CoRR,
+abs/2510.10481, 2025.
+
+Yang, A., Li, A., Yang, B., Zhang, B., Hui, B., Zheng, B.,
+Yu, B., Gao, C., Huang, C., Lv, C., et al. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388, 2025a.
+
+Yang, Y., Wang, C., Wang, S., Wen, Z., Qi, B., Xu, H., and
+Zhang, L. Diffusion llm with native variable generation
+lengths: Let [eos] lead the way, 2025b. URL
+//arxiv.org/abs/2510.24605.
+
+Ye, J., Xie, Z., Zheng, L., Gao, J., Wu, Z., Jiang, X., Li,
+Z., and Kong, L. Dream 7b: Diffusion large language
+models. arXiv preprint arXiv:2508.15487, 2025.
+
+Zhang, A., Sivakumar, A., Tang, C., and Thomas, C.
+Flexible-length text infilling for discrete diffusion models.
+CoRR, abs/2506.13579, 2025a.
+
+Zhang, Y., Ni, B., Chen, X.-S., Zhang, H.-R., Rao, Y.,
+Peng, H., Lu, Q., Hu, H., Guo, M.-H., and Hu, S.-
+M.
+Bee: A high-quality corpus and full-stack suite
+to unlock advanced fully open mllms, 2025b.
+URL
+
+Zhu, F., Wang, R., Nie, S., Zhang, X., Wu, C., Hu, J.,
+Zhou, J., Chen, J., Lin, Y., Wen, J., and Li, C. Llada 1.5:
+Variance-reduced preference optimization for large lan-
+guage diffusion models. CoRR, abs/2505.19223, 2025a.
+
+Zhu, F., You, Z., Xing, Y., Huang, Z., Liu, L., Zhuang, Y.,
+Lu, G., Wang, K., Wang, X., Wei, L., Guo, H., Hu, J.,
+Ye, W., Chen, T., Li, C., Tang, C., Feng, H., Hu, J., Zhou,
+J., Zhang, X., Lan, Z., Zhao, J., Zheng, D., Li, C., Li, J.,
+and Wen, J. Llada-moe: A sparse moe diffusion language
+model. CoRR, abs/2509.24389, 2025b.
+
+Table 6. Unified decoding configuration used across benchmarks. All results for LR-DLLM and baselines are obtained under the same
+settings unless otherwise noted.
+
+Benchmark
+Top-𝑝
+Top-𝑘
+Temperature
+
+HumanEval-Infilling
+0.9
+None
+0.2
+McEval
+0.9
+None
+0.2
+MATH500
+0.9
+None
+0.2
+GSM8K
+0.9
+None
+0.2
+HumanEval
+0.9
+None
+0.2
+
+Model
+Random Span (± std)
+Single-line (± std)
+Multi-line (± std)
+
+LLaDA-8B
+19.2 ± 0.1
+69.4 ± 0.3
+35.9 ± 0.2
+LLaDA-1.5
+20.5 ± 0.2
+68.9 ± 0.2
+34.6 ± 0.4
+LLaDA-MoE
+21.5 ± 0.1
+71.3 ± 0.3
+41.4 ± 0.4
+Dream-7B
+19.6 ± 0.2
+76.7 ± 0.4
+46.3 ± 0.2
+DreamCoder-7B
+23.2 ± 0.2
+81.6 ± 0.3
+53.8 ± 0.4
+
+Table 7. Run-to-run variability of LR-DLLM on HumanEval-Infilling. We report the standard deviation of across 𝑁
+independent runs (different random seeds) for each setting.
+
+A. Experimental Setup and Details
+
+Baseline availability and coverage.
+We compare against representative variable-length diffusion baselines when their
+public releases allow reproducible evaluation under our settings. However, some contemporary methods cannot be uniformly
+evaluated across backbones due to limitations in released checkpoints and implementation availability. DreamOn (Wu et al.,
+2025) is only publicly released with DreamCoder checkpoints, and training the full system from scratch is computationally
+expensive (e.g., requiring large-scale multi-GPU training as reported by the authors); therefore, we report DreamOn
+comparisons only on the DreamCoder backbone. FlexMDM (Kim et al., 2025) does not provide public code at the time
+of writing; we thus cite the numbers reported in the original paper, noting that the paper reports results only for a limited
+subset of settings. Finally, DAEDAL (Li et al., 2025) is designed around the LLaDA family and is not directly applicable to
+Dream under its current framework; hence, we include DAEDAL only in the settings where it is compatible. Across all
+reported comparisons, we align inference budgets and evaluation protocols as closely as possible to ensure fairness, and we
+explicitly mark settings that are not applicable or not available.
+
+Decoding and inference configuration.
+Unless otherwise specified, all experiments use the same decoding configuration
+for fair comparison. Specifically, we apply standard LLM sampling with nucleus sampling probability 𝑝=0.9, no top-𝑘
+truncation, and temperature 0.2 across all benchmarks. The same decoding settings are used for LR-DLLM and all baseline
+methods whenever applicable. All reported results are obtained under fixed random seeds and deterministic decoding
+settings. We observed negligible variance across repeated runs (<0.5 on HumanEval-Infilling).
+
+B. Run-to-Run Variability Analysis
+
+Across all models and infilling settings, the run-to-run variability of LR-DLLM remains consistently small. As shown in
+Table 7, the standard deviation of is below 0.5 in all cases, indicating that the observed performance gains are
+not driven by stochastic fluctuations across runs. This stability holds across heterogeneous backbones and span regimes,
+suggesting that the proposed length-regularized inference yields reliable length decisions rather than exhibiting brittle or
+oscillatory behavior.
+
+In particular, the magnitude of variability is an order of magnitude smaller than the absolute improvements reported in the
+main results, confirming that the benefits of LR-DLLM are stable rather than within noise.
+
+Table 8. Comparison between fixed-length infilling with different mask sizes and LR-DLLM on HumanEval-Infilling using the DreamCoder
+backbone. We report accuracy (%).
+
+Benchmark
+Fixed Mask Length
+LR-DLLM
+4
+8
+16
+32
+64
+
+Single-Line
+24.9
+61.2
+72.6
+62.4
+55.5
+81.6
+Multi-Line
+5.5
+14.7
+27.1
+39.4
+43.2
+53.8
+
+C. Clarification on Task-Agnosticity
+
+In this paper, the term task-agnostic refers to the structural generality of the proposed inference framework, rather than
+empirical validation across all possible task categories. Specifically, LR-DLLM operates on a generic prefix–suffix
+composition x = p∥y∥s and does not rely on task-specific supervision, loss functions, or architectural modifications.
+
+In practice, this formulation subsumes two broad and commonly used generation paradigms: (i) prefix–suffix infilling (FIM),
+where both p and s are non-empty, and (ii) left-to-right continuation, which is recovered as the special case s = ∅. Our
+empirical evaluation focuses on representative tasks within these paradigms, including code completion, multi-line infilling,
+and mathematical reasoning, which naturally instantiate the above structure.
+
+We do not claim that LR-DLLM has been empirically validated on all task families (e.g., dialogue, summarization, or
+instruction following). Rather, the task-agnostic claim is intended in the sense that the method is not specialized to any
+particular task, and can in principle be applied to any generation problem that can be cast into a prefix–suffix composition
+with unknown span length.
+
+D. Fixed-Length Mask Sweep on HumanEval-Infilling
+
+Setup.
+We evaluate fixed-length infilling on HumanEval-Infilling using the DreamCoder backbone by sweeping the mask
+length 𝐿∈{4, 8, 16, 32, 64} under identical inference budgets and decoding settings. accuracy is reported separately
+for Single-Line and Multi-Line infilling. Table 8 summarizes the numerical results, and Figure 4 visualizes the performance
+trends.
+
+Results.
+As shown in Table 8, fixed-length performance exhibits a strong dependence on the chosen mask length. For
+Single-Line infilling, accuracy peaks at 72.6% with 𝐿=16 and degrades for larger masks (e.g., 62.4% at 𝐿=32 and 55.5% at
+𝐿=64). For Multi-Line infilling, performance improves with increasing 𝐿up to 43.2% at 𝐿=64 but remains substantially
+below LR-DLLM (53.8%). Across both settings, LR-DLLM consistently outperforms the best fixed-length choice selected
+in hindsight (Table 8), indicating that its gains cannot be attributed solely to increasing MAX_LENGTH.
+
+While ground-truth span lengths are available for HumanEval-Infilling, we focus on downstream correctness as the primary
+criterion, since multiple lengths may admit semantically valid solutions. Direct length error metrics (e.g., MAE) are therefore
+not fully aligned with task success.
+
+E. Length-Induced Entropy in FIM and Continuation
+
+In both fill-in-the-middle (FIM) and standard left-to-right continuation, we consistently observe a systematic trend: as the
+“free” generation region becomes longer, token predictions become less certain, and uncertainty tends to increase as tokens
+move farther away from the anchoring context (i.e., the boundary between conditioned and unconditioned spans). This
+phenomenon suggests that measured uncertainty contains an intrinsic length-dependent component in addition to the model’s
+quality-dependent component.
+
+A statistical-physics view.
+We model this effect using the classical relation between entropy and the number of admissible
+microstates:
+𝑆= 𝑘log 𝑁,
+(8)
+
+where 𝑁denotes the number of feasible configurations under macroscopic constraints and 𝑘is a constant scale factor. In
+language generation, macroscopic constraints are induced by the given context (prefix/suffix, syntax, semantics), while
+
+60
+
+LR-DLLM
+
+LR-DLLM
+
+80
+
+50
+
+60
+
+40
+
+(%)
+
+(%)
+
+30
+
+40
+
+20
+
+Baseline
+LR-DLLM (Ours)
+
+Baseline
+LR-DLLM (Ours)
+
+20
+
+10
+
+0
+
+0
+
+4 8
+16
+32
+64
+Mask Length
+
+4 8
+16
+32
+64
+Mask Length
+
+(a) Single-Line Infilling
+
+(b) Multi-Line Infilling
+
+Figure 4. Effect of fixed mask length on HumanEval-Infilling. Solid lines denote fixed-length infilling with different mask sizes, while the
+dashed horizontal line corresponds to LR-DLLM.
+
+microstates correspond to distinct valid token (or sequence) realizations consistent with those constraints.
+
+Assumption: admissible choices increase with distance from the anchor.
+Consider a contiguous free region of length 𝐿.
+Index positions by their distance 𝑑∈{1, 2, . . . , 𝐿} from an anchoring point.1 We assume the effective number of admissible
+choices at distance 𝑑grows as a power law:
+
+#choices(𝑑) ∝𝑑𝑟,
+𝑟> 0,
+(9)
+
+capturing the intuition that contextual constraints weaken with distance.
+
+Total number of configurations.
+Using a multiplicative approximation across positions, the number of feasible configura-
+tions for a length-𝐿free region scales as
+
+𝐿
+Ö
+
+𝑑=1
+𝑑𝑟= (𝐿!)𝑟.
+(10)
+
+𝑁(𝐿) ∝
+
+Length-induced entropy and its log 𝐿growth.
+Substituting Eq. (10) into Eq. (8), the entropy induced purely by the
+growth of admissible configurations with 𝐿is
+
+𝑆2(𝐿) = 𝑘log 𝑁(𝐿) ≈𝑘log(𝐿!)𝑟= 𝑘𝑟log(𝐿!).
+(11)
+
+Applying Stirling’s approximation,
+log(𝐿!) = 𝐿log 𝐿−𝐿+ O(log 𝐿),
+(12)
+
+we obtain the leading-order behavior
+
+𝑆2(𝐿) ≈𝑘𝑟(𝐿log 𝐿−𝐿) ∼𝑘𝑟𝐿log 𝐿.
+(13)
+
+Define the average (per-token) length-induced entropy:
+
+𝑆2(𝐿) := 𝑆2(𝐿)
+
+𝐿
+≈𝑘𝑟log 𝐿−𝑘𝑟+ O
+log 𝐿
+
+
+.
+(14)
+
+𝐿
+
+Hence, up to an additive constant,
+
+𝑆2(𝐿) ≈𝑎log 𝐿+ 𝑏,
+with 𝑎≈𝑘𝑟.
+(15)
+
+This predicts that even with a fixed model, average predictive uncertainty should increase approximately linearly in log 𝐿as
+the free region grows.
+
+1For FIM, one may interpret 𝑑as the distance to the nearest boundary (prefix or suffix). The analysis below focuses on the dependence
+on 𝐿and thus applies qualitatively to both settings.
+
+Decomposition: length effect vs. model quality.
+Let AVG_S(𝐿) denote a measurable average uncertainty statistic (e.g.,
+average token entropy computed from model logits) at free length 𝐿. We decompose it as
+
+AVG_S(𝐿) = 𝑆1(𝐿) + 𝑆2(𝐿),
+(16)
+
+where 𝑆2(𝐿) captures the inevitable length-induced contribution characterized above, and 𝑆1(𝐿) is a quality-related term
+reflecting the model’s effective certainty under the current constraints.
+
+Practical estimation via log-length fitting.
+Although 𝑆1(𝐿) is not directly observable, AVG_S(𝐿) is measurable and
+𝑆2(𝐿) admits the log-length form in Eq. (15). We therefore fit
+
+b𝑆2(𝐿) = 𝑎log 𝐿+ 𝑏,
+(17)
+
+by regressing measured AVG_S(𝐿) over a small set of geometrically spaced lengths, e.g.,
+
+𝐿∈{MAX, MAX/2, MAX/4, . . . }.
+(18)
+
+We then estimate the quality-related component as
+
+b𝑆1(𝐿) = AVG_S(𝐿) −b𝑆2(𝐿).
+(19)
+
+Interpretation.
+The estimate b𝑆1(𝐿) serves as a length-normalized uncertainty signal: it subtracts the predictable entropy
+growth attributable to increased free length, making uncertainty more comparable across different candidate lengths in both
+FIM and continuation settings.
+
+F. Forward-Pass Complexity of LR-DLLM
+
+We analyze the complexity of LR-DLLM in terms of the number of model forward evaluations. We count one forward
+evaluation as a single invocation of the DLLM inference procedure on a template x(0) (𝐿) = p∥⟨mask⟩𝐿∥s, which returns
+AVGconf(𝐿; p, s) (and the associated token distributions).
+
+Stage I (exponential probing).
+Stage I evaluates AVGconf(𝐿; p, s) on the exponentially spaced set Lexp = {1, 2, 4, . . . , 2𝑚}
+where 2𝑚≤𝐿max. Thus Stage I uses
+
+𝐹I = |Lexp| = ⌊log2 𝐿max⌋+ 1 = 𝑂(log 𝐿max)
+(20)
+
+forward evaluations.
+
+Stage II (greedy local search).
+At each commitment step 𝑡∈{1, . . . , 𝑁}, the algorithm performs greedy hill-climbing
+over lengths by comparing CL on neighboring lengths {𝐿−1, 𝐿, 𝐿+ 1}, and then commits one token once a strict local
+maximum is reached. Let 𝑢𝑡denote the number of length updates (moves) performed before the 𝑡-th commitment.
+Lemma F.1 (Monotonicity of the length search). Within a fixed commitment step (i.e., with p, s held fixed), the greedy
+update rule never revisits a previous length. Hence, the length trajectory is monotone and terminates at a local maximum.
+
+Proof sketch. Suppose the algorithm moves from 𝐿to 𝐿+ 1. By definition, CL(𝐿+ 1) > CL(𝐿). At the next iteration (still
+under the same context), 𝐿is a neighbor of 𝐿+ 1, so moving back would require CL(𝐿) > CL(𝐿+ 1), contradicting the
+strict improvement. The same argument holds for moves to 𝐿−1.
+□
+
+Counting forward evaluations in Stage II.
+At the beginning of each commitment step, we evaluate CL at {𝐿−1, 𝐿, 𝐿+1},
+requiring at most 3 forwards. By Lemma F.1, each move changes 𝐿by ±1 and introduces at most one new boundary length
+whose CL has not been evaluated yet; therefore each additional move costs at most one forward evaluation. Moreover, in our
+implementation the inference outputs at the locally optimal length are reused to commit the token, so no extra forward is
+needed for commitment.2 Therefore, the total number of forward evaluations in Stage II satisfies
+
+𝑁
+∑︁
+
+𝑁
+∑︁
+
+𝐹II ≤
+
+𝑡=1
+(3 + 𝑢𝑡) = 3𝑁+ 𝑈,
+where 𝑈:=
+
+𝑡=1
+𝑢𝑡.
+(21)
+
+2If an additional forward is used to commit, it only changes constants.
+
+Worst-case upper bound.
+Since the length is always within [1, 𝐿max], we have 𝑢𝑡≤𝐿max −1 and hence 𝑈≤𝑁(𝐿max −1).
+Plugging into Eq. (21) yields
+𝐹II = 𝑂(𝑁𝐿max).
+(22)
+
+When 𝐿max = 𝑂(𝑁), this gives the conservative worst-case bound 𝐹II = 𝑂(𝑁2).
+
+A tighter bound under a stability assumption.
+Let 𝐿★
+𝑡denote the (strict) local maximizer reached at commitment step 𝑡
+under the corresponding context. Since we always initialize step 𝑡from the previous locally optimal length after committing
+one token, we have 𝐿init
+𝑡
+= 𝐿★
+𝑡−1 −1 for 𝑡≥2. By Lemma F.1, the number of moves is exactly the distance to the new local
+optimum:
+𝑢𝑡=
+𝐿★
+𝑡−𝐿init
+𝑡
+=
+𝐿★
+𝑡−(𝐿★
+𝑡−1 −1)
+≤1 + |𝐿★
+𝑡−𝐿★
+𝑡−1|.
+(23)
+
+Summing over 𝑡gives
+
+𝑁
+∑︁
+
+𝑡=2
+|𝐿★
+𝑡−𝐿★
+𝑡−1|.
+(24)
+
+𝑈≤𝑁+
+
+Assumption F.2 (Bounded drift of locally optimal lengths). The locally optimal length does not change abruptly across
+successive subproblems, i.e., Í𝑁
+𝑡=2 |𝐿★
+𝑡−𝐿★
+𝑡−1| = 𝑂(𝑁𝐻) for some 𝐻.
+
+Under Assumption F.2, Eq. (24) implies 𝑈= 𝑂(𝑁𝐻), and therefore Eq. (21) yields
+
+𝐹II = 𝑂(𝑁𝐻).
+(25)
+
+In particular, if the drift satisfies 𝐻= 𝑂(log 𝐿max) (or if |𝐿★
+𝑡−𝐿★
+𝑡−1| ≤𝑐log 𝐿max uniformly), then
+
+𝐹II = 𝑂(𝑁log 𝐿max).
+(26)
+
+Overall bound.
+Combining Stage I and Stage II, the total number of forward evaluations is
+
+𝐹total = 𝐹I + 𝐹II = 𝑂(log 𝐿max) + 𝑂(𝑁𝐿max)
+(27)
+
+in the worst case, and
+𝐹total = 𝑂(log 𝐿max) + 𝑂(𝑁𝐻)
+(28)
+
+under Assumption F.2. In practice, we observe that 𝐻is small, so the empirical complexity is close to linear.
+
+G. Forward-Call Efficiency Distribution Across Models
+
+We quantify the inference-time overhead of LR-DLLM using the ratio Forward Calls/Generated Tokens, where
+Forward Calls counts the number of model invocations used to evaluate AVGconf(𝐿) (and thus CL(𝐿)) during Stage I
+probing and Stage II local length search, and Generated Tokens is the number of committed tokens produced by
+Stage II. Figure 5 visualizes the per-instance distribution of this ratio for three backbones (Dream, DreamCoder, and
+LLaDA-8B) under an identical plotting protocol, while Table 9 reports summary statistics.
+
+Across all three models, the distributions are markedly right-skewed: the median is consistently lower than the mean (e.g.,
+Dream: 3.43 vs. 3.66; DreamCoder: 4.00 vs. 4.89; LLaDA-8B: 4.63 vs. 5.12), indicating that most instances incur a stable
+and moderate overhead, while a small number of hard cases forms a long tail and inflates the mean. Using the median as a
+robust measure of typical behavior, Dream is the most efficient backbone (median 3.43), followed by DreamCoder (median
+4.00) and LLaDA-8B (median 4.63). The tails differ more substantially: Dream exhibits the tightest distribution (P95 = 5.00),
+whereas DreamCoder shows the heaviest tail (P95 = 11.23), with LLaDA-8B in between (P95 = 8.00). All three models have
+rare extreme outliers (max around 28–33), which are far beyond their respective P95 values, suggesting that they occur
+infrequently but can arise when many local length updates are triggered for instances with short effective generations or
+unstable local optima.
+
+Overall, these results corroborate that, despite a conservative worst-case bound, LR-DLLM typically converges in only a few
+local updates per committed token on standard benchmarks, leading to a modest overhead for the vast majority of instances.
+
+Table 9. Summary statistics of the per-instance ratio Forward Calls/Generated Tokens computed from generation logs (lower
+is better). Here Forward Calls counts model invocations used to evaluate AVGconf(𝐿) (hence CL(𝐿)) during Stage I and Stage II,
+and Generated Tokens is the number of committed tokens.
+
+Model
+n
+Mean
+Median
+P95
+Min
+Max
+
+Dream
+1033
+3.6574
+3.4286
+5.0000
+2.0625
+32.8333
+DreamCoder
+1033
+4.8910
+4.0000
+11.2268
+2.8594
+27.6667
+LLaDA-8B
+1033
+5.1211
+4.6316
+8.0000
+2.7288
+31.1429
+
+mean=3.54
+median=3.43
+
+mean=4.86
+median=4.00
+
+mean=5.10
+median=4.63
+
+0.6
+
+0.5
+
+1.2
+
+0.5
+
+0.4
+
+1.0
+
+0.4
+
+0.8
+
+Density
+
+Density
+
+Density
+
+0.3
+
+0.3
+
+0.6
+
+0.2
+
+0.2
+
+0.4
+
+0.1
+
+0.1
+
+0.2
+
+0.0
+
+0.0
+
+0.0
+
+2
+3
+4
+5
+6
+Forward Calls / Generated Tokens
+
+4
+6
+8
+10
+12
+14
+16
+18
+Forward Calls / Generated Tokens
+
+5
+10
+15
+20
+25
+Forward Calls / Generated Tokens
+
+(c) LLaDA-8B.
+Figure 5. Per-instance distributions of the overhead ratio Forward Calls/Generated Tokens for three backbones under the same
+inference and logging protocol. Forward Calls counts model invocations used to evaluate AVGconf(𝐿) (and thus CL(𝐿)) during
+Stage I probing and Stage II greedy local length search, and Generated Tokens is the number of committed tokens produced by
+Stage II. The right-skewed shapes indicate a stable typical overhead with a small number of hard outliers.
+
+(a) Dream.
+
+(b) DreamCoder.
+
+H. Additional Comparison with dLLM-Var
+
+We include an auxiliary comparison with dLLM-Var, a representative training-based variable-length method for diffusion
+LLMs. We do not report it in the main tables because its current public release is limited to a single trained checkpoint
+(LLADA-8B-Instruct) and a specific inference variant (block diffusion), and it only supports one-sided (backward-only)
+length growth. These constraints prevent a consistent evaluation across the multiple backbones and general prefix–suffix
+FIM settings considered in this paper. Nevertheless, for completeness, we report results on the subset of benchmarks that
+dLLM-Var can be evaluated on. For a fair comparison, we use the same maximum probing length MAX_LENGTH = 256 for
+LR-DLLM in all experiments below.
+
+Discussion.
+Table 10 shows that LR-DLLM consistently outperforms dLLM-Var on the supported subset. Concretely,
+LR-DLLM improves GSM8K accuracy from 70.9 to 75.1 (+4.2 points), more than doubles performance on MATH500 from
+18.4 to 39.8 (+21.4 points), and boosts HumanEval from 17.7 to 31.7 (+14.0 points). These gains are achieved
+while remaining training-free and model-agnostic, whereas dLLM-Var is tied to a specific trained LLADA-8B-Instruct
+checkpoint and a block-diffusion procedure with one-sided length growth. More importantly, LR-DLLM supports bidirectional
+length adjustment (both expansion and contraction) under general constrained generation, which is essential for prefix–suffix
+FIM and settings with large length variance. A broader open-source release of dLLM-Var covering more backbones and
+more general constrained generation settings would enable a more comprehensive comparison in future work.
+
+I. Other Related Work
+
+Several recent works have explored diffusion-based language models (DLLMs) from complementary perspectives. Ul-
+traLLaDA (He et al., 2025) focuses on extending the context window of DLLMs to very long sequences (up to 128K
+tokens), addressing scalability in context length rather than the inference-time determination of unknown span length.
+Diffusion-LM (Li et al., 2022) and S3 (Xiong et al., 2025) demonstrate that diffusion-based formulations can be advantageous
+for conditional generation, but they operate under fixed-length generation assumptions and do not address variable-length
+inference.
+
+Other works investigate efficiency and decoding acceleration for DLLMs. DPad (Chen et al., 2025) and Sparse-dLLM (Song
+et al., 2025) study architectural and systems-level optimizations, such as attention sparsification and KV-cache management,
+to improve inference speed. These methods are orthogonal to our focus, as they assume a predetermined generation length
+and do not consider length selection as part of the inference process.
+
+Table 10. Comparison with dLLM-Var on the restricted subset of settings supported by its public release. dLLM-Var is only available as
+a trained LLADA-8B-Instruct checkpoint with block-diffusion inference and backward-only length growth; therefore it cannot be
+applied to other diffusion backbones or general prefix–suffix FIM requiring bidirectional length adjustment. We report LR-DLLM on the
+same backbone under training-free inference.
+
+Benchmark
+dLLM-Var
+LR-DLLM
+
+GSM8K (Acc.)
+70.9
+75.1
+MATH500 (Acc.)
+18.4
+39.8
+HumanEval
+17.7
+31.7
+
+Finally, Theoretical Benefit and Limitation of Diffusion Language Models (Feng et al., 2025) analyzes fundamental
+challenges of DLLMs, explicitly noting the difficulty of variable-length generation. Our work is complementary in that
+it directly targets this limitation by introducing an inference-time framework for adaptive length determination, without
+modifying the underlying model or training procedure.
+
+J. Case Study
+
+J.1. Infilling
+
+Python Infilling Example
+
+def string_transformation(A: str, B: str, rules: list) -> Union[int, str]:
+
+queue = deque([(A, 0)])
+# Each element in the queue is a tuple (current_string, steps_taken)
+visited = set([A])
+# Keep track of visited strings to avoid loops
+
+# Perform BFS
+while queue:
+
+current, steps = queue.popleft()
+if current == B:
+
+return steps
+#BEGIN INFILLING
+for source, target in rules:
+
+new_current = current.replace(source, target)
+if new_current not in visited:
+
+visited.add(new_current)
+queue.append((new_current, steps + 1))
+#END INFILLING
+return "NO ANSWER!"
+
+C++ Infilling Example
+
+int countPermutations(int n, int k, int qq[])
+{
+
+const int N = 505, P = 998244353;
+int q[N], m, dp[N][N], jc[N], f[N], ans;
+
+memset(q, 0, sizeof(q));
+memset(dp, 0, sizeof(dp));
+memset(jc, 0, sizeof(jc));
+memset(f, 0, sizeof(f));
+ans = 0;
+
+for (int i = 1; i <= n; i++)
+
+q[i] = qq[i - 1];
+
+dp[0][0] = f[0] = 1;
+## START INFILLING
+for (int i = 1; i <= n; i++)
+{
+
+f[i] = f[i - 1];
+}
+
+for (int i = 1; i <= n; i++)
+
+{
+
+for (int j = 0; j < i; j++)
+
+for (int k = 1; k <= n; k++)
+
+dp[i][k] = (dp[i][k] + dp[j][k - 1] * 1LL * f[i - j] % P) % P;
+}
+## END INFILLING
+m = 0;
+for (int i = 1; i <= n; i++)
+
+if (q[i] > q[i + 1])
+{
+
+m = i;
+break;
+}
+
+if (m == n)
+{
+
+for (int i = k; i <= n; i++)
+
+ans = (ans + dp[n][i]) % P;
+}
+else
+{
+
+for (int i = m + 1; i <= n; i++)
+{
+
+if (i != m + 1 && (q[i - 1] > q[i] || q[i] < q[m]))
+
+break;
+
+int c = k + i - n - 1;
+if (c >= 0)
+
+ans = (ans + dp[m][c] * 1LL * jc[i - m - 1] % P) % P;
+}
+}
+
+return ans;
+}
+
+J.2. Completion
+
+Math Completion Example
+
+Question:
+What is the least positive integer multiple of 30 that can be written with only the digits 0 and 2?
+Answer:
+To find the least positive integer multiple of 30 that can be written with only the digits 0 and 2, we need to follow
+these steps:
+1. **Identify the properties of multiples of 30:** - A number is a multiple of 30 if it is divisible by both 3 and 10. -
+A number is divisible by 3 if the sum of its digits is divisible by 3. - A number is divisible by 10 if its last digit is 0.
+2. **Form the smallest number using the digits 0 and 2:** - The smallest number we can form using the digits 0 and
+2 is 20.
+3. **Check if 20 is a multiple of 30:** - The sum of the digits of 20 is
+(2 + 0 = 2
+), which is not divisible by 3. - The last digit of 20 is 0, so it is divisible by 10.
+4. **Form the next smallest number:** - The next smallest number we can form using the digits 0 and 2 is 220.
+5. **Check if 220 is a multiple of 30:** - The sum of the digits of 220 is
+(2 + 2 + 0 = 4
+), which is not divisible by 3. - The last digit of 220 is 0, so it is divisible by 10.
+6. **Form the next smallest number:** - The next smallest number we can form using the digits 0 and 2 is 2220.
+7. **Check if 2220 is a multiple of 30:** - The sum of the digits of 2220 is
+(2 + 2 + 2 + 0 = 6
+), which is divisible by 3. - The last digit of 2220 is 0, so it is divisible by 10.
+Since 2220 satisfies both conditions, it is the least positive integer multiple of 30 that can be written with only the
+digits 0 and 2.
+Therefore, the answer is:
+
+boxed{2220}
+
+Code Completion Example
+
+from typing import List\n\n\ndef rescale_to_unit(numbers: List[float]) -> List[float]:
+\"\"\" Given list of numbers (of at least two elements), apply a linear transform to that list,
+such that the smallest number will become 0 and the largest will become 1\n
+>>> rescale_to_unit([1.0, 2.0, 3.0, 4.0, 5.0])
+[0.0, 0.25, 0.5, 0.75, 1.0]
+\"\"\"
+
+#Completion Start
+if len(numbers) < 2:
+
+raise ValueError(\"The list must contain at least two elements\")
+min_val = min(numbers)
+max_val = max(numbers)
+return [(x - min_val) / (max_val - min_val) for x in numbers]

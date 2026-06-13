@@ -1,0 +1,1310 @@
+RHNAS: Realizable Hardware and Neural
+Architecture Search
+
+Yash Akhauri*
+Intel Labs, India
+Adithya Niranjan*
+Intel Labs, India
+J. Pablo Muñoz
+Intel Labs, USA
+Suvadeep Banerjee
+Intel Labs, USA
+
+arXiv:2106.09180v1 [cs.LG] 17 Jun 2021
+
+Abhijit Davare
+Intel Labs, USA
+Pasquale Cocchini
+Intel Labs, USA
+Anton A. Sorokin
+Intel Labs, USA
+Ravi Iyer
+Intel Labs, USA
+
+Nilesh Jain
+Intel Labs, USA
+
+Abstract
+
+The rapidly evolving ﬁeld of Artiﬁcial Intelligence necessitates automated ap-
+proaches to co-design neural network architecture and neural accelerators to max-
+imize system efﬁciency and address productivity challenges. To enable joint
+optimization of this vast space, there has been growing interest in differentiable
+NN-HW co-design. Fully differentiable co-design has reduced the resource re-
+quirements for discovering optimized NN-HW conﬁgurations, but fail to adapt to
+general hardware accelerator search spaces. This is due to the existence of non-
+synthesizable (invalid) designs in the search space of many hardware accelerators.
+To enable efﬁcient and realizable co-design of conﬁgurable hardware accel-
+erators with arbitrary neural network search spaces, we introduce RHNAS.
+RHNAS is a method that combines reinforcement learning for hardware op-
+timization with differentiable neural architecture search. RHNAS discovers
+realizable NN-HW designs with 1.84× lower latency and 1.86× lower energy-
+delay product (EDP) on ImageNet and 2.81× lower latency and 3.30× lower
+EDP on CIFAR-10 over the default hardware accelerator design.
+
+1
+Introduction
+
+The success of deep neural networks (DNNs) in ﬁelds such as computer vision, recommender systems,
+and virtual reality is driving an exponential increase in deployment scenarios for deep learning (DL)
+systems. This success has also been driven by larger, compute-intensive models. These large models
+have higher latency and energy costs - one of the primary hurdles in developing effective artiﬁcial
+intelligence (AI) systems. To meet the increasing engineering and deployment requirements needed
+to optimize AI systems, there has been a shift to utilizing automated neural architecture search
+techniques [1, 2, 3], as well as automated hardware optimization [4, 5]. While HW-Aware ML on
+ﬁxed hardware does improve efﬁciency, this is often sub-optimal for conﬁgurable accelerators. Such
+accelerators present signiﬁcant space for improvement through optimization on components such as
+number of processing elements, buffer sizes, and data-types, among others. Fixing the NN architecture
+and optimizing the HW design also leaves performance on the table - different accelerators have
+different modes of operations and optimizations. Therefore, an optimal layer choice for a given
+accelerator may not be the best choice for another. To model these inter-dependencies, there has been
+growing interest in evolutionary algorithm-based [6], reinforcement learning-based methods [7, 8, 9],
+as well as fully differentiable methods [10, 11] to co-design both hardware accelerators and neural
+network architectures.
+
+Fully differentiable approaches often introduce HW parametrization to represent HW design choices.
+While some accelerators are fully parametrizable, several of them are sparsely valid. Sparse validity
+can have many reasons, be it Instruction Set Architecture (ISA) limitations, arbitrary constraints in
+synthesizable designs or NN-HW interactions. In the context of developing HW accelerators and
+compiler stacks, such issues with validity can arise quite often during early stages of development.
+Reducing this sparsity can take considerable veriﬁcation and development efforts, delaying product
+and innovation life-cycles. We therefore feel that the assumption of fully parametrizable/valid
+spaces design spaces to be fairly restrictive and hope to address some of these issues with our work.
+Optimizing on sparsely valid spaces is a strictly harder problem than having non-differentiable
+hardware costs, as no hardware cost exists for non-realizable designs. We discuss the difﬁculty of
+co-design in sparsely valid spaces in more detail in Section 3. For the remainder of this paper, we use
+non-realizable and invalid hardware designs to refer to choices that are not synthesizable.
+
+In this paper, we look into ﬁnding a realizable solution in two aspects.
+First, ﬁnding opti-
+mal yet synthesizable designs in the hardware accelerator space. Second, proposing a way of
+co-discovering NN-HW designs with reasonable run-time and compute requirements by leveraging
+differentiable neural architecture search, something that is becoming increasingly important
+considering the carbon impact of AI [12]. For example, BestOB [7] utilizes a RL controller for
+co-design and requires 1000 GPU hours to co-design NN-HW on the CIFAR-100 dataset.
+
+We propose a method that integrates a reinforcement learning-based hardware optimizer with dif-
+ferentiable neural architecture search. This method allows us to efﬁciently explore a prohibitively
+large NN-HW joint space with non-differentiable hardware costs and sparsely valid hardware designs.
+With these improvements, we co-design NN-HW on the ImageNet dataset in 186.7 GPU hours
+and 4 GPU hours on the CIFAR-10 dataset. In this paper, we discuss the following contributions:
+
+1. We introduce RHNAS, an NN-HW co-design method that integrates RL-based hardware
+optimizers with differentiable NAS. Our method successfully overcomes the challenges
+associated with sparse validity - a failure point for existing differentiable co-design works.
+It does so with minimal overhead to a standard DNAS solution.
+
+2. We benchmark our RL-based hardware optimizer and use Bayesian hyperparameter opti-
+mization to identify the best hyper-parameters for a fair study of a range of standard RL
+algorithms (PPO, A2C, DQN) [13, 14, 15].
+
+3. We empirically verify that using fully differentiable approaches to co-design does not aid
+in discovering valid hardware accelerator designs. We benchmark our RL-based hardware
+optimizer against a multi-layer perceptron (MLP) based hardware generator [11]. Fur-
+ther, we study the convergence of differentiable algorithms which learn optimal hardware
+parametrizations [10] on our HW accelerator search space.
+
+2
+Related Work
+
+Hardware-aware NAS - Early efforts towards the discovery of NN architectures primarily focused on
+optimizing accuracy using reinforcement learning (RL) and evolutionary algorithms (EA) [16, 17, 18].
+These algorithms generally require considerable computational resources and need to evaluate and
+train many candidate architectures to completion. Differentiable NAS strategies were introduced
+to reduce the cost of discovering efﬁcient neural networks [19, 2]. Most of the early focus was
+on maximizing accuracy, which leads to very large neural networks with high latency and energy
+requirements. To address these demanding requirements, many works [3, 20, 21, 22, 23] model the
+latency, ﬂoating-point operations, or other performance-related metrics as regularizers to guide NAS.
+
+Hardware design optimization - DNN accelerators [24, 25, 26, 27, 28, 29] have been developed
+with the prospect of potential gains over general-purpose hardware. Eyeriss is an energy-efﬁcient
+CNN accelerator [30] that delivered 10 times the energy efﬁciency over mobile GPUs. Such im-
+provements lead to further research in novel microarchitectures and data ﬂow styles. To get the best
+performance on a range of workloads, many accelerators are being designed for conﬁgurability based
+on the selected workload. This results in many possible hardware resource assignments dictated
+by the NN topology to be deployed. Several approaches have been proposed to identify optimal
+resource assignments, e.g., ConfuciuX [5], GAMMA [4], MARVEL [31] utilize RL and GA (Genetic
+Algorithms) to decide the hardware resource assignment for a given workload.
+
+Hardware-Neural Network Co-design - While NAS and HW design optimization give good results
+when applied standalone, the signiﬁcant inter-dependencies between NN and HW components suggest
+an opportunity for improvement by jointly modeling NN topologies and HW designs. DANCE [11]
+introduces an MLP based HW generator along with a differentiable performance estimator to guide
+the joint differentiable search. DNA [10] converts the hardware and neural network design space into
+a categorical probability distribution and uses an MLP HW performance predictor for the co-design
+of hardware and neural network. We ﬁnd that these fully differentiable solutions cannot adapt to
+spaces that has many invalid hardware design choices. Some works propose an RL controller for
+co-design [7, 32]. However, these works suffer from high search cost problems [11].
+
+3
+Conﬁgurable Hardware Accelerators and Sparsely Valid Design Spaces
+
+We use the Versatile Tensor Accelerator (VTA) as our conﬁgurable hardware accelerator. VTA is a
+programmable deep learning accelerator [33] with parametrizable architecture paired with Apache
+TVM [34], a deep learning compiler stack. This integrated end-to-end deep learning stack provides
+a ﬂexible platform to implement our NN-HW co-design framework. The VTA HW is designed
+in Constructing Hardware in a Scala Embedded Language (CHISEL) [35] that facilitates full
+parametrization where underlying memory elements can be programmatically customized for the HW
+backend (ASIC/FPGA), but the hardware designer also retains the ability to reuse existing hardware
+components. The CHISEL ﬂow generates HW modules expressed in register-transfer language (RTL),
+which can be used for downstream ASIC/FPGA synthesis. The TVM framework utilizes a HW
+simulation guided schedule auto-tuning platform known as autoTVM [36] for computing optimal
+data access patterns in adaptation to changes in the workload and HW conﬁgurations. Details on how
+we calculate latency and energy-delay product (EDP) are provided in the appendix.
+
+For this work, we have modiﬁed the TVM compiler to utilize an analytical bandwidth minimization
+technique to compute the optimal tiling scheme of NN operator schedules rapidly. In addition, we
+have extended the TVM-VTA stack to support depth-wise convolutions to allow simulation of our NN
+search space. Table 1 shows the HW architecture parameters we have considered and their possible
+values (in log2 scale). The product of block_in and block_out decides the size of the GEMM core of
+the accelerator, the input (Inp), weight (Wgt), and accumulator (Acc) buffers are on-chip SRAMs,
+µOp width deﬁnes the size of the RISC micro-ops, and the µOp buffer deﬁnes the size of the micro-op
+cache.
+
+While independent consideration of each architectural parameter
+in Table 1 leads to a large theoretical design space (32768 possible
+conﬁgurations), many parameter combinations are invalid. This is
+a common problem on hardware accelerators. On VTA, it is due to
+ISA restrictions. For example, large compute cores and local mem-
+ory buffers can improve accelerator performance, but the number of
+bits required to address such cores/buffers may exceed the instruc-
+tion width, thus limiting the scope of joint architectural parameter
+exploration. Another issue involves hardware resource limitations.
+For example, FPGA targets may lack the SRAM required, or ASIC
+synthesis may not reach the speciﬁed frequency. There can also exist
+arbitrary points in the parameter space which are not synthesizable
+due to routing congestion of larger designs. While such designs are
+within the parameter space, it is not possible to realize them. As
+conﬁgurable accelerators may have invalid parameter choices, we
+implement a validity checker function that analytically detects whether a hardware design is valid.
+
+Table 1:
+VTA parameter
+ranges (log2).
+
+HW Feature
+Range
+
+block_in
+[3, 6]
+block_out
+[3, 6]
+µOp Width (bits)
+[5, 6]
+µOp Buffer (kB)
+[5, 6]
+Inp Buffer (kB)
+[13, 20]
+Wgt Buffer (kB)
+[13, 20]
+Acc Buffer (kB)
+[13, 20]
+
+4
+The RHNAS Flow
+
+4.1
+Proposed Co-Exploration
+
+We introduce an RL HW optimizer whose training is disentangled from differentiable NAS to address
+the dual problem of sparsely valid hardware design space and high NN architecture search cost
+associated with RL and EA-based NAS algorithms. Figure 1 shows an overview of our RHNAS
+ﬂow. Our differentiable NAS algorithm samples neural network architectures from a super-net.
+
+Figure 1: Overall RHNAS ﬂow diagram
+
+This sampling is done from a super-net using a categorical architectural distribution. We use a
+pre-trained RL HW optimizer to generate an optimized accelerator conﬁguration for the sub-sampled
+NN architecture. For every NN architecture sampled during the differentiable neural architecture
+search process, the RL HW optimizer receives the subsampled NN architecture along with a default
+HW accelerator conﬁguration template and outputs an optimized HW accelerator conﬁguration. A
+performance predictor is then used to get the performance of the optimized NN-HW design. This
+performance is used as a regularizer in the differentiable NAS minimization objective.
+
+RHNAS’s optimization is formulated as shown in
+Table 2. σ is the Softmax function. α is the contin-
+uous variable parametrization of the NN architecture.
+σ(α) is the categorical probability distribution of
+the NN supernet. Zα,θ is the one-hot representation
+of the subnetwork sampled using the σ(α) and θ
+weights. HWOpt is the RL HW optimizer. H0 is
+the template HW accelerator conﬁguration that the
+HWOpt is initially provided with. If HWOpt gener-
+ates an invalid accelerator conﬁguration, it simply outputs the template HW accelerator conﬁguration
+H0. Lhw is the HW cost loss determined by the NN-HW Performance Predictor (e.g., Clock Cycles,
+Energy-Delay-Product) and is used to guide the neural architecture search.
+
+Table 2: RHNAS’s Optimization
+
+min
+α,θ Ltrain(Zα,θ) + λLhw(σ(α), Hopt)
+
+s.t.
+Lhw = PerfPredictor(σ(α), Hopt)
+s.t.
+Hopt = HWOpt(σ(α), H0)
+
+As indicated in Table 2, we use the NN architecture categorical distribution σ(α) instead of the
+sub-sampled one-hot representation Zα,θ for the HW loss. In our tests, using the one-hot architectural
+choice Zα,θ in Table 2 leads to noisy training, whereas σ(α) leads to smoother training as it is a
+continuous probability distribution.
+
+4.2
+HW Performance Predictors
+
+For any given accelerator conﬁguration and neural network architecture, the simulator takes signiﬁcant
+time to output a performance metric, as seen in Table 4. For example, we need 2 minutes to get a
+single cycle-accurate RTL simulation of an end-to-end ResNet50v2model. The large query time
+makes computing HW metrics on the ﬂy impractical. Metrics such as FLOPs are not capable of
+capturing the intricacies of the NN-HW design space, we ﬁnd that FLOPS are weakly correlated with
+cycle count. To quantify this - the Pearson’s correlation coefﬁcient between cycle count and FLOPs
+for 55420 randomly sampled NN-HW design choices was 0.15 (weakly positive correlation).
+
+We use an MLP to avoid large query times and capture the relations between NN-HW designs and
+performance. The MLP takes as input the joint NN-HW embedding and predicts the Latency/EDP.
+As seen in Table 2, the NN embedding the MLP takes is a probability distribution (σ(α)) instead of a
+one-hot encoding. We include a study in the appendix to validate that the performance predictor is
+able to accurately interpolate between different discrete NN architectural choices.
+
+4.3
+Reinforcement Learning for HW Optimization
+
+We use an RL agent to optimize over our sparsely valid hardware design space. The agent receives a
+representation of the neural network (N) and an initial HW accelerator template (H0) of our accelera-
+
+tor. The agent modiﬁes the accelerator conﬁguration to improve the NN-HW design latency/EDP.
+In order to make the agent minimize the latency/EDP, we provide the negative of the predicted
+latency/EDP as the reward. In a sparsely valid design space, optimizing only latency/EDP can lead to
+invalid accelerator designs. To address this challenge, we penalize the agent with Cinv for providing
+invalid accelerator design parameters. We study two intuitive settings based on this formulation:
+
+Composite setting: In this formulation, we use a concatenated representation of the NN and HW
+(N, Ht) as the environment state. The agent takes a discrete action that speciﬁes the whole HW
+conﬁguration (Ht) every time step and runs for a ﬁxed number of timesteps tmax every episode. As
+the composite agent provides a new hardware conﬁguration in each time step, it may lose incentive
+to optimize a suboptimal accelerator conﬁguration due to penalty for invalid states. To encourage
+continuous improvement, we introduce a penalty B imposed when the accelerator conﬁguration
+the composite agent provides is worse than its previous accelerator conﬁguration (P(N, Ht) >
+P(N, Ht−1).
+Sequential setting: In this approach, the RL agent optimizes only one HW accelerator parameter in
+a time step, making tmax passes in an episode. Here, we modify the state to include a one-hot vector
+St to provide the agent context about which parameter to optimize. At each time step, the agent takes
+a discrete action choice (H
+p
+t for the pth step). After the agent has generated an action for every HW
+parameter (we have 7 parameters) tmax times, we get the ﬁnal HW conﬁguration. In this setting, we
+found that providing a reward after generating a full template to be more stable than rewards at every
+time-step.
+We discuss implementation details of the agent and the state representation further in Section 5.2 and
+the appendix.
+
+Table 3: RL formulation. Ot, At, Rt are state, action and reward respectively
+Composite setting
+Sequential setting
+
+Ot = (N, Ht);
+Ot = (N, Ht, St);
+At = (Ht)
+At = (H
+p
+t )
+s.t.
+H
+p
+t ∈[0, 7]
+
+⎧⎪⎪⎪⎪⎨⎪⎪⎪⎪⎩
+
+−P(N, Ht) −Cinv(Ht), if t = tmax
+−B, if P(N, Ht) > P(N, Ht−1)
+0, otherwise
+Rt = {
+−P(N, Ht) −Cinv(Ht), if S7 = 1
+0, otherwise
+
+Rt =
+
+5
+Evaluation of RHNAS Components
+
+5.1
+Performance Predictor Network
+
+Our performance predictor network is a fully connected
+neural network with 3 layers with 512 neurons in each
+hidden layer and intermediate ReLU activation functions.
+Table 4 shows the clock cycles, EDP and other simulation
+metrics. We used the VTA simulator to randomly sample
+53600 NN-HW pairs to generate our dataset. We train our
+networks with the L1 loss between predicted and actual
+performance. Our design space changes the buffer and
+GEMM core sizes by powers of two. There can be a large
+difference in the clock cycles for different NN-accelerator
+designs. We found that the Robust Scaler normalization
+from sklearn [37] works well on our data. Since we use
+the performance predictor output to guide our search, it is
+important that the ranking of different NN-HW architec-
+ture pairs are preserved. To verify this, we use the Kendall rank correlation coefﬁcient (τ) [38] - a τ
+of 1 indicates that the rank ordering is perfectly preserved. Since we ﬁnd that τ > 0.97, we conclude
+that our predictors can be used in the RHNAS.
+
+Table 4: Testing the predictor network
+performance by measuring the Kendall
+Tau rank correlation coefﬁcient. (τ)
+
+Predictor Network
+τ metric
+
+EDP
+0.982
+Cycle Count
+0.982
+GEMM Cycle Count
+0.984
+µOp load (bytes)
+0.975
+Weight load (bytes)
+0.985
+Input load (bytes)
+0.983
+Accumulator load (bytes)
+0.984
+
+5.2
+Hardware Optimizers
+
+For the RL HW optimizer, we experimented with the Proximal Policy Optimization (PPO) [13],
+Advantage Actor-Critic (A2C) [14], and Deep Q-Network (DQN) [15] algorithms. We implemented
+the composite and sequential action spaces and environments with the OpenAI gym environment and
+use implementations of PPO, A2C and DQN algorithms from the stable-baselines3 library [39].
+
+For the RL environment, we treat the valid-
+ity penalty (Cinv), maximum timesteps (tmax),
+and the intermediate penalty (B), as environ-
+ment hyper-parameters. We found that tuning
+these parameters carefully was key to ﬁnding
+agents that generated both optimal and synthe-
+sizable hardware conﬁgurations .For example,
+for penalty values that were too low (Cinv <
+1.5), the RL agent would generate very large
+accelerator conﬁgurations, which do not ﬁt on
+our target hardware. On the other hand, larger
+penalties meant the agent would quickly stop at
+a valid sub-optimal HW conﬁguration. Using
+HPO (details in appendix), we were able to ﬁnd
+agents that give near-optimal synthesisable con-
+ﬁgurations. From Table 5, we observe that PPO [13] with the composite setting gives close to optimal
+conﬁguration (∼99% optimal) for both cycle count and energy delay product (EDP) while generating
+no invalid conﬁgurations
+
+Table 5: Optimality of HW generated by RL HW
+generators.
+
+Cycle Count
+Composite
+Sequential
+
+PPO
+99.82%
+99.79%
+A2C
+99.82%
+56.51%
+DQN
+-
+98.10%
+EDP
+Composite
+Sequential
+
+PPO
+98.61%
+97.56%
+A2C
+97.53%
+44.05%
+DQN
+-
+95.21%
+
+5.2.1
+Ablation Study on Hardware Optimizers
+
+A recent work, DANCE [11] introduced an MLP based hardware generator. The data-set is generated
+by sampling random NNs from the search space and using the output of a hardware generation toolkit
+as the target HW. This toolkit uses exact algorithms such as exhaustive search or branch-and-bound
+algorithms to output optimized HW conﬁgurations for an input NN. We reference this method as
+Exhaustive-HWGEN in Table 6. In our tests, Exhaustive-HWGEN is a 3 layer MLP with 512 neurons
+and is trained by taking a categorical cross entropy loss with respect to the optimal HW design for a
+given NN architecture. The optimal HW design is found by exhaustive search. While this method
+slightly exceeds the optimality of hardware generated by our reinforcement learning agents, it has
+a signiﬁcantly larger training time for a general accelerator space because of the exhaustive search.
+Exhaustive search is not practically feasible as accelerator designs get increasingly complex. If we
+look at most accelerators, the search space is of the order of 1030 to 1070 [10, 5] choices, generating
+the data-set for Exhaustive-HWGEN would be completely infeasible.
+
+As an alternative to exhaustive search, we test
+Perf-HWGEN, which is a hardware generator
+akin to Exhaustive-HWGEN but with a training
+procedure that does not require exhaustive enu-
+meration. We utilize the performance predictor
+MLP from Section 5.1 in our loss formulation
+for the Perf-HWGEN hardware generator. Since
+we are not using exhaustive enumeration as a
+search strategy, we also have to penalize invalid
+conﬁgurations given by the Perf-HWGEN. For
+this purpose, we use ValidNet MLP. This MLP
+indicates whether an input HW accelerator con-
+ﬁguration is valid. Details on ValidNet MLP
+architecture and training is provided in the appendix.
+
+Table 6: Optimality of HW generated by MLP HW
+generators.
+
+Cycle Count
+Optimality
+% invalid
+
+Exhaustive-HWGEN
+99.9%
+0%
+Perf-HWGEN
+N/A
+100%
+EDP
+Optimality
+% invalid
+
+Exhaustive-HWGEN
+99.4%
+0.8%
+Perf-HWGEN
+N/A
+100%
+
+The training loss for Perf-HWGEN is formulated as,
+min
+β
+Lhw(Z, Perf-HWGENβ(Z)) + λLvalid(Perf-HWGENβ(Z))
+(1)
+
+As indicated in Equation 1, the training objective of Perf-HWGEN is to jointly minimize the hardware
+cost (Lhw) and validity loss (Lvalid). Z is a randomly sampled NN architecture and β are the
+
+Table 7: RHNAS Ablation studies. EDP has been
+normalized, Lat is Latency.
+
+Table 8: Evaluating RHNAS with other co-
+design works.
+
+Target
+Acc
+Lat
+EDP
+ASIC
+(%)
+ms
+
+Target
+Latency
+Area
+Acc
+ASIC
+ms
+(mm2)
+(%)
+
+DSNAS
+74.4
+22.13
+28
+HW Aware NAS
+74.1
+23.67
+31
+Sequential Optimization
+74.2
+13.54
+17
+RHNAS Lat
+74.5
+12.03
+16
+RHNAS EDP
+74.5
+12.73
+15
+RHNAS Lat+FLOPs
+73.4
+11.77
+12
+DSHWNAS
+74.2
+Invalid Design
+
+DANCE
+8.13
+2.73
+68.70
+DNA 4bit
+1.25
+5.5
+71.7
+DNA 16bit
+2.85
+2.12
+72.2
+NHAS
+1.58
+5.87
+70.74
+EDD
+11.15
+-
+74.7
+RHNAS
+12.03
+1.21
+74.5
+
+parameters of Perf-HWGEN. If λ = 0, there is no penalty for invalid conﬁgurations. In such cases,
+the Perf-HWGEN generates invalid conﬁgurations by merely maximizing the performance.
+
+Our Perf-HWGEN uses the Lvalid loss to guide the search for valid conﬁgurations. We sweep
+λ ∈[10−4, 102] but do not converge to a Perf-HWGEN that generates valid conﬁguration. We
+study the behavior of ValidNet in guiding search for valid hardware conﬁgurations in Section 6.4.
+It is also important to note that the performance predictor network has only been trained on valid
+conﬁgurations, thus the optimality numbers for Perf-HWGEN are not reliable, and labeled as Not
+Applicable (N/A) in Table 6 for invalid conﬁgurations.
+
+6
+RHNAS Evaluation
+
+For our neural architecture search strategy, we employ
+the super-net and choice of blocks as used in the released
+implementation of DSNAS [2]. Our NN architecture sam-
+pling, hyper-parameter settings and parameter update strat-
+egy is the same as DSNAS [2]. DSNAS introduces a
+task-speciﬁc direct neural architecture search without pa-
+rameter retraining. DSNAS requires 420 GPU hours to
+discover networks with accuracy comparable to two-stage
+(search and train) methods. As we train on an NVIDIA
+V-100 GPU, we complete the search in 187 GPU hours.
+
+Table 9: Comparing against other efﬁ-
+cient neural networks.
+
+Target
+Latency
+Acc
+ASIC
+ms
+(%)
+
+MNASNet-1
+17.31
+75.20
+MobileNetV2
+12.16
+71.66
+RHNAS
+12.03
+74.5
+
+We have conducted several experiments on RHNAS using
+the ImageNet (ILSVRC2012) [40] and CIFAR-10 [41] data-sets. We include in our evaluation
+three ASIC baselines: DANCE [11], DNA [10] and NHAS [6]. Due to differences in accelerator
+designs and the neural network backbone, it is not feasible to fairly compare the latency and EDP
+without further standardization. The HW metrics for different works are largely different based on
+the capabilities and optimization of the accelerators. We draw the attention of the reader to the fact
+that DNA cannot discover valid designs on our hardware search space, and is studied in detail by our
+DSHWNAS test in Table 7 and Section 6.4. The MLP-based hardware generator in DANCE has been
+studied in Section 5.2.1. DANCE can work on our hardware design space by exhaustive enumeration,
+which is not a scalable approach as the complexity of hardware accelerators increase. To address the
+lack of standardization across accelerators, we deploy MNASNet-1 [42] and MobileNetV2 [42] on
+the same VTA accelerator as discovered by RHNAS Latency in Table 9. We also demonstrate the
+effectiveness of RHNAS, by implementing HW-Aware NAS and NN-HW sequential optimization
+methods on our accelerator search space as shown in Table 7. All our networks have been quantized
+to 8 bits.
+
+6.1
+RHNAS on CIFAR-10
+
+To demonstrate the effectiveness of RHNAS in discovering solutions with low latency and high
+accuracy, we use a smaller variant of the DSNAS network with 9 layers instead of 20 layers and
+try to ﬁnd good HW-NN pairs on the smaller network. There are 49 = 262144 neural networks
+in our CIFAR-10 search space. We randomly sample 45 neural networks and train them using
+
+the DSNAS [2] SPOSretrain240 strategy detailed in the appendix along with more experimental
+details. We measure the latency of these neural networks on the default VTA accelerator conﬁguration
+and are represented by "Random NN Sampling w/ Default HW". We then measure the latency of
+these neural networks on the optimized HW accelerator design generated by the RL HW Optimizer
+referenced as "Random NN Sampling w/ Optimized HW". Sequential Optimization refers to a method
+where we ﬁrst optimize the neural network architecture for accuracy, and use the RL HW Optimizer
+to generate the hardware accelerator design for the neural network. We also include HW-Aware
+NAS, which attempts to ﬁnd an optimal neural network architecture on the default HW accelerator
+design. As seen from Figure 2, RHNAS designs outperform all other methods provided in the ﬁgure.
+
+6.2
+Hardware-Aware NAS
+
+In Hardware-Aware NAS, we try to minimize
+cycle count and EDP without a HW optimizer in
+the loop. As described by Equation 2, we utilize
+the default HW conﬁguration and optimize the
+NN parametrization on the ﬁxed HW. RHNAS
+ﬁnds solutions with 1.97× lower latency and
+2.07× lower EDP with a 0.4% accuracy gain on
+ImageNet and 2.81× lower latency and 3.30×
+lower EDP on CIFAR-10.
+
+Figure 2: RHNAS discovers efﬁcient NN-HW
+choices that give high accuracy on CIFAR-10.
+
+min
+α,θ Ltrain(Zα,θ) + λLhw(σ(α), H0)
+(2)
+
+6.3
+Sequential Optimization
+
+One of the primary points of comparison for a joint search algorithm is to benchmark with sequential
+optimization algorithms. Since our RL HW optimizer agent is disentangled from the NN architecture
+search, we can take the resultant network from the NAS algorithm with no simulation/FLOPs loss and
+generate HW optimized for that topology. Further, we also simulate the original DSNAS algorithm on
+our HW. As seen from Table 8, RHNAS Latency is able to ﬁnd a solution with 1.13× lower latency
+for 0.1% higher accuracy on the ImageNet dataset and 1.5× lower latency on CIFAR-10 dataset.
+
+6.4
+Fully Differentiable Joint Search
+
+Several works [10, 11] introduce a fully differentiable approach to NN-HW co-design. While these
+works produce excellent results in accelerator design spaces with sparse optimas, we attempt to repro-
+duce a generalized fully differentiable search algorithm as shown in Equation 3 and demonstrate its
+inability to navigate our sparsely valid accelerator design space. Our joint differentiable architecture
+search is formulated below. We use the same Lvalid as described in Equation 1.
+
+min
+α,γ,θ Ltrain(Zα,θ) + λLhw(σ(α), γ) + βLvalid(γ)
+(3)
+
+As seen in Table 8, this DSHWNAS formulation converges with an accuracy of 74.2%,
+
+but discovers an invalid HW design. We ran this
+test with β = 10x for x ∈[−7, 7] but were not
+able to converge to a valid HW choice. We suspect
+that this is due to the irregular gradients given our
+sparsely valid design space. We analyze the gradient
+of our ValidNet model to understand this behaviour,
+and observe that the gradients in proximity of invalid
+design choices are smaller in magnitude than the
+gradients around valid design choices. This may
+mean the gradients are ineffective in navigating the design space with Lvalid given in Equation
+3.
+
+Table 10: Gradient Interpolation Study
+
+∆j =
+∂
+∂̃
+γj L1Loss(ValidNet(̃γ), 1)
+
+̃γ = {
+(1 −ϕ)v + (ϕ)r
+∀ϕ ∈[0, 1)
+(2 −ϕ)r + (ϕ −1)i ∀ϕ ∈[1, 2)
+
+To study this, we measure the gradient to the HW
+parametrization (input to the ValidNet) with respect
+to a target output of 1 (where the HW parametriza-
+tion is valid.). We smoothly interpolate the input HW
+parametrization from a valid design (v) to a random
+design (r) and ﬁnally to an invalid design (i). We
+record the gradient magnitude to the HW parametriza-
+tion. Explicitly, we convert the information in Table
+(10) (δj) to a heat map in Figure 3. We smoothly
+interpolate for ϕ ∈[0, 2) and use the resulting state
+to fetch the gradients through ValidNet.
+
+Figure 3: Gradient magnitudes when interpo-
+lating from valid to invalid.
+
+As evident in Figure 3, the gradients are zero almost everywhere other than the valid design point
+around ϕ ∈[0, 0.25]. The observed behavior is consistent for many iterations of random sampling.
+As seen in our Perf-HWGEN tests previously, λ ≠0 does not aid in the discovery of valid designs.
+This may be explained by the gradient study shown in Figure 3.
+
+7
+Conclusion
+
+In this paper, we demonstrate the need for an efﬁcient solution to address issues with differentiable
+HW optimization (DSHWNAS) and MLP based HW generation (Exhaustive/Perf-HWGEN) on
+sparsely valid spaces. Our method proposes to enables co-design on sparsely valid search spaces by
+disentangling the training of a non-differentiable RL HW optimizer from NAS. The trained RL HW
+optimizer is used along with a performance predictor to guide the differentiable NAS algorithm. Our
+formulation is compatible wth other differentiable NAS strategies and is task agnostic (applicable to
+general tasks in classiﬁcation, segmentation, detection, among others.). We can also adapt our RL
+HW optimizer to more complex HW search spaces, as explored in ConfuciuX [43].
+
+Sparsely valid spaces are common in HW accelerator design. Arbitrary constraints on architectural
+parameters can arise due to resource limitations on accelerators that support different PE (Processing
+Element) connectivity and compiler mapping strategies. Reducing the sparsity of valid design choices
+incurs a cost in hardware design/veriﬁcation effort, physical design effort, fabrication cost, and energy
+efﬁciency. More importantly, it increases development time and delays deployment. We hope that the
+presented technique can help push accelerated deep learning into deployment faster. In future work,
+we hope to introduce multi-task optimization as well as develop more sample-efﬁcient NAS methods
+to enable co-exploration of more complex HW search spaces.
+
+8
+Broader Impact
+
+Our work introduces a co-design method to discover efﬁcient and realizable neural network and
+hardware design pairs on a broader class of hardware accelerators. Our proposed technique integrates
+a single-stage NAS process with an RL agent for hardware optimization. This method allows for co-
+design with marginally more resource requirements. For instance, training a sub-sampled architecture
+from our NN search space would require 160 GPU hours using the SPOSRetrain240 strategy described
+in the appendix. Our algorithm, RHNAS, discovers efﬁcient NN-HW designs in only 187 GPU hours.
+Considering the large energy, compute, and carbon costs of previous non-differentiable NN-HW
+co-design works, we hope that our work will help drive more efﬁcient NN-HW architecture search
+research. Our algorithm is task agnostic and can be adapted to heterogeneous workload optimization
+by introducing multi-workload simulation losses as a regularizer. The proposed method is particularly
+useful for discovering optimized conﬁgurations for ASICs before deployment. We believe that our
+work will encourage early co-design of accelerators in the development stages, allowing developers
+to make wiser decisions about the capabilities, data-ﬂow styles, and hardware resource assignments
+their accelerators should have. Our modest compute requirements should allow for the deployment of
+accelerators in various stages of development as well as frequent prototyping of the design space.
+
+References
+
+[1] Liu, H., K. Simonyan, Y. Yang. Darts: Differentiable architecture search, 2019.
+
+[2] Hu, S., S. Xie, H. Zheng, et al. Dsnas: Direct neural architecture search without parameter
+retraining. 2020 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR),
+pages 12081–12089, 2020.
+
+[3] Cai, H., L. Zhu, S. Han. Proxylessnas: Direct neural architecture search on target task and
+hardware, 2019.
+
+[4] Kao, S., T. Krishna. Gamma: Automating the hw mapping of dnn models on accelerators via
+genetic algorithm. 2020 IEEE/ACM International Conference On Computer Aided Design
+(ICCAD), pages 1–9, 2020.
+
+[5] Kao, S., G. Jeong, T. Krishna. Confuciux: Autonomous hardware resource assignment for
+dnn accelerators using reinforcement learning. 2020 53rd Annual IEEE/ACM International
+Symposium on Microarchitecture (MICRO), pages 622–636, 2020.
+
+[6] Lin, Y., D. Hafdi. Neural-hardware architecture search. 2019.
+
+[7] Abdelfattah, M., L. Dudziak, T. Chau, et al. Best of both worlds: Automl codesign of a cnn and
+its hardware accelerator. 2020 57th ACM/IEEE Design Automation Conference (DAC), pages
+1–6, 2020.
+
+[8] Jiang, W., X. Zhang, E. H. M. Sha, et al. Accuracy vs. efﬁciency: Achieving both through
+fpga-implementation aware neural architecture search, 2019.
+
+[9] Yang, L., Z. Yan, M. Li, et al. Co-exploration of neural architectures and heterogeneous asic
+accelerator designs targeting multiple tasks, 2020.
+
+[10] Zhang, Y., Y. Fu, W. Jiang, et al. Dna: Differentiable network-accelerator co-search. ArXiv,
+abs/2010.14778, 2020.
+
+[11] Choi, K., D.-K. Hong, H. Yoon, et al. Dance: Differentiable accelerator/network co-exploration.
+ArXiv, abs/2009.06237, 2020.
+
+[12] Dhar, P. The carbon impact of artiﬁcial intelligence. Nature Machine Intelligence, 2(8):423–425,
+2020.
+
+[13] Schulman, J., F. Wolski, P. Dhariwal, et al. Proximal policy optimization algorithms, 2017.
+
+[14] Mnih, V., A. P. Badia, M. Mirza, et al. Asynchronous methods for deep reinforcement learning,
+2016.
+
+[15] Mnih, V., K. Kavukcuoglu, D. Silver, et al. Playing atari with deep reinforcement learning,
+2013.
+
+[16] Howard, A., M. Sandler, G. Chu, et al. Searching for mobilenetv3, 2019.
+
+[17] Tan, M., B. Chen, R. Pang, et al. Mnasnet: Platform-aware neural architecture search for mobile,
+2019.
+
+[18] Tan, M., Q. V. Le. Efﬁcientnet: Rethinking model scaling for convolutional neural networks,
+2020.
+
+[19] Liu, H., K. Simonyan, Y. Yang. Darts: Differentiable architecture search. ArXiv, abs/1806.09055,
+2019.
+
+[20] Wu, B., X. Dai, P. Zhang, et al. Fbnet: Hardware-aware efﬁcient convnet design via differentiable
+neural architecture search. 2019 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pages 10726–10734, 2019.
+
+[21] Xie, S., H. Zheng, C. Liu, et al. Snas: Stochastic neural architecture search, 2020.
+
+[22] Xu, Y., L. Xie, X. Zhang, et al. Latency-aware differentiable neural architecture search. ArXiv,
+abs/2001.06392, 2020.
+
+[23] Zhang, L., Y. Yang, Y. Jiang, et al. Fast hardware-aware neural architecture search. 2020
+IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW),
+pages 2959–2967, 2020.
+
+[24] Han, S., X. Liu, H. Mao, et al. Eie: Efﬁcient inference engine on compressed deep neural
+network, 2016.
+
+[25] Umuroglu, Y., N. J. Fraser, G. Gambardella, et al. Finn. Proceedings of the 2017 ACM/SIGDA
+International Symposium on Field-Programmable Gate Arrays, 2017.
+
+[26] Umuroglu, Y., Y. Akhauri, N. J. Fraser, et al. Logicnets: Co-designed neural networks and
+circuits for extreme-throughput applications, 2020.
+[27] Chen, Y.-H., T.-J. Yang, J. Emer, et al. Eyeriss v2: A ﬂexible accelerator for emerging deep
+neural networks on mobile devices, 2019.
+[28] Gao, M., J. Pu, X. Yang, et al. Tetris: Scalable and efﬁcient neural network acceleration with 3d
+memory. SIGARCH Comput. Archit. News, 45(1):751–764, 2017.
+[29] Chen, T., Z. Du, N. Sun, et al. Diannao: A small-footprint high-throughput accelerator for
+ubiquitous machine-learning. SIGARCH Comput. Archit. News, 42(1):269–284, 2014.
+[30] Chen, Y.-H., T.-J. Yang, J. S. Emer, et al. Eyeriss v2: A ﬂexible accelerator for emerging deep
+neural networks on mobile devices. IEEE Journal on Emerging and Selected Topics in Circuits
+and Systems, 9:292–308, 2019.
+[31] Chatarasi, P., H. Kwon, N. Raina, et al. Marvel: A data-centric compiler for dnn operators on
+spatial accelerators, 2020.
+[32] Lu, Q., W. Jiang, X. Xu, et al. On neural architecture search for resource-constrained hardware
+platforms. ArXiv, abs/1911.00105, 2019.
+[33] Moreau, T., T. Chen, L. Vega, et al. A hardware-software blueprint for ﬂexible deep learning
+specialization, 2019.
+[34] Chen, T., T. Moreau, Z. Jiang, et al. Tvm: An automated end-to-end optimizing compiler for
+deep learning, 2018.
+[35] Bachrach, J., H. Vo, B. Richards, et al. Chisel: constructing hardware in a scala embedded
+language. In DAC Design Automation Conference 2012, pages 1212–1221. IEEE, 2012.
+[36] Chen, T., L. Zheng, E. Yan, et al. Learning to optimize tensor programs. Advances in Neural
+Information Processing Systems, 31:3389–3400, 2018.
+[37] Pedregosa, F., G. Varoquaux, A. Gramfort, et al. Scikit-learn: Machine learning in Python.
+Journal of Machine Learning Research, 12:2825–2830, 2011.
+[38] Kendall, M. G. A new measure of rank correlation. Biometrika, 30(1/2):81–93, 1938.
+[39] Rafﬁn, A., A. Hill, M. Ernestus, et al. Stable baselines3.
+stable-baselines3, 2019.
+[40] Deng, J., W. Dong, R. Socher, et al. ImageNet: A Large-Scale Hierarchical Image Database. In
+CVPR09. 2009.
+[41] Krizhevsky, A. Learning multiple layers of features from tiny images. 2009.
+[42] Paszke,
+A.,
+S.
+Gross,
+S.
+Chintala,
+et
+al.
+torchvision.models
+
+[43] Kao, S.-C., G. Jeong, T. Krishna. Confuciux: Autonomous hardware resource assignment for
+dnn accelerators using reinforcement learning, 2020.
+[44] Bergstra, J., D. Yamins, D. D. Cox. Making a science of model search: Hyperparameter
+optimization in hundreds of dimensions for vision architectures. In Proceedings of the 30th
+International Conference on International Conference on Machine Learning - Volume 28,
+ICML’13, page I–115–I–123. JMLR.org, 2013.
+[45] Bergstra, J., R. Bardenet, Y. Bengio, et al. Algorithms for hyper-parameter optimization. In
+J. Shawe-Taylor, R. Zemel, P. Bartlett, F. Pereira, K. Q. Weinberger, eds., Advances in Neural
+Information Processing Systems, vol. 24, pages 2546–2554. Curran Associates, Inc., 2011.
+[46] Akiba, T., S. Sano, T. Yanase, et al. Optuna: A next-generation hyperparameter optimization
+framework, 2019.
+[47] Bohr, M. 22fﬂtechnology.
+uploads/sites/11/2017/04/2017_TMD_MarkBohr_22FFL.pdf.
+[48] Pedram, A., S. Richardson, M. Horowitz, et al. Dark memory and accelerator-rich system
+optimization in the dark silicon era. IEEE Design and Test, 34(2):39–50, 2017.
+[49] Kingma, D. P., J. Ba. Adam: A method for stochastic optimization, 2017.
+
+A
+Appendix
+
+A.1
+RL Agent Details
+
+Agent details For the policy and value networks for PPO and A2C, and Q-network for the DQN, we
+use MLPs with two hidden layers with sizes [64, 64].We ﬁxed the number of training episodes to
+300000 and tuned the agents learning rate, discount factor (γ) and number of steps per update across
+a wide range of settings.1
+
+State representation details:
+
+To represent the HW embeddings, we use a ﬂattened one-hot vector of size 36 for our HW accelerator
+design as there are 7 HW features we control, with two features having 2 choices, two with 4 and
+three with 8 (Listed in Table 1 in the paper).
+
+As for the neural network state, we use a concatenated representation of the one-hot choices for each
+layer. For ImageNet, we use a backbone with 20 blocks having 4 choices each - giving us a vector of
+length 80. For CIFAR-10 we use a smaller network with 9 blocks - giving us a vector of length 36.
+
+We utilize the same representations for the performance predictor - which we use in our reward
+formulation. We found experimentally that normalizing the rewards lead to agents learning faster -
+we used the VecNormalize wrapper from [39]
+
+Hyperparameter optimization for Reinforcement Learning
+
+In order to choose the right hyperparameters, we required signiﬁcant manual tuning and domain
+knowledge. To automate our ﬂow and achieve further improvement, we set up hyper-parameter tuning
+using Optuna [44, 45, 46]. Here, we focused on jointly optimizing the environment parameters ( P,
+B, tmax) and a few algorithm speciﬁc parameters - (learning rate, discount factor γ, number of steps
+per update) for all three algorithms and the number of environment steps per update for PPO and
+A2C. We utilized a Tree Parzen estimator based sampler from Optuna [44, 45, 46] and optimized
+each algorithm using 40 trials. We optimize agents based on how close they came to the optimal
+solutions on ﬁxed test set of neural network architecture samples.
+
+Hyper-parameter optimization signiﬁcantly reduced wall time (≈3x less) required to tune algorithms
+and enabled discovery of trained agents that achieved within 0.2 % of the optimal cycle count and 2
+% of the optimal EDP values on average.
+
+We utilized the hyper-parameters discovered for the ImageNet RL task, and used the same settings
+for training our CIFAR-10 RL optimizer. We found that we were able to achieve optimality rate of
+99.2% (latency) on NNs sampled for the CIFAR-10 task.
+
+A.2
+Optimality
+
+In order to benchmark our RL algorithms, we compare the performance of hardware designs found by
+our RL solution to the optimal hardware design found through grid search using a metric Optimality
+(O).
+
+We measure Optimality by computing the ratio of the HW performance (Latency/EDP) of the best
+performing hardware on a neural network and the performance of the design suggested by the RL
+HW optimizer on a test set of NN architectures (T). Formally, with Hv denoting the set of all
+synthesisable HW designs
+
+minh∈Hv PerfPredictor(Zα, h)
+PerfPredictor(σ(α), HWOpt(Zα, H0))
+
+O = 100
+
+∥T∥∑
+
+Zα∈T
+
+Note that we only use grid search on the HW space for evaluation and for HPO (on a small subset
+of the NN space) Thus, our approach achieves near optimal performance without incurring the
+signiﬁcant cost of grid search over the whole NN space.
+
+1We run all our tests in this paper on an NVIDIA DGX-2™server with 4 NVIDIA V-100 32GB GPUs.
+
+A.3
+Latency and EDP calculations on VTA
+
+We target the Intel 22FFL process [47] with a 1 GHz frequency for our ASIC designs. Cycle accurate
+RTL simulation is used to calculate latency. For energy calculation, we assume that off-chip memory
+transfers take 320 pJ/Byte [48]. For ASIC power analysis, we ran a large VTA design synthesis for 2
+million cycles at 1 GHz on our ASIC. This required 0.52W on the VTA core and 5W of power for
+DRAM memory transactions. Given that over 90% of the overall power is used for DRAM access,
+we can leverage the data transfer count from RTL simulation (for a given neural network workload
+running on a particular VTA instance) and approximate energy as the product of bytes transferred
+and 320 pJ.
+
+A.4
+Predictor Network Training
+
+We use L1 Loss for training the networks for 80 epochs with the Adam optimizer [49] with a learning
+rate of 0.001 and a step decay by a factor of 0.1 at epochs 40 and 60.
+
+A.5
+Kendall Tau Metric
+
+The Kendall Tau metric ranges from -1 to 1. If τ = 1, the ranking is fully preserved, if τ = −1, the
+ranking is reversed. We measure the Kendall Tau metric by comparing the true ranking of the cycle
+count (as an example metric) from the test data-set for a given set of NN - HW accelerator pairs, and
+the ranking produced by the cycle count predictor network for the same set of NN - HW accelerator
+pairs.
+
+A.6
+ImageNet search space
+
+Supernet architecture
+
+Table 11: Supernet architecture. CB - choice block. GAP - global average pooling. FC - fully
+connected layer. Each line describes a sequence of 1 or more identical layers, repeated Repeat times.
+All layers in the same sequence have the same number of output channels. The ﬁrst layer of each
+sequence has a stride Stride and all others use stride 1.
+
+Input
+Block
+Channels
+Repeat
+Stride
+
+2242 × 3
+3 × 3 Conv
+16
+1
+2
+1122 × 16
+CB
+64
+4
+2
+562 × 64
+CB
+160
+4
+2
+282 × 160
+CB
+320
+8
+2
+142 × 320
+CB
+640
+4
+2
+72 × 640
+1 × 1 Conv
+1024
+1
+1
+72 × 1024
+GAP
+-
+1
+-
+1024
+FC
+1000
+1
+-
+
+A.7
+CIFAR10 search space
+
+Supernet architecture
+
+Table 12: Supernet architecture. CB - choice block. GAP - global average pooling. FC - fully
+connected layer. Each line describes a sequence of 1 or more identical layers, repeated Repeat times.
+All layers in the same sequence have the same number of output channels. The ﬁrst layer of each
+sequence has a stride Stride and all others use stride 1.
+
+Input
+Block
+Channels
+Repeat
+Stride
+
+322 × 3
+3 × 3 Conv
+64
+1
+1
+322 × 64
+CB
+256
+4
+2
+162 × 256
+CB
+640
+4
+2
+82 × 640
+CB
+1280
+1
+2
+42 × 1280
+GAP
+-
+1
+-
+1280
+FC
+10
+1
+-
+
+A.8
+Structures of choice blocks for ImageNet and CIFAR-10
+
+2
+
+Channels Shuffle
+
+Channels Split
+
+5×5 DWconv
+
+7×7 DWconv
+
+3×3 DWconv
+
+3×3 DWconv
+
+3×3 DWconv
+
+3×3 DWconv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+Channels Shuffle
+
+Channels Shuffle
+
+Channels Shuffle
+
+(Stride=2)
+
+(Stride=2)
+
+(Stride=2)
+
+(stride=2)
+
+(Stride=2)
+
+3×3 DWconv
+
+5×5 DWconv
+
+7×7 DWconv
+
+1×1 Conv
+
+1×1 Conv
+
+Channels Split
+
+Channels Split
+
+Channels Split
+
+(Stride=2)
+
+(Stride=2)
+
+(Stride=2)
+
+3×3 DWconv
+
+3×3 DWconv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+3×3 DWconv
+
+5×5 DWconv
+
+7×7 DWconv
+
+Concat
+
+Concat
+
+Concat
+
+3×3 DWconv
+
+3×3 DWconv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+1×1 Conv
+
+Concat
+
+Concat
+
+Concat
+
+Concat
+
+Concat
+
+(a) Choice blocks with stride=1. Choice blocks
+in search space.
+From left to right: Choice_3,
+Choice_5, Choice_7, Choice_x.
+
+(b) Choice blocks with stride=2. Choice blocks
+in search space.
+From left to right: Choice_3,
+Choice_5, Choice_7, Choice_x.
+
+Figure 4: Choice blocks in our search space (Figure from [2])
+
+A.9
+CIFAR-10 experimental details
+
+We ﬁrst do 80 epochs of NN architecture search. The NN architecture is then trained from scratch
+using the SPOSretrain240 strategy. We found that this gave better accuracy for CIFAR-10. Thus, the
+total number of epochs required for CIFAR-10 search and train is 320.
+SPOSretrain240
+Epochs: 240
+Batch size: 1024
+Input data has been augmented with random crops, random horizontal ﬂops.
+Torch Transforms Normalize: transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994,
+0.2010))
+Categorical Cross Entropy
+SGD: Momentum = 0.9, weight decay=0.00004
+lr_mode : cosine
+base_lr: 0.34
+targetlr: 0.0
+power: 1
+warmup_mode: linear
+
+2We follow the setting including choice blocks used in the released implementation of DSNAS[2]
+
+warmup_lr: 0.0001
+warmup_epochs: 5
+
+A.10
+ValidNet MLP
+
+This MLP has two hidden layers with ReLU activation function and a SoftMax output to indicate
+whether an input HW accelerator design is valid. The data-set is generated by randomly sampling
+design choices and their output from our analytical validity checker. Since there are very sparsely
+distributed valid HW design choices, we train the Validity MLP network with a cross entropy loss
+and a weighted loss vector [0.05, 0.95] for valid and invalid designs respectively. The network is
+trained for 150 epochs and samples 10240 design points. This validity checker MLP delivered an
+accuracy of > 99%.
+
+A.11
+Performance Predictor Interpolation test.
+
+We utilize the σ(α) NN categorical distribution in RHNAS. Thus we need to ensure that our
+performance predictor is able to take in probability distribution of neural network architectural
+choices and estimate the expected performance.
+
+To do this, we conduct a test where we compute the ratio between the performance predictor output
+for a continuous NN categorical distribution to the expected value for this output (Equation 4). We
+obtain this expected value by summing over the predicted metric from discrete architectures sampled
+from the categorical distribution obtained from σ(α) multiplied by their likelihood of being sampled.
+We found that the ratio is 0.9910 with a variance of 0.0012 after sampling over 400 NN distributions.
+This indicates that the performance predictor is able to accurately interpolate performance between
+NN architectural choices.
+
+PerfPredictor(σ(α), H0)
+E
+Zα∼σ(α)(PerfPredictor(Zα, H0))
+(4)

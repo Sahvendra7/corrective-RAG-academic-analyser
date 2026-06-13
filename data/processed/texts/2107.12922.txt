@@ -1,0 +1,1507 @@
+Jong Hoon Shin, Ali Shaﬁee, Ardavan Pedram, Hamzah Abdel-Aziz, Ling Li, and Joseph Hassoun
+
+Samsung Semiconductor Inc., San Jose, CA
+
+{jhshin.1, ali.shaﬁee, ardavan.p, hamzah.a, ling.li,
+
+sparsity are not as efﬁcient for activation-only sparsity models
+(i.e., (sparse, dense)) and cannot fully take advantage of dual
+sparse models (i.e., (sparse, sparse)). Even architectures that
+support dual sparsity do not get the best area and power
+efﬁciency for (dense, sparse) or (sparse, dense) models (see
+Section III).
+At the edge, where area and power have strict budgets, it is
+challenging to support all categories of workloads efﬁciently,
+especially when both compute unit and SRAM are optimized for
+a speciﬁc category so that the share of sparse overheads on top
+of the dense design becomes signiﬁcant [52], [69]. Examples
+of such dense accelerators include ARM Ethos-N77 (1MB
+per 2048 MACs) [1], NVDLA (0.5MB per 1024 MACs) [2].
+For instance, in the case of DNN models with (sparse, sparse)
+tensors, an accelerator with signiﬁcant sparsity overheads to
+gain substantial speedup is justiﬁable [18], [32]. However, it
+does not perform efﬁciently for other categories.
+Unlike some of the previous work [18], [50], we consider
+the possibility of efﬁciently running all categories of DNN
+execution modes, early, at the design time. We start with
+an efﬁcient dense baseline that exploits high degrees of
+parallelism and data locality. Then we identify sources of
+borrowing effectual operations from future computations across
+several dimensions of blocking and time, and mainly exploited
+resources (e.g., multiplexers and buffers) that can be re-
+purposed from one category of execution mode to another.
+We devise a novel hybrid architecture to reuse the hardware
+overheads in dual sparse architectures for DNN models that
+are only sparse in either activation or weight tensors.We call
+this hybrid architecture Grifﬁn which enhances dual sparse
+architectures for both weight-only and activation-only sparse
+DNN models thus maintaining power and area efﬁciency. We
+corroborate the effectiveness of our approach by comparing
+our design with state-of-the-art architectures for all model
+categories.
+To reach an optimal design for each category as well as an
+efﬁcient hybrid architecture, we create an analytical model,
+veriﬁed by a simulator, to investigate the sources of overheads
+based on parameters that indicate how a multiplier can borrow
+a nonzero operation from the adjacent multipliers or future
+cycles. Our model offers a framework to quantify several
+sparse architectures including some of the prior work such
+as Cnvlutin [7], Cambricon-X [70], and Bit-Tactical [13]. We
+further identify new design points that are more power and area-
+
+Abstract—This paper examines the design space trade-offs of
+DNNs accelerators aiming to achieve competitive performance
+and efﬁciency metrics for all four combinations of dense or sparse
+activation/weight tensors. To do so, we systematically examine
+the overheads of supporting sparsity on top of an optimized
+dense core. These overheads are modeled based on parameters
+that indicate how a multiplier can borrow a nonzero operation
+from the neighboring multipliers or future cycles. As a result
+of this exploration, we identify a few promising designs that
+perform better than prior work. Our ﬁndings suggest that even
+the best design targeting dual sparsity yields a 20%-30% drop in
+power efﬁciency when performing on single sparse models, i.e.,
+those with only sparse weight or sparse activation tensors. We
+found that one can reuse resources of the same core to maintain
+high performance and efﬁciency when running single sparsity or
+dense models. We call this hybrid architecture Grifﬁn. Grifﬁn is
+1.2, 3.0, 3.1, and 1.4× more power-efﬁcient than state-of-the-art
+sparse architectures, for dense, weight-only sparse, activation-
+only sparse, and dual sparse models, respectively.
+
+arXiv:2107.12922v3 [cs.AR] 1 Nov 2021
+
+I. INTRODUCTION
+
+In deep neural networks (DNNs) [37], rectiﬁed linear unit
+(ReLU) [33] and weight pruning [20]–[22], [35] enable accel-
+erators to mitigate ineffectual computations (i.e., those with
+at least one zero operand) [46]. The former approach induces
+sparsity in activation tensors by zeroing out negative elements.
+While the latter approach induces sparsity in weight tensors by
+pruning insigniﬁcant weights. Although both approaches have
+shown promising results in several applications [41], [47], [66],
+they might not be always enabled. For instance, to improve
+DNNs accuracy, DNN developers might prefer dense non-linear
+activation functions, which don’t result in having as many zeros,
+such as swish [56], GeLU [28] or leaky ReLU [42]. Similarly,
+they might avoid weight pruning as it signiﬁcantly increases
+training time, drops network accuracy, or because the network is
+already pre-trained dense. Therefore, both activation and weight
+tensors can be dense or sparse, categorizing DNN models and
+execution modes in four categories based on (activation, weight)
+tensor types: (dense,dense), (dense, sparse), (sparse,dense), and
+(sparse,sparse).
+An accelerator might be optimized speciﬁcally for each of
+the above categories. However, DNN model categories are
+usually unknown at the design time for inference accelerators
+and might switch between different modes during training.
+Unfortunately, the optimal design point to run a category of
+DNNs is only optimal for the same type of DNN models.
+For example, architectures that are optimized for weight-only
+
+In this paper, we focus on architectures that support both
+sparse and dense DNN models, efﬁciently. We ﬁrst review an
+optimized dense architecture in Section II-A. Then we review
+different types of sparse architectures.
+
+A. Dense Architecture
+
+Most dense DNN accelerators rely on a customized unit
+for general matrix-matrix multiplication (GEMM). GEMM,
+deﬁned as C+ = A×B, is the main building block of popular
+DNNs such as CNNs [36], [45] and Transformers [15]. For
+layers such as convolution layer (CL) and fully connected layer
+(FL), input tensor, layer’s parameters (weights), and output
+tensor are represented as AM×K, BK×N, and CM×N, respectively.
+In FL the kernel is represented as 2D matrix BK×N, and
+the input activations as vectors of length K. A batch of input
+activations can therefore be represented as a 2D matrix AM×K
+with M = Batch size that after multiplication by kernels results
+into a batch of outputs CM×N. In a convolution layer, the kernel
+is represented as a 2D matrix BK×N with K = Cin × R × S
+and N = Cout, where Cin, R, S, and Cout are the number of
+input channels, ﬁlter height, ﬁlter width and the number of
+output channels, respectively. As a result, the input feature
+map is reshaped as a 2D matrix AM×K with M = Hin ×Win
+and K = Cin × R × S, where Hin and Win are the height and
+width of each input channel. [19] For transformer-based models,
+GEMM operations appear in the self-attention and feed-forward
+layers. The self-attention layer leverages GEMM operations
+to transform token vectors to key, query, and value vectors.
+Moreover, checking the similarity between all the generated
+query and key vectors is performed by GEMM.
+GEMM can be implemented in hardware with two main
+optimizations: (1) Memory hierarchy optimization using block-
+ing to minimize the size and the data movement between
+different levels of the memory hierarchy
+[52], [53], [61],
+[69], and (2) unrolling the nested loops in space to exploit
+parallelism and minimize energy per access [34], [44], [52],
+[53], [68], [69]. Figure 1 illustrates the high-level structure of
+the dense GEMM accelerator and how the operation is mapped
+onto it. As shown in the ﬁgure, the 3D realization of GEMM
+requires both matrix A and B to be rearranged/blocked in three
+dimensions as well. More speciﬁcally, each rows/columns of
+Matrix A/B, respectively, is stored in a 2D fashion in SRAM
+bank. Therefore, each element in A/B is adjacent to other
+elements in three dimensions as shown in Figure 1 for ai,1
+and b0,j. The adjacency of elements in the three dimensions is
+key to our approach of modeling sparse architecture described
+in Section III and Section IV. More speciﬁcally an element
+can be borrowed from maximum distance of da1, da2 and da3
+(db1, db2, and db3) across all neighboring dimensions.
+
+Fig. 1.
+The pseudo-code depicting the blocking of C+ = A×B
+with AM×K, BK×N, and CM×N matrices. The ﬁrst two loops (Line
+1-2) tile the codes so that it ﬁts on the GEMM accelerator core.
+The accelerator realizes the inner loops (lines 3-9) and unrolls the
+operation in three dimension (M0, N0, K0). The core requires that
+matrices A and B to be reshaped as 3D tensors. The maximum
+distance from which a non-zero element can be borrowed across
+each of the dimensions of these input tensors are represented as
+da1,da2,da3 for A and db1,db2,db3 for B.
+
+efﬁcient than the prior state-of-the-art architectures. Our best
+designs for weight-only sparsity, activation-only sparsity, and
+dual sparsity are 47%, 223%, and 42% more power-efﬁcient
+than prior architectures, respectively. This model enables us
+to further re-purpose the logic overheads to design a hybrid
+architecture that is the top performer in all sparse categories.
+In summary, this paper makes the following contributions:
+
+1) A sparse architecture model based on how far in time
+and space a multiplier can borrow non-zero operands to
+replace with zero inputs.
+2) A design space exploration of sparse architectures that
+encapsulates previous work and identiﬁes more efﬁcient
+designs for each category of networks.
+3) Techniques to reuse the logic in a dual sparse architecture
+to create a hybrid architecture (Grifﬁn) so that it remains
+a top performer for sparse networks.
+4) We evaluate Grifﬁn against previous optimal works. Grifﬁn
+maintains a minimum of 8% performance advantage over
+previous optimal works.
+
+The rest of this paper is organized as follows. Section II
+deﬁnes the problem and base dense architecture. Section III
+describes architectures that only support weight or activation
+sparsity. Section IV explores supporting both activation and
+weight sparsity. Section V presents our methodology and
+Section VI presents the results. Section VII goes over the
+prior work. Finally, we conclude this paper in Section VIII.
+
+B. Sparse Models and Architectures
+
+There are four categories of DNN models as described
+in Section I. Sparsity of A/B in DNN.dense, DNN.A,
+DNN.B, and DNN.AB categories are dense/dense, sparse/dense,
+dense/sparse, sparse/sparse, respectively. Analogously, there
+
+Fig. 2.
+The core replacing zero operations by borrowing from different dimensions. During preprocessing, the zero entities in B are
+ﬁlled with nonzero values from neighboring elements (a) in db1 and db2 dimensions (solid gray: borrowing from db1, solid yellow:
+borrowing from both db1 and db2, dashed: selecting the associated A-elements), (b) from db3 dimension (solid green: borrowing from
+both db1 and db3, dashed green/blue: selecting and sending back the associated A-element and partial output, respectively.). The
+metadata from preprocessing is later used to select appropriate values from Matrix A. The zero entities on Matrix A is detected and
+skipped on-the-ﬂy. To avoid under-utilization, zero operations are replaced from neighboring entities (c) in da1 and da2 dimensions
+(gray: borrowing from da1, yellow: borrowing from both da1 and da2, dashed: selecting the associated B-elements) and (d) in da3
+dimension (orange: borrowing from both db1 and db3, dashed orange/blue: selecting and sending back the associated B-element
+and partial output, respectively.).
+
+operands are within proximity elements. We consider two
+elements as close in Matrix A/B, if they are close in da1, da2,
+and da3 or db1, db2, and db3, respectively (See Figure 1).
+
+TABLE I
+BENCHMARKS LISTED WITH THEIR DNNS CATEGORIES AND
+OPTIMAL ACCELERATOR ARCHITECTURE TYPE
+
+Optimal
+Architecture
+CNN+Non-ReLU [23], [36], [56]
+Trasformer+GeLU [15], [28]
+
+Benchmarks
+A/B
+sparsity
+
+DNN
+Category
+
+In general, detecting zero operations and replacing them
+with nonzero ones imposes additional overheads on top of the
+dense core. Figure 2 illustrates the overheads based on the
+dimension of the two adjacent operands when only one of
+Matrix A or B are sparse. Matrix B is known before execution,
+hence it is preprocessed before being written into SRAM banks.
+Preprocessing replaces zero entities with nonzero entities from
+the neighboring elements, which generates the metadata as
+well as a more compressed form of Matrix B. Figure 2(a)
+shows the case where b0,0 and b2,0 are zero and replaced
+by b3,0 and b4,0, respectively. More speciﬁcally, the solid
+black arrow along db1 dimension represents that non-zero
+b3,0 is sent to the zero b0,0. The two solid golden arrows
+send b4,0 to the diagonally neighboring element b2,0 along db2
+and db1 dimensions. Therefore, for the pair (b0,0,b3,0) and
+pair (b2,0,b4,0), the borrowing distances are (db1,db2,db3) =
+(1,0,0) and (db1,db2,db3) = (1,1,0), respectively. In either
+of these cases, extra MUXs, called AMUX, before operands in
+A are needed. These MUXs select appropriate A-elements via
+the dashed black/golden arrows, based on the metadata derived
+from matrix B.
+
+dense
+/dense
+DNN.dense
+Dense
+
+CNN+ReLU [24], [33]
+Trasformer+ReLU [64], [65]
+
+sparse
+/dense
+DNN.A
+Sparse.A
+
+Pruned CNN+Non-ReLU [20]
+Pruned Trasformer+GeLU [57]
+
+dense
+/sparse
+DNN.B
+Sparse.B
+
+Pruned CNN+ReLU [16], [20]
+Pruned Trasformer+ReLU [54]
+
+sparse
+/sparse
+DNN.AB
+Sparse.AB
+
+are four categories of accelerators, (Dense, Sparse.A, Sparse.B,
+Sparse.AB) that each is optimized for its corresponding model
+as summarized in Table I. We also refer to hybrid (Grifﬁn)
+architecture as the one optimized for all four categories. For all
+of the above architectures, the goal is to maximize power and
+area efﬁciency with minimum overhead on the dense category.
+Throughout the next two sections, we quantify the overheads
+and propose some novel solutions.
+
+III. SPARSITY OVERHEAD ANALYSIS
+
+In a typical dense GEMM accelerator, multipliers share
+operand fetch logic and all of them execute operations
+concurrently [5], [8], [9], [11], [26], [30], [40], [49]. While this
+approach minimizes the control overhead, dense datapath is
+unable to skip ineffectual operations [46]. Sparse architectures
+provide additional logic to ﬁnd zero operands, either by
+preprocessing or on the ﬂy detection and skipping of ineffectual
+operations. The skipped operations would be replaced with
+nonzero operations from future cycles of the same or adjacent
+multipliers. The adjacent multipliers are those that their
+
+In Figure 2(b), b0,1 is replaced with b3,0 which is sent
+to diagonal direction through two consecutive green arrows
+along db3 and db1 dimensions. Thus, the borrowing distance
+is (db1,db2,db3) = (1,0,1), which leads to performing the
+computation in a neighboring PE (i.e., PE0,1). Therefore,
+AMUX and extra adder tree are required to navigate the
+
+In contrast to Matrix B, Matrix A is not preprocessed
+before execution, thus it requires performing on-the-ﬂy zero
+operands detection as well as replacing them with nonzero
+ones. Figure 2(c) depicts two cases where zero operands a0,0
+and a0,2 are replaced with nonzero operand a0,3 and a0,4,
+respectively. The distance for pair (a0,0,a0,3) and (a0,2,a0,4) are
+respectively (da1,da2,da3) = (1,0,0) (solid black arrow) and
+(da1,da2,da3) = (1,1,0) (solid golden arrow). In this case, an
+arbiter logic is needed to detect and replace zero operands. At
+any cycle, the arbiter looks into a window of elements of A that
+are fetched from SRAM and currently reside in a buffer called
+ABUF. The elements of B corresponding to elements of A in
+ABUF are also fetched to a buffer called BBUF. The arbiter
+selects nonzero operands in ABUF and generates the indices
+to pick appropriate values from BBUF. These indices are fed
+into MUXs after BBUF, called BMUX, to select associated
+elements of B, b3,0 and b4,0, according to the dashed black
+arrow and the dashed golden arrow, respectively.. Note that
+ABUF also requires MUXs, but they can be shared between
+all PEs in a row, while each PE requires a standalone BMUX.
+Figure 2(d) illustrates a case that a1,0 is replaced with a0,3
+by two consecutive solid orange arrows along da3 and da1
+dimensions (Therefore, distance is (da1,da2,da3) = (1,0,1)).
+The associated B-element, b3,0, in BBUF is selected by BMUX.
+(dashed orange arrow) In this case, an extra adder tree is
+required to send partial-sum values to the correct accumulator
+(accumulator in PE0,0), as the multiplication is performed in the
+adjacent PE (i.e. PE0,0) with a different accumulator (dashed
+blue arrows). When only one of the input matrices is sparse, we
+can deﬁne single sparse architectures based on the maximum
+distance of borrowing nonzero operands in each dimension to
+replace zero operands with nonzero ones.
+
+Architecture
+ABUF
+AMUX
+BBUF
+BMUX
+ADT
+
+(depth)
+(fan-in)
+(depth)
+(fan-in)
+(number)
+
+Operand selection via metadata
+
+Sparse.A(da1,0,0)
+1+da1
+1+da1
+1+da1
+1+da1
+1
+
+Sparse.A(1,da2,0)
+2
+2+da2
+2
+2+da2
+1
+
+Sparse.A(1,0,da3)
+2
+2+da3
+2
+2
+1+da3
+Sparse.A
+1+da1
+1+da1
+1+da1
+1+da1
+1+da3
+(da1,da2,da3)
+×(1+da2)
+×(1+da2)
+
+×(1+da3)
+
+Sparse.B(db1,0,0)
+1+db1
+1+db1
+-
+-
+1
+
+Sparse.B(1,db2,0)
+2
+2+db2
+-
+-
+1
+
+Sparse.B(1,0,db3)
+2
+2
+-
+-
+1+db3
+Sparse.B
+1+db1
+1+db1
+-
+-
+1+db3
+(db1,db2,db3)
+×(1+db2)
+
+of AMUX and BMUX, and the number of required adder trees
+depend on the limits of distance for replacement elements in
+different dimensions. Table II expresses the dependency for
+both Sparse.A and Sparse.B. In this table, we also provide
+other restricted instances from each family of architectures
+to reveal the impact of replacing elements in each direction.
+Using equations in Table II, we can directly estimate and
+compare the cost of different single sparse architectures. For
+example, Sparse.A(1,1,0) shown in Figure 2(d) can be upgraded
+to Sparse.A(1,1,1) by enabling da3 = 1, which requires twice
+larger AMUX fan-in, and one extra adder-tree per PE.
+
+Load Balancing: For unstructured sparse input matrix A
+and B the zero operands are not necessarily evenly distributed.
+This issue still exists after preprocessing B or on-the-ﬂy zero
+skipping on A. Coarse-grain load balancing is an effective
+approach to distribute nonzero values and improve performance
+utilization [18], [32]. In this approach a GEMM operation is
+decomposed into smaller blocks and each block is assigned
+to available idle PEs. In this work, however, we consider
+a recently proposed ﬁne-grain approach by shufﬂing input
+matrix A and B along their second dimension (i.e., da2 and
+db2) in the core [29]. The shufﬂing happens, over the dense
+matrices A and B, before applying preprocessing or entering
+the buffer for on-the-ﬂy zero skipping. While there are many
+ways to perform shufﬂing, we observe that simple permutation
+is sufﬁcient. Thus, if an element is located in (i1,i2,i3) in an
+input matrix, it will be relocated to (i1,(i2modK0),i3), where
+K0 is the size of the second dot product unit ( see Figure 1).
+Note that shufﬂing happens on both Matrices A and B. To
+navigate the elements of A to its corresponding B’s elements,
+rotation-based shufﬂing requires a K0 ×K0 crossbar between
+SRAM and ABUFs. Therefore we limit the shufﬂing to local
+rotations only between four consecutive elements (in da2 and
+db2) to reduce the K0 ×K0 crossbar to multiple (K0/4) 4×4
+crossbars. In our experiments, this localization does not impact
+the load balancing. We use the notation shuf fle = on and
+
+Deﬁnition III.1. Sparse.A(da1,da2,da3) is an architecture
+that only supports sparsity in matrix A of the GEMM operation.
+This architecture allows replacing a zero value (x1,x2,x3) with
+a nonzero value (x1 +∆1,x2 +∆2,x3 +∆3) where ∆i ≤dai.
+
+Deﬁnition III.2. Sparse.B(db1,db2,db3) is an architecture
+that only supports sparsity in matrix B using preprocessing. This
+architecture allows replacing a zero elements (x1,x2,x3) with
+a nonzero element (x1 +∆1,x2 +∆2,x3 +∆3) where ∆i ≤dbi.
+
+Therefore, the single sparse architectures described in
+Figure 2(a), (b), (c), and (d) can be speciﬁed as Sparse.B(1,1,0),
+Sparse.B(1,0,1), Sparse.A(1,1,0), and Sparse.A(1,0,1), re-
+spectively. In the architectures mentioned above, there are
+da1 ×da2 ×da3 and db1 ×db2 ×db3 potential candidates for
+replacing a zero operand in A and B, respectively. In this
+work, we use a similar priority mechanism as [13] whenever
+multiple nonzero candidates exist. For both Sparse.A and
+Sparse.B families of architectures, we recognize the following
+sources of overhead: ABUF, AMUX, BBUF, BMUX, and
+adder tree (ADT). The depth of ABUF and BBUF, the fan-in
+
+1) Preprocessing B: Since B is known before the execution,
+it is preprocessed to a compressed format with metadata.
+The preprocessed elements of B in SRAM are fetched in
+BBUF, which holds a window of current elements every
+cycle. In our example, b1,0, b3,0, b5,0, b6,0, b7,0, and b10,0
+are kept in BBUF.
+2) Generating zero masks: ABUF keeps the elements of
+A corresponding to the element of B currently residing
+in BBUF. For each of these elements in ABUF, a single
+mask would be generated indicating whether it is zero or
+not. a0,0, a0,1, a0,4, a0,10, and a0,11 are the elements of A
+in ABUF with mask bit equals 1.
+3) Filtering zero masks: using the metadata from B, the
+zero mask get updated by zeroing those mask bits when
+their corresponding weight is zero. In our example, a0,0 ,
+a0,4, and a0,11 become zero.
+4) Arbitration: The remaining ones in the zero mask
+associate with operations with both nonzero operands
+in A and B. In this step, these ones are detected and
+selected.
+5) Index generation: For the selected ones in the zero mask,
+their indices in A and B are extracted using priority
+encoders which detect the ﬁrst unused non-zero value
+in each bit-index pair list and generate the corresponding
+indices. In our example, a0,6 (b6,0), a0,1 (b1,0), and a0,10
+(b10,0) are selected. If there is no such pair, default value
+zero would be picked.
+6) Operand selection: Using the indices generated in Step
+6, two vectors of operands are selected from ABUF and
+BBUF.
+7) Execution: The selected vectors are fed into the PE for
+execution.
+For a Sparse.AB(x,y,z,x′,y′,z′) the following overhead is
+required to realize the above 7-step processes. First, the control
+logic is used to detect nonzero operands per PE, as the pairs
+of A and B in each PE are different. Second, the ABUF
+is shared within a row of PEs. The depth of this buffer is
+L = (1 + x) × (1 + x′). Similarly, the BBUF is shared within
+a column of PEs and its depth is (1 + x′). Third, each PE
+requires its own AMUX and BMUX (see Figure 3). The fan-in
+for AMUX and BMUX are 1+(L−1)×(1+y+y′)×(1+z)
+and 1+x×(1+y), respectively. Finally, dual sparsity support
+requires z×z′ extra adders per PE.
+
+Fig. 3.
+Dual sparse architecture steps. (1) Preprocessing Matrix
+B, (2) Generating zero mask for Matrix A, (3) Filtering out the
+zero mask of A, (4) Selecting nonzero elements, (5) Generating
+index, (6) Selecting elements of A and B using indices, and (7)
+Execute the dot product.
+
+shuf fle = o f f to indicate whether an architecture support
+rotation-based shufﬂing or not.
+
+IV. HYBRID SPARSE ARCHITECTURE
+
+The architecture solution mentioned in Section
+III can
+improve the performance and power efﬁciency of single sparse
+models (i.e., DNN.A and DNN.B models in Table I). In
+Section IV-A, we ﬁrst propose an architecture family that
+supports dual sparsity (i.e., DNN.AB models in Table I).
+This is achieved by enabling zero operand replacement from
+all of the six dimensions mentioned in Section III (da1,
+da2, da3, db1, db2, and db3). On top of this parametric
+architecture, we propose a hybrid solution in Section IV-B, with
+an optimal design called Grifﬁn. Compared to a dual sparse
+architecture, Grifﬁn can morph into high-performance Sparse.A
+and Sparse.B architecture and therefore perform better for
+DNN.A and DNN.B models, respectively.
+
+A. Supporting Dual Sparsity:
+
+The main overhead when supporting dual sparsity is to
+fetch operations with nonzero operands in both A and B. Such
+architectures take advantage of all six dimensions for replacing
+zero elements. We deﬁne dual sparse architectures as follows:
+
+B. Hybrid Architecture (Grifﬁn):
+A hybrid architecture reuses dual sparsity overheads to
+achieve better results in single sparse cases (i.e., DNN.A and
+DNN.B). In this section, we introduce, Grifﬁn, an optimal
+design of hybrid architectures with high area and power
+efﬁciency in both single and dual sparse categories.
+Grifﬁn has three conﬁgurations for sparse architectures
+shown in Figure 4. When running dual sparse benchmark,
+it performs as Sparse.AB(2,0,0,2,0,1) (see Section IV-A).
+
+Deﬁnition IV.1. Sparse.AB(da1,da2,da3,db1,db2,db3) is an
+architecture that support sparsity in both A and B. This
+architecture replaces a zero operand in A (x1,x2,x3) with
+nonzero value (x1 + ∆1,x2 + ∆2,x3 + ∆3) where ∆i ≤dai.
+Similarly, in Matrix B, it allows replacing a zero operand
+(y1,y2,y3) with nonzero value (y1 +∆′
+1,y2 +∆′
+2,y3 +∆′
+3) where
+∆′
+i ≤dbi.
+
+Dual Sparse
+Grifﬁn
+
+model
+DNN.A
+downgrade to
+morph to
+conﬁg
+Sparse.A(2,0,0)
+Sparse.A(2,1,1)
+fan-in BMUX:3
+fan-in BMUX:5
+changes/
+ABUF entries used: 9
+ABUF entries used: 5
+overhead
+no global arbiter
+one global arbiter per row
+PE controller used
+PE controller not used
+
+model
+DNN.B
+downgrade to
+morph to
+conﬁg
+Sparse.B(2,0,1)
+Sparse.B(8,0,1)
+changes/
+BBUF entries used:3
+BBUF entries used:1
+overhead
+metadata per element:3b
+metadata per element:4b
+
+TABLE IV
+SUMMARY OF BENCHMARKS AND ARCHITECTURE
+CONFIGURATION USED FOR THE EXPERIMENTS.
+
+Benchmarks
+
+Network
+Sparsity ratio
+
+(B,A)
+Accuracy
+Dense latency
+
+(# cycles)
+
+AlexNet [20]
+(89%,53%)
+57.3% (top-1)
+1.0×106
+
+GoogleNet [51]
+(82%,37%)
+68.2% (top-1)
+2.2×106
+
+ResNet50 [17]
+(81%,43%)
+76.1% (top-1)
+4.8×106
+
+InceptionV3 [73]
+(79%,46%)
+75.1% (top-1)
+6.9×106
+
+MobileNetV2 [16]
+(81%,52%)
+67.5% (top-1)
+2.2×106
+
+5.3×106
+
+BERT (MNLI) [57]
+(82%,0%)
+81.0%(Devacc)
+
+81.4%(MMacc)
+
+(sentence length=64)
+
+Architecture Conﬁguration
+
+Core
+(K0,N0,M0) =
+#MACs/core
+1024
+
+Dimension
+(16,16,4)
+
+Fig. 4.
+Grifﬁn is a hybrid architecture that morphs into
+different conﬁguration for different categories of benchmarks. (a)
+When running dual sparse benchmark, Grifﬁn allows (2,0,0,2,0,1)
+borrowing from (da1, da2, da3, db1, db2, db3). (b) When run-
+ning benchmark with only sparse Matrix B, it morphs into
+Sparse.B(8,0,1). (c) When running benchmark with only sparse
+Matrix A, it morphs into Sparse.A(2,1,1). In each subﬁgures, we
+highlight the part of ABUF and BBUF used in the conﬁguration
+for PE0,0.
+
+# Cores
+1
+Technology
+7nm
+
+ASRAM
+512kB
+BSRAM
+32kB
+
+ASRAM-BW
+51GB/s
+BSRAM-BW
+205GB/s
+
+DRAM-BW
+50GB
+Supply Voltage
+0.71v
+
+Target Freq.
+800MHz
+Dataﬂow
+OS
+
+Figure 4(c) illustrates Grifﬁn morphing into Sparse.A(2,1,1)
+for DNN.A models. In this mode, the entire three elements of
+BBUF are needed. In addition, the extra adder tree of each PE is
+also reused because these conﬁgurations allow borrowing from
+da3. However, there are three main changes to the dual sparse
+mode. (1) Sparse.A(2,1,1) requires three entries of ABUF
+from the current row and two from the neighboring one. Since
+ABUF has nine spaces from nine entries, the element from the
+neighboring ABUF is also copied into the current ABUF. (2)
+The process of zero skipping and arbitration becomes more
+complicated as borrowing from the da2 direction is permitted.
+However, just one arbiter is needed per row of PE since only A
+is sparse. Moreover, the control logic in each PE is bypassed.
+(3) Due to enabling borrowing from da2 direction, the ﬁn-
+in of BMUXs should increase from three to ﬁve. Table III
+summarizes the difference between Grifﬁn and dual sparse
+architecture for DNN.A and DNN.B models.
+
+We discuss how we derive these parameters for the optimal
+performances in Section VI. This conﬁguration requires 9-
+entry ABUF, 3-entry BBUF, 9-input AMUX, and 3-input
+BMUXs, and one extra adder tree. Without hybrid architec-
+ture, this design point downgrades to Sparse.A(2,0,0) and
+Sparse.B(2,0,1) for DNN.A and DNN.B models, respectively.
+In this case, the main overhead, such as the large ABUF
+would not be underutilized (the above-downgraded models
+only require 3 entries of the ABUF). On the other hand, Grifﬁn
+morphs into a more aggressive conﬁguration for DNN.A and
+DNN.B models to better utilize the overhead already imposed
+for DNN.AB, with a negligible hardware cost. Speciﬁcally,
+Grifﬁn uses Sparse.A(2,1,1) and Sparse.B(8,0,1) for DNN.A
+and DNN.B models, respectively.
+Figure 4(b) shows the re-conﬁguration to Sparse.B(8,0,1).
+This conﬁguration uses the entire nine elements of ABUF but
+requires 4bits of metadata per element of B rather than 3bits.
+Since Matrix A is dense, the control logic in each PE is idle
+and the metadata values are enough to generate indices for
+AMUXs. In addition, only one entry of BBUF is used, hence
+BMUX indices are ﬁxed to 0.
+
+V. EXPERIMENTAL SETUP
+
+The performance evaluation is based on a cycle-accurate
+simulation model developed in Python and PyTorch for several
+pruned DNN benchmarks. The python-based simulator receives
+weight and activation tensor blocks from pytorch and pre-
+preprocess weight tensors, if necessary, and then computes
+
+Architecture A-matrix Routing B-matrix Routing Shufﬂe
+Sparsity
+da1 da2
+da3
+db1 db2
+db3
+Support
+
+Baseline
+
+
+
+
+
+
+
+Dense
+BitTactical
+
+
+
+
+
+
+
+Weight Only
+TensorDash
+
+
+
+
+
+
+
+Dual Sparsity
+SparTen
+
+
+
+
+
+
+
+Dual Sparsity
+Grifﬁn (ours)
+
+
+
+
+
+
+
+Hybrid Sparsity
+
+Deﬁnition V.1. Power and area efﬁciency:
+Effective TOPs/W = sparsity speedup×dense Tops/W
+Effective TOPs/mm2 = sparsity speedup×dense Tops/mm2
+
+VI. RESULTS
+
+In this section, the design space exploration results of sparse
+architectures such as weight-only sparse, activation-only sparse,
+and dual sparse architectures are reported. We identify the
+optimal design points for each sparse architecture class, and
+also propose a hybrid architecture Grifﬁn which performs
+well in three different DNN categories, DNN.A, DNN.B, and
+DNN.AB.
+
+A. Weight-Only Sparsity Support:
+
+For weight-only sparse architectures, we limit our analysis
+to those with AMUX fan-in smaller than or equal to eight,
+as larger MUXs would severely impact power efﬁciency.
+Figure 5(a) shows normalized speed up, with respect to the
+dense baseline, for all possible conﬁgurations with the above
+constraints. We remove the case with db1 = 1, as it is far
+from the optimal points. Below are the key observations from
+Figure 5.
+(1) Larger db1, db2, db3 leads to higher speed-up, with db1
+has more impact than the other two parameters because it
+decides the ideal maximum speed-up to (1+db1).
+(2) db3 > 0 can boost the performance by up to 48%
+(db3 = 1, B(4,0,0,off):1.7× →B(4,0,1,off):2.5×) and
+72% (db3 = 2, B(4,0,0,off):1.7× →B(4,0,2,off):2.9×) with
+increasing power overehead of 10% and 20%, respectivley.
+(3) Shufﬂing is effective, mostly for db1 > 2 and leads to
+up to 43% improvement in speedup (B(6,0,0,off):1.9× →
+B(6,0,0,on):2.7×) (See Figure 5(a)).
+(4) Shufﬂing plays similar role as db2 because both shufﬂing
+and db2 mitigate the load imbalance between different k
+indices in GEMM operation. Therefore, when the shufﬂing
+is used in Sparse.B designs, the impact of db2 get
+diminished as shown in the speedup results from B(2,db2,0,
+on/off).
+(5) Balancing db2 and db3 is more effective than using only
+one large parameter between them because the speedup
+gain from db2 and db3 gets saturated as they increases.
+For example, B(2,1,1,on):2.6× outperform B(2,2,0,on):
+2.4× and B(2,0,2,on):2.4×.
+(6) Shufﬂer can boost the performance of nonzero db2 with a
+lower cost as shown in Figure 5(b).
+
+Fig. 5.
+Impact of B-matrix routing conﬁgurations. We use shorter notation B(db1,db2,db3) to refer to Sparse.B(db1,db2,db3).
+When we indicate shufﬂing-on/off of the sparse design, ‘on’ or ‘off’ index is added as Sparse.B(db1,db2,db3,on/o f f). (a) Normalized
+speedup with respect to the dense baseline for different conﬁgurations. The shaded bars are the results with shufﬂing. (b) Effective
+power efﬁciency for different design points for DNN.B benchmark (y-axis) and DNN.dense benchmark (x-axis), (c) Effective area
+efﬁciency for different design points for DNN.B benchmark (y-axis) and DNN.dense benchmark (x-axis).
+
+AMUX/BMUX fan-in smaller than or equal to eight. This is
+based on our observation that designs with larger AMUX/
+BMUX also require deeper BBUF, which is expensive and
+reduces power and area efﬁciency. Figure 6(a) shows the
+designs with the above mentioned restriction. Figures 6(b),(c)
+also show the power and area efﬁciency of these design points
+for a design with (shown in y-axes) and without ReLU (shown
+in x-axes). We observe that,
+
+TABLE VI
+OPTIMAL DESIGN POINTS AND THEIR ROUTING
+CONFIGURATIONS.
+
+Architecture
+A-matrix Routing
+B-matrix Routing
+Shufﬂe
+da1
+da2
+da3
+db1
+db2
+db3
+
+Sparse.B*
+-
+4
+0
+1
+
+Sparse.A*
+2
+1
+0
+-
+Sparse.AB
+2
+0
+0
+2
+0
+1
+
+On
+
+conf.B
+-
+8
+0
+1
+conf.A
+2
+1
+1
+-
+conf.AB
+2
+0
+0
+2
+0
+1
+
+Grifﬁn
+
+(1) da1 is not as important as db1 in Sparse.B architectures
+because the average sparsity level due to ReLU is close to
+50% that gives ideal speedup of ∼2x.(A(2,1,0,on):1.83×
+∼A(3,1,0,on):1.89×)
+(2) da3 > 0 leads to power and area efﬁciency drop with
+insigniﬁcant speedup (A(2,1,0,on):1.83× →A(2,1,1,on):
+1.93× →A(2,1,2,on):1.97×) , while power/area overhead
+for A(2,1,1,on) and A(2,1,2,on) are 9%/4% and 17%/6%,
+respectively.
+(3) Shufﬂing boosts performance by up to 40%(A(4,0,1,off):
+1.28× →A(4,0,1,on):1.79×).
+(4) Performance of designs with da1 ≥4 is limited since they
+cannot use da2 > 0 due to the AMUX fan-in size limit
+(cf.AMUX=1+da1×(1+da2)×(1+da3)).
+
+Figure 5(b),(c) show the power and area efﬁciency of
+weight-only sparse architecture families, for both pruned
+models (shown in y-axes) and non-pruned models (shown
+in x-axes). Looking into the Pareto optimal design points,
+Sparse.B(4,0,0,on), Sparse.B(4,0,1,on), and Sparse.B(4,0,2,on)
+show 95%, 127%, and 130% increase in power efﬁciency for
+pruned network, respectively. These three designs only impose
+10%, 16%, and 22% power overhead respectively, compared to
+dense baseline models. (Listed in Table VI) Among the three
+designs, we chose Sparse.B(4,0,1,on) as an optimal design
+point for weight-sparse architecture, Sparse.B*, which shows
+high TOPS/W on DNN.B with minimal efﬁciency loss in
+DNN.dense. Finally, note that while SparTen.B shows 3.9×
+speedup, it hurts the power efﬁciency by 26% and increases
+only 1% area efﬁciency with DNN.B, compared to the baseline,
+due to large buffers, MUXs, and control path logic. On the
+other hand, TCL.B improves both area and power efﬁciency.
+However, we found that adding shufﬂing and db3 > 0 can
+signiﬁcantly increase power efﬁciency for TCL.B up to 47%.
+
+Sparse.A(2,1,0,on), which we selected as an optimal design
+point (Sparse.A*) among activation sparse architectures, leads
+to 26% increase in power efﬁciency for DNN.A models while
+reducing power efﬁciency by 18% for DNN.dense models.
+(Listed in Table VI) This conﬁguration leads to 58% increase
+in area efﬁciency, for DNN.A with only 14% decrease for
+DNN.dense models.
+We also observe that SparTen.A can achieve 2× speedup at
+the cost of 62% and 49% power and area overheads, compared
+to the optimized dense baseline. This is because SparTen.A does
+
+B. Activation-Only Sparsity Support:
+We narrow down the design space exploration of archi-
+tectures that support activation-only sparsity to those with
+
+Fig. 6.
+Impact of A-matrix routing conﬁgurations. We use shorter notation A(da1,da2,da3) to refer to Sparse.A(da1,da2,da3).
+When we indicate shufﬂing-on/off of the sparse design, ‘on’ or ‘off’ index is added as Sparse.A(da1,da2,da3,on/o f f). (a) Normalized
+speedup with respect to the dense baseline for different conﬁgurations. The shaded bars are the results with shufﬂing. (b) Effective
+power efﬁciency for different design points for DNN.A benchmark (y-axis) and DNN.dense benchmark (x-axis). (c) Effective area
+efﬁciency for different design points for DNN.A benchmark (y-axis) and DNN.dense benchmark (x-axis).
+
+not unroll in K dimensions, which leads to high accumulation
+cost and high operand fetch energy. In addition, only 8.5% of
+the entire area of the SparTen.A is allocated to the compute
+units, which translates to low area efﬁciency (3.8 TOPS/mm2).
+
+in. Therefore, to achieve higher performance, it is effective
+to limit the maximum da1 window less than or equal to 2
+and invest more on the weight side. In addition, da3 also
+increases AMUX fan-in size in contrast to db3. Thus, we
+chose db3 over da3 and excluded designs with da3 > 0
+from Figure 7 for sake of space.
+In all the explored design points, we selected Sparse.AB
+(2,0,0,2,0,1,on) as our optimal design point, Sparse.AB*, as it
+shows 3.9× speedup and increases power and area efﬁciency
+of the dense baseline by 108% and 187% for DNN.AB models,
+respectively. (Listed in Table VI) For DNN.A models, this
+design reduces power efﬁciency by only 5% and improves
+area efﬁciency by 23%. On the other hand, TDash.AB and
+Sparten.AB only improve power efﬁciency by 43% and 40%,
+respectively. Both architectures do not exploit the beneﬁts of
+weight preprocessing which can save the BBUF depth, BMUX
+fan-in size, and control overheads.
+
+C. Dual Sparsity Support:
+
+The family of dual sparse architectures has seven parameters,
+namely da1, da2, da3, db1, db2, db3, and shufﬂing. To explore
+the design space we allow conﬁgurations that lead to AMUX
+fan-in that is not larger than 16. Compared to weight-only
+and activation-only sparsity, we consider larger fan-in, as dual
+sparse design can achieve higher performance, hence, can
+tolerate higher area and power overhead. Several design points
+satisfy this restriction and we show the best-performing ones
+in Figure 7(a). We observe that 4.9× speedup is achieved
+by Sparse.AB(2,0,0,4,0,2,on) compared to the dense baseline.
+Figure 7(b)/(c) depict the projected power/area efﬁciency for
+DNN.A and DNN.AB models, on the X and Y axis, respectively.
+We observe the following trends in Figure 7.
+(1) Shufﬂing can replace db2 > 0 and da2 > 0, which
+only imposes the sparsity overhead for DNN.dense by
+∼2% and ∼3% for power and area, respectively. For
+example, Sparse.AB(1,db2 = 0,0,3,db2 = 0,1,on) shows
+4.0× speedup while no-shufﬂing designs with da2 = 1
+or db2 = 1 perform worse with 3.4× or 3.8× speedup,
+respectively.
+(2) If both da3 and db3 are nonzero, the design would not be
+on the Pareto optimal curve of power and area efﬁciency,
+as such designs require at least four adder trees per PE
+imposing a large overhead.
+(3) Most area and power-efﬁcient designs have da1 ≤2 as
+larger da1 results in larger BBUFs and AMUX/BMUX fan-
+
+D. Hybrid Architecture (Grifﬁn):
+
+To evaluate our hybrid architecture, Grifﬁn, we consider the
+impact of hybrid enhancement on Sparse.AB*. When running
+DNN.B models, it is reconﬁgured to conf.B(db1,db2,db3,
+shuf fle) = (8,0,1,on) with 3.5× speedup. This conﬁguration
+of Grifﬁn allows DNN.B models to achieve 25% and 42% better
+power efﬁciency and area efﬁciency, respectively, compared
+to Sparse.AB*, as shown in Figure 8(b). The architecture
+uses conf.A(da1,da2,da3,shuf fle) = (2,1,1,on), for running
+DNN.A models, with 1.94× speedup, which translates to 23%
+and 20% power efﬁciency and area efﬁciency improvement,
+respectively (Figure 8(c)). The efﬁciency improvement in
+DNN.B and DNN.A was achieved by only ∼1% drop of power
+efﬁciency and area efﬁciency in both DNN.dense and DNN.AB
+
+Fig. 7.
+Impact of A & B matrices routing conﬁgurations. We use shorter notation AB(da1,da2,da3,db1,db2,db3) to refer to
+Sparse.AB (da1,da2,da3,db1,db2,db3). When we indicate shufﬂing-on/off of the sparse design, ‘on’ or ‘off’ index is added as
+Sparse.AB(da1,da2,da3,db1,db2,db3,on/of f). (a) Normalized speedup with respect to the dense baseline for different conﬁgurations.
+The shaded bars are the results with shufﬂing. (b) Effective power efﬁciency for different design points for DNN.AB benchmark
+(y-axis) and DNN.A benchmark (x-axis), (c) Effective Area efﬁciency for different design points for DNN.AB benchmark (y-axis)
+and DNN.A benchmark (x-axis).
+
+models ( Figure 8(a) and (d)). All three conﬁgurations of Grifﬁn
+are listed in Table VI. Grifﬁn is also 1.2, 3.0, 3.1, and 1.4×
+more power-efﬁcient and 3.8, 3.1, 3.7, and 1.8× more area-
+efﬁcient compared to Sparten, the state-of-the-art dual sparse
+architecture to the best of our knowledge, for DNN.dense,
+DNN.B, DNN.A, and DNN.AB, respectively. Note that the
+conf.A of Grifﬁn for DNN.A is not as effective as conf.B for
+DNN.B, since activation tensors are denser than weight tensors.
+Furthermore, activation sparsity is handled in real-time which
+is less effective than the preprocessing used for weight-only
+sparsity cases.
+
+path imposes 12% and 4.3% power and area overhead, in both
+Sparse.AB* and Grifﬁn, as they require one control unit per
+PE.
+Since TCL.B and TDash.AB added sparse logic designed on
+top of efﬁcient 3D dense core like Grifﬁn, the power and area
+cost of those architectures are similar to Sparse.B* and Grifﬁn,
+respectively. Therefore, the higher speedup from Sparse.B* and
+Grifﬁn caused better power and area efﬁciency compared to
+TCL.B and TDash.AB. In the case of Sparsten.AB, both the
+PE and BUFs cause inefﬁciency because the Sparten.AB with
+MAC-based architecture does not share accumulators (which
+consume 110mW) and uses BUFs with a depth of 128. This
+buffer makes the power and area increase by 416mW and
+6.4×105µm2, respectively (larger than the power and area of
+baseline architecture).
+
+E. Hardware Overhead and Breakdown:
+
+Table VII shows the power and area breakdown of the dense
+baseline as well as Sparse.B*, TCL.B, Sparse.A*, Sparse.AB*,
+Grifﬁn, TDash.AB, and Sparten.AB in the order of increasing
+power efﬁciency. In the dense baseline, we observe that
+multipliers are dominant both in power and area. Allocating
+most of the resources to the compute unit makes the design
+more efﬁcient and sparsity overhead more ampliﬁed. In both
+Sparse.B* and Sparse.A* sparsity cases, the control overhead
+is insigniﬁcant. Moreover, power and area overhead of shufﬂer
+is less than 1.0% and 0.7% compared to the dense, respectively.
+In all types of sparse designs, the main power overheads come
+from registers added to the data path pipeline and those needed
+for ABUFs and BBUFs. The selected design for Sparse.A*,
+Sparse.B*, Sparse.AB*, and Grifﬁn increase the data path
+power, compared to the dense baseline, by 46%, 34%, 72%,
+and 73%, respectively. Moreover, these designs increase the
+area overhead with respect to the dense baseline, by 16%, 19%,
+30%, and 32%, respectively. We also observe that the control
+
+F. Overall Comparison:
+
+Figure 8 depicts the normalized area and energy efﬁciency
+of the several selected architectural conﬁgurations as well as
+the related work for four different types of DNN models. The
+goal for optimal design is to remain a top performer for all four
+categories of DNN models. This is only achieved by Grifﬁn
+design. For DNN.dense models, most of the designs, except
+for the Sparten, perform in the same ballpark of efﬁciency
+and all less efﬁcient of the dense baseline. That is expected
+as DNN.dense models do not reﬂect the gains in speedup
+associated with supporting sparsity. The reduced efﬁciency in
+Figure 8(a) can be interpreted as sparsity tax spent for the sake
+of the sparsity gain. Grifﬁn shows more economic sparsity
+tax of 29%/24% for power/area efﬁciency than 42%/80%
+of Sparten.AB. However, these various designs show large
+
+Fig. 8.
+Power efﬁciency vs Area efﬁciency in different DNN categories such as (a) DNN.dense, (b)DNN.B, (c)DNN.A, (d)DNN.AB.
+
+TABLE VII
+POWER AND AREA BREAKDOWN. CTRL AND SHF ARE CONTROL-UNIT AND SHUFFLER, RESPECTIVELY, THAT ARE SEPARATED
+FROM PE. THE RESULTS FROM PE ARE COMPOSED OF REG/WR(PIPELINE REGISTERS AND WIRES), ACC(ACCUMULATORS),
+MUL(MULTIPLIERS), ADT(ADDER TREES), AND MUXS. ASRAM AND BSRAM RESULTS ARE MERGED INTO SRAM COLUMNS.
+
+Power (mW)
+Area (×1000µm2)
+
+Architecture
+
+Total CTRL SHF
+BUF
+PE
+SRAM Total CTRL SHF
+BUF
+PE
+SRAM
+ABUF BBUF REG/WR ACC MUL ADT MUX
+ABUF BBUF REG/WR ACC MUL ADT MUX
+
+Baseline
+151
+-
+-
+-
+-
+22.8
+10.9
+62.6
+21.8
+-
+33.3
+217
+-
+-
+-
+-
+3.2
+2.6
+29
+6.7
+-
+176
+
+Sparse.B*
+206
+-
+0.7
+7.5
+-
+41.0
+10.9
+55.4
+20.4
+3.5
+66.7
+258
+-
+0.9
+2.0
+-
+4.0
+2.6
+33
+12.8
+6.5
+196
+
+TCL.B
+209
+-
+-
+4.3
+-
+24.3
+10.9
+85.9
+21.2
+4.8
+57.2
+233
+-
+-
+0.9
+-
+3.4
+2.6
+34
+6.6
+6.3
+179
+
+Sparse.A*
+223
+1.2
+0.4
+4.5
+17.8
+23.2
+10.9
+67.2
+17.8
+1.5
+78.2
+253
+0.7
+0.5
+0.9
+3.8
+3.8
+2.6
+34
+6.6
+3.5
+196
+
+Sparse.AB*
+282
+18.2
+1.4
+15.3
+22.9
+64.5
+10.9
+31.7
+17.8
+7.0
+92.3
+282
+8.1
+1.6
+11.5
+5.2
+6.0
+2.6
+29
+12.3
+17.5
+188
+
+Grifﬁn
+284
+18.2
+1.4
+15.3
+22.9
+64.5
+10.9
+31.7
+17.8
+8.8
+92.3
+286
+9.4
+1.6
+11.5
+5.2
+6.0
+2.6
+29
+12.3
+20.7
+188
+
+TDash.AB
+284
+19.0
+-
+5.8
+23.4
+24.3
+10.9
+85.9
+21.2
+9.6
+84.1
+276
+8.9
+-
+1.4
+5.8
+3.4
+2.6
+34
+6.6
+17.4
+196
+
+Sparten.AB
+991
+133
+-
+213
+213
+7.5
+110
+133
+-
+inBUF 181.6
+1139
+227
+-
+320
+320
+0.7
+30.2
+41
+-
+inBUF
+200
+
+output channels (i.e.,db3 = 0). Unlike weight sparsity, activation
+sparsity inherently exists in DNNs because of rectiﬁed linear
+(ReLU) function. Cnvlutin exploits only activation sparsity,
+without shufﬂing, by compressing them in time (i.e., db1) [7].
+Other work proposed CNN architectures to support dual
+sparsity [18], [32], [50]. SCNN uses a 2D array of compute
+units that perform an outer product between two nonzero weight
+and activation vectors [50]. The outputs of the compute units are
+routed to their corresponding accumulator using a heavyweight
+crossbar which introduces a substantial overhead.
+ZeNA [32] is a dual sparsity architecture similar to Sparten.
+Both are based on sparse-aware MAC units which route
+computations in time (i.e., db1 and da1) only for each MAC
+unit independently. However, they are limited in efﬁciency
+and scalability due to their limited data movement and reuse
+between MACs. In contrast, Grifﬁn routes irregular sparsity
+among all core dimensions.
+Eyeriss v2 [10] introduces a hierarchical mesh network for
+ﬂexible processing of sparse weights and input activations
+directly in a compressed domain. In contrast to our work,
+it introduces large overheads degrading the performances of
+dense models. Sparse-TPU [25] incorporates index matching
+and value holding functionalities to efﬁciently process sparse
+matrices in a compressed format using a systolic array.
+In addition, there are other sparse architectures which exploit
+bit-level sparsity in weights and/or activation such as Stripe [31],
+Bit-Pragmatic [6], Loom [59], Laconic [58], Bit-Fusion [60],
+UNUP [38] and activation-side in TCL [13]. Bit-level sparsity
+requires extra overhead due to bit-serial operation which
+
+contrast, especially in DNN.B and DNN.AB models and beat
+the baseline by factors of integer in area/energy efﬁciency. The
+exceptions are Sparten.AB and Sparse.A* still perform overall
+worse than the baseline if the task is not dual sparse. TCL.B
+is close to the baseline for DNN.dense and DNN.A models
+and performs reasonably well for DNN.B and DNN.AB cases.
+While TDash.AB shows similar efﬁciency to Sparse.AW* in
+DNN.dense, DNN.A, and DNN.B, it does not perform well in
+DNN.AB models, compared to Sparse.AB* and Grifﬁn.
+
+VII. RELATED WORK
+Recently, several optimization techniques are proposed to
+improve compute and memory efﬁciency for DNNs [14], [39],
+[63]. Various deep learning accelerators improve DNNs per-
+formance by exploiting weight and/or activation sparsity [12].
+Cambricon-X [70] and Bit-Tactical (TCL) [13] are two designs
+based on inner product compute units that focus only on
+exploiting weight sparsity. Cambricon-X leverages a queue
+for weights generated by ﬂattening (K) axes and it uses a
+wide activation crossbar to fetch inputs corresponding with
+nonzero weights. This approach routes nonzero weights with a
+large 16×16 window (i.e., db1 = 16,db2 = 16) which imposes
+high overhead in input crossbar and bandwidth. This activation
+bandwidth requirement makes the design infeasible for scaling
+up. TCL introduces static scheduling coupled with a lightweight
+input multiplexing network. TCL compresses weights statically
+by routing nonzero weights in time and input channel (i.e., db1
+and db2). TCL is similar to our weight-only sparsity design,
+but it does not support routing nonzero weights from different
+
+VIII. CONCLUSIONS
+
+This work describes a systematic approach to model the
+family of architectures that support various ﬂavors of DNNs
+sparsity. We explore the design space and offer multiple insights
+regarding the best dimensions to borrow from for varieties of
+sparse architectures. We propose a hybrid architecture, Grifﬁn,
+to enhance dual sparse architectures to perform close to optimal
+power efﬁciency even when both weight and activation tensors
+are not sparse. We evaluate the proposed design in contrast with
+previous work for different model categories (i.e., DNN.dense,
+DNN.B, DNN.A, and DNN.AB). The result shows that Grifﬁn
+architecture improves power and area efﬁciency by up to 3.1
+and 3.8×, respectively, compared to the state-of-the-art dual
+sparse architectures.
+
+[1] Arm Ethos-N77. [Online]. Available:
+silicon-ip-cpu/ethos/ethos-n77
+[2] NVIDIA deep learning accelerator (NVDLA). [Online]. Available:
+
+[3] SPAGHETTI. [Online]. Available:
+[4] Synopsys
+design
+compiler.
+[Online].
+Available:
+
+test/design-compiler-graphical.html
+[5] (2017)
+NVIDIA
+Tesla
+V100
+GPU
+Achitecture.
+[On-
+line]. Available:
+pdf/voltaarchitecture-whitepaper.pdf
+[6] J. Albericio, A. Delm´as, P. Judd, S. Sharify, G. O’Leary, R. Genov,
+and A. Moshovos, “Bit-pragmatic deep neural network computing,” in
+Proceedings of the 50th Annual IEEE/ACM International Symposium
+on Microarchitecture, ser. MICRO-50 ’17.
+New York, NY, USA:
+Association for Computing Machinery, 2017, p. 382–394. [Online].
+Available:
+[7] J. Albericio, P. Judd, T. Hetherington, T. Aamodt, N. E. Jerger, and
+A. Moshovos, “Cnvlutin: Ineffectual-neuron-free deep neural network
+computing,” ACM SIGARCH Computer Architecture News, vol. 44, no. 3,
+pp. 1–13, 2016.
+[8] T. Chen, Z. Du, N. Sun, J. Wang, C. Wu, Y. Chen, and O. Temam,
+“Diannao: A small-footprint high-throughput accelerator for ubiquitous
+machine-learning,” in Proceedings of the 19th International Conference
+on Architectural Support for Programming Languages and Operating
+Systems, ser. ASPLOS ’14.
+New York, NY, USA: Association
+for Computing Machinery, 2014, p. 269–284. [Online]. Available:
+
+[9] Y.-H. Chen, J. Emer, and V. Sze, “Eyeriss: A spatial architecture
+for energy-efﬁcient dataﬂow for convolutional neural networks,” in
+Proceedings of the 43rd International Symposium on Computer
+Architecture, ser. ISCA ’16.
+IEEE Press, 2016, p. 367–379. [Online].
+Available:
+[10] Y.-H. Chen, T.-J. Yang, J. Emer, and V. Sze, “Eyeriss v2: A ﬂexible
+accelerator for emerging deep neural networks on mobile devices,” IEEE
+Journal on Emerging and Selected Topics in Circuits and Systems, vol. 9,
+no. 2, pp. 292–308, 2019.
+[11] Y. Chen, T. Luo, S. Liu, S. Zhang, L. He, J. Wang, L. Li, T. Chen, Z. Xu,
+N. Sun et al., “Dadiannao: A machine-learning supercomputer,” in 2014
+47th Annual IEEE/ACM International Symposium on Microarchitecture.
+IEEE, 2014, pp. 609–622.
+[12] S. Dave, R. Baghdadi, T. Nowatzki, S. Avancha, A. Shrivastava, and
+B. Li, “Hardware acceleration of sparse and irregular tensor computations
+of ml models: A survey and insights,” arXiv preprint arXiv:2007.00864,
+2020.
+[13] A. Delmas Lascorz, P. Judd, D. M. Stuart, Z. Poulos, M. Mahmoud,
+S. Sharify, M. Nikolic, K. Siu, and A. Moshovos, “Bit-tactical: A
+software/hardware approach to exploiting value and bit sparsity in neural
+networks,” in Proceedings of the Twenty-Fourth International Conference
+on Architectural Support for Programming Languages and Operating
+Systems, 2019, pp. 749–763.
+[14] L. Deng, G. Li, S. Han, L. Shi, and Y. Xie, “Model compression and
+hardware acceleration for neural networks: A comprehensive survey,”
+Proceedings of the IEEE, vol. 108, no. 4, pp. 485–532, 2020.
+[15] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training
+of deep bidirectional transformers for language understanding,” 2019.
+[16] U. Evci, T. Gale, J. Menick, P. S. Castro, and E. Elsen, “Rigging
+the lottery: Making all tickets winners,” in Proceedings of the 37th
+International Conference on Machine Learning, ser. Proceedings of
+Machine Learning Research, H. D. III and A. Singh, Eds., vol.
+119.
+PMLR, 13–18 Jul 2020, pp. 2943–2952. [Online]. Available:
+
+[17] T. Gale, E. Elsen, and S. Hooker, “The state of sparsity in deep neural
+networks,” arXiv preprint arXiv:1902.09574, 2019.
+[18] A. Gondimalla, N. Chesnut, M. Thottethodi, and T. Vijaykumar, “Sparten:
+A sparse tensor accelerator for convolutional neural networks,” in
+Proceedings of the 52nd Annual IEEE/ACM International Symposium
+on Microarchitecture, 2019, pp. 151–165.
+[19] S. Hadjis, F. Abuzaid, C. Zhang, and C. R´e, “Caffe con troll: Shallow
+ideas to speed up deep learning,” 2015.

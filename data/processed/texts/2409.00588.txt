@@ -1,0 +1,3049 @@
+Diffusion Policy Policy Optimization
+
+Allen Z. Ren1, Justin Lidard1, Lars L. Ankile2, Anthony Simeonov2,
+
+Pulkit Agrawal2, Anirudha Majumdar1, Benjamin Burchfiel3, Hongkai Dai3, Max Simchowitz2,4
+
+1Princeton University 2Massachusetts Institute of Technology
+3Toyota Research Institute 4Carnegie Mellon University
+
+arXiv:2409.00588v3 [cs.RO] 9 Dec 2024
+
+Abstract
+
+We introduce Diffusion Policy Policy Optimization, DPPO, an algorithmic framework including best
+practices for fine-tuning diffusion-based policies (e.g. Diffusion Policy [20]) in continuous control and
+robot learning tasks using the policy gradient (PG) method from reinforcement learning (RL). PG meth-
+ods are ubiquitous in training RL policies with other policy parameterizations; nevertheless, they had
+been conjectured to be less efficient for diffusion-based policies. Surprisingly, we show that DPPO
+achieves the strongest overall performance and efficiency for fine-tuning in common benchmarks com-
+pared to other RL methods for diffusion-based policies and also compared to PG fine-tuning of other
+policy parameterizations.
+Through experimental investigation, we find that DPPO takes advantage
+of unique synergies between RL fine-tuning and the diffusion parameterization, leading to structured
+and on-manifold exploration, stable training, and strong policy robustness. We further demonstrate the
+strengths of DPPO in a range of realistic settings, including simulated robotic tasks with pixel observa-
+tions, and via zero-shot deployment of simulation-trained policies on robot hardware in a long-horizon,
+multi-stage manipulation task. Website with code: diffusion-ppo.github.io.
+
+1
+Introduction
+
+Large-scale pre-training with additional fine-tuning has become a ubiquitous pipeline in the development
+of language and image foundation models [12, 65, 75, 82]. Though behavior cloning with expert data
+[71] is rapidly emerging as dominant paradigm for pre-training robot policies [27, 28, 30, 50, 106], their
+performance can be suboptimal [64] due to expert data being suboptimal or expert data exhibiting limited
+coverage of possible environment conditions. As robot policies entail interaction with their environment,
+reinforcement learning (RL) [90] is a natural candidate for further optimizing their performance beyond the
+limits of demonstration data. However, RL fine-tuning can be nuanced for pre-trained policies parameterized
+as diffusion models [38], which have emerged as a leading parameterization for action policies [20, 66, 78],
+due in large part to their high training stability and ability to represent complex distributions [39, 49, 72, 80].
+
+Contribution 1 (DPPO). We introduce Diffusion Policy Policy Optimization (DPPO), a generic
+framework as well as a set of carefully chosen design decisions for fine-tuning a diffusion-based
+robot learning policy via popular policy gradient methods [85, 91] in reinforcement learning.
+
+The literature has already studied improving/fine-tuning diffusion-based policies (Diffusion Policy) us-
+ing RL [35, 74, 100], and has applied policy gradient (PG) to fine-tuning non-interactive applications of
+diffusion models such as text-to-image generation [9, 21, 25]. Yet PG methods have been believed to be
+inefficient in training Diffusion Policy for continuous control tasks [74, 103]. On the contrary, we show
+that for a Diffusion Policy pre-trained from expert demonstrations, our methodology for fine-tuning via PG
+updates yields robust, high-performing policies with favorable training behavior.
+
+DPPO: Diǒusion Policy Policy Optimization
+
+Environment MDP
+
+Policy
+Gradient
+
+Diffusion
+
+Diffusion
+
+MDP
+
+MDP
+
+Update
+
+Structured exploration
+Training stability
+Policy robustness
+
+Figure 1: We introduce DPPO, Diffusion Policy Policy Optimization, that fine-tunes pre-trained Diffusion
+Policy using policy gradient. DPPO treats the denoising process as a Markov Decision Process (“Diffusion
+MDP”) allowing the task reward signal (from “Environment MDP“) to easily propagate through Diffusion
+Policy (Fig. 3). Policy gradient update then leverages the tractable Gaussian likelihood at each denoising
+step. Extensive experiments in simulation and hardware show DPPO affords structured exploration and
+training stability during policy fine-tuning, and the final policy exhibits strong robustness and generalization.
+
+Contribution 2 (Demonstration of DPPO’s Performance). We show that for fine-tuning a
+pre-trained Diffusion Policy, DPPO yields strong training stability across tasks and marked
+improvements in final performance in challenging robotic tasks in comparison to a range of
+alternatives, including those based on off-policy Q-learning [35, 74, 100, 103] and weighted
+regression [47, 67, 70], other demo-augmented RL methods [7, 40, 62], as well as common
+policy parameterizations such as Gaussian and Gaussian Mixture models with PG updates.
+
+The above finding might be surprising because PG methods do not appear to take advantage of the unique
+capabilities of diffusion sampling (e.g., guidance [2, 45]). Through careful investigative experimentation,
+however, we find a unique synergy between RL fine-tuning and diffusion-based policies.
+
+Contribution 3 (Understanding the mechanism of DPPO’s success). We complement our re-
+sults with numerous investigative experiments that provide insight into the mechanisms behind
+DPPO’s strong performance. Compared to other common policy parameterizations, we pro-
+vide evidence that DPPO engages in structured exploration that takes better advantage of the
+“manifold” of training data, and finds policies that exhibit greater robustness to perturbation.
+
+Through ablations, we further show that our design decisions overcome the speculated limitation of PG
+methods for fine-tuning Diffusion Policy. Finally, to justify the broad utility of DPPO, we verify its efficacy
+across both simulated and real environments, and in situations when either ground-truth states or pixels are
+given to the policy as input.
+
+Contribution 4 (Tackling challenging robotic tasks and settings). We show DPPO is effective
+in various challenging robotic and control settings, including ones with pixel observations and
+long-horizon manipulation tasks with sparse reward. We also deploy a policy trained in simu-
+lation via DPPO on real hardware in zero-shot, which exhibits a remarkably small sim-to-real
+gap compared to the baseline.
+
+Robust sim-to-real transfer in zero shot
+
+Corrective
+
+behavior
+
+Figure 2: DPPO solves challenging long-horizon manipulation tasks from FURNITURE-BENCH ([36]), and
+allows robust sim-to-real transfer without using any real data (see Section 5.4).
+
+1.1
+Overview of Approach
+
+Like prior work [9, 21], our approach unrolls the denoising diffusion process into an MDP in which action
+likelihoods are explicit; from this, we construct a two-layer MDP whose outer layer corresponds to the
+environment MDP and inner layer to the denoising MDP. Given the challenges of RL training, we also
+present a number of design decisions tailored to DPPO that are crucial for enabling DPPO’s performance in
+challenging robotic settings, discussed in Contributions 2 and 4, including:
+
+• We apply Proximal Policy Optimization (PPO) [85] to the two-layer MDP. We show how to efficiently
+estimate the advantage function for the PPO update.
+
+• We show that for fine-tuning tasks, it often suffices to fine-tune only the last few steps of the denoising
+process, or fine-tune the Denoising Diffusion Implicit Model (DDIM) [87] instead.
+
+• We propose modifications to the diffusion noise schedule to ensure stable training and adequate ex-
+ploration, whilst also leveraging the natural stochasticity of diffusion models.
+
+Our method is formally detailed in Section 4. As noted above, we conduct extensive experiments demon-
+strating both the success of DPPO in Section 5 and potential explanations thereof in Section 6.
+
+2
+Related Work
+
+Policy optimization and its application to robotics.
+Policy optimization methods update an explicit rep-
+resentation of an RL policy — typically parameterized by a neural network — by taking gradients through
+action likelihoods. Following the seminal policy gradient (PG) method [91, 101], there have been a range
+of algorithms that further improve training stability and sample efficiency such as DDPG [54] and PPO
+[84]. PG methods have been broadly effective in training robot policies [4, 17, 43, 48], largely due to their
+training stability with high-dimensional continuous action spaces, as well as their favorable scaling with par-
+allelized simulated environments. Given the challenges of from-scratch exploration in long-horizon tasks,
+PG has seen great success in fine-tuning a baseline policy trained from demonstrations [68, 76, 93]. Our
+experiments find DPPO performing on-policy PG often achieves stronger final performance in manipula-
+tion tasks, especially ones with long horizon and high-dimensional action space, than off-policy Q-learning
+methods [7, 40, 62]. See Appendix A.1 for extended discussions on PG fine-tuning of robot policies and
+related methods.
+
+Learning and improving diffusion-based policies.
+Diffusion-based policies [5, 20, 66, 78, 89, 99, 105]
+have shown recent success in robotics and decision making applications. Most typically, these policies are
+trained from human demonstrations through a supervised objective, and enjoy both high training stability
+and strong performance in modeling complex and multi-modal trajectory distributions.
+
+As demonstration data are often limited and/or suboptimal, there have been many approaches proposed
+to improve the performance of diffusion-based policies. One popular approach has been to guide the dif-
+fusion denoising process using objectives such as reward signal or goal conditioning [2, 15, 45, 53, 96].
+More recent work has explored the possibilities of techniques including Q-learning and weighted regres-
+sion, either from purely offline estimation [16, 22, 100], and/or with online interaction [35, 47, 74, 103].
+See Appendix A.2 for detailed descriptions of these methods.
+
+Policy gradient through diffusion models.
+RL techniques have been used to fine-tune diffusion models
+such as ones for text-to-image generation [9, 24, 25, 97]. Black et al. [9] treat the denoising process as
+an MDP and apply PPO updates. We build upon these earlier findings by embedding the denoising MDP
+into the environmental MDP of the dynamics in control tasks, forming a two-layer “Diffusion Policy MDP”.
+Though Psenka et al. [74] have already shown how PG can be taken through Diffusion Policy by propagating
+PG through both MDPs, they conjecture that it is likely to be ineffective due to large action variance caused
+by the increased effective horizon induced from the denoising steps. Our results contravene this supposition
+for diffusion-based policies in the fine-tuning setting.
+
+3
+Preliminaries
+
+Markov Decision Process.
+We consider a Markov Decision Process (MDP)1 MENV := (S, A, P0, P, R)
+with states s ∈S, actions a ∈A, initial state distribution P0, transition probabilities P, and reward R.
+At each timestep t, the agent (e.g., robot) observes the state st ∈S, takes an action at ∼π(at | st) ∈A,
+transitions to the next state st+1 according to st+1 ∼P(st+1 | st, at) while receiving the reward R(st, at)2.
+Fixing the MDP MENV, we let Eπ (resp. Pπ) denote the expectation (resp. probability distribution) over
+trajectories (s0, a0, ..., sT , aT ) with length T + 1, with initial state distribution s0 ∼P0 and transition
+operator P. We aim to train a policy to optimize the cumulative reward, discounted by a function γ(·): :
+
+
+
+
+
+X
+
+J (πθ) = Eπθ,P0
+
+t≥0
+γ(t)R(st, at)
+
+.
+(3.1)
+
+Policy optimization.
+The policy gradient method (e.g., REINFORCE [101]) allows for improving policy
+performance by approximating the gradient of this objective w.r.t. the policy parameters:
+
+
+
+
+
+X
+
+,
+rt(st, at) :=
+X
+
+∇θJ (πθ) = Eπθ,P0
+
+t≥0
+∇θ log πθ(at|st)rt(st, at)
+
+τ≥t
+γ(τ)R(sτ, aτ),
+(3.2)
+
+where rt is the discounted cumulative future reward from time t (more generally, rt can be replaced by
+a Q-function estimator [91]), γ is the discount factor that depends on the time-step, and ∇θ log πθ(at|st)
+denotes the gradient of the logarithm of the likelihood of at | st. To reduce the variance of the gradient
+estimation, a state-value function ˆV πθ(st) can be learned to approximate E[rt]. The estimated advantage
+function ˆAπθ(st, at) := rt(st, at) −ˆV πθ(st) substitutes rt(st, at).
+
+1More generally, we can view our environment as a Partially Observed Markov Decision Process (POMDP) where the agent’s
+actions depend on observations o of the states s (e.g., action from pixels). Our implementation applies in this setting, but we omit
+additional observations from the formalism to avoid notional clutter.
+2For simplicity, we overload R(·, ·) to denote both the random variable reward and its distribution.
+
+Diffusion models.
+A denoising diffusion probabilistic model (DDPM) [38, 63, 86] represents a continuous-
+valued data distribution p(·) = p(x0) as the reverse denoising process of a forward noising process q(xk|xk−1)
+that iteratively adds Gaussian noise to the data. The reverse process is parameterized by a neural network
+εθ(xk, k), predicting the added noise ε that converts x0 to xk [38]. Sampling starts with a random sample
+xK ∼N(0, I) and iteratively generates the denoised sample:
+
+xk−1 ∼pθ(xk−1|xk) := N(xk−1; µk(xk, εθ(xk, k)), σ2
+kI).
+(3.3)
+
+Above, µk(·) is a fixed function, independent of θ, that maps xk and predicted εθ to the next mean, and σ2
+k
+is a variance term that abides by a fixed schedule from k = 1, . . . , K. We refer the reader to Chan [14] for
+an in-depth survey.
+
+Diffusion models as policies.
+Diffusion Policy (DP; see Chi et al. [20]) is a policy πθ parameterized by
+a DDPM which takes in s as a conditioning argument, and parameterizes pθ(ak−1 | ak, s) as in Eq. (3.3).
+DPs can be trained via behavior cloning by fitting the conditional noise prediction εθ(ak, s, k) to predict the
+added noise. Notice that unlike more standard policy parameterizations such as unimodal Gaussian policies,
+DPs do not maintain an explicit likelihood of pθ(a0 | s). In this work, we adopt the common practice of
+training DPs to predict an action chunk — a sequence of actions a few time steps (denoted Tp) into the
+future — to promote temporal consistency. Policy executes Ta ≤Tp steps of the predicted chunk before the
+next prediction. From now on a ∈A denotes the entire executed action chunk. For fair comparison, our
+diffusion and non-diffusion baselines use the same Ta unless noted.
+
+4
+DPPO: Diffusion Policy Policy Optimization
+
+As noted in Section 1 and Section 2, there has been much attention devoted to fine-tuning Diffusion Policy
+for improved performance [74, 103], focusing primarily on off-policy Q-learning [35, 100] and/or weighted
+regression. DPPO takes a different approach: differentiate through action likelihood and apply a policy
+gradient (PG) update like Eq. (3.2).
+
+4.1
+A Two-Layer “Diffusion Policy MDP”
+
+Figure 3: We treat the denoising process in Diffusion Policy as an MDP, and the whole environment episode
+can be considered as a chain of such MDPs. Now the entire chain (“Diffusion Policy MDP”, MDP) involves
+a Gaussian likelihood at each (denoising) step and thus can be optimized with policy gradient. Blue circle
+denotes the state and red circle denotes the action in MDP.
+
+As observed in [9] and [74], a denoising process can be represented as a multi-step MDP in which
+policy likelihood of each denoising step can be obtained directly. We extend this formalism by embedding
+the Diffusion MDP into the environmental MDP, obtaining a larger “Diffusion Policy MDP” denoted MDP,
+
+visualized in Fig. 3. Below, we use the notation δ to denote a Dirac distribution and ⊗to denote a product
+distribution.
+Recall the environment MDP MENV := (S, A, P0, P, R) in Section 3. The Diffusion MDP MDP uses
+indices ¯t(t, k) = tK + (K −k −1) corresponding to (t, k), which increases in t but (to keep the indexing
+conventions of diffusion) decreases lexicographically with K −1 ≥k ≥0. The states, actions and rewards
+are
+
+(
+0
+k > 0
+R(st, a0
+t )
+k = 0 ,
+
+¯s¯t(t,k) = (st, ak+1
+t
+),
+¯a¯t(t,k) = ak
+t ,
+¯R¯t(t,k)(¯s¯t(t,k), ¯a¯t(t,k)) =
+
+where the bar-action at ¯t(t, k) is the action ak
+t after one denoising step. Reward is only given at times
+corresponding to when a0
+t is taken. The initial state distribution is ¯P 0 = P0 ⊗N(0, I), corresponding to
+s0 ∼P0 is the initial distribution from the environmental MDP and aK
+0 ∼N(0, I) independently. Finally,
+the transitions are
+
+(
+(st, ak
+t ) ∼δ(st,ak
+t )
+¯t = ¯t(t, k), k > 0
+
+¯P(¯s¯t+1 | ¯s¯t, ¯a¯t) =
+
+(st+1, aK
+t+1) ∼P(st+1 | st, a0
+t ) ⊗N(0, I)
+¯t = ¯t(t, k), k = 0
+.
+
+That is, the transition moves the denoised action ak
+t at step ¯t(t, k) into the next state when k > 0, or
+otherwise progresses the environment MDP dynamics with k = 0. The pure noise aK
+t is considered part of
+the environment when transitioning at k = 0. In light of Eq. (3.3), the policy in MDP takes the form
+
+¯πθ(¯a¯t(t,k) | ¯s¯t(t,k)) = πθ(ak
+t | ak+1
+t
+, st) = N(ak
+t ; µ(ak+1
+t
+, εθ(ak+1
+t
+, k + 1, st)), σ2
+k+1I).
+(4.1)
+
+Fortunately, Eq. (4.1) is a Gaussian likelihood, which can be evaluated analytically and is amenable to the
+policy gradient updates3:
+
+∇θ ¯
+J (¯πθ) = E¯πθ, ¯P, ¯P 0
+
+
+
+
+τ≥¯t
+γ(τ) ¯R(¯sτ, ¯aτ).
+(4.2)
+
+,
+¯r(¯s¯t, ¯a¯t) :=
+X
+
+X
+
+¯t≥0
+∇θ log ¯πθ(¯a¯t | ¯s¯t)¯r(¯s¯t, ¯a¯t)
+
+Evaluating the above involves sampling through the denoising process, which is the usual “forward pass”
+that samples actions in Diffusion Policy; as noted above, the inital state can be sampled from the enviroment
+via ¯P 0 = P0 ⊗N(0, I), where P0 is from the environment MDP.
+
+4.2
+Instantiating DPPO with Proximal Policy Optimization
+
+We apply Proximal Policy Optimization (PPO) [1, 23, 41, 85], a popular improvement of the vanilla policy
+gradient update. The full pseudocode with implementation details are shown in Algorithm 1, Appendix B.
+
+Definition 4.1 (Generalized PPO, clipping variant). Consider a general MDP. Given an advantage estimator
+ˆA(s, a), the PPO update [85] is the sample approximation to
+
+πθold(at | st), ˆAπθold(st, at) clip
+πθ(at | st)
+
+∇θ E(st,at)∼πθold min
+
+ˆAπθold(st, at) πθ(at | st)
+
+πθold(at | st), 1 −ε, 1 + ε
+
+,
+
+where ε, the clipping ratio, controls the maximum magnitude of the policy updated from the previous policy.
+
+3[74] proposes a similar derivation but does not consider the denoising process as a MDP. See further clarification in Appendix A.
+
+We instantiate PPO in our diffusion MDP with (s, a, t) ←(¯s, ¯a, ¯t). Our advantage estimator takes a
+specific form that respects the two-level nature of the MDP: let γENV ∈(0, 1) be the environment discount
+and γDENOISE ∈(0, 1) be the denoising discount. Consider the environment-discounted return:
+
+¯r(¯s¯t, ¯a¯t) :=
+X
+
+t′≥t
+γt
+ENV¯r(¯s¯t(t′,0), ¯a¯t(t′,0)),
+¯t = ¯t(t, k),
+
+since ¯R(¯t) = 0 at k > 0. This fact also obviates the need of estimating the value at k > 1 and allows us to
+use the following denoising-discounted advantage estimator4:
+ˆAπθold(¯s¯t, ¯a¯t) := γk
+DENOISE
+
+¯r(¯s¯t, ¯a¯t) −ˆV ¯πθold(¯s¯t(t,0))
+
+
+The denoising-discounting has the effect of downweighting the contribution of noisier steps (larger k) to the
+policy gradient (see study in Appendix C.2). Lastly, we choose the value estimator to only depend on the
+“s” component of ¯s:
+ˆV ¯πθold(¯s¯t(t,0)) := ˜V ¯πθold(st),
+
+which we find leads to more efficient and stable training compared to also estimating the value of applying
+the denoised action ak=1
+t
+(part of ¯s¯t(t,0)) as shown in Appendix C.2.
+
+4.3
+Best Practices for DPPO
+
+Fine-tune only the last few denoising steps.
+Diffusion Policy often uses up to K = 100 denoising steps
+with DDPM to better capture the complex data distribution of expert demonstrations. With DPPO, we can
+choose to fine-tune only a subset of the denoising steps instead, e.g., the last K′ steps. Experimental results
+in Appendix C.2 shows this speeds up DPPO training and reduces GPU memory usage without sacrificing
+the final performance. Instead of fine-tuning the pre-trained model weights θ, we make a copy θFT — θ is
+frozen and used for the early denoising steps, while θFT is used for the last K′ steps and updated with DPPO.
+
+Fine-tune DDIM sampling.
+Instead of fine-tuning all K or the last few steps of the DDPM, one can
+also apply Denoising Diffusion Implicit Model (DDIM) [87] during fine-tuning, which greatly reduces the
+number of sampling steps KDDIM ≪K, e.g., as few as 5 steps, and thus potentially improves DPPO
+efficiency as fewer steps are fine-tuned:
+
+xk−1 ∼pDDIM
+θ
+(xk−1|xk) := N(xk−1; µDDIM(xk, εθ(xk, k)), ησ2
+kI),
+k = KDDIM, ..., 0.
+(4.3)
+
+Although DDIM is typically used as a deterministic sampler by setting η = 0 in Eq. (4.3), we can use
+η > 0 for fine-tuning in order to provide exploration noise and avoid calculating a Gaussian likelihood with
+a Dirac distribution. In practice, we set η = 1 for training (equivalent to applying DDPM [87]) and then
+η = 0 for evaluation. We use DDIM sampling for our pixel-based experiments and long-horizon furniture
+assembly tasks, where the efficiency improvements are much desired.
+
+Diffusion noise scheduling.
+We use the cosine schedule for σk introduced in [63], which was originally
+annealed to a small value on the order of 1e−4 at k = 0. In DPPO, the values of σk also translate to
+the exploration noise that is crucial to training efficiency. Empirically, we find that clipping σk to a higher
+minimum value (denoted σexp
+min, e.g., 0.01 −0.1) when sampling actions helps exploration (see study in
+Appendix C.2). Additionally we clip σk to be at least 0.1 (denoted σprob
+min ) when evaluating the Gaussian
+likelihood log ¯πθ(¯a¯t|¯s¯t), which improves training stability by avoiding large magnitude.
+
+4In practice, we use Generalized Advantage Estimation (GAE, Schulman et al. [84]) that better balances variance and bias in
+estimating the advantage. We present the simpler form here.
+
+Network architecture.
+We study both Multi-layer Perceptron (MLP) and UNet [81] as the policy heads
+in Diffusion Policy. MLP offers a simpler setup, and we find that it generally fine-tunes more stably with
+DPPO. Meanwhile, UNet, only applying convolutions to ak
+t , has the benefit of allowing fine-tuning with
+Ta < Tp, e.g., Tp = 16 and Ta = 8. We find that DPPO benefits from pre-training with larger Tp (better
+prediction) and fine-tuning with smaller Ta (more amenable to policy gradient)5.
+
+5
+Performance Evaluation of DPPO
+
+We study the performance of DPPO in popular RL and robotics benchmarking environments. We compare
+to other RL methods for fine-tuning a Diffusion Policy (Section 5.1), to other demo-augmented RL meth-
+ods (Section 5.2), to other policy parameterizations with PG updates (Section 5.3), and then in multi-stage
+manipulation tasks including hardware evaluation (Section 5.4), and conclude with ablations (Section 5.5).
+While our evaluations focus primarily on fine-tuning, we also present training-from-scratch results in Ap-
+pendix C. Wall-clock times are reported and discussed in Appendix D; they are roughly comparable (of-
+ten faster) than other diffusion-based RL baselines, much faster than other demo-augmented RL baselines,
+though can be up to 2× slower than other policy parameterizations. Full choices of training hyperparameters
+and additional training details are presented in Appendix E.
+
+Environments: OpenAI Gym.
+We first consider three OpenAI GYM locomotion benchmarks [11] com-
+mon in the RL literature: {Hopper-v2, Walker2D-v2, HalfCheetah-v2}. All policies are pre-
+trained with the full medium-level datasets from D4RL [29] with state input and action chunk size Ta = 4.
+We use the original dense reward setup in fine-tuning.
+
+Environments: Franka Kitchen.
+We also consider the FRANKA-KITCHEN environment first introduced
+in [32] involving a Franka arm completing four countertop tasks. We use the three datasets from D4RL [29]:
+{Kitchen-Complete-v0, Kitchen-Partial-v0, Kitchen-Mixed-v0}, containing demonstra-
+tions of varying levels of completeness. State input is considered and action chunk size Ta = 4 is used for
+DPPO. We use the original sparse reward setup in fine-tuning.
+
+Environments: Robomimic.
+Next we consider four simulated robot manipulation tasks from the ROBOMIMIC
+benchmark [60], {Lift, Can, Square, Transport}, ordered in increasing difficulty. These tasks are
+more representative of real-world robotic tasks, and Square and Transport (Fig. 4) are considered
+very challenging for RL training. Both state and pixel policy input are considered. State-based and pixel-
+based policies are pre-trained with 300 and 100 demonstrations provided by ROBOMIMIC, respectively.
+We mostly consider the noisier Multi-Human (MH) data from ROBOMIMIC but also consider the cleaner
+Proficient-Human (PH) data in some experiments. We consider Ta = 4 for Can, Lift, and Square, and
+Ta = 8 for Transport. They are then fine-tuned with sparse reward equal to 1 upon task completion.
+
+Environments: Furniture-Bench & real furniture assembly.
+Finally, we demonstrate solving longer-
+horizon, multi-stage robot manipulation tasks from the FURNITURE-BENCH [36] benchmark. We consider
+three simulated furniture assembly tasks, {One-leg, Lamp, Round-table}, shown in Fig. 4 and de-
+scribed in detail in Appendix E.8. We consider two levels of randomness over initial state distribution, Low
+and Med, defined by the benchmark. All policies are pre-trained with 50 human demonstrations collected in
+simulation and Ta = 8. They are then fine-tuned with sparse (indicator of task stage completion) reward.
+We also evaluate the zero-shot sim-to-real performance with One-leg.
+
+5With fully-connected layers in MLP, empirically we find that fine-tuning with Ta < Tp leads to training instability.
+
+Transport
+One-leg
+Round-table
+Lamp
+
+Figure 4: Long-horizon robot manipulations tasks including (left) the bimanual Transport from
+ROBOMIMIC and (right) FURNITURE-BENCH tasks (full rollouts visualized in Fig. A12).
+
+5.1
+Comparison to diffusion-based RL algorithms
+
+We compare DPPO to an extensive list of RL methods for fine-tuning diffusion-based policies. Baseline
+names are color-coordinated with their plot colors. Two methods, DRWR, DAWR, are our own, novel base-
+lines that are based on reward-weighted regression (RWR, Peters and Schaal [70]) and advantage-weighted
+regression (AWR, Peng et al. [67]). The remaining methods, DIPO [103], IDQL [35], DQL [100], and
+QSM [74], are existing in the literature. Among them, QSM and DIPO are proposed specifically for training-
+from-scratch, while IDQL and DQL can be more suitable to online fine-tuning. We evaluate on the three
+OpenAI GYM tasks and the four ROBOMIMIC tasks with state input; detailed descriptions of all baselines
+and training details are in Appendix E.3.
+Overall, DPPO performs consistently, exhibits great training stability, and enjoys strong fine-tuning
+performance across tasks. In the GYM tasks (Figure 5, top row), IDQL and DIPO exhibit competitive
+performance, while the other methods often perform worse and train less stably. Baselines also tend to
+exhibit performance drop at the beginning of fine-tuning, mostly likely due to misestimating Q values of
+the pre-trained policy. DPPO is the strongest performer in the ROBOMIMIC tasks (Figure 5, bottom row),
+especially in the challenging Transport tasks. IDQL and, surprisingly, DRWR, are strong baselines
+in {Lift, Can, Square} but underperforms in Transport, while all other baselines fare worse still.
+We postulate that the other baselines, all performing off-policy updates and propagating gradients from the
+imperfect Q function to the actor, suffers from even greater training instability in sparse-reward ROBOMIMIC
+tasks given the continuous action space plus large action chunk sizes (see furtuer studies in Appendix C.2).
+
+Figure 5: Comparing to other diffusion-based RL algorithms. Top row: GYM tasks [11] averaged over
+five seeds. Bottow row: ROBOMIMIC tasks [60], averaged over three seeds, with state observation. DPPO
+curves are slightly thicker for better visibility.
+
+5.2
+Comparison to other demo-augmented RL algorithms
+
+We compare DPPO with recently proposed RL methods for training robot policies (not necessarily diffusion-
+based) leveraging offline data, including RLPD [7], Cal-QL [62], and IBRL [40]. These methods add
+expert data in the replay buffer and performs off-policy updates (IBRL and Cal-QL also pretrain with
+behavior cloning and offline RL objectives, respectively), which significantly improves sample efficiency
+vs. DPPO in HalfCheetah-v2 (Fig. 6, top left).
+Among the FRANKA-KITCHEN settings (Fig. 6, top right), we find RLPD and IBRL fail to learn
+well especially with noisier demonstrations from Kitchen-Partial-v0 and Kitchen-Mixed-v0.
+Cal-QL achieves competitive performance but DPPO still achieves overall the best performance especially
+with Kitchen-Complete-v0. We note that DPPO, not using any expert data during fine-tuning, can be
+sensitive to the pre-training performance; we find the incomplete demonstrations in Kitchen-Partial-v0
+and Kitchen-Mixed-v0 cause challenge in fully modeling the multi-modality of the data even with dif-
+fusion parameterization and prevent DPPO from achieving (near-)perfect fine-tuning performance.
+Nonetheless, we believe the expert demonstrations from ROBOMIMIC are most reflective of pre-training
+plus fine-tuning in robotics as all demonstrations complete the task despite the varying quality. Fig. 6
+bottom row shows the performance of DPPO and baselines using either cleaner PH or noisier MH data in
+Can and Square; DPPO exhibits much stronger final performance. RLPD and Cal-QL fail to learn at
+all and IBRL saturates at lower success levels. DPPO also runs significantly faster in wall-clock time than
+the baselines as it leverages sampling from highly parallelized environments6; thus we cap the number of
+samples at 1e6 for the baselines in ROBOMIMIC, also since their performance saturates.
+
+Figure 6: Comparing to other demo-augmented RL algorithms. Top left: HalfCheetah-v2 task [11]
+averaged over five seeds. Top right: FRANKA-KITCHEN task [32] averaged over three seeds. Bottom row:
+ROBOMIMIC tasks [60] averaged over three seeds with state observation, using either Proficient-Human
+(PH) or Multi-Human (MH) data.
+
+6Off-policy methods (baselines) usually cannot fully leverage parallelized sampling as the policy is updated less often (e.g., 50
+updates per 50 samples instead of 1 update per 1 sample) and the performance can be affected.
+
+5.3
+Comparison to other policy parameterizations
+
+We compare DPPO with popular RL policy parameterizations: unimodal Gaussian with diagonal covariance
+[91] and Gaussian Mixture Model (GMM [8]), using either MLPs or Transformers [94], and also fine-tuned
+with the PPO objective. We compare these to DPPO-MLP and DPPO-UNet, which use either MLP or
+UNet as the network backbone. We evaluate on the four tasks from ROBOMIMIC (Lift, Can, Square,
+Transport) with both state and pixel input. With state input, DPPO pre-trains with 20 denoising steps
+and then fine-tunes the last 10. With pixel input, DPPO pre-trains with 100 denoising steps and then fine-
+tunes 5 DDIM steps.
+
+Figure 7:
+Comparing to other policy parameterizations in the more challenging Square and
+Transport tasks from ROBOMIMIC, with state (left) or pixel (right) observation. Results are averaged
+over three seeds.
+
+Fig. 7 display results for the more challenging Square and Transport — we defer the results in
+Lift and Can to Fig. A9. With state input, DPPO outperforms Gaussian and GMM policies, with faster
+convergence to ∼100% success rate in Lift and Can, and greater final performance on Square and
+the challenging Transport, where it reaches > 90%. UNet and MLP variants perform similarly, with
+the latter training somewhat more rapidly. With pixel inputs, we use a Vision-Transformer-based (ViT)
+image encoder introduced in Hu et al. [40] and an MLP head and compare the resulting variants DPPO-
+ViT-MLP and Gaussian-ViT-MLP (we omit GMM due to poor performance in state-based training). While
+the two are comparable on Lift and Can, DPPO trains more quickly and to higher accuracy on Square,
+and drastically outperforms on Transport, whereas Gaussian does not improve from its 0% pre-trained
+success rate. To our knowledge, DPPO is the first RL algorithm to solve Transport from either state
+or pixel input to high (>50%) success rates.
+
+5.4
+Evaluation on Furniture-Bench, and sim-to-real transfer
+
+Here we evaluate DPPO on the long-horizon manipulation tasks from FURNITURE-BENCH [36]. We com-
+pare DPPO to Gaussian-MLP, the overall most effective baseline from Section 5.3. Fig. 8 (top row) shows
+the evaluation success rate over fine-tuning iterations. DPPO exhibits strong training stability and improves
+policy performance in all six settings. Gaussian-MLP collapses to zero success rate in all three tasks with
+Med randomness (except for one seed in Lamp) and Round-table with Low randomness.
+Note that we are only using 50 human demonstrations for pre-training; we expect DPPO can leverage
+additional human data (better state space coverage) to further improve in Med, which is corroborated by
+ablation studies in Appendix C.3 examining the effect of pre-training data on DPPO.
+
+Sim-to-real transfer.
+We evaluate DPPO and Gaussian policies trained in the simulated One-leg task on
+physical hardware zero-shot (i.e., no real data fine-tuning / co-training) over 20 trials. Both policies run at
+10Hz. Please see additional simulation training and hardware details in Appendix E.8. Fig. 8 (bottom row)
+shows simulated and hardware success rates after pre-training and fine-tuning. Notably, DPPO improves the
+
+Figure 8: (Top) DPPO vs. Gaussian-MLP baseline in simulated FURNITURE-BENCH tasks. Results are
+averaged over three seeds. (Bottom) Sim-to-real transfer results in One-leg.
+
+real-world performance to 80% (16 out of 20 trials). Though the Gaussian policy achieves a high success
+rate in simulation after fine-tuning (88%), it fails entirely on hardware (0%). Supplemental video suggests
+it exhibits volatile and jittery behavior. For stronger comparison, we also fine-tune the Gaussian policy with
+an auxiliary behavior-cloning loss [93] such that the fine-tuned policy is encouraged to stay close to the base
+policy. However, this limits fine-tuning and only leads to 53% success rate in simulation and 50% in reality.
+Qualitatively, we find fine-tuned policies to be more robust and exhibit more corrective behaviors than
+pre-trained-only policies, especially during the insertion stage of the task; such behaviors are visualized in
+Fig. 2 and Fig. 9 shows representative rollouts on hardware. Overall, these results demonstrate the strong
+sim-to-real capabilities of DPPO; Section 6 provides a conjectural mechanism for why this may be the case.
+
+5.5
+Summary of ablation findings
+
+We conduct extensive ablation studies in Appendix C.2. Our main findings include: (1) for challenging tasks,
+using a value estimator which depends on environment state but is independent of denoised action is crucial
+for performance; we conjecture that this is related to the high stochasticity of Diffusion Policy; (2) there
+is a sweet spot for clipping the denoising noise level for DPPO exploration, trading off between too little
+exploration and too much action noise; (3) DPPO is resilient to fine-tuning fewer-than-K denoising steps,
+yielding improved runtime and comparable performance; (4) DPPO yields improvements over Gaussian-
+MLP baselines for varying levels of expert demonstration data, and achieves comparable final performance
+and sample efficiency when training from scratch in GYM environments.
+
+6
+Understanding the performance of DPPO
+
+The improvement of DPPO over popular Gaussian and GMM methods in Section 5.3 comes as a surprise
+initially as DPPO solves a much longer Diffusion Policy MDP (Section 4) than the original environment
+MDP that other methods solve. This leads us to study the factors contributing to DPPO’s improvements in
+performance. Our findings highlight three major contributing factors:
+
+(1) DPPO induces structured exploration near the pre-training data manifold [26].
+
+(2) DPPO updates the action distribution progressively through the multi-step denoising process, which
+can be flexible and robust to policy collapse.
+
+DP Pre-trained
+
+Initialization
+Grasp tabletop
+Place tabletop
+Grasp leg
+Insert leg
+Screw leg
+(A) Pre-trained Diffusion policy performs successful rollout
+
+(B) Policy pushes peg down without proper alignment with the hole before releasing the peg, making it topple over
+
+DP Fine-tuned
+
+(C) Fine-tuned DPPO policy performs successful rollout
+
+(D) Initial peg alignment is off, the policy corrects placement until it is properly inserted in the hole before letting go
+
+Figure 9: Qualitative comparison of pre-trained vs. fine-tuned DPPO policies in hardware evaluation.
+(A) Successful rollout with the pre-trained policy. (B) Failed rollout with the pre-trained policy due to
+imprecise insertion. (C) Successful rollout with the fine-tuned policy. (D) Successful rollout with the fine-
+tuned policy exhibiting corrective behavior.
+
+(3) DPPO leads to fine-tuned policies robust to perturbations in dynamics and initial state distribution.
+
+We use the Avoid environment from D3IL benchmark [46], where a robot arm needs to reach the other
+side of the table while avoiding an array of obstacles (Fig. 10, top-left). The action space is the 2D target
+location of the end-effector.
+D3IL provides a set of expert demonstrations that covers different possible
+paths to the goal line — we consider three subsets of the demonstrations, M1, M2, and M3 in Fig. 10,
+each with two distinct modes. We choose such relatively simple setups with only two modes in each setting
+such that Gaussian (with exploration noise)7 and GMM can fit the expert data distribution reasonably well,
+allowing fair comparisons in fine-tuning.
+We pre-train MLP-based Diffusion, Gaussian, and GMM policies (action chunk size Ta = 4 unless
+noted) with the demonstrations. For fine-tuning, we assign sparse reward when the robot reaches the goal
+line from the topmost mode. Gaussian and GMM policies are also fine-tuned with the PPO objective.
+
+Benefit 1: Structured, on-manifold exploration.
+Fig. 10 (right) shows the sampled trajectories (with
+exploration noise) from DPPO, Gaussian, and GMM during the first iteration of fine-tuning. DPPO explores
+in wide coverage around the expert data manifold, whereas Gaussian generates less structured exploration
+
+7Without noise, Gaussian policy is fully deterministic and cannot capture the two modes.
+
+Figure 10: (Left) We use the Avoid environment from D3IL benchmark [46] to visualize the DPPO’s
+exploration tendencies. We design the task of always reaching the green goal line from the topmost mode.
+(Right) Structured exploration. We show sampled trajectories at the first iteration of fine-tuning for DPPO,
+Gaussian, and GMM after pre-training on three sets of expert demonstrations, M1, M2, and M3.
+
+noise (especially in M2) and GMM exhibits narrower coverage. Unlike Gaussian policy that adds noise only
+to the final sampled action, diffusion adds multiple rounds of noise through denoising. Each denoising step
+expands the coverage with new noise while also pushing the newly denoised action towards the expert
+data manifold [69]. Moreover, the combination of diffusion parameterization with the denoising of action
+chunks means that policy stochasticity in DPPO is structured in both action dimension and time horizon.
+Quantitatively, Fig. A8 in Appendix shows DPPO achieves greater fine-tuning efficiency than Gaussian and
+GMM in all settings if a sufficient number of denoising steps is fine-tuned, consistent with the findings in
+Section 5.3 and Section 5.5.
+It is possible, however, that the on-manifold exploration we observe with DPPO hinders fine-tuning
+when aggressive, unstructured exploration is desired. We conjecture this is the case in the Lamp environment
+with Low randomness, in which DPPO slightly underperforms the Gaussian baseline (Fig. 8). Moreover,
+we do not observe that DPPO is substantially better (nor is it any worse) than Gaussian in exploration from-
+scratch (see Appendix C). Thus, we anticipate that this structured, on-manifold exploration confers the
+greatest benefit when pre-training provides sufficient coverage of relevant success modes. In particular, we
+believe that this makes DPPO uniquely suited for fine-tuning large Diffusion Policy pre-trained on multiple
+tasks [99], as it may exhibit sufficient mode coverage given training data diversity.
+
+Benefit 2: Training stability from multi-step denoising process.
+In Fig. 11 (left), we run fine-tuning
+after pre-training with M2 and attempt to de-stabilize fine-tuning by gradually adding noise to the action
+during the fine-tuning process (see Appendix E.9 for details). We find that Gaussian and GMM’s perfor-
+mance both collapse, while with DPPO, the performance is robust to the noise if at least four denoising
+steps are used. This property also allows DPPO to apply significant noise to the sampled actions, simulating
+an imperfect low-level controller to facilitate sim-to-real transfer in Section 5.4. In Fig. 11 (right), we also
+find DPPO enjoys greater training stability when fine-tuning long action chunks, e.g., up to Ta = 16, while
+Gaussian and GMM can fail to improve at all.
+
+Fig. 12 visualizes how DPPO affects the multi-step denoising process. Over fine-tuning iterations, the
+action distribution gradually converges through the denoising steps — the iterative refinement is largely
+preserved, as opposed to, e.g., “collapsing” to the optimal actions at the first fine-tuned denoising step or the
+final one. We postulate this contributes to the training stability of DPPO.
+
+Noise level
+
+Figure 11: Training stability. Fine-tuning performance (averaged over five seeds, standard deviation not
+shown) after pre-training with M2. (Left) Noise is injected into the applied actions after a few training
+iterations. (Right) The action chunk size Ta is varied.
+
+DPPO
+Gaussian
+GMM
+Denoising steps
+Itr 0
+
+k=0
+k=9
+
+Fine-tuning
+
+iterations
+
+Itr 4
+
+Itr 8
+
+Final
+
+Figure 12: Preserving the iterative refinement. The 2D actions from 50 trajectories at the branching
+point through fine-tuning iterations after pre-training with M2. For DPPO, we also visualize the action
+distribution through the final denoising steps at each fine-tuning iteration.
+
+Benefit 3: Robust and generalizable fine-tuned policy.
+DPPO also generates final policies robust to
+perturbations in dynamics and the initial state distribution. In Fig. 13, we again add noise to the actions
+sampled from the fine-tuned policy (no noise applied during training) and find that DPPO policy exhibits
+strong robustness to the noise compared to the Gaussian policy. DPPO policy also converges to the (near-
+)optimal path from a larger distribution of initial states. This finding echoes theoretical guarantees that
+Diffusion Policy, capable of representing complex multi-modal data distribution, can effectively deconvolve
+noise from noisy states [10], a property used in Chen et al. [15] to stabilize long-horizon video generation.
+
+Figure 13: Policy robustness after fine-tuning. Green dot / box indicates the initial state region.
+
+7
+Conclusion and Future Work
+
+We present Diffusion Policy Policy Optimization (DPPO) for fine-tuning a pre-trained Diffusion Policy with
+the policy gradient method. DPPO leverages the sequential nature of the diffusion denoising process and
+fine-tunes the entire chain of diffusion MDPs. DPPO exhibits structured online exploration, strong training
+stability, and robustness and generalization at deployment. We demonstrate the efficiency and effectiveness
+of DPPO fine-tuning in various RL and robotics benchmarks, as well as strong sim-to-real transfer of a
+DPPO policy in a long-horizon, multi-stage manipulation task.
+We believe DPPO will become an important component in the pre-training-plus-fine-tuning pipeline for
+training general-purpose real-world robotic policies. To this end, we hope in future work to further showcase
+the promise of DPPO for simulation-to-real transfer [18, 19, 52, 77] in which we fine-tune a vision-based
+policy that has been pre-trained on a variety of diverse tasks. We expect this pre-training to provide a
+large and diverse expert data manifold, of which, as we have shown in Section 6, DPPO is well-suited
+to take advantage for better exploration during fine-tuning. We are also excited to understand how DPPO
+can fit together with other decision-making tools such as model-based planning [45] and decision-making
+aided by video prediction [15]; these tools may help address the main limitation of DPPO — its lower
+sample efficiency than off-policy methods — and unlocking performing practical RL in physical hardware
+or generative simulation (e.g., video-based [13, 104]). Finally, as noted in the introduction, we eagerly
+anticipate applications of DPPO in domains beyond robotics, where diffusion models have shown promise
+for combinatorial search and sequence modeling [56, 73].
+
+Acknowledgments
+
+We would like to thank Lirui Wang and Terry Suh for helpful discussions in the early stage of the project.
+The authors were partially supported by the Toyota Research Institute (TRI). This article solely reflects the
+opinions and conclusions of its authors and not TRI or any other Toyota entity.
+
+References
+
+[1] J. Achiam. Spinning Up in Deep Reinforcement Learning. 2018.
+[2] A. Ajay, Y. Du, A. Gupta, J. B. Tenenbaum, T. S. Jaakkola, and P. Agrawal. Is conditional generative
+modeling all you need for decision making? In The Eleventh International Conference on Learning
+Representations, 2023.
+[3] M. Alakuijala, G. Dulac-Arnold, J. Mairal, J. Ponce, and C. Schmid. Residual reinforcement learning
+from demonstrations. arXiv preprint arXiv:2106.08050, 2021.
+[4] O. M. Andrychowicz, B. Baker, M. Chociej, R. Jozefowicz, B. McGrew, J. Pachocki, A. Petron,
+M. Plappert, G. Powell, A. Ray, et al. Learning dexterous in-hand manipulation. The International
+Journal of Robotics Research, 2020.
+[5] L. Ankile, A. Simeonov, I. Shenfeld, and P. Agrawal. Juicer: Data-efficient imitation learning for
+robotic assembly. arXiv, 2024.
+[6] L. Ankile, A. Simeonov, I. Shenfeld, M. Torne, and P. Agrawal. From imitation to refinement–residual
+rl for precise visual assembly. arXiv preprint arXiv:2407.16677, 2024.
+[7] P. J. Ball, L. Smith, I. Kostrikov, and S. Levine. Efficient online reinforcement learning with offline
+data. In International Conference on Machine Learning, pages 1577–1594. PMLR, 2023.
+[8] C. M. Bishop and N. M. Nasrabadi. Pattern recognition and machine learning. Springer, 2006.
+
+[9] K. Black, M. Janner, Y. Du, I. Kostrikov, and S. Levine. Training diffusion models with reinforcement
+learning. arXiv preprint arXiv:2305.13301, 2023.
+[10] A. Block, A. Jadbabaie, D. Pfrommer, M. Simchowitz, and R. Tedrake. Provable guarantees for
+generative behavior cloning: Bridging low-level stability and high-level behavior. Advances in Neural
+Information Processing Systems, 2024.
+[11] G. Brockman, V. Cheung, L. Pettersson, J. Schneider, J. Schulman, J. Tang, and W. Zaremba. Openai
+gym. arXiv preprint arXiv:1606.01540, 2016.
+[12] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam,
+G. Sastry, A. Askell, et al. Language models are few-shot learners. Advances in neural information
+processing systems, 2020.
+[13] J. Bruce, M. D. Dennis, A. Edwards, J. Parker-Holder, Y. Shi, E. Hughes, M. Lai, A. Mavalankar,
+R. Steigerwald, C. Apps, et al. Genie: Generative interactive environments. In Forty-first Interna-
+tional Conference on Machine Learning, 2024.
+[14] S. H. Chan. Tutorial on diffusion models for imaging and vision. arXiv preprint arXiv:2403.18103,
+2024.
+[15] B. Chen, D. M. Monso, Y. Du, M. Simchowitz, R. Tedrake, and V. Sitzmann. Diffusion forcing:
+Next-token prediction meets full-sequence diffusion. arXiv preprint arXiv:2407.01392, 2024.
+[16] H. Chen, C. Lu, C. Ying, H. Su, and J. Zhu. Offline reinforcement learning via high-fidelity generative
+behavior modeling. arXiv preprint arXiv:2209.14548, 2022.
+[17] T. Chen, J. Xu, and P. Agrawal. A system for general in-hand object re-orientation. In Conference on
+Robot Learning, 2022.
+[18] Y. Chen, C. Wang, L. Fei-Fei, and C. K. Liu. Sequential dexterity: Chaining dexterous policies for
+long-horizon manipulation. arXiv preprint arXiv:2309.00987, 2023.
+[19] C. Chi, B. Burchfiel, E. Cousineau, S. Feng, and S. Song.
+Iterative residual policy: for goal-
+conditioned dynamic manipulation of deformable objects. The International Journal of Robotics
+Research, 2024.
+[20] C. Chi, Z. Xu, S. Feng, E. Cousineau, Y. Du, B. Burchfiel, R. Tedrake, and S. Song. Diffusion policy:
+Visuomotor policy learning via action diffusion. The International Journal of Robotics Research,
+2024.
+[21] K. Clark, P. Vicol, K. Swersky, and D. J. Fleet. Directly fine-tuning diffusion models on differentiable
+rewards. arXiv preprint arXiv:2309.17400, 2023.
+[22] Z. Ding and C. Jin. Consistency models as a rich and efficient policy class for reinforcement learning.
+arXiv preprint arXiv:2309.16984, 2023.
+[23] L. Engstrom, A. Ilyas, S. Santurkar, D. Tsipras, F. Janoos, L. Rudolph, and A. Madry. Implemen-
+tation matters in deep rl: A case study on ppo and trpo. In International conference on learning
+representations, 2019.
+[24] Y. Fan and K. Lee.
+Optimizing ddpm sampling with shortcut fine-tuning.
+arXiv preprint
+arXiv:2301.13362, 2023.
+[25] Y. Fan, O. Watkins, Y. Du, H. Liu, M. Ryu, C. Boutilier, P. Abbeel, M. Ghavamzadeh, K. Lee, and
+K. Lee. Reinforcement learning for fine-tuning text-to-image diffusion models. Advances in Neural
+Information Processing Systems, 2024.
+[26] C. Fefferman, S. Mitter, and H. Narayanan. Testing the manifold hypothesis. Journal of the American
+Mathematical Society, 2016.
+[27] P. Florence, L. Manuelli, and R. Tedrake. Self-supervised correspondence in visuomotor policy learn-
+ing. IEEE Robotics and Automation Letters, 2019.
+
+[28] P. Florence, C. Lynch, A. Zeng, O. A. Ramirez, A. Wahid, L. Downs, A. Wong, J. Lee, I. Mordatch,
+and J. Tompson. Implicit behavioral cloning. In Conference on Robot Learning. PMLR, 2022.
+[29] J. Fu, A. Kumar, O. Nachum, G. Tucker, and S. Levine. D4rl: Datasets for deep data-driven rein-
+forcement learning. arXiv preprint arXiv:2004.07219, 2020.
+[30] Z. Fu, T. Z. Zhao, and C. Finn. Mobile aloha: Learning bimanual mobile manipulation with low-cost
+whole-body teleoperation. arXiv preprint arXiv:2401.02117, 2024.
+[31] W. Goo and S. Niekum. Know your boundaries: The necessity of explicit behavioral cloning in offline
+rl. arXiv preprint arXiv:2206.00695, 2022.
+[32] A. Gupta, V. Kumar, C. Lynch, S. Levine, and K. Hausman. Relay policy learning: Solving long-
+horizon tasks via imitation and reinforcement learning. arXiv preprint arXiv:1910.11956, 2019.
+[33] T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine. Soft actor-critic: Off-policy maximum entropy deep
+reinforcement learning with a stochastic actor. In International conference on machine learning,
+pages 1861–1870. PMLR, 2018.
+[34] S. Haldar, J. Pari, A. Rai, and L. Pinto. Teach a robot to fish: Versatile imitation from one minute of
+demonstrations. arXiv preprint arXiv:2303.01497, 2023.
+[35] P. Hansen-Estruch, I. Kostrikov, M. Janner, J. G. Kuba, and S. Levine. Idql: Implicit q-learning as an
+actor-critic method with diffusion policies. arXiv preprint arXiv:2304.10573, 2023.
+[36] M. Heo, Y. Lee, D. Lee, and J. J. Lim. Furniturebench: Reproducible real-world benchmark for
+long-horizon complex manipulation. arXiv preprint arXiv:2305.12821, 2023.
+[37] T. Hester, M. Vecerik, O. Pietquin, M. Lanctot, T. Schaul, B. Piot, D. Horgan, J. Quan, A. Sendonaris,
+I. Osband, et al. Deep q-learning from demonstrations. In Proceedings of the AAAI conference on
+artificial intelligence, volume 32, 2018.
+[38] J. Ho, A. Jain, and P. Abbeel. Denoising diffusion probabilistic models. Advances in neural informa-
+tion processing systems, 2020.
+[39] J. Ho, W. Chan, C. Saharia, J. Whang, R. Gao, A. Gritsenko, D. P. Kingma, B. Poole, M. Norouzi,
+D. J. Fleet, et al. Imagen video: High definition video generation with diffusion models. arXiv
+preprint arXiv:2210.02303, 2022.
+[40] H. Hu, S. Mirchandani, and D. Sadigh. Imitation bootstrapped reinforcement learning. arXiv preprint
+arXiv:2311.02198, 2023.
+[41] S. Huang, R. F. J. Dossa, C. Ye, J. Braga, D. Chakraborty, K. Mehta, and J. G. AraÃšjo. Cleanrl: High-
+quality single-file implementations of deep reinforcement learning algorithms. Journal of Machine
+Learning Research, 2022.
+[42] Z. Huang, L. Yang, X. Zhou, Z. Zhang, W. Zhang, X. Zheng, J. Chen, Y. Wang, C. Bin, and W. Yang.
+Protein-ligand interaction prior for binding-aware 3d molecule diffusion models.
+In The Twelfth
+International Conference on Learning Representations, 2024.
+[43] J. Hwangbo, J. Lee, A. Dosovitskiy, D. Bellicoso, V. Tsounis, V. Koltun, and M. Hutter. Learning
+agile and dynamic motor skills for legged robots. Science Robotics, 2019.
+[44] M. T. Jackson, M. T. Matthews, C. Lu, B. Ellis, S. Whiteson, and J. Foerster. Policy-guided diffusion.
+arXiv preprint arXiv:2404.06356, 2024.
+[45] M. Janner, Y. Du, J. B. Tenenbaum, and S. Levine. Planning with diffusion for flexible behavior
+synthesis. arXiv preprint arXiv:2205.09991, 2022.
+[46] X. Jia, D. Blessing, X. Jiang, M. Reuss, A. Donat, R. Lioutikov, and G. Neumann. Towards di-
+verse behaviors: A benchmark for imitation learning with human demonstrations. arXiv preprint
+arXiv:2402.14606, 2024.
+
+[47] B. Kang, X. Ma, C. Du, T. Pang, and S. Yan. Efficient diffusion policies for offline reinforcement
+learning. Advances in Neural Information Processing Systems, 2024.
+[48] E. Kaufmann, L. Bauersfeld, A. Loquercio, M. Müller, V. Koltun, and D. Scaramuzza. Champion-
+level drone racing using deep reinforcement learning. Nature, 2023.
+[49] Z. Kong, W. Ping, J. Huang, K. Zhao, and B. Catanzaro. Diffwave: A versatile diffusion model for
+audio synthesis. arXiv preprint arXiv:2009.09761, 2020.
+[50] S. Lee, Y. Wang, H. Etukuru, H. J. Kim, N. M. M. Shafiullah, and L. Pinto. Behavior generation with
+latent actions. arXiv preprint arXiv:2403.03181, 2024.
+[51] K. Lei, Z. He, C. Lu, K. Hu, Y. Gao, and H. Xu. Uni-o4: Unifying online and offline deep reinforce-
+ment learning with multi-step on-policy optimization. arXiv preprint arXiv:2311.03351, 2023.
+[52] J. Liang, S. Saxena, and O. Kroemer. Learning active task-oriented exploration policies for bridging
+the sim-to-real gap. arXiv preprint arXiv:2006.01952, 2020.
+[53] Z. Liang, Y. Mu, M. Ding, F. Ni, M. Tomizuka, and P. Luo. Adaptdiffuser: Diffusion models as
+adaptive self-evolving planners. arXiv preprint arXiv:2302.01877, 2023.
+[54] T. P. Lillicrap, J. J. Hunt, A. Pritzel, N. Heess, T. Erez, Y. Tassa, D. Silver, and D. Wierstra. Continu-
+ous control with deep reinforcement learning. arXiv preprint arXiv:1509.02971, 2015.
+[55] Y. Lin,
+A. S. Wang,
+G. Sutanto,
+A. Rai,
+and F. Meier.
+Polymetis.
+
+facebookresearch.github.io/fairo/polymetis/, 2021.
+[56] A. Lou, C. Meng, and S. Ermon. Discrete diffusion modeling by estimating the ratios of the data
+distribution. stat, 2024.
+[57] J. Luo, Z. Hu, C. Xu, Y. L. Tan, J. Berg, A. Sharma, S. Schaal, C. Finn, A. Gupta, and
+S. Levine. Serl: A software suite for sample-efficient robotic reinforcement learning. arXiv preprint
+arXiv:2401.16013, 2024.
+[58] S. Luo, Y. Su, X. Peng, S. Wang, J. Peng, and J. Ma. Antigen-specific antibody design and optimiza-
+tion with diffusion-based generative models for protein structures. Advances in Neural Information
+Processing Systems, 2022.
+[59] V. Makoviychuk, L. Wawrzyniak, Y. Guo, M. Lu, K. Storey, M. Macklin, D. Hoeller, N. Rudin,
+A. Allshire, A. Handa, et al. Isaac gym: High performance gpu-based physics simulation for robot
+learning. arXiv preprint arXiv:2108.10470, 2021.
+[60] A. Mandlekar, D. Xu, J. Wong, S. Nasiriany, C. Wang, R. Kulkarni, L. Fei-Fei, S. Savarese, Y. Zhu,
+and R. Martín-Martín. What matters in learning from offline human demonstrations for robot manip-
+ulation. In arXiv preprint arXiv:2108.03298, 2021.
+[61] A. Nair, A. Gupta, M. Dalal, and S. Levine. Awac: Accelerating online reinforcement learning with
+offline datasets. arXiv preprint arXiv:2006.09359, 2020.
+[62] M. Nakamoto, S. Zhai, A. Singh, M. Sobol Mark, Y. Ma, C. Finn, A. Kumar, and S. Levine. Cal-
+ql: Calibrated offline rl pre-training for efficient online fine-tuning. Advances in Neural Information
+Processing Systems, 36, 2024.
+[63] A. Q. Nichol and P. Dhariwal. Improved denoising diffusion probabilistic models. In International
+conference on machine learning, 2021.
+[64] T. Osa, J. Pajarinen, G. Neumann, J. A. Bagnell, P. Abbeel, J. Peters, et al. An algorithmic perspective
+on imitation learning. Foundations and Trends® in Robotics, 2018.
+[65] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama,
+A. Ray, et al. Training language models to follow instructions with human feedback. Advances in
+neural information processing systems, 2022.
+
+[66] T. Pearce, T. Rashid, A. Kanervisto, D. Bignell, M. Sun, R. Georgescu, S. V. Macua, S. Z. Tan,
+I. Momennejad, K. Hofmann, et al. Imitating human behaviour with diffusion models. arXiv preprint
+arXiv:2301.10677, 2023.
+[67] X. B. Peng, A. Kumar, G. Zhang, and S. Levine. Advantage-weighted regression: Simple and scalable
+off-policy reinforcement learning. arXiv preprint arXiv:1910.00177, 2019.
+[68] X. B. Peng, Z. Ma, P. Abbeel, S. Levine, and A. Kanazawa. Amp: Adversarial motion priors for
+stylized physics-based character control. ACM Transactions on Graphics (ToG), 2021.
+[69] F. Permenter and C. Yuan. Interpreting and improving diffusion models from an optimization per-
+spective. arXiv preprint arXiv:2306.04848, 2023.
+[70] J. Peters and S. Schaal. Reinforcement learning by reward-weighted regression for operational space
+control. In Proceedings of the 24th international conference on Machine learning, 2007.
+[71] D. A. Pomerleau. Alvinn: An autonomous land vehicle in a neural network. Advances in neural
+information processing systems, 1988.
+[72] B. Poole, A. Jain, J. T. Barron, and B. Mildenhall. Dreamfusion: Text-to-3d using 2d diffusion. arXiv
+preprint arXiv:2209.14988, 2022.
+[73] M. Popova, O. Isayev, and A. Tropsha. Deep reinforcement learning for de novo drug design. Science
+advances, 2018.
+[74] M. Psenka, A. Escontrela, P. Abbeel, and Y. Ma. Learning a diffusion model policy from rewards via
+q-score matching. arXiv preprint arXiv:2312.11752, 2023.
+[75] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P. Mishkin,
+J. Clark, et al. Learning transferable visual models from natural language supervision. In Interna-
+tional conference on machine learning, 2021.
+[76] A. Rajeswaran, V. Kumar, A. Gupta, G. Vezzani, J. Schulman, E. Todorov, and S. Levine. Learn-
+ing complex dexterous manipulation with deep reinforcement learning and demonstrations. arXiv
+preprint arXiv:1709.10087, 2017.
+[77] A. Z. Ren, H. Dai, B. Burchfiel, and A. Majumdar. AdaptSim: Task-driven simulation adaptation for
+sim-to-real transfer. In Proceedings of the Conference on Robot Learning (CoRL), 2023.
+[78] M. Reuss, M. Li, X. Jia, and R. Lioutikov. Goal-conditioned imitation learning using score-based
+diffusion policies. arXiv preprint arXiv:2304.02532, 2023.
+[79] M. Rigter, J. Yamada, and I. Posner. World models via policy-guided trajectory diffusion. arXiv
+preprint arXiv:2312.08533, 2023.
+[80] R. Rombach, A. Blattmann, D. Lorenz, P. Esser, and B. Ommer. High-resolution image synthesis
+with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and
+pattern recognition, 2022.
+[81] O. Ronneberger, P. Fischer, and T. Brox. U-net: Convolutional networks for biomedical image seg-
+mentation. In Medical image computing and computer-assisted intervention (MICCAI), 2015.
+[82] N. Ruiz, Y. Li, V. Jampani, Y. Pritch, M. Rubinstein, and K. Aberman. Dreambooth: Fine tuning text-
+to-image diffusion models for subject-driven generation. In Proceedings of the IEEE/CVF conference
+on computer vision and pattern recognition, 2023.
+[83] S. S. Sahoo, M. Arriola, Y. Schiff, A. Gokaslan, E. Marroquin, J. T. Chiu, A. Rush, and V. Kuleshov.
+Simple and effective masked diffusion language models. arXiv preprint arXiv:2406.07524, 2024.
+[84] J. Schulman, P. Moritz, S. Levine, M. Jordan, and P. Abbeel. High-dimensional continuous control
+using generalized advantage estimation. arXiv preprint arXiv:1506.02438, 2015.
+[85] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. Proximal policy optimization
+algorithms. arXiv preprint arXiv:1707.06347, 2017.
+
+[86] J. Sohl-Dickstein, E. Weiss, N. Maheswaranathan, and S. Ganguli. Deep unsupervised learning using
+nonequilibrium thermodynamics. In International conference on machine learning, 2015.
+[87] J. Song, C. Meng, and S. Ermon.
+Denoising diffusion implicit models.
+arXiv preprint
+arXiv:2010.02502, 2020.
+[88] Y. Song, J. Sohl-Dickstein, D. P. Kingma, A. Kumar, S. Ermon, and B. Poole. Score-based generative
+modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456, 2020.
+[89] A. Sridhar, D. Shah, C. Glossop, and S. Levine. Nomad: Goal masked diffusion policies for naviga-
+tion and exploration. arXiv preprint arXiv:2310.07896, 2023.
+[90] R. S. Sutton and A. G. Barto. Reinforcement learning: An introduction. MIT press, 2018.
+[91] R. S. Sutton, D. McAllester, S. Singh, and Y. Mansour. Policy gradient methods for reinforcement
+learning with function approximation. Advances in neural information processing systems, 1999.
+[92] E. Todorov, T. Erez, and Y. Tassa. Mujoco: A physics engine for model-based control. In 2012
+IEEE/RSJ international conference on intelligent robots and systems, 2012.
+[93] M. Torne, A. Simeonov, Z. Li, A. Chan, T. Chen, A. Gupta, and P. Agrawal.
+Reconciling re-
+ality through simulation: A real-to-sim-to-real approach for robust manipulation.
+arXiv preprint
+arXiv:2403.03949, 2024.
+[94] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin.
+Attention is all you need. Advances in neural information processing systems, 2017.
+[95] M. Vecerik, T. Hester, J. Scholz, F. Wang, O. Pietquin, B. Piot, N. Heess, T. Rothörl, T. Lampe, and
+M. Riedmiller. Leveraging demonstrations for deep reinforcement learning on robotics problems with
+sparse rewards. arXiv preprint arXiv:1707.08817, 2017.
+[96] S. Venkatraman, S. Khaitan, R. T. Akella, J. Dolan, J. Schneider, and G. Berseth. Reasoning with
+latent diffusion in offline reinforcement learning. arXiv preprint arXiv:2309.06599, 2023.
+[97] B. Wallace, M. Dang, R. Rafailov, L. Zhou, A. Lou, S. Purushwalkam, S. Ermon, C. Xiong, S. Joty,
+and N. Naik.
+Diffusion model alignment using direct preference optimization.
+arXiv preprint
+arXiv:2311.12908, 2023.
+[98] J. Wang and E. Olson. Apriltag 2: Efficient and robust fiducial detection. In IEEE/RSJ International
+Conference on Intelligent Robots and Systems (IROS), 2016.
+[99] L. Wang, J. Zhao, Y. Du, E. H. Adelson, and R. Tedrake. Poco: Policy composition from and for
+heterogeneous robot learning. arXiv preprint arXiv:2402.02511, 2024.
+[100] Z. Wang, J. J. Hunt, and M. Zhou. Diffusion policies as an expressive policy class for offline rein-
+forcement learning. arXiv preprint arXiv:2208.06193, 2022.
+[101] R. J. Williams. Simple statistical gradient-following algorithms for connectionist reinforcement learn-
+ing. Machine learning, 1992.
+[102] J. Yang, M. S. Mark, B. Vu, A. Sharma, J. Bohg, and C. Finn. Robot fine-tuning made easy: Pre-
+training rewards and policies for autonomous real-world reinforcement learning. In 2024 IEEE Inter-
+national Conference on Robotics and Automation (ICRA), pages 4804–4811. IEEE, 2024.
+[103] L. Yang, Z. Huang, F. Lei, Y. Zhong, Y. Yang, C. Fang, S. Wen, B. Zhou, and Z. Lin. Policy represen-
+tation via diffusion probability model for reinforcement learning. arXiv preprint arXiv:2305.13122,
+2023.
+[104] M. Yang, Y. Du, K. Ghasemipour, J. Tompson, D. Schuurmans, and P. Abbeel. Learning interactive
+real-world simulators. arXiv preprint arXiv:2310.06114, 2023.
+[105] Y. Ze, G. Zhang, K. Zhang, C. Hu, M. Wang, and H. Xu. 3d diffusion policy: Generalizable visuo-
+motor policy learning via simple 3d representations. In ICRA 2024 Workshop on 3D Visual Repre-
+sentations for Robot Manipulation.
+
+[106] T. Z. Zhao, V. Kumar, S. Levine, and C. Finn. Learning fine-grained bimanual manipulation with
+low-cost hardware. arXiv preprint arXiv:2304.13705, 2023.
+[107] H. Zhu, A. Gupta, A. Rajeswaran, S. Levine, and V. Kumar. Dexterous manipulation with deep rein-
+forcement learning: Efficient, general, and low-cost. In 2019 International Conference on Robotics
+and Automation (ICRA), pages 3651–3657. IEEE, 2019.
+[108] Z. Zhu, H. Zhao, H. He, Y. Zhong, S. Zhang, Y. Yu, and W. Zhang. Diffusion models for reinforce-
+ment learning: A survey. arXiv preprint arXiv:2311.01223, 2023.
+
+A
+Extended Related Work
+
+A.1
+RL training of robot policies with offline data
+
+Here, we discuss related work in training robot policies using RL augmented with offline data to help RL
+better explore online in sparse reward settings.
+One simple form is to use offline data to pre-train the policy, typically using behavior cloning, and then
+fine-tune the policy online. This is the approach that DPPO takes. Often, a regularization loss is applied
+to constrain the fine-tuned policy to stay close to the base policy, leading to natural fine-tuned behavior and
+often better learning [76, 93, 107]. DPPO does not apply regularization at fine-tuning as we find the on-
+manifold exploration helps DPPO maintain natural behavior after fine-tuning Section 5.4. Another popular
+approach is to learn a residual policy with RL on top of the frozen base policy [3, 34]. A closer work to ours
+is from Ankile et al. [6], which trains a one-step residual non-diffusion policy with on-policy RL on top of a
+pre-trained chunked diffusion policy. This approach has the benefit of being fully closed-loop but lacks the
+structured on-manifold exploration of DPPO. Another hybrid approach is from Hu et al. [40], which uses
+pre-trained and fine-tuned policies to sample online experiences.
+Another popular line of work, instead of training a base policy using offline data, directly adds the data
+in the replay buffer for online, off-policy learning in a single stage [37, 61, 95]. One recent approach from
+Ball et al. [7], RLPD, further improves sample efficiency from previous off-policy methods incorporating,
+e.g., critic ensembling. Luo et al. [57] demonstrate RLPD solving real-world manipulation tasks (although
+generally less challenging than ones solved by DPPO).
+Other approaches, including Cal-QL, build on offline RL to learn from offline data and then switch to
+online RL while still sampling from offline data [35, 62, 102]. Often the distributional mismatch between
+offline data and online policy needs to be addressed: Cal-QL proposes calibrated conservative Q-learning
+that learns a offline Q function that lower bounds the true value of the learned policy; Lei et al. [51] propose
+ensemble behavior cloning during pre-training to promote policy diversity.
+
+A.2
+Diffusion-based RL methods
+
+This section discusses related methods that directly train or improve diffusion-based policies with RL meth-
+ods. The baselines to which we compare in Section 5.1 are discussed below as well, and are highlighted in
+their corresponding colors. We also refer the readers to Zhu et al. [108] for an extensive survey on diffusion
+models for RL.
+Most previous works have focused on the offline setting with a static dataset. One line of work fo-
+cuses on state trajectory planning and guiding the denoising sampling process such that the sampled actions
+satisfy some desired objectives. Janner et al. [45] apply classifier guidance that generates trajectories with
+higher predicted rewards. Ajay et al. [2] introduce classifier-free guidance that avoids learning the value of
+noisy states. There is another line of work that uses diffusion models as an action policy (instead of state
+planner) and generally applies Q-learning. DQL [100] introduces Diffusion Q-Learning that learns a state-
+action critic for the final denoised actions and backpropagates the gradient from the critic through the entire
+Diffusion Policy (actor) denoising chain, akin to the usual Q-learning. IDQL [35], or Implicit Diffusion Q-
+learning, proposes learning the critic to select the actions at inference time for either training or evaluation
+while fitting the actor to all sampled actions. Kang et al. [47] instead propose using the critic to re-weight
+the sampled actions for updating the actor itself, similar to weighted regression baselines DAWR and DRWR
+introduced in our work. Goo and Niekum [31] similarly extract the policy in the spirit of AWR [67]. Chen
+et al. [16] train the critic using value iteration instead based on samples from the actor. Finally, Jackson et al.
+[44] explore using diffusion guidance to move offline data towards the target trajectory distribution.
+We note that methods like DQL and IDQL can also be applied in the online setting. A small amount of
+
+work also focuses entirely on the online setting. DIPO [103] differs from DQL and related work in that it
+uses the critic to update the sampled actions (“action gradient”) instead of the actor — the actor is then fitted
+with updated actions from the replay buffer. QSM, or Q-Score Matching [74], suggests that optimizing the
+likelihood of the entire chain of denoised actions can be inefficient (contrary to our findings in the fine-tuning
+setting) and instead proposes learning the optimal policy by iteratively aligning the gradient of the actor (i.e.,
+score) with the action gradient of the critic. Rigter et al. [79] proposes learning a diffusion dynamic model
+to generate synthetic trajectories for online training of a non-diffusion RL policy.
+We note that almost all prior work in diffusion-based RL (offline or online) have relied on approximating
+the state-action Q function and using it to update the diffusion actor in some form — policy gradient update
+has been deemed challenging due to the multi-step denoising process [74, 103]. Inaccurate Q values may
+lead to biased updates to the actor, which can lead to training collapse as it starts with decent pre-training
+performance but quickly drops to zero success rate as seen in Fig. 5, also failing to recover since then due
+to the sparse-reward setup. While Q-learning methods generally achieve better sample efficiency when they
+can solve the task of interest, our focus has been largely on challenging long-horizon robot manipulation
+tasks where the training stability is much desired.
+
+Distinction from the policy gradient formulation in Psenka et al. [74].
+There has been a different
+formulation introduced in Psenka et al. [74] Sec. 3 that derives the policy gradient update for diffusion policy.
+The derivation is based on converting the gradient of the log likelihood of the final denoised action to the sum
+over log likelihood of individual denoising actions. This formulation, unlike DPPO, does not treat the multi-
+step denoising process as a MDP. In the policy gradient update, Psenka et al. [74] sum over denoising steps
+and then takes expectation over environment steps, while DPPO’s update (4.2) takes expectation over both
+denoising and environment steps, potentially leading to better sample efficiency. Moreover, Psenka et al.
+[74] do not propose applying PPO updates or other modifications to diffusion, and finds such vanilla form
+of policy gradient update to be ineffective. We formulate DPPO independent of their work and find DPPO
+highly effective in fine-tuning settings while also being competitive in training from scratch (Appendix C.3).
+
+B
+Additional details of DPPO implementation
+
+Pseudocode.
+The pseudocode for DPPO is presented in Algorithm 1. DPPO takes as input a diffusion
+policy πθ trained using behavior cloning loss LBC. The policy is then fine-tuned using a PPO-style loss [85]
+with careful treatment of the denoising process (Section 4).
+
+Pre-training.
+The diffusion policy πθ is pre-trained using a behavior cloning loss [38]:
+
+LBC(θ) = E(st,a0
+t )∼Doff
+∥εt −εθ(a0
+t , st, k)∥2
+,
+(A1)
+
+where Doff is the offline dataset and εθ is the policy network predicting the sampled noise added to a0
+t based
+on the noisy action. We use the cosine noise schedule from Nichol and Dhariwal [63].
+
+Environment-step advantage estimation.
+We use Generalized Advantage Estimation (GAE) [84] with
+parameter λ for advantage estimation in Algorithm 1. GAE-λ approximates the advantage function using
+the series
+
+∞
+X
+
+l=0
+(γλ)l¯δ¯t(t+l,k=0),
+where ¯δ¯t(t,k) = ¯R¯t(t,k) + γENVVϕ(¯s¯t(t+1,k)) −Vϕ(¯s¯t(t,k)).
+(A2)
+
+ˆAλ¯t(t,k=0) =
+
+Algorithm 1 DPPO
+
+1: Pre-train diffusion policy πθ with offline dataset Doff using BC loss LBC(θ) Eq. (A1).
+
+2: Initialize value function Vϕ.
+
+3: for iteration = 1, 2, . . . do
+
+4:
+Initialize rollout buffer Ditr.
+
+5:
+πθold = πθ.
+
+6:
+for environment = 1, 2, . . . , N in parallel do
+
+7:
+Initialize state ¯s¯t(0,K) = (s0, aK
+0 ) in MDP.
+
+8:
+for environment step t = 1, . . . , T, denoising step k = K −1, . . . , 0 do
+
+9:
+Sample the next denoised action ¯a¯t(t,k) = ak
+t ∼πθold.
+
+10:
+if k = 0 then
+
+11:
+Run a0
+t in the environment and observe ¯R¯t(t,0) and ¯s¯t(t+1,K).
+
+12:
+else
+
+13:
+Set ¯R¯t(t,k) = 0 and ¯s¯t(t,k−1) = (st, ak
+t ).
+
+14:
+Add (k, ¯s¯t(t,k), ¯a¯t(t,k), ¯R¯t(t,k)) to Ditr.
+
+15:
+Compute advantage estimates Aπθold(s¯t(t,k=0), a¯t(t,k=0)) for Ditr using GAE Eq. (A2).
+
+16:
+for update = 1, 2, . . . , num_update do
+▷Based on replay ratio Nθ
+17:
+for minibatch = 1, 2, . . . , B do
+
+18:
+Sample (k, ¯s¯t(t,k), ¯a¯t(t,k), ¯R¯t(t,k)) and Aπθold(s¯t(t,k), a¯t(t,k)) from Ditr.
+
+19:
+Compute denoising-discounted advantage ˆA¯t(t,k) = γk
+DENOISEAπθold(s¯t(t,0), a¯t(t,0)).
+
+20:
+Optimize πθ using policy gradient loss Lθ Eq. (A3).
+
+21:
+Optimize Vϕ using value loss Lϕ Eq. (A4).
+
+22: return converged policy πθ.
+
+Notably, GAE-λ interpolates between a one-step temporal difference ( ˆAλ=0
+¯t(t,k) = ¯R¯t(t,k)+γENVVϕ(¯s¯t(t+1,k))−
+
+Vϕ(¯s¯t(t,k))) and the Monte Carlo return of the episode relative to the baseline ( ˆAλ=1
+¯t(t,k) = PT−t
+l=0 γl
+ENV ¯R¯t(t+l,k)−
+Vϕ(¯s¯t(t,k))). We refer the reader to Table A8 for additional details on GAE parameter selection and Section
+C.2 for ablations on the choice of advantage estimator.
+Note that in Eq. (A2) we are only concerned with k = 0, i.e., the final denoising step, calculating the
+advantage for k = 0 (i.e., environment steps) but not for intermediate denoising steps. We only need to
+apply denoising discounting to the calculated advantages so they can be applied to each denoising step k.
+
+Fine-tuning.
+During RL fine-tuning, we update the policy πθ using the clipped objective:
+
+¯πθold(¯s¯t, ¯a¯t), ˆAπθold(¯s¯t, ¯a¯t) clip
+¯πθ(¯s¯t, ¯a¯t)
+
+Lθ = EDitr min
+
+ˆA¯πθold(¯s¯t, ¯a¯t) ¯πθ(¯s¯t, ¯a¯t)
+
+¯πθold(¯s¯t, ¯a¯t), 1 −ε, 1 + ε
+
+.
+(A3)
+
+If we choose to fine-tune only the last K′ denoising steps, then we sample only those from Ditr.
+Finally, we train the value function to predict the future discounted sum of rewards (i.e., discounted
+returns):
+
+T−t
+X
+
+l=0
+γl
+ENV ¯R¯t(t+l,k) −Vϕ(st)∥2
+.
+(A4)
+
+Lϕ = EDitr
+∥
+
+Similar to all baselines in Appendix E.3, we denote Nθ and Nϕ the replay ratio for the actor (diffusion
+policy) and the value critic in DPPO; in practice we always set Nθ = Nϕ. Similar to usual PPO imple-
+mentations [41], the batch updates in an iteration terminate when the KL divergence between πθ and πθold
+reaches 1, although in practice we find this never happens.
+
+Large batch size.
+Since the gradient update in DPPO involves expectation over both environment steps
+and denoising steps, we use a larger batch size compared to, e.g., PPO training with Gaussian policy pa-
+rameterization. Roughly we use the batch size from Gaussian training times the number of the fine-tuned
+denoising steps; in some cases like ROBOMIMIC we also observe that a much smaller batch size (close to
+that of Gaussian training) can be used and significantly improves sample efficiency.
+
+Gradient clipping ratio.
+We find the PPO clipping ratio, ε, can affect the training stability significantly
+in DPPO (as well as in Gaussian and GMM policies) especially in sparse-reward manipulation tasks. In
+practice we find that, a good indicator of the amount of clipping leading to optimal training efficiency, is
+to aim for a clipping fraction (fraction of individual samples being clipped in a batch) of 10% to 20%. For
+each method in different tasks, we vary ε in {.1, .01, .001} and choose the highest value that satisfies the
+clipping fraction target. Empirically we also find that, using a higher ε for earlier denoising steps in DPPO
+further improves training stability in manipulation tasks. Denote εk the clipping value at denoising step k,
+and in practice we set εk=(K−1) = 0.1εk=0, and it follows an exponential schedule among intermediate k.
+
+C
+Additional experimental results
+
+C.1
+Comparing to demo-augmented RL baselines using diffusion policy instead
+
+In Section 5.2 we compare DPPO with other demo-augmented RL methods, namely, RLPD, Cal-QL, and
+IBRL — DPPO uses diffusion policy while the baselines use Gaussian policy. Here we experiment with
+using diffusion policies for the baselines and the results are shown in Fig. A1. We use either action chunk
+size Ta = 1 or Ta = 4. We see similar results as in Fig. 6 using Gaussian policies that RLPD and Cal-QL
+fails to solve the task at all. We believe that the worse performance of Cal-QL is due to the offline RL
+objective (based on learning the state-action Q function) making learning precise continuous actions needed
+in ROBOMIMIC tasks very difficult, regardless of the policy parameterization, which corroborates our origi-
+nal finding in Section 5.1 when comparing DPPO to Q-learning-based diffusion RL methods. Compared to
+RLPD that trains with the SAC objective and expert data in the replay buffer, IBRL, using BC pre-training,
+is able to learn a base policy more effectively and uses it for online data collection. DPPO benefits from
+directly fine-tuning the pre-trained policy (instead of training a new one using experiences from the pre-
+trained policy), and achieves similar or better sample efficiency before 1e6 steps compared to IBRL, and
+converges to ∼100% success rates unlike IBRL saturates at lower levels (not shown).
+
+Figure A1: Using diffusion policy for other demo-augmented RL methods. Results are averaged over
+three seeds.
+
+C.2
+Ablation studies on design decisions in DPPO
+
+1. Choice of advantage estimator.
+In Section 4.3 we demonstrate how to efficiently estimate the advan-
+tage used in PPO updates by learning ˜V (st) that only depends on the environment state; the advantage used
+in DPPO is formally
+
+ˆA = γk
+DENOISE(¯r(¯s¯t, ¯a¯t) −˜V (st)).
+
+We now compare this choice with learning the value of the full state ¯s¯t(t,0) that includes environment state
+st and denoised action ak=1
+t
+. We additionally compare with the state-action Q-function estimator used in
+Psenka et al. [74]8, ˜Q(st, ak=0
+t
+), that does not directly use the rollout reward ¯r in the advantage.
+Fig. A2 shows the fine-tuning results in Hopper-v2 and HalfCheetah-v2 from GYM, and Can
+and Square from ROBOMIMIC. On the simpler Hopper-v2, we observe that the two baselines, both esti-
+mating the value of some action, achieves higher reward during fine-tuning than DPPO’s choice. However,
+in the more challenging tasks, the environment-state-only advantage used in DPPO consistently leads to the
+most improved performance. We believe estimating the accurate value of applying a continuous and high-
+dimensional action can be challenging, and this is exacerbated by the high stochasticity of diffusion-based
+policies and the action chunk size. The results here corroborate the findings in Section 5.1 that off-policy
+Q-learning methods can perform well in Hopper-v2 and Walker2D-v2, but often exhibit training insta-
+bility in manipulation tasks from ROBOMIMIC.
+
+Figure A2: Choice of advantage estimator. Results are averaged over five seeds in Hopper-v2 and
+HalfCheetah-v2 and three seeds in Can and Square.
+
+Denoising discount factor.
+We further examine how γDENOISE in the DPPO advantage estimator affects
+fine-tuning. Using a smaller value (i.e., more discount) has the effect of downweighting the contribution of
+earlier denoising steps in the policy gradient. Fig. A3 shows the fine-tuning results in the same four tasks
+with varying γDENOISE ∈[0.5, 0.8, 0.9, 1]. We find in Hopper-v2 and HalfCheetah-v2 γDENOISE = 0.8
+leads to better efficiency while smaller γDENOISE = 0.5 slows training. The value does not affect training
+noticeably in Can. In Square the smaller γDENOISE = 0.5 works slightly better. Overall in manipulation
+tasks, DPPO training seems relatively robust to this choice.
+
+2. Choice of diffusion noise schedule.
+As introduced in Section 4.3, we find it helpful to clip the diffusion
+noise σk to a higher minimum value σexp
+min to ensure sufficient exploration. In Figure A4, we perform analysis
+on varying σexp
+min ∈{.001, .01, .1, .2} (keeping σprob
+min = .1 to evaluate likelihoods). Although in Can the
+choice of σexp
+min does not affect the fine-tuning performance, in Square a higher σexp
+min = 0.1 is required to
+
+8Psenka et al. [74] applies off-policy training with double Q-learning (according to its open-source implementation) and policy
+gradient over the denoising steps. Note that this is a baseline in Psenka et al. [74] that is conjectured to be inefficient. We follow
+the same except for applying on-policy PPO updates.
+
+Figure A3: Choice of denoising discount factor. Results are averaged over five seeds in Hopper-v2 and
+HalfCheetah-v2 and three seeds in Can and Square.
+
+prevent the policy from collapsing. We conjecture that this is due to limited exploration causing policy over-
+optimizing the collected samples that exhibit limited state-action coverage. We also visualize the trajectories
+at the beginning of fine-tuning in Avoid task from D3IL. With higher σexp
+min, the trajectories still remain near
+the two modes of the pre-training data but exhibit a higher coverage in the state space — we believe this
+additional coverage leads to better exploration. Anecdotally, we find terminating the denoising process
+early can also provide exploration noise and lead to comparable results, but it requires a more involved
+implementation around the denoising MDP.
+
+Training trajectories at the beginning of ﬁne-tuning
+
+0.1
+0.01
+0.001
+
+Figure A4: Choice of minimum diffusion noise. Results are averaged over three seeds. Note in Left,
+with higher minimum noise level, the sampled trajectories exhibit wider coverage at the two modes but still
+maintain the overall structure.
+
+3. Choice of the number of fine-tuned denoising steps.
+We examine how the number of fine-tuned
+denoising steps in DPPO, K′, affects the fine-tune performance and wall-clock time in Fig. A5. We show
+the curves of individual runs (three for each K′) instead of the average as their wall-clock times (X-axis) are
+not perfectly aligned. Generally, fine-tuning too few denoising steps (e.g., 3) can lead to subpar asymptotic
+performance and slower convergence especially in Can. Fine-tuning 10 steps leads to the overall best
+efficiency. Similar results are also shown in Fig. A8 with Avoid task. Lastly, we note that the GPU
+memory usage scales linearly with K′.
+We note that the findings here mostly correlate with those from varying the denoising discount factor,
+γDENOISE. Discounting the earlier denoising steps in the policy gradient can be considered as a soft version
+of hard limiting the number of fine-tuned denoising steps. Depending on the amount of fine-tuning needed
+from the pre-trained action distribution, one can flexibly adjust γDENOISE and K′ to achieve the best efficiency.
+
+C.3
+Effect of expert data
+
+We investigate the effect of the amount of pre-training expert data on fine-tuning performance. In Fig. A6 we
+compare DPPO and Gaussian in Hopper-v2, Square, and One-leg task from FURNITURE-BENCH,
+using varying numbers of expert data (episodes) denoted in the figure. Overall, we find DPPO can bet-
+ter leverage the pre-training data and fine-tune to high success rates. Notably, DPPO obtains non-trivial
+performance (60% success rate) on One-leg from only 10 episode of demonstrations.
+
+Figure A5: Choice of number of fine-tuned denoising steps, K′. Individual runs are shown. The curves
+are smoothed using a Savitzky–Golay filter.
+
+Figure A6: Varying the number of expert demonstrations. The numbers in the legends indicates the
+number of episodes used in pre-training.
+
+Training from scratch.
+In Fig. A7 we compare DPPO (10 denoising steps) and Gaussian trained from
+scratch (no pre-training on expert data) in the three OpenAI GYM tasks. As using larger action chunk sizes
+Ta leads to poor from-scratch training shown in Fig. A6, we focus on single-action chunks Ta = 1 (and
+Tp = 1) as is typical in RL benchmarking. Though we find Gaussian trains faster than DPPO (expected
+since DPPO solves an MDP with longer effective horizon), DPPO still attains reasonable final performance.
+However, due to the multi-step (10) denoising sampling, DPPO takes about 6× wall-clock time compared
+to Gaussian. We hope that future work will explore how to design the training curriculum of denoising steps
+for the best balance of training performance and wall-clock efficiency.
+
+Figure A7: No expert data / pre-training with GYM tasks. Results are averaged over five seeds.
+
+C.4
+Comparing to other policy parameterizations in Avoid
+
+Figure A8 depicts the performance of various parameterizations of DPPO (with differing numbers of fine-
+tuned denoising steps, K′) to Gaussian and GMM baselines. We study the Avoid task from D3IL, after
+pre-training with the data from M1, M2, M3 as described in Section 6. We find that, for K′ ∈{15, 20},
+DPPO attains the highest performance of all methods and trains the quickest in terms of environment steps;
+on M1, M2, it appears to attain the greatest terminal performance as well. K′ = 10 appears slightly better
+than, but roughly comparable to, the Gaussian baseline, with GMM and K′ < 10 performing less strongly.
+
+Figure A8: Fine-tuning performance (averaged over five seeds, standard deviation not shown) after pre-
+training with M1, M2, and M3 in Avoid task from D3IL. DPPO (K = 20), Gaussian, and GMM policies
+are compared. We also sweep the number of fine-tuned denoising steps K′ in DPPO.
+
+C.5
+Comparing to other policy parameterizations in the easier tasks from ROBOMIMIC
+
+Figure A9 compares the performance of DPPO to Gaussian and GMM baslines, across a variety of architec-
+tures, and with state and pixel inputs, in Lift and Can environments in the ROBOMIMIC suite. Compared
+to the Square and Transport (results shown in Section 5), these environments are considered to be “eas-
+ier”, and this is reflected in the greater performance of DPPO and Gaussian baselines (GMM still exhibits
+subpar performance). Nonetheless, DPPO still achieves similar or even better sample efficiency compared
+to Gaussian baseline.
+
+Figure A9: Comparing to other policy parameterizations in the easier Lift and Can tasks from
+ROBOMIMIC, with state (left) or pixel (right) observation. Results are averaged over three seeds.
+
+C.6
+Comparing to policy gradient using exact likelihood of Diffusion Policy
+
+Here we experiment another novel method (which, to our knowledge, has not been explicitly studied in
+any previous work) for performing policy gradient with diffusion-based policies. Although diffusion model
+does not directly model the action likelihood, pθ(a0|s), there have been ways to estimate the value, e.g.,
+by solving the probability flow ODE that implements DDPM [88]. We refer the readers to Appendix. D in
+Song et al. [88] for a comprehensive exposition. We follow the official open-source code from Song et al.9,
+
+9
+
+and implement policy gradient (single-level MDP) that uses the exact action likelihood πθ(at|st) (3.1).
+
+Fig. A10 shows the comparison between DPPO and diffusion policy gradient using exact likelihood
+estimate. Exact policy gradient improves the base policy in Hopper-v2 but does not outperform DPPO. It
+also requires more runtime and GPU memory as it backpropagates through the ODE. In the more challenging
+Can its success rate drops to zero. Moreover, policy gradient with exact likelihood does not offer the
+flexibility of fine-tuning fewer-than-K denoising steps or discounting the early denoising steps that DPPO
+offers, which have shown in Appendix C.2 to often improve fine-tuning efficiency.
+
+Figure A10: Comparing to diffusion policy gradient with exact action likelihood. Results are averaged
+over five seeds in Hopper-v2 and HalfCheetah-v2, and three seeds in Can.
+
+C.7
+Ablating Structured Exploration in DPPO
+
+Here we provide additional evidence on how structured exploration of DPPO (Section 6) aids RL fine-
+tuning. While Fig. A8 compares DPPO with Gaussian and GMM policies and shows DPPO trajectories
+achieve wide coverage and stay near the expert data manifold, in Fig. A11 we ablate such structured explo-
+ration within DPPO. We use DDIM [87] such that actions can be sampled deterministically — this allows
+us to sample trajectories without adding any noise to intermediate denoising steps but only to the final de-
+noised action (k = 0), and compare that to DPPO with noise added to all denoising steps. In both cases,
+we consider the minimum noise level σexp
+min of 0.05 and 0.1. We see in Fig. A11 that with higher noise level,
+DPPO trajectories cover the expert data modes well without exploring aggressively into new modes, while
+in the case of only adding noise to the final step, the trajectories become less structured especially in M3.
+Then we run both exploration schemes in Can and Square from ROBOMIMIC, and Fig. A3 right shows
+the original DPPO setup achieves faster convergence than when noise is only added to the final step. This
+result, on top of results from Section 5.3 showing DPPO achiving better sample efficiency than Gaussian
+and GMM policies, showcases the benefit of structured exploration in fine-tuning.
+
+D
+Reporting of Wall-Clock Times
+
+Comparing to other diffusion-based RL algorithms Section 5.1.
+Table A1 and Table A2 shows the the
+wall-clock time used in each OpenAI GYM task and ROBOMIMIC task. In GYM tasks, on average DPPO
+trains 41%, 37%, and 12% faster than DAWR, DIPO, and DQL, respectively, which all require a significant
+amount of gradient updates per sample to train stably. QSM, DRWR, and IDQL trains 43%, 33%, and
+7% faster than DPPO, respectively. ROBOMIMIC tasks are more expensive to simulate, especially with
+Transport task, and thus the wall-clock difference is smaller among the different methods. All methods
+use comparable time except for DIPO that uses slightly more on average.
+
+Figure A11: Ablating Structured Exploration in DPPO. (Left) Sampled trajectories with noise added to
+all denoising steps vs. only to the last step k = 0 in Avoid. (Right) Results are averaged over three seeds
+in Can and Square.
+
+Method
+Task
+
+Hopper-v2
+Walker2D-v2
+HalfCheetah-v2
+
+DRWR
+11.3
+12.7
+10.4
+DAWR
+30.4
+30.7
+27.1
+DIPO
+27.8
+27.9
+26.0
+IDQL
+16.3
+16.1
+15.5
+DQL
+20.5
+20.5
+17.6
+QSM
+9.6
+9.9
+9.7
+DPPO
+16.6
+18.3
+16.8
+
+Table A1: Wall-clock time in seconds for a single training iteration in OpenAI GYM tasks when com-
+paring diffusion-based RL algorithms. Each iteration involves 500 environment timesteps in each of the 40
+parallelized environments running on 40 CPU threads and a NVIDIA RTX 2080 GPU (20000 steps total).
+
+Method
+Task
+
+Lift
+Can
+Square
+Transport
+
+DRWR
+32.5
+39.5
+59.8
+346.1
+DAWR
+38.6
+46.0
+70.5
+354.3
+DIPO
+43.9
+51.6
+73.3
+359.7
+IDQL
+33.8
+41.7
+63.7
+349.9
+DQL
+36.9
+44.4
+68.5
+353.5
+QSM
+31.8
+44.5
+68.7
+322.5
+DPPO
+35.2
+42.0
+65.6
+350.3
+
+Table A2: Wall-clock time in seconds for a single training iteration in ROBOMIMIC tasks with state in-
+put when comparing diffusion-based RL algorithms. Each iteration involves 4 episodes (1200 environment
+timesteps for Lift and Can, 1600 for Square, and 3200 for Transport) from each of the 50 paral-
+lelized environments running on 50 CPU threads and a NVIDIA L40 GPU (60000, 80000, 160000 steps).
+
+Comparing to other policy parameterizations and architecture Section 5.3 and Section 5.4.
+Table A3
+and Table A4 shows the wall-clock time used in fine-tuning in each ROBOMIMIC task with state or pixel
+input, respectively. Gaussian and GMM use similar times and Transformer is slightly more expensive than
+MLP. On average with state input, DPPO-MLP trains 24%, 21%, 24%, and 22% slower than baselines
+due to the more expensive diffusion sampling. DPPO-UNet requires more time with the extensive use of
+convolutional and normalization layers and trains on average 49% slower than DPPO-MLP. On average with
+pixel input, DPPO-ViT-MLP trains 14% slower than Gaussian-ViT-MLP — the difference is smaller than
+the state input case as the rendering in simulation can be expensive. Table A5 shows the wall-clock time
+used in FURNITURE-BENCH tasks. DPPO-UNet trains 20% slower than Gaussian-MLP on average.
+
+Method
+Task
+
+Lift
+Can
+Square
+Transport
+
+Gaussian-MLP
+27.7
+35.7
+56.2
+255.6
+Gaussian-Transformer
+29.8
+37.1
+57.8
+266.1
+GMM-MLP
+28.0
+36.2
+55.2
+254.5
+GMM-Transformer
+29.5
+37.4
+58.1
+260.2
+DPPO-MLP
+35.6
+43.3
+65.0
+350.5
+DPPO-UNet
+83.6
+92.7
+130.4
+431.1
+
+Table A3: Wall-clock time in seconds for a single training iteration in ROBOMIMIC tasks with state input
+when comparing policy parameterizations. Each iteration involves 4 episodes (1200 environment timesteps
+for Lift and Can, 1600 for Square, and 3200 for Transport) from each of the 50 parallelized envi-
+ronments running on 50 CPU threads and a NVIDIA L40 GPU (60000, 80000, 160000 steps).
+
+Method
+Task
+
+Lift
+Can
+Square
+Transport
+
+Gaussian-ViT-MLP
+153.6
+173.1
+277.0
+770.0
+DPPO-ViT-MLP
+194.9
+202.5
+328.5
+871.3
+
+Table A4: Wall-clock time in seconds for a single training iteration in ROBOMIMIC tasks with pixel input
+when comparing policy parameterizations. Each iteration involves 4 episodes (1200 environment timesteps
+for Lift and Can, 1600 for Square, and 3200 for Transport) from each of the 50 parallelized envi-
+ronments running on 50 CPU threads and a NVIDIA L40 GPU (60000, 80000, 160000 steps).
+
+Method
+Task
+
+One-leg
+Lamp
+Round-table
+
+Gaussian-MLP
+101.8
+202.8
+168.7
+DPPO-UNet
+148.4
+258.2
+188.6
+
+Table A5: Wall-clock time in seconds for a single training iteration in FURNITURE-BENCH tasks when
+comparing policy parameterizations. Each iteration involves 1 episodes (700 environment timesteps for
+One-leg, and 1000 for Lamp and Round-table) from each of the 1000 parallelized environments
+running on a NVIDIA L40 GPU (700000, 1000000, 1000000 steps).
+
+E
+Additional Experimental Details
+
+Task / Dataset
+Obs dim - State
+Obs dim - Pixel
+Act dim
+T
+Sparse reward ?
+
+GYM
+Hopper-v2
+11
+-
+3
+1000
+No
+Walker2D-v2
+17
+-
+6
+1000
+No
+HalfCheetah-v2
+17
+-
+6
+1000
+No
+
+FRANKA-KITCHEN
+Kitchen-Complete-v0
+60
+-
+9
+280
+Yes
+Kitchen-Partial-v0
+60
+-
+9
+280
+Yes
+Kitchen-Mixed-v0
+60
+-
+9
+280
+Yes
+
+Lift
+19
+-
+7
+300
+Yes
+Can
+23
+-
+7
+300
+Yes
+Square
+23
+-
+7
+400
+Yes
+Transport
+59
+-
+14
+800
+Yes
+
+ROBOMIMIC, state input
+
+Lift
+9
+96×96
+7
+300
+Yes
+Can
+9
+96×96
+7
+300
+Yes
+Square
+9
+96×96
+7
+400
+Yes
+Transport
+18
+2×96×96
+14
+800
+Yes
+
+ROBOMIMIC, pixel input
+
+FURNITURE-BENCH
+One-leg
+58
+-
+10
+700
+Yes
+Lamp
+44
+-
+10
+1000
+Yes
+Round-table
+44
+-
+10
+1000
+Yes
+
+D3IL
+M1
+4
+-
+2
+100
+Yes
+M2
+4
+-
+2
+100
+Yes
+M3
+4
+-
+2
+100
+Yes
+
+Table A6: Comparison of the different tasks considered. “Obs dim - State”: dimension of the state
+observation input. “Obs dim - State”: dimension of the pixel observation input. “Act dim - State”: dimension
+of the action space. T: maximum number of steps in an episode. “Sparse reward ?”: whether sparse reward
+is used in training instead of dense reward.
+
+E.1
+Details of policy architectures used in all experiments
+
+MLP.
+For most of the experiments, we use a Multi-layer Perceptron (MLP) with two-layer residual con-
+nection as the policy head. For diffusion-based policies, we also use a small MLP encoder for the state input
+and another small MLP with sinusoidal positional encoding for the denoising timestep input. Their output
+features are then concatenated before being fed into the MLP head. Diffusion Policy, proposed by Chi et al.
+[20], does not use MLP as the diffusion architecture, but we find it delivers comparable (or even better)
+pre-training performance compared to UNet.
+
+Transformer.
+For comparing to other policy parameterizations in Section 5.3, we also consider Trans-
+former as the policy architecture for the Gaussian and GMM baselines. We consider decoder only. No
+dropout is used. A learned positional embedding for the action chunk is the sequence into the decoder.
+
+UNet.
+For comparing to other policy parameterizations in Section 5.3, we also consider UNet [81] as a
+possible architecture for DP. We follow the implementation from Chi et al. [20] that uses sinusoidal posi-
+tional encoding for the denoising timestep input, except for using a larger MLP encoder for the observation
+input in each convolutional block. We find this modification helpful in more challenging tasks.
+
+ViT.
+For pixel-based experiments in Section 5.3 we use Vision-Transformer(ViT)-based image encoder
+introduced by Hu et al. [40] before an MLP head. Proprioception input is appended to each channel of the
+image patches. We also follow [40] and use a learned spatial embedding for the ViT output to greatly reduce
+the number of features, which are then fed into the downstream MLP head.
+
+E.2
+Additional details of GYM tasks and training in Section 5.1
+
+Pre-training.
+The observations and actions are normalized to [0, 1] using min/max statistics from the pre-
+training dataset. For all three tasks the policy is trained for 3000 epochs with batch size 128, learning rate
+of 1e-3 decayed to 1e-4 with a cosine schedule, and weight decay of 1e-6. Exponential Moving Average
+(EMA) is applied with a decay rate of 0.995.
+
+Fine-tuning.
+All methods from Section 5.1 use the same pre-trained policy. Fine-tuning is done using
+online experiences sampled from 40 parallelized MuJoCo environments [92]. Reward curves shown in
+Fig. 5 are evaluated by running fine-tuned policies with σexp
+min = 0.001 (i.e., without extra noise) for 40
+episodes. Each episode terminates if the default conditions are met or the episode reaches 1000 timesteps.
+Detailed hyperparameters are listed in Table A7.
+
+E.3
+Descriptions of diffusion-based RL algorithm baselines in Section 5.1
+
+DRWR:
+This is a customized reward-weighted regression (RWR) algorithm [70] that fine-tunes a pre-
+trained DP with a supervised objective with higher weights on actions that lead to higher reward-to-go r.
+The reward is scaled with β and the exponentiated weight is clipped at wmax. The policy is updated with
+experiences collected with the current policy (no buffer for data from previous iteration) and a replay ratio
+of Nθ. No critic is learned.
+
+Lθ = E¯πθ,εth
+min(eβrt, wmax)∥εt −εθ(a0
+t , st, k)∥2i
+.
+
+DAWR:
+This is a customized advantage-weighted regression (AWR) algorithm [67] that builds on DRWR
+but uses TD-bootstrapped [90] advantage estimation instead of the higher-variance reward-to-go for better
+training stability and efficiency. DAWR (and DRWR) can be seen as approximately optimizing (4.2) with a
+Kullback–Leibler (KL) divergence constraint on the policy [9, 67].
+The advantage is scaled with β and the exponentiated weight is clipped at wmax. Unlike DRWR, we
+follow [67] and trains the actor in an off-policy manner: recent experiences are saved in a replay buffer D,
+and the actor is updated with a replay ratio of Nθ.
+
+Lθ = ED,εt
+min(eβ ˆ
+Aϕ(st,a0
+t ), wmax)∥εt −εθ(a0
+t , st, k)∥2
+.
+
+The critic is updated less frequently (we find diffusion models need many gradient updates to fit the actions)
+with a replay ratio of Nϕ.
+Lϕ = ED
+∥ˆAϕ(st, a0
+t ) −A(st, a0
+t )∥2
+,
+
+where A is calculated using TD(λ), with λ as λDAWR and the discount factor γENV.
+
+DIPO [103]:
+This baseline applies “action gradient” that uses a learned state-action Q function to update
+the actions saved in the replay buffer, and then has DP fitting on them without weighting.
+Similar to DAWR, recent experiences are saved in a replay buffer D. The actions (k = 0) in the buffer
+are updated for MDIPO iterations with learning rate αDIPO.
+
+am+1,k=0
+t
+= am,k=0
+t
++ αDIPO∇ϕ ˆQϕ(st, am,k=0
+t
+), m = 0, . . . , MDIPO −1.
+
+The actor is then updated with a replay ratio of Nθ.
+
+Lθ = ED
+∥εt −εθ(aMDIPO,k=0
+t
+, st, k)∥2
+.
+
+The critic is trained to minimize the Bellman residual with a replay ratio of Nϕ. Double Q-learning is also
+applied.
+Lϕ = ED
+∥(Rt + γENV ˆQϕ(st+1, ¯πθ(ak=0
+t+1 |st+1)) −ˆQϕ(st, am=0,k=0
+t
+)∥2
+
+IDQL [35]:
+This baseline learns a state-action Q function and state V function to choose among the
+sampled actions from DP. DP fits on new samples without weighting.
+Again recent experiences are saved in a replay buffer D. The state value function is updated to match
+the expected Q value with an expectile loss, with a replay ratio of Nψ.
+
+Lψ = ED
+|τIDQL −1( ˆQϕ(st, a0
+t ) < ˆV 2
+ψ(st))|
+
+.
+
+The value function is used to update the Q function with a replay ratio of Nϕ.
+
+Lϕ = ED
+∥(Rt + γENV ˆVψ(st+1) −ˆQϕ(st, a0
+t )∥2
+.
+
+The actor fits all sampled experiences without weighting, with a replay ratio of Nθ.
+
+Lθ = ED
+∥εt −εθ(a0
+t , st, k)∥2
+.
+
+At inference time, MIDQL actions are sampled from the actor. For training, Boltzmann exploration is applied
+based on the difference between Q value of the sampled actions and and the V value at the current state. For
+evaluation, the greedy action under Q is chosen.
+
+DQL [100]:
+This baseline learns a state-action Q function and backpropagates the gradient from the critic
+through the entire actor (with multiple denoising steps), akin to the usual Q-learning.
+Again recent experiences are saved in a replay buffer D. The actor is then updated using both a super-
+vised loss and the value loss with a replay ratio of Nθ.
+
+Lθ = ED
+∥εt −εθ(a0
+t , st, k)∥2 −αDQL ˆQϕ(st, ¯πθ(a0
+t |st))
+
+,
+
+where αDQL is a weighting coefficient. The critic is trained to minimize the Bellman residual with a replay
+ratio of Nϕ. Double Q-learning is also applied.
+
+Lϕ = ED
+∥(Rt + γENV ˆQϕ(st+1, ¯πθ(a0
+t+1|st+1)) −ˆQϕ(st, a0
+t )∥2
+
+QSM [74]:
+This baselines learns a state-action Q function, and then updates the actor by aligning the score
+of the diffusion actor with the gradient of the Q function.
+Again recent experiences are saved in a replay buffer D. The critic is trained to minimize the Bellman
+residual with a replay ratio of Nϕ. Double Q-learning is also applied.
+
+Lϕ = ED
+∥(Rt + γENV ˆQϕ(st+1, ¯πθ(a0
+t+1|st+1)) −ˆQϕ(st, a0
+t )∥2
+.
+
+The actor is updated as follows with a replay ratio of Nθ.
+
+Lθ = ED
+∥αQSM∇a ˆQϕ(st, at) −(−εθ(a0
+t , st, k))∥2
+,
+
+where αQSM scales the gradient. The negative sign before εθ is from taking the gradient of the mean µ in
+the denoising process.
+
+E.4
+Descriptions of RL fine-tuning algorithm baselines in Section 5.2
+
+In this subsection, we detail the baselines RLPD, Cal-QL, and IBRL. All policies πθ are parameterized
+as unimodal Gaussian.
+
+RLPD [7]:
+This baseline is based on Soft Actor Critic (SAC, Haarnoja et al. [33]) — it learns an entropy-
+regularized state-action Q function, and then updates the actor by maximizing the Q function w.r.t. the
+action.
+A replay buffer D is initialized with offline data, and online samples are added to D. Each gradient
+update uses a batch of mixed 50/50 offline and online data. An ensemble of Ncritic critics is used, and at
+each gradient step two critics are randomly chosen. The critics are trained to minimize the Bellman residual
+with replay ratio Nϕ:
+
+Lϕ = ED
+∥(Rt + γENV ˆQϕ′(st+1, πθ(at+1|st+1)) −ˆQϕ(st, at)∥2
+.
+
+The target critic parameter ϕ′ is updated with delay. The actor minimizes the following loss with a replay
+ratio of 1:
+Lθ = ED
+−ˆQϕ(st, at) + αent log πθ(at|st)
+
+,
+
+where αent is the entropy coefficient (automatically tuned as in SAC starting at 1).
+
+Cal-QL [62]:
+This baseline trains the policy µ and the action-value function Qµ in an offline phase and
+then an online phase. During the offline phase only offline data is sampled for gradient update, while during
+the online phase mixed 50/50 offline and online data are sampled. The critic is trained to minimize the
+following loss (Bellman residual and calibrated Q-learning):
+
+Lϕ =ED
+∥(Rt + γENV ˆQϕ′(st+1, πθ(at+1|st+1))) −ˆQϕ(st, at)∥2
+
++ βcql(ED
+max(Qϕ(st, at), V (st))
+
+−ED
+Qϕ(st, at)
+
+),
+
+where βcql is a weighting coefficient between Bellman residual and calibration Q-learning and V (st) is esti-
+mated using Monte-Carlo returns. The target critic parameter ϕ′ is updated with delay. The actor minimizes
+the following loss:
+Lθ = ED
+−ˆQϕ(st, at) + αent log πθ(at|st)
+
+,
+
+where αent is the entropy coefficient (automatically tuned as in SAC starting at 1).
+
+IBRL [40]:
+This baseline first pre-trains a policy µψ using behavior cloning, and for fine-tuning it trains
+a RL policy πθ initialized as µψ. During fine-tuning recent experiences are saved in a replay buffer D. An
+ensemble of Ncritic critics is used, and at each gradient step two critics are randomly chosen. The critics are
+trained to minimize the Bellman residual with replay ratio Nϕ:
+
+Lϕ = ED
+∥(Rt + γENV
+max
+a′∈{aIL,aRL}
+ˆQϕ′(st+1, a′) −ˆQϕ(st, at)∥2
+
+where aIL = µψ(st+1) (no noise) and aRL ∼πθ′(st+1), and πθ′ is the target actor. The target critic
+parameter ϕ′ is updated with delay. The actor minimizes the following loss with a replay ratio of 1:
+
+Lθ = −ED ˆQϕ(st, at)
+
+.
+
+The target actor parameter θ′ is also updated with delay.
+
+E.5
+Additional details of FRANKA-KITCHEN tasks and training in Section 5.2
+
+Tasks.
+We consider three settings from the D4RL benchmark [29]: (1) Kitchen-Complete-v0 con-
+taining demonstrations that complete the entire task (four subtasks), (2) Kitchen-Partial-v0 contain-
+ing some complete demonstrations and many ones completing only subtasks, and (3) Kitchen-Mixed-v0
+containing incomplete demonstrations only.
+
+Pre-training.
+The observations and actions are normalized to [0, 1] using min/max statistics from the pre-
+training dataset. No history observation (proprioception or ground-truth object states) is used. All policies
+are trained with batch size 128, learning rate 1e-4 decayed to 1e-5 with a cosine schedule, and weight decay
+1e-6. DPPO policies are trained with 8000 epochs. For IBRL and Cal-QL we follow the hyperparameters
+from the original implementations — IBRL proposes using (1) wider MLP layers and (2) dropout during
+pre-training, which we follow too. We use Ta = 4 for DPPO; we also tried to use the same action chunk
+size with IBRL, RLPD, and Cal-QL, but we find for all of them Ta = 1 leads to better performance.
+
+Fine-tuning.
+With DPPO, policies are fine-tuned using online experiences sampled from 40 parallelized
+MuJoCo environments [92], while the baselines use only one environment (matching their original imple-
+mentations). Episodes terminates when they reach maximum episode lengths (shown in Table A6) or all four
+subtasks are completed. Detailed hyperparameters are listed in Table A8 — we follow the hyperparameter
+choices from the original implementations of the baselines.
+
+Larger variance with DPPO in Fig. 6.
+In Fig. 6, it is shown that DPPO exhibits a larger variance in nor-
+malized score with Kitchen-Partial-v0 than Cal-QL. This is due to DPPO solving either 3/4 or 2/4
+subtasks in one seed (low variance within the evaluation episodes in one seed) but high variance over seeds,
+whereas Cal-QL has higher variance among evaluation episodes in one seed but on average over seeds
+it shows lower variance. This also highlights a notable property of DPPO: Kitchen-Partial-v0 and
+Kitchen-Mixed-v0 have trajectories only completing subtasks, thus being highly multi-modal. Dif-
+fusion policy can sometimes struggle to learn all the modes from pre-training, and since DPPO directly
+fine-tunes the pre-trained policy, it can fail to converge to 100% success rate at fine-tuning. Cal-QL
+instead learns from all offline data during fine-tuning in an off-policy manner, thus less sensitive to pre-
+training performance. Nonetheless, with offline data completing tasks consistently despite varying qual-
+ity (ROBOMIMIC and Kitchen-Complete-v0, which, we believe, are more realistic in the current
+paradigm of robot manipulation), DPPO demonstrates much better final performance than Cal-QL and
+other baselines in Fig. 6.
+
+E.6
+Additional details of ROBOMIMIC tasks and training in Section 5.3
+
+Tasks.
+We consider four tasks from the ROBOMIMIC benchmark [60]: (1) Lift: lifting a cube from the
+table, (2) Can: picking up a Coke can and placing it at a target bin, (3) Square: picking up a square nut
+and place it on a rod, and (4) Transport: two robot arms removing a bin cover, picking and placing a
+cube, and then transferring a hammer from one container to another one.
+
+Pre-training.
+ROBOMIMIC provides the Multi-Human (MH) dataset with noisy human demonstrations
+for each task, which we use to pre-train the policies. The observations and actions are normalized to [0, 1]
+using min/max statistics from the pre-training dataset. No history observation (pixel, proprioception, or
+ground-truth object states) is used. All policies are trained with batch size 128, learning rate 1e-4 decayed to
+1e-5 with a cosine schedule, and weight decay 1e-6. Diffusion-based policies are trained with 8000 epochs,
+
+while Gaussian and GMM policies are trained with 5000 epochs — we find diffusion models require more
+gradient updates to fit the data well.
+
+Fine-tuning.
+Diffusion-based, Gaussian, and GMM pre-trained policies are then fine-tuned using online
+experiences sampled from 50 parallelized MuJoCo environments [92]. Success rate curves shown in Fig. 5,
+Fig. 7, and Fig. A9 are evaluated by running fine-tuned policies with σexp
+min = 0.001 (i.e., without extra noise)
+for 50 episodes. Episodes terminates only when they reach maximum episode lengths (shown in Table A6).
+Detailed hyperparameters are listed in Table A9.
+
+Pixel training.
+We use the wrist camera view in Lift and Can, the third-person camera view in Square,
+and the two robot shoulder camera views in Transport. Random-shift data augmentation is applied to
+the camera images during both pre-training and fine-tuning. Gradient accumulation is used in fine-tuning so
+that the same batch size (as in state-input training) can fit on the GPU. Detailed hyperparameters are listed
+in Table A10.
+
+E.7
+Descriptions of policy parameterization baselines in Section 5.3
+
+Gaussian.
+We consider unimodal Gaussian with diagonal covariance, the most commonly used policy
+parameterization in RL. The standard deviation for each action dimension, σGau, is fixed during pre-training;
+we also tried to learn σGau from the dataset but we find the training very unstable. During fine-tuning σGau is
+learned starting from the same fixed value and also clipped between 0.01 and 0.2. Additionally we clip the
+sampled action to be within 3 standard deviation from the mean. As discusses in Appendix B, we choose
+the PPO clipping ratio ε based on the empirical clipping fraction in each task. This setup is also used
+in the FURNITURE-BENCH experiments. We note that we spend significant amount of efforts tuning the
+Gaussian baseline, and our results with it are some of the best known ones in RL training for long-horizon
+manipulation tasks (exceeding our initial expectations), e.g., reaching ∼100% success rate in Lamp with
+Low randomness.
+
+GMM.
+We also consider Gaussian Mixture Model as the policy parameterization. We denote MGMM the
+number of mixtures. The standard deviation for each action dimension in each mixture, σGMM, is also fixed
+during pre-training. Again during fine-tuning σGMM is learned starting from the same fixed value and also
+clipped between 0.01 and 0.2.
+
+E.8
+Additional details of FURNITURE-BENCH tasks and training in Section 5.4
+
+Tasks.
+We consider three tasks from the FURNITURE-BENCH benchmark [36]: (1) One-leg: assemble
+one leg of a table by placing the tabletop in the fixture corner, grasping and inserting the table leg, and
+screwing in the leg, (2) Lamp: place the lamp base in the fixture corner, grasp, insert, and screw in the light
+bulb, and finally place the lamp shade, (3) Round-table: place a round tabletop in the fixture corner,
+insert and screw in the table leg, and then insert and screw in the table base. See Fig. A12 for the visualized
+rollouts in simulation.
+
+Pre-training.
+The pre-training dataset is collected in the simulated environments using a SpaceMouse10, a
+6 DoF input device. The simulator runs at 10Hz. At every timestep, we read off the state of the SpaceMouse
+as δa = [∆x, ∆y, ∆z, ∆roll, ∆pitch, ∆yaw], which is converted to a quaternion before passed to the envi-
+ronment step and stored as the action alongside the current observation in the trajectory. If |∆ai| < ε ∀i
+
+10
+
+for some small ε = 0.05 defining the threshold for a no-op, we do not record any action nor pass it to the
+environment. Discarding no-ops is important for allowing the policies to learn from demonstrations effec-
+tively. When the desired number of demonstrations has been collected (typically 50), we process the actions
+to convert the delta actions stored from the SpaceMouse into absolute pose actions by applying the delta
+action to the current EE pose at each timestep.
+The observations and actions are normalized to [−1, 1] using min/max statistics from the pre-training
+dataset. No history observation (proprioception or ground-truth object states) is used, i.e., only the current
+observation is passed to the policy. All policies are trained with batch size 256, learning rate 1e-4 decayed to
+1e-5 with a cosine schedule, and weight decay 1e-6. Diffusion-based policies are trained with 8000 epochs,
+while Gaussian policies are trained with 3000 epochs. Gaussian policies can easily overfit the pre-trained
+dataset, while diffusion-based policies are more resilient. Gaussian policies also require a very large MLP
+(∼10 million parameters) to fit the data well.
+
+Fine-tuning.
+Diffusion-based and Gaussian pre-trained policies are then fine-tuned using online experi-
+ences sampled from 1000 parallelized IsaacGym environments [59]. Success rate curves shown in Fig. 8
+are evaluated by running fine-tuned policies with σexp
+min = 0.001 (i.e., without extra noise) for 1000 episodes.
+Episodes terminate only when they reach maximum episode length (shown in Table A6). Detailed hyperpa-
+rameters are listed in Table A11. We find a smaller amount of exploration noise (we set σexp
+min and σGau to be
+0.04) is necessary for the pre-trained policy achieving nonzero success rates at the beginning of fine-tuning.
+
+One-leg
+
+Lamp
+
+Round-table
+
+Figure A12: Representative rollouts from simulated FURNITURE-BENCH tasks.
+
+Hardware setup - robot control.
+The physical robot used is a Franka Emika Panda arm. The policies
+output a sequence of desired end-effector poses in the robot base frame to control the robot. These poses are
+converted into joint position targets through differential inverse kinematics. We calculate the desired end-
+effector velocity as the difference between the desired and current poses divided by the delta time dt = 1/10.
+We then convert this to desired joint velocities using the Jacobian and compute the desired joint positions
+with a first-order integration over the current joint positions and desired velocity. The resulting joint position
+targets are passed to a low-level joint impedance controller provided by Polymetis [55], running at 1kHz.
+
+Hardware setup - state estimation.
+To deploy state-based policies on real hardware, we utilize AprilTags
+[98] for part pose estimation. The FURNITURE-BENCH [36] task suite provides AprilTags for each part and
+code for estimating part poses from tag detections. The process involves several steps: (1) detecting tags
+in the camera frame, (2) mapping tag detections to the robot frame for policy compatibility, (3) utilizing
+known offsets between tags and object centers in the simulator, and (4) calibrating the camera pose using an
+
+AprilTag at a known position relative to the robot base. Despite general accuracy, detections can be noisy,
+especially during movement or partial occlusion, which the One-leg task features. Since the task requires
+high precision, we find the following to help make the estimation reliable enough:
+
+• Camera coverage: We find detection quality sensitive to distance and angle between the camera and tag.
+This issue is likely due to the RealSense D435 camera having mediocre image quality and clarity and
+the relatively small tags. To remedy this, we opt to use 4 cameras roughly evenly spread out around the
+scene to ensure that at least one camera has a solid view of a tag on all the parts (i.e., as close as possible
+with a straight-on view). To find the best camera positions, we start with having a camera in each of the
+cardinal directions around the scene. Then, we adjust the pose of each to get it as close as possible to the
+objects while still covering the necessary workspace and capturing the base tag for calibration. Moving
+the robot arm around the scene to avoid the worst occlusion is also helpful.
+
+• Lighting: Even with better camera coverage and placement, detection quality depends on having crisp
+images. We find proper lighting helpful to improve image quality. In particular, the scene should be well
+and evenly lit around the scene without causing reflections in either the tag or table.
+
+• Filtering: Bad detections can sometimes cause the resulting pose estimate to deviate significantly from
+the true pose, i.e., jumping several centimeters from one frame to the next. This usually only happens
+on isolated frames, and thus before “accepting” a given detection, we check if the new position and
+orientation are within 5 cm and 20 degrees of the previously accepted pose. In addition, we apply low-
+pass filtering on the detection using a simple exponential average (with α = 0.25) to smooth out the
+high-frequency noise.
+
+• Averaging: The objects have multiple tags that can be detected from multiple cameras. After performing
+the filtering step, we average all pose estimates for the same object across different tags and cameras,
+which also helps smooth out noise. This alone, however, does not fully cancel the case when a single
+detection has a large jump, as this can severely skew the average, still necessitating a filtering step.
+Having multiple cameras benefits this step, too, as it provides more detections to average over.
+
+• Caching part pose in hand: A particularly difficult phase of the task to achieve good detections is when
+the robot transports the table leg from the initial position to the tabletop for insertion. The main problems
+are that the movement can blur the images, and the grasping can cause occlusions. Therefore, we found
+it helpful to assume that once the part was grasped by the robot, it would not move in the grasp until the
+gripper opened. With this, we can “cache” the pose of the part relative to the end-effector once the object
+is fully grasped and use this instead of relying on detections during the movement.
+
+• Normalization pitfalls and clipping: We generally use min-max normalization of the state observations
+to ensure observations are in [−1, 1]. The tabletop part moves very little in the z-direction demonstration
+data, meaning the resulting normalization limits (the minimum and maximum value of the data) can be
+very close, xmax−xmin ≈0. With these tight limits, the noise in the real-world detection can be amplified
+greatly as xnorm =
+x−xmin
+xmax−xmin . Therefore, ensure that normalization ranges are reasonable. As an extra
+safeguard, clipping the data to [−1, 1] can also help.
+
+• Only estimate necessary states: Despite the One-leg task having 5 parts, only 2 are manipulated.
+Only estimating the pose of those parts can eliminate a lot of noise. In particular, the pose of the 3 legs
+that are not used and the obstacle (the U-shaped fixture) can be set to an arbitrary value from the dataset.
+
+• Visualization for debugging: We use the visualization tool MeshCat11 extensively for debugging of
+state estimation. The tool allows for easy visualizations of poses of all relevant objects in the scene,
+
+11
+
+like the robot end-effector and parts, which makes sanity-checking the implementation far easier than
+looking at raw numbers.
+
+Hardware evaluation.
+We perform 20 trials for each method. We adopt a single-blind model selection
+process: at the beginning of each trial, we first randomize the initial state. Then, we randomly select a
+method and roll it out, but the experimenter does not observe which model is used. We record the success
+and failure of each trial and then aggregate statistics for each model after all trials are completed.
+
+Domain randomization for sim-to-real transfer.
+To facilitate the sim-to-real transfer, we apply addi-
+tional domain randomization to the simulation training. We record the range of observation noises in hard-
+ware without any robot motion and then apply the same amount of noise to state observations in simulation.
+We find the state estimation in hardware particularly sensitive to the object heights. Also, we apply random
+noise (zero mean with 0.03 standard deviation) to the sampled action from DPPO to simulate the imperfect
+low-level controller; we find adding such noise to the Gaussian policy leads to zero task success rate while
+DPPO is robust to it (also see discussion in Section 6).
+
+BC regularization loss used for Gaussian baseline.
+Since the fine-tuned Gaussian policy exhibits very
+jittery behavior and leads to zero success rate in real evaluation, we further experiment with adding a behav-
+ior cloning (BC) regularization loss in fine-tuning with the Gaussian baseline. The combined loss follows
+
+K−1
+X
+
+Lθ,+BC = Lθ −αBCEπθold[
+
+k=0
+log πθpre-trained(ak
+t |ak+1
+t
+, st)],
+
+where πθpre-trained is the frozen BC-only policy. The extra term encourages the newly sampled actions from
+the fine-tuned policy to remain high-likelihood under the BC-only policy. We set αBC = 0.1. However,
+although this regularization reduces the sim-to-real gap, it also significantly limits fine-tuning, leading to
+the fine-tuning policy saturating at 53% success rate shown in Fig. 8.
+
+E.9
+Additional details of Avoid task from D3IL and training in Section 6
+
+Pre-training.
+We split the original dataset from D3IL based on the three settings, M1, M2, and M3; in
+each setting, observations and actions are normalized to [0, 1] using min/max statistics. All policies are
+trained with batch size 16 (due to the small dataset size), learning rate 1e-4 decayed to 1e-5 with a cosine
+schedule, and weight decay 1e-6. Diffusion-based policies are trained with about 15000 epochs, while
+Gaussian and GMM policies are trained with about 10000 epochs; we manually examine the trajectories
+from different pre-trained checkpoints and pick ones that visually match the expert data the best.
+
+Fine-tuning.
+Diffusion-based, Gaussian, and GMM pre-trained policies are then fine-tuned using online
+experiences sampled from 50 parallelized MuJoCo environments [92]. Reward curves shown in Fig. 11
+and Fig. A8 are evaluated by running fine-tuned policies with the same amount of exploration noise used in
+training for 50 episodes; we choose to use the training (instead of evaluation) setup since Gaussian policies
+exhibit multi-modality only with training noise. Episodes terminate only when they reach 100 steps.
+
+Added action noise during fine-tuning.
+In Fig. 11 left, we demonstrate that DPPO exhibits stronger
+training stability when noise is added to the sampled actions during fine-tuning. The noise starts at the 5th
+iteration. It is sampled from a uniform distribution with the lower limit ramping up to 0.1 and the upper
+limit ramping up to 0.2 linearly in 5 iterations. The limits are kept the same from the 10th iteration to the
+end of fine-tuning.
+
+E.10
+Listed training hyperparameters
+
+Task(s)
+
+Method
+Parameter
+GYM
+Lift, Can
+Square
+Transport
+
+γENV
+0.99
+0.999
+0.999
+0.999
+σexp
+min
+0.1
+0.1
+0.1
+0.08
+σprob
+min
+0.1
+Tp
+4
+4
+4
+8
+Ta
+4
+4
+4
+8
+K
+20
+Actor learning rate
+1e-4 for DPPO and 1e-5 for others (tuned from 1e-4 to 1e-5)
+Critic learning rate (if applies)
+1e-3
+Actor MLP dims
+[512, 512, 512]
+[512, 512, 512]
+[1024, 1024, 1024]
+[1024, 1024, 1024]
+Critic MLP dims (if applies)
+[256, 256, 256]
+
+Common
+
+β
+10
+wmax
+100
+Nθ
+16
+Batch size
+1000
+
+DRWR
+
+β
+10
+wmax
+100
+λDAWR
+0.95
+Nθ
+64
+Nϕ
+16
+Buffer size
+200000
+120000
+120000
+120000
+Batch size
+1000
+
+DAWR
+
+αDIPO
+1e-4
+MDIPO
+10
+Nθ
+64
+Buffer size
+1000000
+Batch size
+1000
+
+DIPO
+
+MIDQL
+20
+10
+10
+10
+Nθ
+128
+Nϕ
+128
+Buffer size
+1000000
+250000
+250000
+250000
+Batch size
+1000
+
+IDQL
+
+αDQL
+1
+Nθ
+16
+Nϕ
+16
+Buffer eize
+1000000
+Batch size
+1000
+
+DQL
+
+αQSM
+10
+Nθ
+16
+Nϕ
+16
+Buffer size
+1000000
+250000
+250000
+250000
+Batch size
+1000
+
+QSM
+
+γDENOISE
+0.99
+GAE λ
+0.95
+Nθ
+5
+10
+10
+10
+Nϕ
+5
+10
+10
+10
+ε
+0.01
+Batch size
+50000
+7500
+10000
+10000
+K′
+10
+
+DPPO
+
+Table A7:
+Fine-tuning hyperparameters for OpenAI GYM and ROBOMIMIC tasks when comparing
+diffusion-based RL methods. We list shared hyperparameters and then method-specific ones.
+
+Task(s)
+
+Method
+Parameter HalfCheetah-v2 Kitchen-Complete-v0 Kitchen-Partial-v0 Kitchen-Mixed-v0
+
+Common
+γENV
+0.99
+
+Tp
+1
+Ta
+1
+Nϕ
+2 3
+10310
+10
+Ncritic
+10
+5
+5
+5
+Batch size
+256
+
+RLPD
+
+Cal-QL
+Tp
+1
+Ta
+1
+βcql
+5
+Batch size
+256
+
+Tp
+1
+Ta
+1
+Nϕ
+5
+Ncritic
+5
+Batch size
+256
+
+IBRL
+
+Tp
+1
+4
+4
+4
+Ta
+1
+4
+4
+4
+σexp
+min
+0.1
+σprob
+min
+0.1
+γDENOISE
+0.99
+GAE λ
+0.95
+Nθ
+5
+10
+10
+10
+Nϕ
+5
+10
+10
+10
+ε
+0.01
+Batch size
+10000
+5600
+5600
+5600
+K
+20
+K′
+10
+
+DPPO
+
+Method
+Parameter
+Can, PH
+Square, PH
+Can, MH
+Square, MH
+
+Common
+γENV
+0.999
+Ta
+1
+Ta
+1
+
+Nϕ
+3
+Ncritic
+5
+Batch size
+256
+
+RLPD
+
+Cal-QL
+βcql
+5
+Batch size
+256
+
+Nϕ
+3
+Ncritic
+5
+Batch size
+256
+
+IBRL
+
+σexp
+min
+0.1
+σprob
+min
+0.1
+γDENOISE
+0.9
+0.9
+0.99
+0.99
+GAE λ
+0.95
+Nθ
+10
+Nϕ
+10
+ε
+0.01
+Batch size
+6000
+15000
+8000
+20000
+K
+20
+K′
+10
+
+DPPO
+
+Table A8: Fine-tuning hyperparameters for HalfCheetah-v2, FRANKA-KITCHEN, Can, and Square
+(PH or MH datasets) when comparing demo-augmented RL methods. We list hyperparameters shared by
+all methods first, and then method-specific ones.
+
+Task
+
+Method
+Parameter
+Lift, Can
+Square
+Transport
+
+γENV
+0.999
+Ta
+4
+4
+8
+Actor learning rate
+1e-4
+1e-5
+1e-5 (decayed to 1e-6)
+Critic learning rate
+1e-3
+GAE λ
+0.95
+Nθ
+10
+10
+8
+Nϕ
+10
+10
+8
+ε
+0.01 (annealed in DPPO)
+
+Common
+
+Gaussian, Common
+σGau
+0.1
+0.1
+0.08
+Batch size
+7500
+10000
+10000
+Gaussian-MLP
+Model size
+552K
+2.15M
+1.93M
+Gaussian-Transformer
+Model size
+675K
+1.86M
+1.87M
+
+GMM, Common
+MGMM
+5
+σGMM
+0.1
+0.1
+0.08
+Batch size
+7500
+10000
+10000
+GMM-MLP
+Model size
+1.15M
+4.40M
+4.90M
+GMM-Transformer
+Model size
+680K
+1.87M
+1.89M
+
+γDENOISE
+0.99
+σexp
+min
+0.1
+0.1
+0.08
+σprob
+min
+0.1
+0.1
+0.1
+K
+20
+K′
+10
+Batch size
+75000
+100000
+100000
+DPPO-MLP
+Model size
+576K
+2.31M
+2.43M
+DPPO-UNet
+Model size
+652K
+1.62M
+1.68M
+
+DPPO, Common
+
+Table A9: Fine-tuning hyperparameters for ROBOMIMIC tasks with state input when comparing policy
+parameterizations. We list hyperparameters shared by all methods first, and then method-specific ones.
+Since the different policy parameterizations use different neural network architecture, we list the total model
+size here instead of the details such as MLP dimensions.
+
+Task
+
+Method
+Parameter
+Lift, Can
+Square
+Transport
+
+γENV
+0.999
+Ta
+4
+4
+8
+Actor learning rate
+1e-4
+1e-5
+1e-5 (decayed to 1e-6)
+Critic learning rate
+1e-3
+GAE λ
+0.95
+Nθ
+10
+10
+8
+Nϕ
+10
+10
+8
+ε
+0.01 (annealed in DPPO)
+
+Common
+
+Gaussian-ViT-MLP
+Model size
+1.03M
+1.03M
+1.93M
+σGau
+0.1
+0.1
+0.08
+Batch size
+7500
+10000
+10000
+
+Model size
+1.06M
+1.06M
+2.05M
+γDENOISE
+0.9
+σexp
+min
+0.1
+0.1
+0.08
+σprob
+min
+0.10
+K
+100
+K′
+5 (DDIM)
+Batch size
+37500
+50000
+50000
+
+DPPO-ViT-MLP
+
+Table A10: Fine-tuning hyperparameters for ROBOMIMIC tasks with pixel input when comparing policy
+parameterizations. We list hyperparameters shared by all methods first, and then method-specific ones.
+Since the different policy parameterizations use different neural network architecture, we list the total model
+size here instead of the details such as MLP dimensions.
+
+Task
+
+Method
+Parameter
+One-leg
+Lamp
+Round-table
+
+γENV
+0.999
+Ta
+8
+Actor learning rate
+1e-5 (decayed to 1e-6)
+Critic learning rate
+1e-3
+GAE λ
+0.95
+Nθ
+5
+Nϕ
+5
+ε
+0.001
+
+Common
+
+Gaussian-MLP
+Model size
+10.64M
+10.62M
+10.62M
+σGau
+0.04
+Batch size
+8800
+
+Model size
+6.86M
+6.81M
+6.81M
+γDENOISE
+0.9
+σexp
+min
+0.04
+σprob
+min
+0.1
+K
+100
+K′
+5 (DDIM)
+Batch size
+44000
+
+DPPO-UNet
+
+Table A11: Fine-tuning hyperparameters for FURNITURE-BENCH tasks when comparing policy parame-
+terizations. We list hyperparameters shared by all methods first, and then method-specific ones.

@@ -1,0 +1,1128 @@
+RAC: Retrieval-Augmented Clarification for
+Faithful Conversational Search
+
+Ahmed Rayane Kebir1,2[0009−0009−2512−832X], Vincent
+Guigue3[0000−0002−1450−5566], Lynda Said Lhadj2[0009−0005−3850−9229], and
+Laure Soulier1[0000−0001−9827−7400]
+
+1 Sorbonne Université, CNRS, ISIR, F-75005 Paris, France
+2 Ecole nationale Supérieure d’Informatique (ESI), Algeria
+3 AgroParisTech, UMR MIA-PS, Palaiseau, France
+
+arXiv:2601.11722v1 [cs.CL] 16 Jan 2026
+
+Abstract. Clarification questions help conversational search systems re-
+solve ambiguous or underspecified user queries. While prior work has fo-
+cused on fluency and alignment with user intent, especially through facet
+extraction, much less attention has been paid to grounding clarifications
+in the underlying corpus. Without such grounding, systems risk asking
+questions that cannot be answered from the available documents. We
+introduce RAC (Retrieval-Augmented Clarification), a framework for
+generating corpus-faithful clarification questions. After comparing sev-
+eral indexing strategies for retrieval, we fine-tune a large language model
+to make optimal use of research context and to encourage the genera-
+tion of evidence-based question. We then apply contrastive preference
+optimization to favor questions supported by retrieved passages over un-
+grounded alternatives. Evaluated on four benchmarks, RAC demonstrate
+significant improvements over baselines. In addition to LLM-as-Judge as-
+sessments, we introduce novel metrics derived from NLI and data-to-text
+to assess how well questions are anchored in the context, and we demon-
+strate that our approach consistently enhances faithfulness.
+
+Keywords: Conversational Search · Clarifying Questions · RAG.
+
+1
+Introduction
+
+In open-domain information-seeking tasks, user queries are often short, am-
+biguous, or under-specified. Such characteristics make it difficult for traditional
+search systems to accurately capture user intent, as they typically provide only
+a ranked list of documents or passages without engaging in clarifying interac-
+tions [22]. Recent work has explored generating clarifying questions that are
+relevant, diverse, and human-plausible [8,28,30]. However, little attention has
+been given to whether these questions are grounded in the document corpus,
+even though unsupported clarifications may mislead users and harm retrieval
+effectiveness [10,18].
+
+This is the author’s version of the work. It is posted here for your personal use. The definitive version is published in:
+Proc of the 48th European Conference on Information Retrieval (ECIR ’26), 29 March–2 April, 2026, Delft, Netherlands
+
+2
+A-R Kebir et al.
+
+(a) passage retrieval
+(b) training pipeline
+
+Ambiguous user query
+
+Unfaithful clarifying question
+
+Top-k passages
+
+>
+
+Base
+
+Retriever
+(BM25, dense vector)
+
+Faithful clarifying question
+
+RACSFT
+
+Preference Optimization (DPO)
+
+Fig. 1: Overview of RAC. Given an ambiguous user query, the system first re-
+trieves the top-k passages ((a) passage retrieval). A mixture of the fine-tuned
+model and the base model is then used to generate unfaithful clarifying questions.
+Both faithful and unfaithful clarifying questions are subsequently leveraged for
+preference optimization via the DPO algorithm ((b) training pipeline). During
+inference, the trained model directly generates faithful clarifying questions.
+
+Early approaches to clarifying question generation in conversational search
+largely relied on facet-based methods. These methods extracted candidate facets
+from the document collection to produce clarifying questions via templates or
+sequence-to-sequence models [1,2]. While this offered a basic form of corpus
+grounding, the reliance on coarse-grained facets proved reductive.
+The advent of large language models (LLMs) enabled more fluent generation,
+with systems either conditioning on extracted facets to produce natural clarifica-
+tions or directly deriving facets from queries before turning them into questions.
+Yet the task remains split into two stages—facet identification and question gen-
+eration—creating bottlenecks in facet extraction and risks of hallucination when
+clarifications introduce content unsupported by the corpus [27,28].
+In this work, we build on the retrieval-augmented generation (RAG) paradigm
+[12] to ground clarifications directly in the corpus, focusing on answers supported
+by the documents. Facet extraction is performed implicitly by supplying the top-
+k retrieved passages to the LLM, which then generates the clarifying question.
+The first contribution of this article is to propose a fine-tuning of conditional
+clarification generation, which greatly improves the quality of the questions. To
+further mitigate entity-level hallucinations, we also introduce a faithfulness re-
+inforcement mechanism that steers the model to rely on the retrieved inputs
+rather than its internal knowledge, following the approach of [6].
+Thus, we aim to address the following research questions:
+
+RQ1. How can relevant passages be selected from the corpus, and how many
+should be used to optimally guide clarification?
+RQ2. How does conditioning on these relevant passages affect the generation
+of clarifying questions?
+RQ3. How can the faithfulness of clarifying question generation be improved
+when conditioned on relevant passages?
+
+Retrieval-Augmented Clarification for Faithful CS
+3
+
+We introduce RAC, a framework for generating clarifying questions grounded
+in relevant retrieved passages, and train a large language model to prioritize
+faithful questions using preference tuning and contrastive learning, as illustrated
+in Fig. 1. We validate our approach on conversational search and open-domain
+Question Answering datasets through automatic metrics and LLM-as-Judge
+evaluations. Results show that RAC consistently enhances both the quality and
+faithfulness of clarifying questions, outperforming existing baselines.
+
+2
+Related Work
+
+Query Clarification in Conversational Search. Asking clarifying questions
+enables users to actively participate in query disambiguation, with the goal of
+better capturing their information intent [1,2,7,11]. Prior work in this area has
+primarily focused on two tasks: predicting the need for clarification and gener-
+ating clarifying questions. In this paper, we focus on the latter. Recent studies
+have increasingly explored large language model based approaches. For instance,
+Sekulić et al. [27] conditioned an LLM on specific facets; however, such facets are
+not always readily available and often require external extraction tools. Siro et
+al. [28] leveraged temperature control and facet information to generate diverse
+clarifications, while Wang et al. [30] introduced a zero-shot clarifying-question
+generator using fixed templates and query facets. More recently, Tang et al. [29]
+proposed a prompting strategy grounded in an ambiguity taxonomy to improve
+handling of ambiguous queries. Although these methods produce plausible and
+diverse clarifications, they remain prone to hallucination, frequently generating
+questions about aspects unsupported by the underlying corpus. Additionally, the
+reliance on explicit facets limits applicability when facets are difficult to extract
+or unavailable.
+
+Retrieval Augmented Generation. Since the original article [12], several
+variants have been proposed, first for question answering [9] and later for clar-
+ification. Early studies primarily examined the role of the retriever in selecting
+corpus-grounded clarifications among candidate suggestions [18], whereas more
+recent work has shifted the focus toward generation [10], with particular atten-
+tion to maximizing faithfulness during inference. In addition, [26] demonstrates
+that the RAG paradigm can be combined with knowledge bases to enhance dis-
+ambiguation in domain-specific applications. However, these approaches rely on
+a zero-shot paradigm, whereas we demonstrate the benefit of fine-tuning the
+generator to better exploit the retrieved passages.
+
+Preference Tuning. Reinforcement learning from human feedback was intro-
+duced to align LLMs with human preferences [19], but reward-model methods
+were costly and often unstable. More recent techniques such as direct preference
+optimization (DPO) [23] and extensions [32] have improved efficiency by learning
+directly from pairwise comparisons. Beyond general alignment, generating both
+faithful and unfaithful baseline sentences allows contrastive learning algorithms
+
+4
+A-R Kebir et al.
+
+to be effectively applied for improving text generation. Such approaches have
+demonstrated strong performance in tasks such as automatic summarization [4]
+and data-to-text generation [6]. To be useful, text variants must be generated
+carefully, and previous work has relied on mixture-of-logits decoding. Such tech-
+niques are directly relevant to conversational search, where clarifying questions
+must remain faithful to the corpus.
+
+Faithfulness Evaluation. Faithfulness measures whether generated text re-
+mains consistent with its input. In summarization, state-of-the-art approaches
+employ entailment-based metrics that leverage NLI models to score the con-
+sistency of summaries with source documents (e.g., RoBERTa-based entail-
+ment [16]). These methods provide fine-grained judgments of factual align-
+ment on a continuous scale. In data-to-text generation, metrics such as PAR-
+ENT [5] evaluate whether candidate outputs faithfully express entities and rela-
+tions from structured inputs. By contrast, clarifying question generation has not
+been systematically assessed for faithfulness. Existing evaluations rely mainly
+on reference-based metrics (e.g., BLEU, METEOR) or indirect retrieval-based
+proxies [2,24], which do not directly measure factual consistency with the input
+context. In this work, we adapt entailment-based and data-grounding approaches
+from summarization and data-to-text to develop faithfulness evaluations tailored
+to clarifying question generation.
+
+3
+Methodology
+
+Our RAC framework follows a two-stage training pipeline as illustrated in Fig. 2.
+In the first stage, a large language model pLM is fine-tuned on existing clarifi-
+cation datasets along two axes to generate: (1) factual questions conditioned by
+user queries and retrieved passages pθ0 and (2) less factual questions uncondi-
+tioned by passages puncond. The two levels of question quality are then passed
+to a preference learning algorithm (contrastive) that encourages the model to
+rank faithful, evidence-grounded clarifications higher than unsupported or hal-
+lucinated alternatives.
+We formulate the task of generating clarifying questions Cq as a retrieval-
+augmented generation task. The initial user query Uq enables the retrieval of
+a set of relevant passages D = {d1, . . . , dN}, which will be used as context for
+the generation. We assume all queries to be ambiguous, focusing on clarifying
+
+Preference tuning
+Fine-tuning on 1
+
+pθ
+
+p(Cq | Uq, D)
+
+0
+
+pLM
+
+Training
+
+pθ
+
+*
+
+Data-generation
+
+Fine-tuning on 1
+
+puncond
+
++
+-
+
+= {(Uq, D, Cq , Cq ​)}
+2
+
+p(Cq | Uq)
+
+Fig. 2: Overview of our proposed training pipeline.
+
+Retrieval-Augmented Clarification for Faithful CS
+5
+
+question generation rather than clarification need prediction [17]. Each passage
+may capture different semantic facets of the query, but we restrict to a single-turn
+setup, generating one clarifying question targeting the most useful facet.
+
+3.1
+Supervised Clarifying Question Generation
+
+Retrieval-augmented generation (RAG) has shown that conditioning large lan-
+guage models on retrieved passages improves factual grounding and reduces re-
+liance on parametric memory [9,12]. However, previous work has focused on
+generating direct zero-shot answers. Our contribution is to propose a fine-tuned
+model (twice) to better exploit the retrieved passages for the clarification task.
+To this end, we employ supervised fine-tuning (SFT) as the first stage of training:
+a large language model is trained to generate clarifying questions Cq conditioned
+on both the user query Uq and the corresponding retrieved passages D (lead-
+ing to pθ0). Given a dataset T1 of query–passage–ground-truth-question tuples
+(Uq, D, C+
+q ), the model is optimized with the negative log-likelihood objective:
+
+|C+
+q |
+X
+
+
+
+
+
+LSFT(θ) = −E∼T1
+
+t=1
+log pθ(Cq,t | Uq, D, Cq,<t)
+
+
+(1)
+
+
+
+Here, each token of the clarifying question Cq,t is predicted sequentially, condi-
+tioned on the user query, the retrieved passages, and the previously generated
+tokens (denoted Cq,<t).
+SFT establishes a strong baseline for clarification. By learning to ask ques-
+tions supported by retrieved passages, the model reduces ambiguity in user intent
+and provides an evidence-aligned starting point for the subsequent preference
+based alignment stage. This further improves faithfulness and mitigates halluci-
+nations.
+
+3.2
+Faithfulness Alignment
+
+Although the pθ0 model is already fine-tuned to generate clarifying questions that
+are much more relevant than the initial pLM model, one of its main limitations
+is its tendency to hallucinate: it may generate details that are absent from the
+retrieved passages D.
+
+Preference tuning. To mitigate this, we introduce a second training stage
+focused on faithfulness. We augment the training data with pairs of faith-
+ful (C+
+q ) and unfaithful (C−
+q ) clarifying questions and apply a contrastive
+learning approach. In particular, we employ DPO [23] over a dataset T2 =
+{(Uq, D, C+
+q , C−
+q )}, where the model is explicitly trained to prefer faithful clar-
+ifying questions over unfaithful ones. In DPO, the learning objective (Eq. 2)
+aligns a policy model pθ with a preference signal, favoring C+
+q over C−
+q , given
+the same input (Uq, D), as defined below:
+
+LDPO(θ) = −E∼T2
+h
+log σ
+
+β log pθ(C+
+q | Uq, D)
+pθ0(C+
+q | Uq, D) −β log pθ(C−
+q | Uq, D)
+pθ0(C−
+q | Uq, D)
+
+i
+(2)
+
+6
+A-R Kebir et al.
+
+Unfaithful clarifying questions generation. Preference-based alignment
+requires faithful–unfaithful question pairs, but manual creation is costly and
+automatic detection remains difficult. We propose an unsupervised method that
+simulates unfaithful questions by injecting controlled noise during decoding. Our
+method adapts the noisy decoding strategy of Duong et al. [6] to the clarification
+setting. The approach relies on two complementary models:
+Grounded model pθ0: obtained by fine-tuning a pretrained base model pLM on
+half of the dataset T1. Given a query and retrieved passages (Uq, D), it out-
+puts generally faithful clarifying questions Cq ∼pθ0(· | Uq, D), though minor
+inaccuracies remain.
+Ungrounded model puncond: obtained by fine-tuning the same base model but
+conditioned only on the user query Uq, i.e., Cq ∼puncond(· | Uq). It produces flu-
+ent and relevant clarifying questions, yet these are not guaranteed to be grounded
+in the retrieved passages D.
+While puncond produces overly unconstrained questions and pθ0 tends to re-
+main faithful, their combination yields plausible but unfaithful clarifying ques-
+tions (the balance is critical, as highlighted by Duong et al. [6]). Specifically,
+we decode token-by-token from a mixture distribution (Eq. 3), using stochastic
+decoding (temperature and top-k sampling) to promote diversity and encourage
+hallucinated tokens.
+
+Cq,t ∼(1 −αt) pθ0(· | Cq,<t, Uq, D) + αt puncond(· | Cq,<t, Uq),
+(3)
+
+where αt ∼Bernoulli(α) controls the injection of ungrounded content. The noise
+parameter α ∈[0, 1] determines the faithfulness–fluency trade-off: α = 0 recov-
+ers clarifying questions from pθ0, whereas α = 1 generates ungrounded ones
+from puncond. The resulting questions remain fluent but contain ungrounded
+spans, yielding both intrinsic errors (contradictions with retrieved passages) and
+extrinsic hallucinations (additions not inferable from D). These are used as un-
+faithful clarifying questions C−
+q in the augmented dataset T2 = (Uq, D, C+
+q , C−
+q ),
+enabling preference optimization for faithfulness alignment.
+
+3.3
+Joint Training Objective
+
+Supervised fine-tuning and preference optimization address complementary ob-
+jectives: supervised fine-tuning operates at the token level, teaching the model
+to produce clarifying questions, while preference optimization encourages it to
+prefer faithful outputs over unfaithful ones. To leverage both, we propose a com-
+bined training objective: LRAC(θ) = γ · LDPO(θ) +
+(1 −γ) · LSFT(θ).
+
+4
+Experimental Setup
+
+4.1
+Datasets and Evaluation
+
+Datasets. We evaluate RAC on four datasets across conversational search and
+open-retrieval QA. For search, we use Qulac (derived from TREC Web Track
+
+Retrieval-Augmented Clarification for Faithful CS
+7
+
+2009–2012) [2] and the filtered version of ClariQ proposed by Sekulic et al. [27],
+which maps clarifying questions to facets. For QA, we use PaQa (AmbigNQ
+with GPT-3 clarifications) [8] and CambigNQ (AmbigNQ queries augmented
+with human-validated clarifications) [11].
+
+Adapting Datasets for Retrieval-Augmented Clarification. Existing clarification
+datasets (Qulac, ClariQ) lack passage-level grounding, as their relevance labels
+are assigned at the document level and not explicitly tied to the clarifying ques-
+tion. To bridge this gap, we derive passage-level supervision through a three-
+stage pipeline: (i) Passage Indexing: we segment Clueweb09-124 into 250-token
+passages, following TREC CAsT [20], and index them with Pyserini [15]; (ii)
+Query Rewriting: for each ambiguous query–clarification pair (Uq, Cq), we gen-
+erate a facet-specific reformulation U r
+q by incorporating Cq using an LLM, yield-
+ing sharper retrieval intents than Uq alone; (iii) Pseudo-Relevance Retrieval: we
+employ BM25 [25] over the passage index to retrieve the top-k passages D for
+U r
+q , treating them as pseudo-relevant evidence. This produces training tuples
+(Uq, D, Cq) that support retrieval-conditioned clarification generation.
+
+Metrics. We employ both reference-based and reference-free metrics to evaluate
+the quality of generated clarifying questions. Reference-based metrics measure
+similarity to gold questions, while reference-free metrics assess faithfulness to
+the input query and associated passages. In addition, we use GPT-4 to assess
+faithfulness, serving as a model-based proxy for human judgment.
+
+Reference-based evaluation.
+We report BLEU [21], ROUGE-L [14], ME-
+TEOR [3], and BERTScore [33]. BLEU and ROUGE-L capture n-gram and
+longest common subsequence overlap, respectively, while METEOR accounts
+for synonym and stem matches. BERTScore computes semantic similarity via
+contextualized token embeddings, providing a finer-grained assessment of mean-
+ing preservation. These metrics are consistent with prior work in clarification
+question generation and facilitate direct comparison.
+
+Faithfulness evaluation. We evaluate faithfulness using PARENT Recall (PAR)
+[5] and AlignScore (AL) [13]. PAR, originally proposed for data-to-text genera-
+tion, computes n-gram recall against both the input and the reference, serving
+as a proxy for input-groundedness. To apply it to unstructured passages, we
+adapt the metric by extracting named entities, multi-word noun phrases, and
+subject–verb–object triples with SpaCy5, allowing content-level overlap mea-
+surement without reliance on structured data. AL is an entailment-based metric
+built on RoBERTa [16] and trained on multiple NLI datasets. Because clarify-
+ing questions are often interrogative and not well-suited for direct entailment
+evaluation, we convert them into declarative statements by removing question
+templates, retaining only content-bearing tokens, and filtering query overlaps.
+
+4
+5
+
+8
+A-R Kebir et al.
+
+This yields hypotheses compatible with AL’s premise–hypothesis structure while
+preserving the semantic content of the questions.
+
+4.2
+Baselines
+
+We evaluate RAC against several baselines. First, we include (AT-CoT), the am-
+biguity taxonomy chain-of-thought prompting baseline of Tang et al. [29], which
+applies few-shot prompting conditioned only on the query. Following Sekulic et
+al. [27], we use the widely adopted (Q-Cond) fine-tuned model, which generates
+clarifications from the query alone. To assess the impact of supervision, we com-
+pare RAC to a (QP-Zeroshot) variant conditioned on both query and passages in
+a zero-shot setting. Finally, on ClariQ, where facet annotations are available, we
+also report results for the template-based (TB) and facet-based (QF-Cond) base-
+lines of Sekulic et al. [27]. For LLM-based methods, we use the same underlying
+model to ensure a fair comparison.
+
+4.3
+Implementation Details and Hyperparameters
+
+We build on the pre-trained LLaMA3.1-8B-base checkpoint from the Hugging-
+Face Hub, using the Transformers and TRL libraries [31]. For supervised fine-
+tuning (SFT), we train for 2 epochs with a learning rate of 1 × 10−5, batch
+size 32, and a linear learning rate schedule. For direct preference optimiza-
+tion (DPO), we use 2 epochs with a learning rate of 2 × 10−6, batch size 32,
+and β = 0.1. In our joint loss, we set γ = 0.5, based on ablation results.
+Zero-shot baselines rely on the Instruct variant of the base model. All ex-
+periments are run on NVIDIA A100 GPUs (80GB). Source code is available at:
+
+5
+Results
+
+5.1
+Main Results
+
+The main evaluation results are reported in Table 1. We find that RAC sig-
+nificantly outperforms the baselines across all metrics and datasets, confirming
+that passage conditioning substantially improves clarifying question generation,
+answering RQ2.
+Moreover, results show that reference-based measures fail to capture the
+gains from preference tuning, consistent with prior findings [4,6,23]. In contrast,
+reference-free evaluation –reported only for models conditionned with passages–
+reveals that RACDPO achieves better performance over RACSFT. This demon-
+strates that preference-based optmization enhances corpus faithfulness beyond
+sepervised fine-tuning, directly adressing RQ3.
+The fact that QP-Zero performs significantly worse than Q-cond highlights
+the importance of learning the form of a clarification question, independently of
+its content.
+
+Retrieval-Augmented Clarification for Faithful CS
+9
+
+Table 1: Evaluation scores of RAC variants against different baselines, with β =
+0.1 and for mixture α
+=
+0.7. Bold values indicate best performance, and †
+indicates a statistically significant improvement (Welch’s t-test, p < 0.001).
+
+Dataset
+Model
+ROUGE-L ↑BLEU ↑METEOR ↑BERTScore (F1) ↑ALScore ↑Par-R ↑
+
+Conversational Search Datasets
+
+AT-CoT
+17.97
+2.77
+20.81
+84.72
+–
+–
+Q-Cond
+29.44
+10.51
+25.92
+88.24
+–
+–
+QP-Zeroshot
+27.39
+5.68
+33.33
+87.20
+–
+–
+RACSFT(ours)
+33.14†
+12.59†
+31.30†
+89.34†
+79.14
+42.53
++ RACDPO(ours)
+32.42†
+11.52†
+31.48†
+88.92†
+81.73
+44.83
+
+Qulac
+
+AT-CoT
+18.63
+3.49
+21.19
+84.74
+–
+–
+Q-Cond
+28.68
+11.19
+25.47
+88.16
+–
+–
+TB
+35.50
+0.28
+24.26
+87.65
+–
+–
+QF-Cond
+33.70
+2.20
+37.56
+89.08
+–
+–
+QP-Zeroshot
+26.03
+4.99
+31.81
+86.59
+–
+–
+RACSFT(ours)
+36.25†
+14.88†
+34.01†
+89.52†
+51.32
+53.15
++ RACDPO(ours)
+35.52†
+14.86†
+33.84†
+89.39†
+52.41
+55.77
+
+ClariQ
+
+Question Answering Datasets
+
+AT-CoT
+23.59
+7.07
+22.93
+85.97
+–
+–
+Q-Cond
+42.46
+16.62
+41.58
+90.12
+–
+–
+QP-Zeroshot
+33.79
+10.42
+35.84
+88.66
+–
+–
+RACSFT(ours)
+46.83†
+20.17†
+47.97†
+90.85†
+43.36
+27.62
++ RACDPO(ours)
+45.26†
+18.32†
+46.40†
+90.41†
+45.75
+28.54
+
+PaQa
+
+AT-CoT
+10.33
+2.10
+8.53
+84.02
+–
+–
+Q-Cond
+28.41
+8.90
+33.06
+87.17
+–
+–
+QP-Zeroshot
+18.20
+4.27
+19.48
+85.15
+–
+–
+RACSFT(ours)
+36.66†
+14.81†
+43.37†
+88.93†
+47.62
+87.99
++ RACDPO(ours)
+35.47†
+14.40†
+41.99†
+88.89†
+49.95
+88.05
+
+CAmbigNQ
+
+These findings highlight both the benefit of passage conditioning and the
+added value of preference-based optimization. We further validate these results
+through qualitative analysis and LLM-based judgments in subsequent experi-
+ments.
+
+5.2
+LLM-based Evaluation
+
+To further address RQ2, we evaluate the faithfulness of our approach using
+GPT-4 as a evaluator, comparing RACDPO against RACSFT. Results are shown
+in Table 2. Across all datasets, RACDPO achieves higher win rates compared to
+RACSFT, in some cases by more than a factor of two, whereas a large fraction
+of outputs are judged as ties. These results suggest that supervised fine-tuning
+already provides a strong baseline, preference optimization yield further gains
+on harder cases, reinforcing RQ3 by enhancing faithfulness beyond supervised
+training.
+
+5.3
+Impact of the Number of Input Passages
+
+We next examine the impact of the number and quality of retrieved passages on
+RAC. Because RAC relies on retrieval to expose potential ambiguities, both the
+quantity and relevance of the input passages directly affect its ability to generate
+effective clarifications.
+
+10
+A-R Kebir et al.
+
+Table 2: GPT-4 preference results comparing RACDPO and RACSFT. Results
+with * are statistically significantly different based on the one-sided McNemar’s
+test with p < 0.05.
+
+Dataset
+RACDPO%
+Tie%
+RACSFT%
+
+Qulac
+28.88*
+50.56
+20.56
+ClariQ
+28.36*
+48.79
+22.85
+PaQa
+36.24
+30.36
+33.40
+CAMbigNQ
+16.27*
+72.23
+11.50
+
+As shown in Fig. 3, performance improves as the number of passages in-
+creases, but the effect saturates after approximately four passages, suggesting
+that the most salient query-related ambiguities are typically captured within
+the top-ranked results. Passage quality is equally important: using random pas-
+sages results in performance close to the ”Q-Cond” baseline, whereas BM25 and
+dense retrievers achieve substantially higher scores. BM25’s advantage is likely
+due to a domain mismatch, since the dense retriever is trained on MS MARCO,
+whose passage structure and content differ from the chunked ClueWeb passages
+used in our setting. These findings indicate that RAC benefits from informative
+retrieval signals and can extract relevant facets from high-quality passages rather
+than relying on arbitrary content, thereby addressing RQ1.
+
+5.4
+Impact of the Quality of Noisy Generated Elements
+
+We study the effect of our noisy generation method by comparing puncond, fine-
+tuned with only the query as input, with pLM, the initial language model. We
+then measure their impact on preference tuning (positive samples always being
+generated by pθ0). Table 3 shows that puncond provides more effective negative
+samples than pLM. Unlike the approach of Duong et al. [6], which relies on generic
+
+36.25
+
+87.83 88.99 89.52
+
+35
+
+34.01
+Q-Cond Baseline
+Random
+TCT-ColBERT-v2 (MSMARCO)
+BM25
+
+88.13
+
+33.11
+
+80
+
+30.32
+
+30
+
+50
+
+Score (ROUGE / BLEU / METEOR)
+
+27.88
+
+Score (%) [ROUGE / BLEU / METEOR]
+
+91.4
+
+27.82
+
+25.56
+
+25
+
+45
+
+Score (BERTScore)
+
+60
+
+Score (%) [BERTScore]
+
+24.23
+
+91.2
+
+20
+
+40
+
+ROUGE-L
+BLEU
+METEOR
+BERTScore (F1)
+
+91.0
+
+40
+
+14.88
+
+15
+
+35
+
+12.63
+
+90.8
+
+10.39
+
+30
+
+10
+
+10.32
+
+20
+
+90.6
+
+25
+
+5
+
+90.4
+
+20
+
+0
+
+0
+
+0
+1
+2
+3
+4
+5
+Number of Passages
+
+ROUGE
+BLEU
+METEOR
+BERTScore
+Evaluation Metric
+
+Fig. 3: NLG metrics on ClariQ: impact of varying the number of passages (left)
+and comparison of retrieval strategies (BM25, TCT, random) using the top 5
+retrieved passages (right).
+
+Retrieval-Augmented Clarification for Faithful CS
+11
+
+Table 3: ClariQ validation results using different negative generation methods.
+
+Method
+ROUGE-L BLEU METEOR BERTScore (F1) ALScore ↑Par-R ↑
+
+RACDP O, C−
+q ∼pLM
+33.84
+12.93
+30.79
+89.25
+50.81
+50.73
+RACDP O, C−
+q ∼puncond
+35.52
+14.86
+33.84
+89.39
+52.41
+55.77
+
+noise injection, puncond generates clarifications that are structurally well-formed
+but factually misaligned. This contrast makes them harder negatives and better
+training signals for preference optimization. By comparison, samples from pLM
+often fail to resemble clarifications at all, limiting their usefulness. These results
+highlight the importance of tailoring noise generation to the clarification format
+rather than reusing generic base-model outputs.
+
+5.5
+Qualitative Analysis
+
+Noisy clarifying questions. We qualitatively assess the effect of mixture be-
+tween the conditionned & unconditionned models pθ0 and puncond, controlled by
+α (Eq.3). At α = 0, outputs come solely from pθ0; at α = 1, from puncond. Table 4
+shows an example from ClariQ, where noise increases with α. Irrelevant spans
+(highlighted in red ) illustrate how higher α degrades faithfulness. For prefer-
+ence learning, selecting intermediate α values yields negative examples that are
+challenging yet informative, avoiding both trivial and overly noisy supervision.
+
+Generated Clarifying questions. We compare clarifications from RACSF T
+and RACDP O on ClariQ validation data (Table 5). Faithful content is high-
+lighted in yellow , hallucinations in red . RACSF T exhibits occasional ground-
+ing failures, such as introducing unsupported entities (e.g., hallucinating “season
+17”) or omitting relevant evidence (e.g., overlooking “season 16”). In contrast,
+RACDP O produces questions more tightly grounded in passages. This aligns
+
+Table 4: Noisy generation at different α interpolation weights of puncond and pθ0
+
+α
+Noisy Generation
+
+0.0 are you interested in the causes of angular cheilitis
+0.1 do you want to read an article on that, do you want to be diagnosed
+0.2 do you have any recommendations for treating this condition
+0.3 do you want to see a
+picture
+of angular cheilitis
+0.4 would you like to know about symptoms, risk factors, or a way to treat or manage your condition
+0.5 would recommend a topical or internal medicine to cure your specific symptom for you based
+off its symptoms or how do I treat your specific angular cheilitis?
+0.6
+do any methods have been tested?
+0.7 What works to treat this
+0.8 Use warm soapy water , soft cotton balls , an old razor blade . If you do not have any of the
+
+aforementioned items, you can use a
+regular nail clipper .
+
+0.9
+How many times a day should I apply the treatment?
+
+12
+A-R Kebir et al.
+
+Table 5: Qualitative comparison of RAC against baseline models.
+
+Input
+RACSF T
+RACDP O
+
+Query: When does the new family guy season
+come out?
+Passages: [’... Ed O Neill Liam Payne Louis
+Tomlinson and Neil deGrasse Tyson During this
+season the guys head to South Korea after’, ’
+Family Guy (season 15) Family Guy season 15
+Family Guy fifteenth season premiered on Fox in
+the United States on September 25 2016 and
+ended on May 21 2017 The season contained 20
+episodes The series follows the dysfunctional
+Griffin family consisting of father Peter mother
+Lois daughter Meg son Chris baby ...re Appel
+and Callaghan Guest stars for the season include
+Kyle Chandler Stephen Curry Flea Rob
+Gronkowski’]
+
+Are you looking for the
+release date of Family
+Guy season
+15, 16
+or
+
+Are you looking for the
+release dates of Family
+Guy seasons
+
+14, 15 or 16 ?
+
+17 ?
+
+with quantitative gains reflecting in more relevant and grounded clarifying ques-
+tions, demonstrating that DPO improves reliability in ambiguous cases where
+SFT fails to capture the core ambiguity.
+
+6
+Conclusion
+
+In this work, we introduced clarification question generation as a retrieval con-
+ditioned generation task, where questions are generated based on both the user
+query and retrieved passages. This formulation ensures that clarifications are
+grounded in information the system can realistically access. Our RAC framework
+combines retrieval context with preference tuning to improve both the relevance
+and corpus-faithfulness of generated questions. Experiments on four benchmarks
+demonstrate that both RACSFT and RACDPO significantly outperform existing
+baselines, Q-Cond and QP-Zeroshot, across all reference-based metrics (ROUGE-
+L, BLEU, METEOR, and BERTScore). We further employ LLM-as-Judge eval-
+uations and novel metrics derived from NLI and data-to-text to quantify the
+gains in faithfulness to retrieved content of RACDPO over RACSFT, which is
+critical for conversational search, where the objective is to disambiguate and an-
+swer user queries based on retrieved evidence rather than knowledge internal to
+the language model. As future work, we plan to extend this task to multi-turn
+clarification and evaluate its impact on downstream retrieval performance.
+
+Acknowledgments. The authors acknowledge the ANR – FRANCE (French National
+Research Agency) for its financial support of the GUIDANCE project n◦ANR-23-IAS1-
+0003 as well as the Chaire Multi-Modal/LLM ANR Cluster IA ANR-23-IACL-0007.
+This work was granted access to the HPC resources of IDRIS under the allocation
+AD011016470 made by GENCI.
+
+Disclosure of Interests. The authors have no competing interests to declare that
+are relevant to the content of this article.
+
+Retrieval-Augmented Clarification for Faithful CS
+13
+
+References
+
+1. Aliannejadi, M., Kiseleva, J., Chuklin, A., Dalton, J., Burtsev, M.: Building and
+evaluating open-domain dialogue corpora with clarifying questions. arXiv preprint
+arXiv:2109.05794 (2021)
+2. Aliannejadi, M., Zamani, H., Crestani, F., Croft, W.B.: Asking clarifying questions
+in open-domain information-seeking conversations. In: Proceedings of the 42nd
+international acm sigir conference on research and development in information
+retrieval. pp. 475–484 (2019)
+3. Banerjee, S., Lavie, A.: Meteor: An automatic metric for mt evaluation with im-
+proved correlation with human judgments. In: Proceedings of the acl workshop on
+intrinsic and extrinsic evaluation measures for machine translation and/or summa-
+rization. pp. 65–72 (2005)
+4. Choi, J., Chae, K., Song, J., Jo, Y., Kim, T.: Model-based preference optimization
+in abstractive summarization without human feedback. In: Al-Onaizan, Y., Bansal,
+M., Chen, Y.N. (eds.) Proceedings of the 2024 Conference on Empirical Methods
+in Natural Language Processing. pp. 18837–18851. Association for Computational
+Linguistics, Miami, Florida, USA (Nov 2024).
+2024.emnlp-main.1048,
+5. Dhingra, B., Faruqui, M., Parikh, A., Chang, M.W., Das, D., Cohen, W.W.: Han-
+dling divergent reference texts when evaluating table-to-text generation. arXiv
+preprint arXiv:1906.01081 (2019)
+6. Duong, S., Bronnec, F.L., Allauzen, A., Guigue, V., Lumbreras, A., Soulier, L.,
+Gallinari, P.: SCOPE: A self-supervised framework for improving faithfulness in
+conditional text generation. In: The Thirteenth International Conference on Learn-
+ing Representations (2025),
+7. Erbacher, P., Nie, J.Y., Preux, P., Soulier, L.: Augmenting ad-hoc ir dataset
+for interactive conversational search. Transactions on Machine Learning Research
+(2024),
+8. Erbacher, P., Nie, J.Y., Preux, P., Soulier, L.: Paqa: toward proactive open-retrieval
+question answering. arXiv preprint arXiv:2402.16608 (2024)
+9. Izacard, G., Grave, E.: Leveraging passage retrieval with generative models for
+open domain question answering. In: Merlo, P., Tiedemann, J., Tsarfaty, R. (eds.)
+Proceedings of the 16th Conference of the European Chapter of the Association
+for Computational Linguistics: Main Volume. pp. 874–880. Association for Com-
+putational Linguistics, Online (Apr 2021).
+eacl-main.74,
+10. Krasakis, A.M., Yates, A., Kanoulas, E.: Corpus-informed retrieval augmented
+generation of clarifying questions. arXiv preprint arXiv:2409.18575 (2024)
+11. Lee, D., Kim, S., Lee, M., Lee, H., Park, J., Lee, S.W., Jung, K.: Asking clarification
+questions to handle ambiguity in open-domain qa. arXiv preprint arXiv:2305.13808
+(2023)
+12. Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H.,
+Lewis, M., Yih, W.t., Rocktäschel, T., et al.: Retrieval-augmented generation for
+knowledge-intensive nlp tasks. Advances in neural information processing systems
+33, 9459–9474 (2020)
+13. Li, Y.Z.Y.Y.R., Hu, Z.: Alignscore: Evaluating factual consistency with a unified
+alignment function
+14. Lin, C.Y.: Rouge: A package for automatic evaluation of summaries. In: Text sum-
+marization branches out. pp. 74–81 (2004)
+
+14
+A-R Kebir et al.
+
+15. Lin, J., Ma, X., Lin, S.C., Yang, J.H., Pradeep, R., Nogueira, R.: Pyserini: A
+python toolkit for reproducible information retrieval research with sparse and dense
+representations. In: Proceedings of the 44th international ACM SIGIR conference
+on research and development in information retrieval. pp. 2356–2362 (2021)
+16. Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis, M.,
+Zettlemoyer, L., Stoyanov, V.: Roberta: A robustly optimized bert pretraining
+approach. arXiv preprint arXiv:1907.11692 (2019)
+17. Lu, L., Meng, C., Ravenda, F., Aliannejadi, M., Crestani, F.: Zero-shot and efficient
+clarification need prediction in conversational search. In: European Conference on
+Information Retrieval. pp. 389–404. Springer (2025)
+18. Mass, Y., Cohen, D., Yehudai, A., Konopnicki, D.: Conversational search with
+mixed-initiative - asking good clarification questions backed-up by passage re-
+trieval. In: Feng, S., Wan, H., Yuan, C., Yu, H. (eds.) Proceedings of the Second
+DialDoc Workshop on Document-grounded Dialogue and Conversational Ques-
+tion Answering. pp. 65–71. Association for Computational Linguistics, Dublin,
+Ireland (May 2022).
+//aclanthology.org/2022.dialdoc-1.7/
+19. Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang,
+C., Agarwal, S., Slama, K., Ray, A., et al.: Training language models to follow
+instructions with human feedback. Advances in neural information processing sys-
+tems 35, 27730–27744 (2022)
+20. Owoicho, P., Dalton, J., Aliannejadi, M., Azzopardi, L., Trippas, J.R., Vakulenko,
+S.: Trec cast 2022: Going beyond user ask and system retrieve with initiative and
+response generation. In: TREC (2022)
+21. Papineni, K., Roukos, S., Ward, T., Zhu, W.J.: Bleu: a method for automatic
+evaluation of machine translation. In: Proceedings of the 40th annual meeting of
+the Association for Computational Linguistics. pp. 311–318 (2002)
+22. Radlinski, F., Craswell, N.: A theoretical framework for conversational search. In:
+Proceedings of the 2017 conference on conference human information interaction
+and retrieval. pp. 117–126 (2017)
+23. Rafailov, R., Sharma, A., Mitchell, E., Manning, C.D., Ermon, S., Finn, C.: Direct
+preference optimization: Your language model is secretly a reward model. Advances
+in neural information processing systems 36, 53728–53741 (2023)
+24. Rao, S., Daumé, H.: Learning to ask good questions: Ranking clarification questions
+using neural expected value of perfect information. In: Annual Meeting of the
+Association for Computational Linguistics (2018)
+25. Robertson, S., Zaragoza, H., et al.: The probabilistic relevance framework: Bm25
+and beyond. Foundations and Trends® in Information Retrieval 3(4), 333–389
+(2009)
+26. Sahay, R., Tekumalla, L.S., Aggarwal, P., Jain, A., Saladi, A.: Ask: Aspects and
+retrieval based hybrid clarification in task oriented dialogue systems. In: Proceed-
+ings of the 63rd Annual Meeting of the Association for Computational Linguistics
+(Volume 6: Industry Track). pp. 881–895 (2025)
+27. Sekulić, I., Aliannejadi, M., Crestani, F.: Towards facet-driven generation of clari-
+fying questions for conversational search. In: Proceedings of the 2021 ACM SIGIR
+international conference on theory of information retrieval. pp. 167–175 (2021)
+28. Siro, C., Yuan, Y., Aliannejadi, M., de Rijke, M.: AGENT-CQ: Automatic Genera-
+tion and Evaluation of Clarifying Questions for Conversational Search with LLMs.
+arXiv preprint arXiv:2410.19692 (2024),
+
+Retrieval-Augmented Clarification for Faithful CS
+15
+
+29. Tang, A., Soulier, L., Guigue, V.: Clarifying ambiguities: on the role of ambigu-
+ity types in prompting methods for clarification generation. In: Proceedings of
+the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. pp. 20–30 (2025)
+30. Wang, Z., Tu, Y., Rosset, C., Craswell, N., Wu, M., Ai, Q.: Zero-shot clarifying
+question generation for conversational search. In: Proceedings of the ACM web
+conference 2023. pp. 3288–3298 (2023)
+31. Wolf, T., Debut, L., Sanh, V., Chaumond, J., Delangue, C., Moi, A., Cistac, P.,
+Rault, T., Louf, R., Funtowicz, M., et al.: Transformers: State-of-the-art natural
+language processing. In: Proceedings of the 2020 conference on empirical methods
+in natural language processing: system demonstrations. pp. 38–45 (2020)
+32. Yang, X., Tan, Z., Li, H.: Ipo: Iterative preference optimization for text-to-video
+generation. arXiv preprint arXiv:2502.02088 (2025)
+33. Zhang, T., Kishore, V., Wu, F., Weinberger, K.Q., Artzi, Y.: Bertscore: Evaluating
+text generation with bert. arXiv preprint arXiv:1904.09675 (2019)

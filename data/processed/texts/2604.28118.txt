@@ -1,0 +1,4921 @@
+DEFault++: Automated Fault Detection, Categorization,
+and Diagnosis for Transformer Architectures
+
+Sigma Jahan
+
+Faculty of Computer Science
+Dalhousie University
+Halifax, NS, Canada
+
+Saurabh Singh Rajput
+
+Faculty of Computer Science
+Dalhousie University
+Halifax, NS, Canada
+
+arXiv:2604.28118v1 [cs.SE] 30 Apr 2026
+
+Tushar Sharma
+
+Faculty of Computer Science
+Dalhousie University
+Halifax, NS, Canada
+
+Mohammad Masudur Rahman
+
+Faculty of Computer Science
+Dalhousie University
+Halifax, NS, Canada
+
+Abstract
+
+1
+Introduction
+
+Transformer models are widely used across natural language processing (OpenAI, 2023; Gemini
+Team et al., 2023), code generation (Chen et al., 2021), software engineering (Qiu et al., 2025), and
+medical imaging (Esteva et al., 2017). Their effectiveness stems largely from the attention mech-
+anism (Vaswani et al., 2017), which addresses limitations of sequential models such as Recurrent
+Neural Networks (RNNs) (Vaswani et al., 2017). Attention is implemented through model code,
+optimized kernels, mixed-precision arithmetic, and task-specific preprocessing.
+
+Small implementation mistakes in attention logic, masking, or kernel integration can silently alter
+model behavior without raising explicit errors (Jahan et al., 2025a; de Santana Correia & Colombini,
+2022; Zhai et al., 2023a; Wei et al., 2025; Miller, 2023; Voita et al., 2019). For example, attention
+heads can degenerate or become redundant (Michel et al., 2019; Voita et al., 2019). These faults
+can reduce representation diversity and affect model performance without producing immediate
+errors. Even when a symptom becomes visible, such as poor output quality or unstable fine-tuning,
+it rarely identifies the responsible component. The same symptom can arise from projection errors,
+masking faults, positional encoding faults, or residual corruption (Jahan et al., 2026). Developers
+can inspect loss curves, gradients, attention maps, and parameter updates, but these measurements
+alone do not connect a visible symptom to the root cause or the responsible transformer component.
+
+Recent work has proposed automated debugging techniques for DNN programs. Rule-based tech-
+niques, such as AutoTrainer (Zhang et al., 2021), UMLAUT (Yuan et al., 2021), and DeepDiagno-
+sis (Wardat et al., 2022), check training runs against fixed symptoms such as exploding gradients,
+vanishing gradients, or oscillating loss. Learned classifiers, such as DeepFD (Cao et al., 2022) and
+DEFault (Jahan et al., 2025b), train on runtime features to predict fault categories such as loss
+function, learning rate, or activation. Both lines of work are architecture-agnostic and remain useful
+for general training and model faults in transformer programs. However, they do not address the
+class of faults that arise from transformer-specific mechanisms (Jahan et al., 2025a; 2026). These
+techniques observe runtime behavior at the model level rather than inside individual transformer
+components. As a result, they cannot reliably distinguish transformer-specific faults from generic
+training problems, nor can they identify which component is responsible.
+Transformer-specific
+debuggers such as ATTNChecker (Liang et al., 2025) and AtPatch (Weng et al., 2026) target nar-
+rower failure modes, such as NaN or Inf values during attention or attention-map anomalies at
+the patch level. They do not cover the full taxonomy of transformer faults shown in Figure 3.
+Consequently, existing techniques report broad categories such as incorrect activation or incorrect
+loss, without identifying which transformer component caused the fault, such as QKV or mask-
+ing, or which mechanism inside that component explains it, such as dimension mismatch or stale
+projection update.
+
+four existing DNN debugging techniques on Level 1 fault detection across AUROC, macro-F1, and
+accuracy. In our developer study (N = 21), repair-action accuracy improved from 57.1% without
+assistance to 83.3% with DEFault++ assistance.
+
+In summary, we make the following contributions:
+
+(a) DEFault++, a hierarchical technique that detects faults in transformer programs, classifies
+them into fault categories, and identifies the root cause within that category.
+
+(b) DEForm, a mutation technique for transformer models based on a taxonomy of real-world
+transformer faults.
+
+(c) DEFault-bench, a transformer fault detection benchmark of 3,739 labeled instances pro-
+duced by DEForm.
+
+(d) A Fault Propagation Graph (FPG) that encodes how faults propagate through transformer
+components and provides the diagnostic model with the transformer’s architectural struc-
+ture.
+
+(e) A training objective for root-cause diagnosis that combines supervised contrastive learning
+with prototype matching to separate root causes within the same fault category, and an
+FPG-based explanation that reports which feature groups support each diagnosis.
+
+(f) An evaluation of DEFault++ on 3,739 labeled instances covering both encoder and decoder
+architectures, on real-world transformer faults reproduced from public GitHub issues, and
+through a developer study with 21 participants.
+
+The remainder of the paper is organized as follows. Section 2 presents a motivating example. Sec-
+tion 3 describes the construction of DEFault-bench and the DEForm mutation technique. Section 4
+describes the DEFault++ diagnostic technique. Sections 5 to 7 report the controlled benchmark
+evaluation, the real-world fault evaluation, and the developer study, respectively. Sections 8 and 9
+discuss limitations, future directions, and threats to validity. Section 10 surveys related work, and
+Section 11 concludes the paper.
+
+2
+Motivating Example
+
+To show the class of faults DEFault++ targets, consider the real-world fault in Listing 2.1, taken
+from the HuggingFace Diffusers library (Issue #119031).
+The method fuse_qkv_projections
+merges three projection layers (query q_proj, key k_proj, and value v_proj) into one fused layer
+(to_qkv) and redirects the model to route all computation through this fused layer. The original
+projection layers are retained because deleting them would cause LoRA to raise an error when it
+cannot find its adapter targets. However, retaining them lets LoRA attach to modules that are no
+longer part of the forward pass. In the example, LoRA targets q_proj and v_proj, even though
+the forward pass uses only the fused layer to_qkv. The adapters therefore have no effect on model
+output. The fault produces no visible error. The model runs without exception, the loss decreases,
+and no invalid values (e.g., NaN or Inf) appear. The only observable indication that something is
+wrong is that fine-tuning does not change model behavior.
+
+1
+class CrossAttention(nn.Module):
+2
+def __init__(self, dim, heads=8):
+3
+super().__init__()
+4
+self.q_proj = nn.Linear(dim, dim)
+5
+self.k_proj = nn.Linear(dim, dim)
+6
+self.v_proj = nn.Linear(dim, dim)
+7
+self.out_proj = nn.Linear(dim, dim)
+8
+9
+def fuse_qkv_projections(self):
+10
+"""Fuse Q/K/V into a single linear layer for efficiency."""
+11
+w = torch.cat([self.q_proj.weight,
+12
+self.k_proj.weight,
+13
+self.v_proj.weight])
+14
+self.to_qkv = nn.Linear(dim, 3 * dim)
+15
+self.to_qkv.weight.data.copy_(w)
+16
+# BUG: original q_proj, k_proj, v_proj NOT deleted
+17
+18
+def forward(self, x, context=None):
+19
+q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+# uses fused layer
+20
+# ... attention computation with q, k, v ...
+21
+return self.out_proj(attn_output)
+22
+23
+# --- Downstream: LoRA targets the stale projections ---
+24
+lora_config = LoraConfig(
+25
+target_modules=["q_proj", "v_proj"],
+# inactive in forward pass
+26
+)
+27
+model = get_peft_model(pipeline.unet, lora_config)
+28
+model.train()
+# LoRA adapts stale layers; no effect on forward pass
+
+Listing 2.1: Faulty QKV projection fusion from HuggingFace Diffusers Issue #11903 (simplified)
+
+Static analysis misses this fault because the original layers still exist, are correctly typed, and remain
+reachable in the parameter list. Dynamic techniques miss it for one of two reasons. Rule-based tools
+(e.g., AutoTrainer, UMLAUT, DeepLocalize) (Zhang et al., 2021; Yuan et al., 2021; Wardat et al.,
+2021) look for symptoms such as oscillating loss, heuristic validation-trend violations, or NaN/Inf,
+none of which occurs in this case. Learned classifiers (e.g., DeepFD, DEFault) (Cao et al., 2022;
+Jahan et al., 2025b) use DNN-level fault categories that do not represent transformer components.
+ATTNChecker (Liang et al., 2025) targets temporary NaN/Inf in attention, which this fault does
+not produce.
+
+In contrast, DEFault++ measures runtime traces such as QKV alignment, attention entropy, and
+projection update activity during training. These features help characterize the faulty component
+(i.e., the QKV projection path). DEFault++ therefore detects the fault at Level 1, assigns it to
+the correct category (i.e., QKV) at Level 2, and identifies the root cause (i.e., a stale projection
+update path) at Level 3.
+
+3
+Benchmark Construction
+
+taken from documented fault root causes, two injection mechanisms (one for stored parameters,
+one for forward computations), and a structural check that runs before the statistical test. We also
+replace DeepCrime’s twenty-seed generalized linear model with a one-sided sign-flip permutation
+test at five matched seeds, which keeps the test exact at α = 0.05 and reduces the compute cost
+per mutant.
+
+Each fault is specified by a configuration C = (m, t, u, f, v, ℓ, σ) that fixes the model m, the fine-
+tuning task t, the target component u, the fault category f, the fault variant v, the target layer ℓ,
+and the severity σ. We then run paired clean and faulty fine-tuning under matched random seeds,
+validate each mutant statistically against its clean counterpart on the task metric, and retain the
+validated mutants together with their training-time measurements as labeled instances for the
+diagnostic model. Figure 1 shows the benchmark construction workflow.
+
+We organize this section into the fault taxonomy and mutation operators (Section 3.1), the in-
+jection mechanism (Section 3.2), the subject models and tasks (Section 3.3), mutant validation
+(Section 3.4), and DEFault-bench statistics (Section 3.5).
+
+Figure 1: Workflow for constructing DEFault-bench
+
+3.1
+Fault Taxonomy and Mutation Operators
+
+Each mutation operator matches a transformer fault root cause that has been reported in real-world
+projects. The attention-internal categories and root causes come from the attention fault taxonomy
+of Jahan et al. (2026), which classifies 555 attention faults collected from open-source projects. The
+non-attention categories (Embedding, FFN, LayerNorm, Residual, Output) come from prior DNN
+fault taxonomies that catalog real DL faults: Humbatova et al. (2020) and Islam et al. (2019),
+which report 970 faults across five DL libraries.
+
+We focus on implementation errors that do not raise runtime errors, such as configuration mistakes
+and silent numerical issues. These faults require statistical observation against a clean baseline
+for detection. We exclude explicit faults because conventional tests or runtime checks often detect
+them.
+
+We decompose each transformer block into six units that match common implementation bound-
+aries. For a standard transformer block (Vaswani et al., 2017):
+
+h = LayerNorm
+x + MHA(x)
+
+(1)
+
+y = LayerNorm
+h + FFN(h)
+
+(2)
+
+where x ∈Rn×d is an input sequence, MHA is multi-head self-attention, and the position-wise
+feed-forward network (FFN) follows. From this structure, we define six units: embeddings (input
+representations), multi-head self-attention, FFN, layer normalization, residual connections, and
+the output projection head. The same unit boundaries apply under pre-norm variants. Only the
+ordering of LayerNorm changes. For each unit, we define one or more fault categories, and each
+category contains multiple variants that represent specific bug patterns. Figure 2 shows the fault
+categories grouped by transformer component.
+
+(b) Attention Internals
+
+(a) Transformer Unit
+
+Output
+Faults
+
+Linear 𝑊𝑂
+
+Output
+Projection Head
+
+Softmax
+MatMul
+
+LayerNorm
+
+Masking
+Faults
+
+FFN
+Faults
+
+Mask
+
+Feed-Forward
+Network (FFN)
+
+Kernel Faults
+(affects whole block)
+
+Score Comp.
+Faults
+
+Normalization
+Faults
+
+Scale
+
+Residual
+Faults
+
+LayerNorm
+
+Attention
+Variant Faults
+
+MatMul
+
+Multi-Head
+Self-Attention
+
+QKV
+Faults
+
+Linear
+𝑊𝐾
+Linear
+𝑊𝑄
+
+Linear
+𝑊𝑉
+
+Embedding
+Faults
+
+Embeddings
+
+KV-Cache
+Faults
+
+Input Sequence x
+
+Input (from previous layer)
+
+Positional
+Encoding Faults
+
+Figure 2: Fault categories organized by transformer component. Part (a) shows block-level categories;
+Part (b) shows attention-internal categories
+
+Multi-head self-attention is the most complex unit and a frequent source of faults in practice (Jahan
+et al., 2025a; Michel et al., 2019; Voita et al., 2019). We write self-attention as
+
+QK⊤
+
+!
+
+Attention(Q, K, V ) = softmax
+
+V
+(3)
+
+where Q, K, V are linear projections of the input, dk is the key dimension, and M is an additive
+mask. We treat each component of Equation (3) as a potential fault surface and group attention
+faults into seven categories. Six apply to both encoders and decoders. The seventh, KV Cache, is
+decoder-only.
+
+Attention masking faults corrupt the mask M through missing padding masks, inverted mask logic,
+or incorrect reshaping across batch and head dimensions.
+For decoder-only self-attention, this
+category also covers causal-mask violations that allow attention to flow from position i to future
+positions j > i.
+QKV projection faults corrupt the projection matrices W Q, W K, W V through
+shared or swapped projections, zero-initialized projections, or frozen parameters. Score computa-
+tion faults corrupt the scaling and dropout around attention scores through missing 1/√dk scaling,
+misplaced dropout, or unsafe mixed-precision conversions. Positional encoding faults corrupt posi-
+tional information through off-by-one errors, truncation beyond the supported sequence length, or
+omission of positional embeddings. Kernel faults stem from misconfiguration of attention kernels,
+including mismatched dropout probabilities and silent backend fallbacks. Attention variant faults
+represent the selection of a wrong attention variant, such as single-head instead of multi-head at-
+tention, or applying causal masking in a bidirectional encoder. KV Cache faults target key-value
+cache management in autoregressive decoders through stale caches, off-by-one indexing, truncated
+caches, or cross-request leaks (Adnan et al., 2024).
+
+The remaining five units have a single fault category each. Input embedding faults corrupt token and
+segment embeddings by zeroing subsets, swapping pairs, or scaling segment embeddings. FFN faults
+alter hidden-layer characteristics by scaling weights, permanently dropping neurons, or replacing
+the nonlinearity. Layer normalization faults modify LayerNorm parameters by scaling or zeroing the
+learned scale parameter γ, shifting the bias parameter β, or misconfiguring the numerical stability
+term ϵ (Xiong et al., 2020; Mosbach et al., 2021). Residual connection faults break skip connections
+by removing them, scaling the residual path, or injecting noise. Output projection faults corrupt
+prediction heads by scaling logits, zeroing rows for selected output classes, or reinitializing the
+projection.
+
+Figure 3 shows the complete fault taxonomy that defines the Level 2 and Level 3 label spaces.
+The seven attention-specific categories and their 25 root causes are derived from the attention
+fault taxonomy (Jahan et al., 2026). The five non-attention categories (Input/Embedding, Layer
+Normalization, FFN, Residual, and Output) and their 20 root causes are derived from prior DNN
+fault taxonomies (Humbatova et al., 2020; Islam et al., 2019) and the DeepCrime mutation op-
+erators (Humbatova et al., 2021). Each root cause name identifies the fundamental mechanism
+or parameter that is faulty (e.g., activation function, dropout rate, weight scaling) rather than a
+specific corrective action. The taxonomy contains 12 fault categories. Eleven apply to encoders
+and all 12 apply to decoders, since KV Cache is decoder-only. Together, the 12 categories define
+40 root causes for encoders and 45 for decoders.
+
+Tables 1 and 2 list the mutation operators implemented in DEForm (Section 3.2), separated into
+attention-specific operators and architecture-level operators. Each operator is based on a trans-
+former fault root cause associated with the units in Figure 2, following prior fault taxonomies (Jahan
+et al., 2025a; Humbatova et al., 2020; Islam et al., 2019; Humbatova et al., 2021). The operator
+name preserves the corresponding root-cause mechanism, following (Humbatova et al., 2021). How-
+ever, the final benchmark includes only the configuration that can run successfully during training
+and evaluation.
+
+Figure 3: Taxonomy of transformer fault categories and root-cause labels used by DEFault++
+
+Some root causes can lead to either explicit failures or silent behavioral faults, depending on how
+they are parameterized.
+For example, changing an output dimension may cause an immediate
+shape error if the output head no longer matches the task loss. The same root cause may also keep
+the model runnable while corrupting the output mapping. We discard configurations that crash,
+produce invalid tensor shapes, call unsupported backend functions, or create out-of-range indices.
+The remaining configurations must pass structural verification, complete feature extraction, and
+produce the required training traces.
+
+Each operator has a three-letter ID. The first letter identifies the transformer component (E = Em-
+bedding, M = Masking, Q = QKV, S = Score, P = Positional, K = Kernel, V = Variant, C = KV
+Cache, F = FFN, N = LayerNorm, R = Residual, O = Output), and the next two letters abbre-
+viate the action and its target. For example, QZQ reads as “in the QKV component, Zero the Q
+projection.”
+
+The Search Type (ST) column says how DEForm (Section 3.2) chooses values for an operator’s
+parameter. B means the operator has no parameter and is either applied or not (e.g., MZM zeroes
+the attention mask). EU means the operator takes a numeric parameter and DEForm runs it once
+at each value in a list we provide (e.g., ETZ zeroes a configurable percentage of token embeddings).
+EL means the operator takes a choice from a fixed categorical set and DEForm runs it once at each
+item (e.g., FCA replaces the activation function with each of {ReLU, GELU, Tanh, Sigmoid}).
+
+3.2
+DEForm: Fault Injection Mechanism
+
+We denote the clean model parameters by θ and the injected mutant by θ′. We evaluate θ and θ′
+
+Table 1: Attention-specific mutation operators used to construct DEFault-bench
+
+ComponentRoot cause
+Operator
+ID
+Executable Mutation Parameters
+ST
+
+Mask application
+Zero attention mask
+MZM
+Replace the valid attention mask with an all-zero mask
+of the same shape.
+
+B
+
+Masking
+
+Mask application
+Invert attention
+mask
+MIM
+Invert mask semantics while preserving the expected
+mask shape and dtype.
+
+B
+
+Mask generation
+Reshape mask
+incorrectly
+MRM
+axis: batch or head dimension to misalign; retained only
+if broadcast-compatible.
+
+EL
+
+Dynamic mask
+Causal-mask break
+(decoder)
+MCB
+visibility: fraction of future keys made visible within the
+valid mask tensor.
+
+EU
+
+Parameter
+initialization
+Zero Q projection
+QZQ
+Zero the existing query projection weights without
+changing tensor shape.
+
+B
+
+Parameter
+initialization
+Zero K projection
+QZK
+Zero the existing key projection weights without
+changing tensor shape.
+
+B
+
+QKV
+Projection
+
+Parameter
+initialization
+Zero V projection
+QZV
+Zero the existing value projection weights without
+changing tensor shape.
+
+B
+
+Head interaction
+Swap Q ↔K
+QSW
+Swap compatible query and key projection tensors or
+outputs.
+
+B
+
+Head interaction
+Tie head weights
+QTH
+heads: subset of existing heads tied while preserving
+projection dimensionality.
+
+EL
+
+Freeze QKV
+gradients
+QFG
+Disable updates to existing QKV parameters while
+preserving the forward path.
+
+B
+
+Dynamic
+parameter
+registration
+
+Score
+Normalization
+Drop 1/√dk scaling
+SDS
+Remove score scaling while preserving attention-score
+shape.
+
+B
+
+Implementation
+Apply dropout
+pre-softmax
+SPD
+p: dropout probability applied to score tensors before
+softmax.
+
+EU
+
+Precision handling Unsafe fp16 cast
+SUC
+Cast score computation to fp16; configurations
+producing non-finite traces are discarded.
+
+B
+
+Positional
+Indexing
+Omit positional
+embeddings
+POE
+Remove or zero the positional contribution while
+preserving hidden-state shape.
+
+B
+
+Relative position
+Shift position
+indices
+PSI
+∆: index shift restricted to valid supported positions.
+EU
+
+Interpolation
+Truncate positional
+support
+PTL
+cutoff : maximum retained position index; out-of-range
+indices are discarded.
+
+EU
+
+Kernel
+Silent fallback
+Force slow backend
+KSB
+Force a valid non-optimized attention backend.
+B
+Feature
+constraints
+Mismatched
+dropout probability
+KMD
+pcfg, pkern: valid training vs. kernel dropout settings.
+EU
+
+KFT
+dtype or layout mismatch that triggers a supported
+fallback path.
+
+EL
+
+Hardware
+incompatibility
+Trigger valid
+fallback
+(dtype/layout)
+
+Variant
+Variant
+configuration
+Single effective head
+attention
+VSH
+Route, tie, or mask heads so only one effective head
+remains while preserving output shape.
+
+B
+
+Dynamic dispatch
+Causal mask in
+encoder
+VEC
+Apply a broadcast-compatible causal mask in an encoder
+attention layer.
+
+B
+
+Cache invalidation Stale cache
+CST
+layers: subset of layers using stale but shape-compatible
+cached K, V states.
+
+EL
+
+KV Cache
+(decoder)
+
+Cache-position
+Off-by-one indexing
+COB
+shift: cache index offset restricted to valid cache
+positions.
+
+EU
+
+Memory layout
+Truncate cache
+CTR
+length: maximum retained cache length while preserving
+the expected cache interface.
+
+EU
+
+Distributed
+synchronization
+Cross-request leak
+CLK
+Reuse compatible cached states across requests without
+changing cache tensor shape.
+
+B
+
+Table 2: Architecture-level mutation operators used to construct DEFault-bench
+
+ComponentRoot cause
+Operator
+ID
+Executable Mutation Parameters
+ST
+
+Embedding
+Input
+initialization
+Zero token
+embedding subset
+ETZ
+percentage: fraction of vocabulary entries zeroed while
+preserving embedding shape.
+
+EU
+
+Input type
+Swap embedding
+pairs
+ESW
+percentage: fraction of token pairs swapped within the
+existing vocabulary.
+
+EU
+
+Input type
+Scale segment /
+type embedding
+ESS
+factor: multiplicative scale applied to existing segment
+or type embeddings.
+
+EU
+
+Weight scaling
+Scale FFN weights
+FSW
+factor: multiplicative scale on existing W1, W2 tensors.
+EU
+Neuron dropout
+Permanently drop
+neurons
+FDN
+percentage: fraction of hidden neurons zeroed while
+preserving FFN shape.
+
+EU
+
+FFN
+
+Activation
+function
+Change activation
+function
+FCA
+activation: executable replacement nonlinearity
+(e.g., GELU →ReLU).
+
+EL
+
+Regularization
+Change weight
+regularization
+FRG
+scheme: replacement weight-decay or L2 coefficient
+accepted by the optimizer.
+
+EU
+
+Weight
+initialization
+Change weight
+initialization
+FWI
+init: replacement initialization scheme applied to
+existing W1, W2 tensors.
+
+EL
+
+Scale parameter
+Scale γ
+NSG
+factor: multiplicative scale on existing γ parameters.
+EU
+Scale parameter
+Zero γ
+NZG
+Zero existing γ parameters while preserving LayerNorm
+shape.
+
+B
+
+LayerNorm
+
+Bias parameter
+Shift β
+NSB
+shift: additive offset on existing β parameters.
+EU
+Stability
+parameter
+Change ϵ
+NCE
+value: positive numerical-stability constant accepted by
+LayerNorm.
+
+EU
+
+Skip connection
+Remove skip
+connection
+RRS
+Zero or bypass the residual branch while preserving
+sublayer output shape.
+
+B
+
+Residual
+
+Residual scaling
+Scale residual
+branch
+RSR
+factor: multiplicative scale on the residual path.
+EU
+
+Residual path
+Inject Gaussian
+noise
+RIN
+σ: standard deviation of additive noise with matching
+tensor shape.
+
+EU
+
+Gradient clipping
+Change gradient
+clipping
+RGC
+value: replacement max-norm clip threshold accepted by
+the training loop.
+
+EU
+
+Output scaling
+Scale output logits
+OSL
+factor: multiplicative scale on logits while preserving
+output dimension.
+
+EU
+
+Output
+
+Output dimension
+Zero rows for
+selected classes
+OZR
+classes: subset of existing output rows to zero.
+EL
+
+Output type
+Reinitialize output
+projection
+ORI
+init: replacement initialization scheme applied to the
+existing output projection.
+
+EL
+
+Output dimension
+Change output
+interface
+OOD
+dim/map: root-cause-derived output-dimension or
+mapping fault; retained only when compatible with the
+task loss.
+
+EU
+
+layer indices ℓ⊆{1, . . . , L} where L is the number of transformer blocks, and the severity level
+σ ∈{low, medium, high}. The severity controls the magnitude of the injected change for numeric
+variants (e.g., scaling factors, dropout rates) and maps to a discrete intensity for non-numeric vari-
+ants (e.g., visibility ratio in causal-mask breaking). We use single-fault configurations only (one
+target unit, one category, one variant per run) to preserve attribution clarity at Level 2 and Level 3.
+
+Transformer faults affect either stored parameters or runtime computations, which requires two
+distinct injection mechanisms (Mahmoud et al., 2020; Humbatova et al., 2021). Static faults modify
+parameter tensors at rest, before forward execution. For example, an FFN weight-scaling fault
+multiplies the targeted weight matrices by a scalar:
+
+
+
+
+θ′
+i =
+
+where params(u, ℓ) selects parameters of unit u in layers ℓ. Static faults include embedding corrup-
+tion, parameter scaling, permanent neuron dropout, and LayerNorm parameter changes. Dynamic
+faults modify the forward computation path through wrappers or hooks at selected module call
+sites. For example, a mask-zeroing fault intercepts the attention call and replaces the mask M by
+zeros:
+
+forward′(x, M) = forward(x, 0|M|)
+(5)
+
+where 0|M| denotes a zero tensor of the same shape as the original mask M. Dynamic faults include
+mask manipulation, Q/K swapping, removal of score scaling, and forced kernel selection. In both
+cases, the transformer architecture is unchanged. Only the targeted computation or parameter
+values are modified. Figure 4 contrasts the clean and injected execution paths for one representative
+example of each mechanism.
+
+(a) Encoder (BERT): Correct
+
+(b) Encoder (BERT): Static Injection
+
+# clean encoder FFN forward pass
+layer = model.bert.encoder.layer[layer_idx]
+ffn = layer
+# same module mutated in (b)
+h = ffn.intermediate.dense(hidden_states)
+h = ffn.intermediate.intermediate_act_fn(h)
+h = ffn.output.dense(h)
+
+# static fault: mutate FFN weights at rest
+layer = model.bert.encoder.layer[layer_idx]
+ffn = layer
+# same module used in (a)
+orig_w1 = ffn.intermediate.dense.weight
+orig_w2 = ffn.output.dense.weight
+self._backup = (orig_w1.clone(), orig_w2.clone())
+with torch.no_grad():
+orig_w1.mul_(self.alpha)
+# scale W1
+orig_w2.mul_(self.alpha)
+# scale W2
+
+(c) Decoder (GPT): Correct
+
+(d) Decoder (GPT): Dynamic Injection
+
+# clean decoder call (causal behavior intact)
+outputs = model(
+input_ids=input_ids,
+attention_mask=attention_mask,
+use_cache=True,
+output_attentions=False,
+)
+
+# dynamic fault: wrap the same model’s
+# attention.forward to weaken causal mask
+self._backup_fwd = attention.forward
+def faulty_forward(*args, **kwargs):
+mask = _get_attention_mask(kwargs)
+if mask is not None:
+
+# unmask a fraction of future keys
+kwargs["attention_mask"] = \
+_weaken_causal_mask(
+mask, visibility_ratio)
+return self._backup_fwd(
+*args, **kwargs)
+attention.forward = faulty_forward
+
+Figure 4: Clean and injected execution paths for the same model. Panels (b,d) show static parameter
+mutation and dynamic forward wrapping
+
+Decoder-only self-attention is causal by construction. The clean model enforces that token position
+i cannot attend to future positions j > i. To inject a causal violation, we weaken or remove the
+existing constraint so that queries can attend to future positions. We do not add an additional
+causal mask. We replace a configurable fraction of the −∞entries in the upper-triangular region
+of the additive mask M with 0, controlled by the severity parameter σ, so each query can attend
+to a proportion of keys beyond its own position. We treat causal violations as decoder instances of
+attention masking faults.
+
+setup, logging instrumentation, random seed).
+Each faulty training run is paired with a clean
+training run under the same seed and otherwise identical training conditions. We implement fault
+injection with a context manager. The manager stores the original parameter tensors and forward
+methods before mutation, applies the fault specified by C, and restores the original state after
+evaluation. The context-manager scope prevents carryover effects across configurations.
+
+Before any statistical comparison, we apply a structural verification check. For static faults, we
+verify that the parameter difference is restricted to params(u, ℓ) and that its magnitude matches σ
+within a relative tolerance of 10−6 to account for floating-point rounding. For dynamic faults, we
+verify that hooks or wrappers attach only at the intended module call sites and that the original
+forward function is restored after the context manager exits. We also verify execution completeness
+by confirming that each configuration produces the required instrumentation logs. Configurations
+that fail any check are excluded as structurally invalid.
+
+3.3
+Subject Models and Tasks
+
+We use four encoder-only and three decoder-only transformer models spanning 66M–125M param-
+eters, 6–12 layers, and both masked and causal language modeling objectives (Devlin et al., 2019;
+Liu et al., 2019; Sanh et al., 2019; Radford et al., 2019; Black et al., 2021). We limit models to at
+most 125M parameters to keep all paired runs feasible within our compute budget.
+
+Encoders are fine-tuned on five GLUE classification tasks (Wang et al., 2019) (accuracy as task
+metric); decoders are fine-tuned on four language-modeling corpora (Paperno et al., 2016; Marcus
+et al., 1993; Merity et al., 2016; Gokaslan & Cohen, 2019) (log-perplexity as task metric). Ta-
+ble 3 summarizes the models and tasks. All models use the standard Hugging Face Transformers
+implementations and default tokenizers.
+
+Table 3: Models and Tasks used to construct the DEFault-bench
+
+Architecture
+Model
+Parameters
+Layers
+Tasks
+
+BERT-base (Devlin et al., 2019)
+110M
+12
+SST-2, QNLI, RTE, MRPC, QQP
+DistilBERT (Sanh et al., 2019)
+66M
+6
+SST-2, QNLI, RTE, MRPC, QQP
+RoBERTa-base (Liu et al., 2019)
+125M
+12
+SST-2, QNLI, RTE, MRPC, QQP
+DistilRoBERTa (Sanh et al., 2019)
+82M
+6
+SST-2, QNLI, RTE, MRPC, QQP
+
+Encoder
+
+Decoder
+GPT-2 (Radford et al., 2019)
+124M
+12
+LAMBADA,
+PTB,
+WikiText-2,
+OpenWebText
+DistilGPT-2 (Sanh et al., 2019)
+82M
+6
+LAMBADA,
+PTB,
+WikiText-2,
+OpenWebText
+GPT-Neo-125M (Black et al., 2021)
+125M
+12
+LAMBADA,
+PTB,
+WikiText-2,
+OpenWebText
+
+Encoder models are fine-tuned on GLUE classification tasks (Wang et al., 2019): SST-2 (sentiment), QNLI (nat-
+ural language inference), RTE (textual entailment), MRPC (paraphrase detection), and QQP (duplicate question
+detection).
+Decoder models are fine-tuned using a language modeling objective on LAMBADA (Paperno et al., 2016) (word
+prediction), PTB (Marcus et al., 1993) (language modeling), WikiText-2 (Merity et al., 2016) (language modeling),
+and OpenWebText (Gokaslan & Cohen, 2019) (language modeling). All models use the standard Hugging Face
+Transformersa implementations and default tokenizers for each checkpoint.
+
+a
+
+Each configuration is run under five fixed seeds S = {42, 123, 456, 789, 101112} (Mosbach et al.,
+2021), the smallest design that admits an exact one-sided sign-flip permutation test at α = 0.05
+(smallest attainable p-value 1/25 ≈0.031). Layer indices and severity levels low, medium, high
+are sampled uniformly to avoid concentration on any single layer or magnitude. After structural
+verification, we obtain 3,739 single-fault configurations: 1,891 for encoders and 1,848 for decoders,
+with all categories represented. Producing the dataset required 37,390 paired clean and faulty fine-
+tuning runs (∼18,600 GPU-hours on NVIDIA A100 and H100 GPUs). Full hyperparameter tables
+appear in Section A.
+
+3.4
+Mutant Validation
+
+We adopt the statistical mutation-killing framework of Humbatova et al. (2021).
+The original
+network N and a mutant M are each retrained n times under matched random seeds, and the re-
+sulting performance distributions AN(TestS) = ⟨AN1, . . . , ANn⟩and AM(TestS) = ⟨AM1, . . . , AMn⟩
+are compared on a held-out test set TestS. The predicate isKilled decides whether the mutant is
+killed:
+
+(
+true
+if p-value
+AN(TestS), AM(TestS)
+< α,
+false
+otherwise.
+(6)
+
+isKilled(N, M, TestS) =
+
+We use accuracy as the test-set performance metric for encoder classification tasks and log-
+perplexity for decoder language modeling tasks (Jahan et al., 2025a).
+We set n = 5 matched
+seeds and α = 0.05.
+Humbatova et al. (2021) use a generalized linear model with n = 20 re-
+trainings paired with Cohen’s d effect size; we instead use a one-sided paired sign-flip permutation
+test (Good, 2005) on the per-seed deltas, since seed-paired deltas are exchangeable under the null
+and five matched seeds are the smallest design that admits an exact one-sided test at α = 0.05.
+The smallest attainable p-value with five paired comparisons is 1/25 ≈0.031. We estimate false
+positives by applying isKilled to pairs of clean-vs-clean runs.
+
+Following Humbatova et al. (2021), we summarize each mutation operator’s effectiveness using the
+mutation score:
+
+MS(MO) = |{c ∈MO : isKilled(N, Mc, TestS)}|
+
+|MO|
+(7)
+
+where MO is the set of injected configurations of a mutation operator.
+The overall mutation
+score is the average of MS(MO) across all operators. For each killed mutant we attach a label
+y = (u, f, v, ℓ, σ) that records the target unit, fault category, fault variant, affected layer set, and
+severity. We omit m and t because each instance is computed within one model–task context. A
+surviving mutant, for which isKilled returns false, is still an injected fault, but its measured effect
+does not pass the killing test (p > α). We therefore use surviving mutants as negative examples only
+for Level 1 detection and exclude them from Level 2 and Level 3 training. Algorithm 1 summarizes
+the per-configuration dataset construction loop.
+
+Algorithm 1 Per-configuration fault injection and validation
+Require: Clean model θ, configuration C, seeds S
+Ensure: Label isKilled, instance feature vector x
+
+1: θ′ ←Inject(θ, C)
+▷static or dynamic mutation
+
+2: if VerifyStructural(θ, θ′, C) = false then return discard
+
+3: end if
+
+4: for s ∈S do
+
+5:
+ac
+s ←TrainAndEvaluate(θ, s);
+af
+s ←TrainAndEvaluate(θ′, s)
+
+6: end for
+
+7: p ←SignFlipPermTest({ac
+s}, {af
+s})
+▷one-sided, paired
+
+8: killed ←[ p ≤α ]
+▷Equation (6)
+
+9: x ←Aggregate({ac
+s}, {af
+s})
+▷clean-to-faulty deltas
+
+10: return (killed, x)
+
+3.5
+Benchmark Statistics
+
+We applied isKilled (Equation (6)) to all 3,739 structurally valid configurations and computed
+the mutation score (Equation (7)) per category and per architecture, following Humbatova et al.
+(2021). Table 4 reports the per-category mutation scores. Macro-averages assign equal weight to
+each model–task pair, while configuration-weighted totals count individual mutants directly.
+
+Table 4: Mutation scores by fault category and architecture under isKilled
+
+Encoder
+Decoder
+
+Category
+Killed
+Surviving
+Killed
+Surviving
+
+Variant
+100.0%
+0.0%
+28.8%
+71.2%
+Score
+93.8%
+6.2%
+17.5%
+82.5%
+QKV
+93.0%
+7.0%
+26.5%
+73.5%
+Positional
+89.3%
+10.7%
+48.2%
+51.8%
+FFN
+85.1%
+14.9%
+58.9%
+41.1%
+Residual
+84.5%
+15.5%
+42.0%
+58.0%
+LayerNorm
+83.5%
+16.5%
+54.1%
+45.9%
+Embedding
+80.9%
+19.1%
+54.7%
+45.3%
+Output
+56.9%
+43.1%
+25.9%
+74.1%
+Masking
+56.8%
+43.2%
+68.5%
+31.5%
+Kernel
+51.6%
+48.4%
+68.0%
+32.0%
+KV Cache
+—
+—
+5.6%
+94.4%
+
+Macro-average
+79.6%
+20.4%
+41.3%
+58.7%
+Configuration-weighted total
+84.5%
+15.5%
+63.9%
+36.1%
+
+rations as labeled instances. Killed mutants are labeled faulty and surviving mutants are labeled
+correct. Table 5 summarizes the resulting dataset composition.
+
+Table 5: Composition of DEFault-bench
+
+Metric
+Encoder
+Decoder
+Metric
+Encoder
+Decoder
+
+Total
+1,891
+1,848
+Fault categories
+11
+12
+Faulty
+1,598
+1,180
+Root causes
+40
+45
+Correct
+293
+668
+
+Category
+Encoder
+Decoder
+Category
+Encoder
+Decoder
+
+Variant
+24
+51
+LayerNorm
+210
+185
+Score
+278
+142
+Embedding
+176
+165
+QKV
+247
+184
+Output
+192
+180
+Positional
+180
+179
+Masking
+70
+126
+FFN
+288
+203
+Kernel
+96
+63
+Residual
+130
+167
+KV Cache
+—
+203
+
+Faulty instances are killed mutants; correct instances are surviving mutants. Fault-category counts include both faulty and
+correct instances; Level 2 and Level 3 evaluation use only the faulty subset.
+
+Each instance carries labels at three levels of granularity. At Level 1 (fault detection), the label
+is binary, faulty or correct. At Level 2 (fault categorization), the label is the injected fault cate-
+gory. Encoders use 11 categories: Score, Positional, FFN, QKV, LayerNorm, Residual, Masking,
+Embedding, Kernel, Output, and Variant. Decoders use the same 11 plus KV Cache. At Level 3
+(root-cause diagnosis), the label is the injected root cause within the fault category. Each category
+contains 2–7 root causes, and each root cause belongs to exactly one fault category.
+
+The encoder and decoder subsets are imbalanced. The two architectures differ in their proportion
+of faulty and correct instances, and the fault categories (11 on encoders, 12 on decoders) and
+their root causes also have different sample sizes. Section 5 describes the evaluation criteria and
+class-weighting strategy used to address this imbalance.
+
+4
+DEFault++ Diagnostic Technique
+
+4.1
+Overview
+
+4.2
+Fault Propagation Graph
+
+The fault categories and root causes defined in Section 3 identify where a fault originates, but they
+do not describe how a fault in one component affects other components during forward compu-
+tation or backward gradient flow. A stale QKV projection, for example, not only corrupts the
+projection output but also shifts downstream attention scores, attention weights, and the residual
+stream. To capture these inter-component dependencies, we define the Fault Propagation Graph
+(FPG), a directed graph derived from the transformer forward pass, backward pass, architectural
+configuration, and autoregressive execution.
+The FPG serves two purposes in DEFault++: it
+structures the feature representation by mapping feature groups to transformer components (Sec-
+tion 4.3), and it provides the adjacency matrix for message passing in the diagnostic model (Sec-
+tion 4.4.2). Prior DL fault-diagnosis techniques use graph representations for different purposes.
+NeuraLint (Nikanjam et al., 2021) encodes a typed meta-model graph for pre-training structural
+checks, while FL4Deep (Morovati et al., 2024) ranks root causes using a static and dynamic knowl-
+edge graph. In contrast, the FPG models inter-component fault propagation during transformer
+training. We test whether the FPG structure matters in RQ3 (Section 5.6) by comparing it against
+rewired and random graphs of the same density.
+
+We distinguish seven dependency mechanisms. Mechanisms one to three (M1–M3) describe local
+forward propagation. Mechanism four (M4) captures repeated forward propagation across stacked
+layers.
+Mechanism five (M5) captures backward gradient dependencies.
+Mechanism six (M6)
+captures architecture-wide interventions that affect multiple components at once. Mechanism seven
+(M7) captures temporal dependencies introduced by decoder caching. The current FPG collapses
+these mechanisms into unlabeled directed edges. The graph is deterministic since it mirrors the fixed
+computational graph of the transformer. Each edge encodes a structural dependency through which
+a fault can propagate. Whether a specific fault produces an observable downstream effect depends
+on its magnitude, on intervening nonlinear operations (detailed below), and on the parameter
+values learned during training. The FPG therefore models possible dependency pathways within
+transformer architectures, with edges derived from dependencies in the transformer forward and
+backward pass. Section 10 contrasts the FPG with prior graph-based representations in DNN fault
+analysis.
+
+We define the FPG G = (V, E) where each node v ∈V represents a transformer component.
+The component types are: embedding, positional encoding, QKV projection, score computation,
+attention masking, attention weights, attention output, residual connections, LayerNorm, FFN,
+and output head. Residual connections and LayerNorm appear independently for each sublayer
+(attention and FFN). Decoders additionally include a KV cache node.
+Each directed edge
+(vi, vj) ∈E indicates that vj depends on vi under the chosen computational, execution, or
+architectural abstraction, so a fault at vi can reach vj. An edge (vi, vj) is included when a fault
+at vi can directly affect the output of vj through forward data flow, backward gradient flow,
+residual identity flow, autoregressive state reuse, or architecture-wide intervention under the chosen
+transformer abstraction. The FPG models only transformer components and their dependencies.
+Not all diagnostic feature groups are FPG nodes. Model-wide context groups and the cross-layer
+observation group participate in the group-level graph through self-loops only (Table 7).
+
+By analyzing the transformer’s forward and backward equations, we identify seven dependency
+mechanisms. Let δx denote a perturbation to variable x.
+
+1. M1: Forward sequential propagation. If B = f(A), then δB = (∂f/∂A) δA. Pertur-
+bation propagates along the data flow path: embedding →projections →scores →masking
+→weights →output →residual →LayerNorm →FFN →residual →output head.
+2. M2: Simultaneous propagation. QKV projections feed both score computation (via
+Q, K) and attention output (via V ) simultaneously.
+A single projection fault therefore
+perturbs scores and values at the same time. In decoders, K and V additionally enter the
+cache.
+3. M3: Residual bypass. In h = x + MHA(x), a perturbation δx appears in h with unit
+gain through the skip path. The skip connection therefore carries any change at x to the
+residual output even when the sublayer transformation reduces it, although subsequent
+normalization may reshape it.
+4. M4: Cross-layer propagation. The residual stream provides repeated identity paths
+across stacked layers (Roquet et al., 2024). A change at layer ℓcan therefore reach later
+representations, although intervening normalization and nonlinear operations may reduce
+or reshape it.
+5. M5: Backward pass propagation. A fault that changes the loss L can change ∂L/∂θi
+for parameters whose computation contributes to that loss term, which can affect weight
+updates across multiple components during training.
+6. M6: Architecture-wide intervention. Some fault types inherently affect multiple com-
+ponents at once. A variant fault (e.g., single-head instead of multi-head attention) simulta-
+neously changes the attention computation pattern, parameter shapes, and kernel dispatch.
+Unlike Mechanisms 1–5, this is not a propagation relation but a joint structural effect in
+which a single architectural change alters multiple components at the same time.
+7. M7: Cache propagation across time steps (decoder only). The KV cache stores K
+and V across generation steps. A cache fault affects the current token and all future tokens.
+
+Three nonlinear operations limit propagation at specific edges.
+Softmax maps deviations into
+[0, 1] with a sum-to-one constraint, which reduces large-magnitude shifts. LayerNorm (Ba et al.,
+2016) rescales outputs to zero mean and unit variance, which removes additive shifts. Activation
+functions (e.g., ReLU, GELU) suppress changes in their saturation regions and pass them in their
+linear regions. We annotate these limiting operations on the corresponding edges of the FPG.
+
+The seven mechanisms fall into three classes (see Table 6). Propagation relations (Mechanisms 1,
+2, 3, 5, 7) describe how a fault at one component directly reaches another through forward data
+flow, residual identity, backward gradient flow, or autoregressive state reuse. Recursive composition
+(Mechanism 4) is the repeated application of propagation relations 1 and 3 across stacked layers.
+Structural intervention (mechanism six) is a joint structural effect in which a single architectural
+change alters multiple components rather than propagating from one to another. Relation-typed
+message passing that distinguishes these three classes is a natural extension.
+
+For use in the diagnostic model, we collapse the component-level FPG to a group-level ad-
+jacency matrix.
+Each transformer component maps to the feature group that measures it,
+as shown in Table 7.
+A group-level edge exists if any component in the source group has
+a propagation edge to any component in the target group.
+Components that map to the
+same group (e.g., attention masking, attention weights, and attention output all map to the
+Attention group) are merged.
+Structural groups receive FPG-derived neighbor edges.
+The
+cross-layer observation group (Representation drift) and model-wide context groups (Training
+dynamics, Validation performance) participate through self-loops only: they undergo the same
+
+Table 6: Edge derivation for the Fault Propagation Graph (FPG)
+
+Source
+Target
+Mechanism Class
+Scope
+Details
+
+Embedding
+QKV Projection
+Forward prop. (M1)
+Enc/Dec
+Q, K, V = WQ,K,V E[x]
+Positional
+QKV Projection
+Forward prop. (M1)
+Enc/Dec
+Position added to embedding before projection
+QKV Proj.
+Score Comp.
+Simultaneous (M2)
+Enc/Dec
+S = QK⊤/√dk; Q, K from projection
+QKV Proj.
+Attn. Output
+Simultaneous (M2)
+Enc/Dec
+Attn = softmax(S) V ; V from projection
+QKV Proj.
+KV Cache
+Simultaneous (M2)
+Dec
+K, V stored in cache at each step
+Score Comp.
+Attn. Mask
+Forward prop. (M1)
+Enc/Dec
+S′ = S + M
+Attn. Mask
+Attn. Weights
+Forward prop. (M1)
+Enc/Dec
+α = softmax(S′)
+Attn. Weights
+Attn. Output
+Forward prop. (M1)
+Enc/Dec
+Attn = α V
+Attn. Output
+Residual (attn)
+Forward prop. (M1)
+Enc/Dec
+h = x + Attn(x)
+Residual input
+Residual (attn)
+Residual bypass (M3)
+Enc/Dec
+Skip connection: δx passes with unit gain
+Residual (attn)
+LayerNorm
+(attn)
+Forward prop. (M1)
+Enc/Dec
+ˆx = LN(h)
+
+LayerNorm
+(attn)
+FFN
+Forward prop. (M1)
+Enc/Dec
+FFN input is post-norm representation
+
+FFN
+Residual (FFN)
+Forward prop. (M1)
+Enc/Dec
+h′ = h + FFN(ˆx)
+Residual input
+Residual (FFN)
+Residual bypass (M3)
+Enc/Dec
+Skip connection: δh passes with unit gain
+Residual (FFN)
+LayerNorm
+(FFN)
+Forward prop. (M1)
+Enc/Dec
+ˆh′ = LN(h′)
+
+LayerNorm
+(FFN)
+Output Head
+Forward prop. (M1)
+Enc/Dec
+Final representation enters output head
+
+Layer ℓresidual
+Layer ℓ+1
+Cross-layer (M4)
+Enc/Dec
+Repeated M1+M3 across stacked layers
+All components
+All components
+Backward prop. (M5)
+Enc/Dec
+∂L/∂θi couples all parameters
+KV Cache
+Attn. Weights
+Cache-time (M7)
+Dec
+Cached K, V affect future-step attention
+Variant config.
+Multi
+compo-
+nents
+Intervention (M6)
+Enc/Dec
+Architectural change alters multiple components
+
+2
+
+learned transformation as structural groups but do not receive information from neighboring
+groups. Groups that map to multiple components inherit all edges of their constituent components.
+
+Figure 6 shows the group-level adjacency matrix ˆA for the decoder diagnostic model (G = 13).
+The near-diagonal sparsity reflects the sequential data flow through the transformer block. The
+off-diagonal entries (e.g., QKV→Cache, Cache→Attention, FFN→Residual) capture the feedback
+and branching paths that the FPG encodes. Non-structural groups (Representation drift, Training
+dynamics, Validation performance) appear as isolated self-loops in the lower-right block.
+
+4.3
+Feature Representation
+
+The Fault Propagation Graph defines which transformer components can affect each other, but
+the diagnostic model requires quantitative measurements of those components during training.
+Generic DNN fault features such as loss trajectories, gradient statistics, and activation counts
+do not distinguish transformer fault categories.
+Corrupted QKV projections, missing causal
+masks, and misconfigured positional encodings leave end-task metrics untouched but produce
+characteristic patterns in attention-level and component-level measurements. We therefore define
+a transformer-specific feature space that targets attention distributions, projection alignments,
+and residual-stream behavior (see Figure 7). Table 8 lists the feature groups, their metric types,
+and the collection branch through which each group enters the feature-construction process.
+
+Embedding
+Positional
+
+store 𝐾,𝑉
+
+QKV Projection
+
+KV Cache
+
+V
+
+𝑆′=𝑆+𝑀
+
+Score Computation
+Attention Masking
+
+residual skip
+
+softmax
+
+cached 𝐾,𝑉
+
+Attention Weights
+
+Attention Output
+
+Attention Sub-graph
+
+×𝑁layers (M4)
+
+⊕
+
+FFN Sub-graph
+
+LayerNorm
+
+layer norm
+
+residual skip
+
+Feed-Forward Network (FFN)
+
+activation
+
+⊕
+
+LayerNorm
+
+layer norm
+
+Output Head
+
+∇𝜃ℒpropagates in reverse along all edges
+
+▶M1: Forward
+- - ▶M2: Simultaneous
+▶M3: Residual
+⋅⋅⋅▶M5: Gradient
+
+- - ▶M7: Cache-time
+{ M4: Cross-layer (brace)
+M6: Intervention (not drawn)
+
+Computation
+Normalization
+Residual Junction (⊕)
+I/O
+Auxiliary
+
+softmax , layer norm , activation = nonlinear operations that limit fault propagation at the annotated edge
+
+Figure 5: Fault Propagation Graph (FPG) for transformer architectures. The loopback denotes M4; the
+dashed KV Cache return denotes decoder-only M7. M6 is omitted because it affects multiple components
+simultaneously.
+
+Table 7: Feature-group roles and message passing in DEFault++
+
+Feature Group
+Role
+Scope
+Message Passing
+
+Attention
+Structural
+Attn. masking, weights, output FPG edges
+Score
+Structural
+Score computation
+FPG edges
+FFN output
+Structural
+FFN
+FPG edges
+LayerNorm
+Structural
+LayerNorm
+FPG edges
+Residual stream
+Structural
+Residual connections
+FPG edges
+QKV alignment
+Structural
+QKV projection
+FPG edges
+Embedding
+Structural
+Embedding
+FPG edges
+Positional
+Structural
+Positional encoding
+FPG edges
+Output
+Structural
+Output head
+FPG edges
+Cache (decoder)
+Structural
+KV cache
+FPG edges
+
+Representation drift
+Cross-layer observation Inter-layer residual path
+Self-loop only
+
+Training dynamics
+Model-wide context
+Model-wide optimization
+Self-loop only
+Validation performance Model-wide context
+Model-wide output quality
+Self-loop only
+
+Target group
+
+QKV Alignment
+
+Residual Stream
+
+Training Dyn.
+
+FFN Output
+
+LayerNorm
+
+Embedding
+
+Repr. Drift
+
+Positional
+
+Task Perf.
+
+Attention
+
+Output
+
+Cache
+
+Score
+
+Embedding
+
+Positional
+
+QKV Alignment
+
+Non-structural
+Structural
+
+Score
+
+Attention
+
+Source group
+
+Residual Stream
+
+LayerNorm
+
+FFN Output
+
+Output
+
+Cache
+
+Repr. Drift
+
+Training Dyn.
+
+Task Perf.
+
+FPG edge
+Self-loop
+
+Figure 6: Group-level adjacency matrix ˆA for the decoder diagnostic model
+
+A1-Attention.
+We measure seven properties of the post-softmax attention distribution at each
+sampled layer (six for encoders, seven for decoders).
+
+–Attention entropy (Hattn) computes the Shannon entropy of the attention distribution, averaged
+across heads and query positions (Voita et al., 2019). Low entropy indicates that a head concentrates
+on a single position. High entropy indicates a near-uniform distribution.
+
+–Padding attention mass (PadMass) computes the fraction of attention directed at padding tokens.
+Non-zero padding mass indicates a masking fault.
+
+Table 8: Feature groups, metric types, and feature dimensions in DEFault++
+
+Feature Group
+Metric Types
+ng
+
+Layer-internal metrics (Cint, collected at each training step, per layer)
+
+Attention
+Attention entropy, padding attention mass, inter-head cosine similarity, head utilization, attention
+rank, cross-example leakage, future attention mass (decoder only)
+6/7a
+
+Score
+Pre-softmax score
+1
+
+FFN output
+FFN output norm
+1
+
+LayerNorm
+Scale parameter norm, post-norm distribution
+2
+
+Residual stream
+Residual cosine similarity
+1
+
+Repr. drift
+CKA layer similarity
+1
+
+QKV alignment
+Q–K sim., Q–V sim., K–V sim.
+3
+
+Gradient metrics (Copt, collected at each training step)
+
+Optimization
+Gradient and update features (gradient norm, update ratio, update activity)
+21
+
+Behavioral metrics (Ctrain, collected at each training step)
+
+Embedding
+Embedding norm, token-level variance
+2
+
+Positional
+Positional sensitivity
+1
+
+Training dyn.
+Loss trajectory, gradient noise scale, step time, peak memory allocation
+4
+
+Output
+Prediction confidence, output entropy, margin statistics
+3
+
+Cache
+Cache hidden similarity, cache distribution divergence
+2
+
+Validation metrics (Ceval, collected at epoch end or validation checkpoints)
+
+Validation perf.
+Task accuracy / perplexity, calibration error
+2
+
+a6 for encoders, 7 for decoders (future attention mass applies only to decoders).
+
+–Head utilization is the fraction of heads whose attention entropy exceeds a minimum threshold,
+indicating the head attends to more than one position. Variant faults that reduce the effective head
+count lower this fraction (Voita et al., 2019; Clark et al., 2019).
+
+–Attention rank quantifies the effective dimensionality of each head’s attention weight matrix as the
+exponential of the Shannon entropy of its normalized singular value distribution (Roy & Vetterli,
+2007): EffRank(Ai) = exp(−Pn
+k=1 ˜σk log ˜σk), where ˜σk is the k-th singular value normalized to
+sum to one. A rank near 1 indicates a low-dimensional attention pattern dominated by a single
+singular component. A rank approaching n indicates a broader singular value spectrum across
+query positions. Variant faults that reduce effective multi-head capacity lower the metric, while
+faults that introduce more diffuse high-dimensional structure may raise it.
+
+–Cross-example leakage measures the total attention weight flowing between unrelated examples
+in the same batch, averaged over heads and layers (Vaswani et al., 2017; Dao et al., 2022). Under
+correct masking, this quantity is zero.
+Non-zero values indicate that the attention mechanism
+attends across example boundaries, which is a direct indicator of masking faults.
+
+–Future attention mass (decoder only) measures the total attention weight assigned from each
+query position to future key positions, averaged over heads and layers (Vaswani et al., 2017).
+Under correct causal masking, this quantity is near zero, and causal-mask violations increase it
+systematically.
+
+s = QK⊤/
+p
+
+dk
+(8)
+
+At each layer, we reduce the full query-key score matrix to a single scalar by computing its mean
+across all positions (Dong et al., 2021). This within-layer reduction precedes the cross-layer aggre-
+gation (Aℓ) described above. High score variance across layers indicates that attention sharpness
+differs substantially between early and late layers, which can result from softmax saturation and
+reduced gradient flow (Dong et al., 2021; Zhai et al., 2023b). Pre-softmax scores are sensitive to
+Score and Positional faults because both fault types directly alter this computation.
+
+A3-FFN output.
+We record the ℓ2 norm of the feed-forward sublayer outputs at each layer,
+computed as ∥FFN(x)∥2 per token and averaged across the batch. Abnormally large norms indicate
+instability in the FFN transformation. Near-zero norms indicate that the FFN sublayer contributes
+little to the residual stream, which can occur when activation functions suppress most dimensions.
+
+A4-LayerNorm.
+We record two properties of layer normalization (Ba et al., 2016) at each layer.
+Scale parameter norm is the Frobenius norm ∥γ∥F of the learned scale vector. Post-norm distribu-
+tion captures the moments of the normalized output:
+
+ˆx = γ ⊙x −µ
+
+σ + ϵ + β
+(9)
+
+A LayerNorm fault disrupts the rescaling and produces post-norm moments or γ magnitudes outside
+the range seen in clean training runs.
+
+A5-Residual stream.
+We compute the cosine similarity between the input and output of each
+residual sublayer:
+
+res_simℓ=
+xℓ· hℓ
+∥xℓ∥∥hℓ∥
+(10)
+
+where xℓis the sublayer input and hℓ= xℓ+ f(xℓ) is the residual output at layer ℓ. In a correctly
+functioning transformer, the skip connection preserves the input direction while the sublayer f
+adds a bounded change, so cosine similarity remains close to 1.0. A Residual fault that corrupts
+the skip-connection path reduces this similarity. This metric measures the effect of a fault within
+a single sublayer (input vs. output of the same residual block).
+
+A6-Representation drift.
+We compute Centered Kernel Alignment (CKA) (Kornblith et al.,
+2019) between consecutive layer representations:
+
+CKA(Hℓ, Hℓ+1) =
+∥H⊤
+ℓ+1Hℓ∥2
+F
+∥H⊤
+ℓHℓ∥F ∥H⊤
+ℓ+1Hℓ+1∥F
+(11)
+
+A7-QKV alignment.
+We compute pairwise cosine similarity between the query, key, and value
+projection outputs at each sampled layer:
+
+sim(Q, K) =
+Q · K
+∥Q∥∥K∥,
+sim(Q, V ) =
+Q · V
+∥Q∥∥V ∥,
+sim(K, V ) =
+K · V
+∥K∥∥V ∥
+(12)
+
+where Q = WQx, K = WKx, and V = WV x are the projection outputs for input x (Vaswani et al.,
+2017). A fault that corrupts one projection weight matrix shifts its output direction relative to
+the other two, producing a measurable drop in pairwise similarity.
+
+B. Gradient metrics (Copt, collected per component at each training step).
+
+For each parameterized component (e.g., Attention, QKV, FFN, LayerNorm, Embedding), we
+compute three gradient-level measurements inspired by prior DNN fault detection work (Jahan
+et al., 2025b; Cao et al., 2022). Gradient norm computes the ℓ2 norm of the gradient vector for all
+parameters belonging to that component:
+
+gc =
+s X
+
+θ∈Θc
+∥∇θL∥2
+(13)
+
+where Θc is the parameter set of component c. Update ratio measures the relative magnitude of
+weight change between consecutive training steps:
+
+uc = ∥W (t)
+c
+−W (t−1)
+c
+∥F
+∥W (t−1)
+c
+∥F + ϵ
+(14)
+
+where W (t)
+c
+is the weight matrix of component c at step t. Update activity is a binary flag indicating
+whether the gradient norm exceeds a minimum threshold (gc > 10−6), which identifies components
+that have stopped learning. These 15 component-level measurements (three per component) to-
+gether with six global gradient statistics form the Copt = 21 gradient metrics in Table 8. The
+Output group uses behavioral metrics only and does not add a sixth component-routed gradient
+set.
+
+Gradient metrics do not form a separate FPG node. Each component-level gradient measurement
+is appended to the feature group of its corresponding component (Attention, QKV alignment,
+FFN output, LayerNorm, Embedding).
+The six global gradient statistics are appended to the
+Training dynamics group. The message-passing graph therefore contains 12 groups for encoders
+and 13 for decoders, as listed in Table 7.
+
+C. Behavioral metrics (Ctrain, collected at each training step).
+
+C1-Embedding.
+We record two properties of the input embedding vectors. Embedding norm
+is the mean ℓ2 norm 1
+
+C2-Positional.
+We measure positional sensitivity as the model’s response to a fixed non-zero
+shift in position indices on a held-out batch. In all experiments, we set ∆= 1. Let Pmax denote the
+model’s maximum supported position index, and let I(X) be the set of valid non-padding token
+positions in batch X such that i + ∆< Pmax. For each i ∈I(X), we compare the hidden state
+at position i under the original indices with the hidden state at the same token position under the
+shifted indices. We define positional sensitivity as
+
+L
+X
+
+Spos(X) =
+1
+L |I(X)|
+
+hℓ,i(X) −h(∆)
+ℓ,i (X)
+
+
+
+2
+(15)
+
+X
+
+ℓ=1
+
+i∈I(X)
+
+where L is the number of instrumented layers. Tokens that would exceed the valid index range after
+shifting are excluded from the average; we do not clip, wrap, or reuse position indices. Larger values
+indicate stronger dependence of the model’s representations on positional information. Positional
+faults that omit, misalign, or truncate positional encoding shift this quantity away from the clean
+baseline.
+
+C3-Training dynamics.
+We record four optimization-level and infrastructure-level metrics at
+each training step. Loss trajectory is the scalar training loss per step. Gradient noise scale measures
+the ratio of gradient variance to the squared gradient norm (McCandlish et al., 2018):
+
+GNS = Var(∥∇L∥)
+
+E[∥∇L∥]2
+(16)
+
+computed over a rolling window of 20 training steps.
+High gradient noise scale indicates that
+individual batches produce inconsistent gradient directions. Step time is the wall-clock duration
+of each training step. Sudden increases in step time can indicate memory pressure or scheduling
+faults. Peak memory allocation records the peak GPU memory reported by the CUDA allocator
+during each training step (NVIDIA, 2021; Chakrabarti et al., 2012). A forced fallback to a non-
+optimized kernel or an unintended data-layout change can increase peak memory without raising
+an explicit error (Dao et al., 2022). We include peak memory alongside step time because both are
+infrastructure-level measurements that detect kernel and scheduling faults.
+
+C4-Output.
+We record three properties of the output head at each training step. Prediction
+confidence computes the mean maximum softmax probability
+1
+N
+PN
+i=1 maxc p(i)
+c
+across all samples
+in the batch.
+Output entropy computes the mean Shannon entropy of the output distribution
+−1
+
+N
+PN
+i=1
+P
+c p(i)
+c log p(i)
+c . Margin statistics measure the gap between the correct-class logit and the
+strongest competing logit.
+For encoder classification tasks, we compute these metrics over the
+classification logits per batch sample. For decoder language modeling tasks, we average over non-
+padding tokens within each sequence, where margin measures the gap between the logit of the true
+next token and the highest competing logit. Low confidence, high entropy, or negative margins
+indicate that the output head does not produce well-separated predictions, whether because of
+upstream faults or direct output-projection faults.
+
+Cache distribution divergence computes the KL divergence:
+
+v
+Pcache(v) log Pcache(v)
+
+DKL(Pcache∥Pfresh) =
+X
+
+Pfresh(v)
+(17)
+
+between the next-token distribution produced using the cache (Pcache) and the distribution
+produced by fresh computation (Pfresh). Non-zero divergence indicates that cached states produce
+different predictions, which is a direct indicator of KV Cache faults.
+
+D. Validation metrics (Ceval, collected at epoch end or validation checkpoints).
+
+We record two measurements at epoch end or at scheduled validation checkpoints. Task accuracy
+is classification accuracy for encoder tasks and perplexity for decoder language modeling tasks.
+Calibration error is the expected calibration error (Guo et al., 2017):
+
+B
+X
+
+|b|
+N
+
+acc(b) −conf(b)
+
+(18)
+
+ECE =
+
+b=1
+
+where B is the number of confidence bins. Faults that degrade downstream performance produce
+abnormal values in these metrics. Faults that shift internal behavior without affecting validation
+performance (task-invisible faults) produce normal values in this group but abnormal values in
+other groups. Since these metrics are computed at epoch boundaries rather than at each training
+step, they enter the feature-construction process after the epoch-level summary stage (Table 8).
+
+Figure 7: DEFault++ feature construction (raw metric to the fixed-length feature vector)
+
+4.3.1
+Aggregation & Feature Vector Construction
+
+2016; Xiong et al., 2020), and residual propagation (Roquet et al., 2024) vary qualitatively across
+layers. We therefore measure Cint = 15 (encoder) or Cint = 16 (decoder) layer-internal metric types
+at each layer independently (Table 8). The decoder count is higher because future attention mass
+applies only to decoder architectures. The remaining metrics are collected at the step level or epoch
+level. Gradient metrics (Copt = 21) record gradient norm, update ratio, and update activity across
+parameterized components and global gradients. Behavioral metrics (Ctrain = 10 for encoders,
+12 for decoders) measure model-wide properties such as training loss, output-head behavior, posi-
+tional sensitivity under controlled position shifts, and peak memory allocation. Validation metrics
+(Ceval = 2) record accuracy or perplexity and calibration error at epoch boundaries.
+
+To create a fixed-length representation regardless of model depth, we aggregate per-layer layer-
+internal metrics into five summary statistics (Aℓ= 5: early mean, early standard deviation, mid
+mean, mid standard deviation, and final-layer value). A 6-layer and a 12-layer model therefore
+produce the same number of features per group. Step-level metrics (gradient and behavioral) skip
+this aggregation. After layer aggregation produces dstep = AℓCint +Copt +Ctrain step-level features,
+we apply two further aggregation stages to convert variable-length training runs into a fixed-length
+vector.
+
+Epoch-level
+summary
+(Ae
+=
+3).
+Following
+prior
+work
+on
+step-level
+training
+met-
+rics (Ben Braiek & Khomh, 2023; Wardat et al., 2021), we aggregate step-level values within each
+training epoch into three statistics: epoch mean, epoch standard deviation, and a burst statistic
+(the 95th-percentile or maximum value). These statistics capture micro-level training behavior
+within a single pass over the data. Abnormal within-epoch variance can reveal batch-level issues
+such as gradient instability (Ben Braiek & Khomh, 2023) or data-complexity mismatches (War-
+dat et al., 2021) that disappear when only the final epoch value is recorded. Validation metrics
+(Ceval = 2) enter at this stage because they are collected at epoch end or at validation checkpoints.
+The epoch-level vector has dimensionality depoch = Ae dstep + Ceval.
+
+Training-phase summary (Ap = 5).
+We partition the epoch sequence into three training phases
+(early, mid, final) and compute the mean within each phase, a linear-regression slope across phases,
+and the final-epoch value. Together these five statistics per metric compose Ap = 5. The slope
+captures the macro-level trajectory of the training process. A fault that causes learning-rate decay
+to stall (Zhang et al., 2021), or that traps the optimizer in a suboptimal region (Wardat et al.,
+2021), produces a characteristic slope pattern that a single-epoch snapshot would miss. Final values
+capture faults whose effect is visible only at convergence, independent of the trajectory shape.
+
+Feature vector length.
+Layer-internal metrics (Cint) pass through layer aggregation (Aℓ= 5)
+before the epoch-level and training-phase summaries. Gradient and behavioral metrics skip layer
+aggregation. Validation metrics enter after the epoch-level summary. The raw feature vector length
+before filtering is
+
+dfinal = Ap(Ae(AℓCint + Copt + Ctrain) + Ceval) .
+(19)
+
+For encoders, Cint = 15, Copt = 21, Ctrain = 10, and Ceval = 2, giving
+
+For decoders, Cint = 16 because decoder features add future attention mass, and Ctrain = 12
+because they add two cache metrics, giving
+
+dfinal = 5 × (3 × (5 × 16 + 21 + 12) + 2) = 5 × (3 × 113 + 2) = 5 × 341 = 1705.
+
+We apply coefficient-of-variation filtering (CV < 0.01) to remove near-constant columns.
+The
+fixed-length feature vector serves as input to the diagnostic model (Section 4.4).
+
+4.4
+Diagnostic Model
+
+Figure 8: DEFault++ inference hierarchy for fault detection, categorization, and root-cause diagnosis
+
+Algorithm 2 summarizes the diagnosis and explanation flow for one input instance. It shows the
+three-level gating logic and the explanation derivation; the shared encoding is defined in Sec-
+tions 4.4.1 to 4.4.2.
+
+4.4.1
+Feature-Group Encoding
+
+We encode each feature group with a dedicated MLP. We keep groups structurally separate so
+that FPG message passing can mix information across them and the explanation step can examine
+each group’s embedding independently. We use trainable MLPs rather than a flat classifier because
+the prototype-distance objective and the contrastive separation loss both require gradients to flow
+through the group-level weights during training. As encoder and decoder architectures differ in the
+number of feature groups (G = 12 vs. G = 13), we train separate encoder and decoder diagnostic
+models. Given the feature vector z ∈Rd partitioned into G groups {zg1, . . . , zgG} (see Table 8),
+each group g is encoded by a dedicated MLP (Equation (20)).
+
+hg = MLPg(zg) ∈Rh,
+g = 1, . . . , G,
+(20)
+
+where h = 32 is the hidden dimension per group (selected via grid search on the inner validation
+fold). The group embeddings form the matrix H = [h1; . . . ; hG] ∈RG×h.
+
+Algorithm 2 DEFault++ hierarchical diagnosis for one input instance
+
+Input: Feature vector x; shared encoder producing group embeddings {hg}G
+g=1 and projection
+zproj; trained prototypes {πc,r}
+Output: Detection label ˆy; if faulty: fault category ˆc, root cause ˆr, and per-group importance
+scores {wg}G
+g=1
+
+Level 1: Fault Detection
+
+1: Classify the instance as faulty or clean: ˆy ←Detect(zproj)
+
+2: if ˆy = clean then
+
+3:
+return ˆy
+▷clean instances exit here; Levels 2–3 are not called
+
+4: end if
+
+Level 2: Fault Categorization
+
+5: Assign the fault to a transformer component category: ˆc ←Categorize(zproj)
+
+Level 3: Root-Cause Diagnosis
+
+6: for each root cause r in the predicted category Rˆc do
+
+7:
+Sum squared distances to prototype r across all feature groups: dr ←PG
+g=1∥hg −πˆc,r,g∥2
+
+8: end for
+
+9: Select the nearest prototype as the predicted root cause: ˆr ←arg minr∈Rˆc dr
+
+Explanation
+
+10: Identify the nearest alternative root cause: ˜r ←arg minr∈Rˆc\{ˆr} dr
+11: for each feature group g = 1, . . . , G do
+
+12:
+Compute how much group g favors ˆr over ˜r: ∆g ←dg(πˆc,˜r) −dg(πˆc,ˆr)
+
+13:
+Normalize
+positive
+contributions
+into
+importance
+score:
+wg
+←
+max(∆g, 0) / P
+g′ max(∆g′, 0)
+
+14: end for
+
+15: return ˆy, ˆc, ˆr, {wg}G
+g=1
+
+where e = 64 is the embedding dimension and vec(H) ∈RGh denotes the row-major vectorization.
+Levels 1 and 2 use the pooled projection zproj for detection and categorization. Level 3 uses the
+group embedding matrix H directly to preserve group-level structure for root-cause separation and
+group-level explanation (Section 4.6).
+
+4.4.2
+Message Passing in the Fault Propagation Graph
+
+We update each group embedding by aggregating information from neighboring groups in the FPG.
+We construct the group-level adjacency matrix A ∈RG×G from the component-level FPG (Sec-
+tion 4.2) and the mapping in Table 7.
+Structural groups receive FPG-derived neighbor edges.
+The cross-layer observation group (Representation drift) and model-wide context groups (Train-
+ing dynamics, Validation performance) receive self-loops only, meaning they undergo the learned
+transformation but do not aggregate information from neighboring groups. We compute updated
+group embeddings following graph convolutional networks (Kipf & Welling, 2017):
+
+where ˆA is the row-normalized adjacency matrix (with self-loops) and Wmsg ∈Rh×h.
+We use
+row normalization rather than symmetric normalization because structural feature groups differ in
+the number of FPG propagation connections. Row normalization prevents high-degree groups from
+over-averaging their neighbors. The updated group embeddings H′ replace the pre-message-passing
+H in both the projection and the Level 3 prototype matching. We apply three rounds of message
+passing, each with a dedicated learnable weight matrix. Three rounds is also the diameter of the
+FPG: any node can reach any other node within three steps along the propagation edges, so this
+depth is enough to combine information across the full graph without entering the deeper regime
+where graph convolutional networks tend to oversmooth (Li et al., 2018). We selected this number
+through grid search on the inner validation fold (Section B).
+
+For example, a QKV projection fault propagates to attention scores and the residual stream ac-
+cording to Mechanisms 1 and 2. Message passing along these edges aggregates that multi-group
+information into the QKV alignment embedding before classification.
+The model-wide context
+groups are transformed independently, without exchanging with neighbors, and contribute through
+the projection and prototype comparison steps.
+
+4.4.3
+Hierarchical Classification
+
+All three classification levels share one encoder (group encoding, FPG message passing, and
+projection) rather than one per level.
+Sharing reduces parameters and training cost.
+Message
+passing over a 12–13-node graph with 32-dimensional embeddings is negligible relative to the
+upstream transformer training.
+The FPG also encodes structural dependencies between trans-
+former components.
+A fault in one component (e.g., QKV projection) can shift measurements
+in downstream components (e.g., attention scores, residual stream). Message passing aggregates
+these cross-component dependencies into each group embedding, which benefits all three levels to
+varying degrees. Each level adds a task-specific head.
+
+Level 1: Fault detection. A two-layer MLP maps zproj to binary logits (faulty vs. correct).
+
+Level 2: Fault categorization. A two-layer MLP maps zproj to C-class logits, where C = 11 for
+encoders and C = 12 for decoders. During training, the class-weighted cross-entropy is computed
+only over samples labeled faulty.
+
+Level 3: Root-cause diagnosis. Level 3 discriminates among the 2–7 root causes within a fault
+category. Per-root-cause training support ranges from fewer than 10 samples (e.g., Variant encoder)
+to approximately 80, with an average of 42 per root cause for encoders and 26 for decoders. A
+standard softmax classifier risks overfitting to majority root causes in this setting. It also gives
+one prediction score for the whole input, which does not show how each feature group supports
+the diagnosis.
+We therefore combine a cross-entropy head with a prototypical classifier (Snell
+et al., 2017; Kamp & Partee, 1995).
+The prototypical classifier compares each sample with
+class-mean embeddings instead of learning a separate weight vector for each class. Its distance
+score can also be broken down by feature group, which supports the explanation step in Section 4.6.
+
+category matches the category under training. Negative samples for Level 3 are the other root
+causes within the same category, not samples from different categories.
+
+Second, a prototypical classifier (Snell et al., 2017; Lin et al., 2022) operates in the group embedding
+space H ∈RG×h (not the logit space). Distances in H are converted to class logits through the
+prototype-matching loss (Equation (28)). Let Dc,r denote the set of training samples with category
+c and root cause r. For each root cause r within category c, we compute a prototype πc,r as the
+mean group embedding (Equation (23)).
+
+πc,r =
+1
+|Dc,r|
+
+i∈Dc,r
+Hi ∈RG×h.
+(23)
+
+X
+
+The distance from a sample to a prototype decomposes additively by group (Equation (24)).
+
+G
+X
+
+G
+X
+
+g=1
+∥hg −πc,r,g∥2 =
+
+d(H, πc,r) =
+
+g=1
+dg,
+(24)
+
+where dg = ∥hg −πc,r,g∥2 is the squared distance contributed by group g.
+
+Level 3 predicts the root cause whose prototype is nearest: ˆr = arg minr∈Rc d(H, πc,r). Because the
+distance decomposes additively by group (Equation (24)), the prediction also admits a per-group
+explanation, which Section 4.6 defines.
+
+At inference, Level 3 runs only after Level 2 predicts a fault category, and root-cause diagnosis
+is restricted to that category. The per-category cross-entropy heads are used during training to
+provide auxiliary gradient information for the shared encoder. At inference we use the prototype
+classifier because its distances decompose by group, which supports the group-level explanation in
+Section 4.6.
+
+Figure 9: DEFault++ training process with shared feature processing and four loss components
+
+4.5
+Training Objective
+
+We design a four-term training objective. Two terms are standard cross-entropy heads for fault de-
+tection and fault categorization. The other two terms target Level 3 root-cause separation. Level 3
+introduces a new training formulation for fault diagnosis that combines supervised contrastive
+learning (Khosla et al., 2020) with prototype matching (Snell et al., 2017). The contrastive part
+encourages samples with the same root cause to stay close in the learned space and samples with
+different root causes to stay apart. The prototype-matching part then compares each sample with
+the learned prototype of each root cause and assigns the closest match. This formulation differs
+from prior DL fault detection and diagnosis techniques by using both root-cause separation and
+prototype-based matching in the same training objective. We test the effect of the separation loss
+in RQ3 (Section 5.6).
+
+DEFault++ uses a hierarchical architecture at inference (Level 1 filters before Level 2, Level 2
+filters before Level 3) but trains the shared encoding pathway jointly across all three levels. We
+adopt joint training with hard parameter sharing (Caruana, 1997; Ruder, 2017) rather than training
+independent encoders per level. The dataset contains only 3,739 instances and the per-root-cause
+sample counts are limited (Section 3). Independent training would fragment this limited gradient
+information across separate encoders. Joint training is feasible because the three tasks are nested.
+Every Level 3 sample is also a Level 2 and Level 1 sample, and gradient directions across levels re-
+inforce each other rather than opposing each other. The Level 2 loss encourages category-separable
+embeddings, and the Level 3 separation loss imposes within-category structure. Both also improve
+Level 1 detection, since a more structured embedding space produces a cleaner binary boundary.
+
+Each level uses a dedicated loss, and all losses are computed at the mini-batch level.
+Level 1
+uses binary cross-entropy Ldetect over all samples in the batch. Level 2 uses class-weighted cross-
+entropy Lcat over fault categories, applied to faulty samples only. Level 3 uses two losses jointly:
+per-category cross-entropy Lrc over root causes, and a root-cause separation loss Lsep that helps
+separate root causes within each category.
+
+Cross-entropy trains per-category heads but does not explicitly structure the embedding space for
+within-category separation. We therefore define Lsep with two components. The first is a contrastive
+term that operates on the flattened group embeddings vec(H). For each sample i with category
+label ci and root-cause label ri, positive pairs share both (ci, ri), while negative pairs share ci but
+differ in root cause. Following supervised contrastive learning (Khosla et al., 2020), the contrastive
+term within category c is
+
+(i,j)∈Pc
+log
+exp(sim(hi, hj)/τ)
+P
+k:ck=ci exp(sim(hi, hk)/τ)
+(25)
+
+L(c)
+ctr = −1
+
+X
+
+|Pc|
+
+where Pc is the set of positive pairs within category c, sim(·, ·) is cosine similarity on the normal-
+ized flattened group embeddings, and τ = 0.1 is the temperature. Cosine similarity captures the
+directional alignment that the contrastive objective requires (Wang & Liu, 2021; Islam et al., 2023).
+The prototype classifier in Equation (24) uses squared Euclidean distance instead, since prototype
+matching depends on spatial proximity in the grouped embedding space.
+
+We define the joint training objective LDEFault++ in Equation (26).
+
+where α and λ are level-specific weighting coefficients. During training, we apply the root-cause
+separation loss Lsep only to faulty samples within their ground-truth fault category. At inference,
+Level 3 uses the predicted category from Level 2. The separation loss is defined as
+
+Lsep = β Lctr + γ Lpm
+(27)
+
+where Lctr is the contrastive term from Equation (25), and Lpm is a prototype-matching loss defined
+as
+
+i∈B
+log
+exp(−d(Hi, πci,ri)/τp)
+P
+r′∈Rci exp(−d(Hi, πci,r′)/τp)
+(28)
+
+Lpm = −1
+
+X
+
+|B|
+
+where B is the training batch, d(·, ·) is the grouped squared distance from Equation (24), Rci
+is the set of root causes within category ci, and τp is a temperature parameter. By converting
+negative prototype distances into class logits, Lpm trains H so that the group-level distance gap
+(Equation (29)) faithfully reflects the prediction.
+
+We set α = 1.0, λ = 1.0, β = 0.5, and γ = 0.3, where β weights the contrastive term Lctr and γ
+weights the prototype-matching term Lpm in Lsep. We selected all four coefficients via grid search
+on the inner validation fold (Section B). Training details appear in Section 5.
+
+4.6
+FPG-based Explanation
+
+Level 3 predicts the root cause whose prototype is nearest in the grouped embedding space (Sec-
+tion 4.4.3). To explain that prediction, we compare the predicted prototype πc,ˆr with the nearest
+alternative prototype πc,˜r, where ˜r = arg minr∈Rc\{ˆr} d(H, πc,r). The distance gap between these
+two prototypes decomposes additively by group:
+
+∆g = dg(πc,˜r) −dg(πc,ˆr),
+g = 1, . . . , G
+(29)
+
+where dg(πc,r) = ∥hg −πc,r,g∥2. A positive ∆g means group g is closer to the predicted prototype
+than to the nearest alternative, so it favors the predicted root cause. A negative ∆g means the group
+favors the alternative. The total gap P
+g ∆g equals the difference between the two full prototype
+distances, confirming that the decomposition is exact.
+
+To summarize these contributions for visualization, we normalize the positive contributions into an
+importance score per group:
+
+wg =
+max(∆g, 0)
+PG
+g′=1 max(∆g′, 0),
+g = 1, . . . , G
+(30)
+
+Groups with negative contributions receive wg = 0. The importance scores sum to one and highlight
+the groups that most support the predicted root cause.
+
+large importance indicates model-wide deviation that corroborates the component-level diagnosis
+but does not localize the fault to a specific subsystem. Because wg is computed from distances in
+the post-message-passing embedding space, structural groups reflect fault effects as they propagate
+across components, while model-wide context groups reflect self-transformed embeddings without
+cross-group mixing. The group ablation in RQ4 (Section 5.7) tests this interpretation by ablating
+the most important groups and measuring how much the gap decreases.
+
+5
+Evaluation
+
+5.1
+Research Questions
+
+We evaluate DEFault++ on DEFault-bench using nested grouped cross-validation. Encoder and
+decoder architectures are evaluated separately since their feature and label spaces differ.
+
+▶RQ1:
+How effective is DEFault++ in detecting, categorizing, and diagnosing transformer
+faults?
+
+▶RQ2: How does DEFault++ compare with existing DL fault-detection techniques?
+
+▶RQ3: How do message passing in the Fault Propagation Graph and the root-cause separation
+loss contribute to diagnostic performance?
+
+▶RQ4: How faithful are the FPG-based explanations to the root-cause diagnosis?
+
+5.2
+Experiment Setup
+
+We use nested grouped cross-validation with k = 5 outer folds. The encoder subset contains 20
+model–task pairs (4 models × 5 GLUE tasks) and the decoder subset contains 12 (3 models × 4
+language modeling corpora). All instances from the same model–task pair are kept in the same
+outer fold to prevent information leakage from correlated traces. Each encoder fold therefore holds
+out 4 pairs (20 / 5), and each decoder fold holds out 2 to 3 pairs (12 / 5). Per-seed measurements
+are already averaged into one instance per configuration (Section 3), so seed is not a separate
+grouping variable at this stage. The inner split uses StratifiedGroupKFold for model selection.
+The outer loop evaluates generalization on unseen model–task pairs, while the inner loop selects
+model hyperparameters. We restrict all preprocessing (scaling, thresholding, and standardization)
+and hyperparameter grid search to the inner training fold.
+This design trains 25 models per
+architecture (5 outer folds × 5 inner folds). We use the same outer-fold assignments for every
+method so that each is tested on the same held-out samples.3 Each outer fold holds out entire
+model–task pairs rather than random samples. As a result, a fold-level standard deviation would
+mostly reflect which pairs were held out in that split, rather than variability in model training. We
+therefore report the model–task-level results directly and include the appendix heatmap (Figure 17)
+to show where DEFault++ generalizes well and where performance is lower.
+
+We evaluate DEFault++ using four standard metrics. Let TP, FP, TN, and FN denote the true
+positive, false positive, true negative, and false negative counts, respectively. Precision (P) and
+recall (R) are defined as
+
+P =
+TP
+TP + FP,
+R =
+TP
+TP + FN
+(31)
+
+The F1-score is the harmonic mean of precision and recall:
+
+F1 = 2 · P · R
+
+P + R
+(32)
+
+The class distributions are imbalanced at all three levels. We therefore report Macro-F1 (Naidu
+et al., 2023), which averages F1 across classes:
+
+C
+X
+
+Macro-F1 = 1
+
+c=1
+F1c
+(33)
+
+C
+
+where C is the number of classes and F1c is the F1-score for class c. For fault detection (Level 1),
+we additionally report AUROC (Bradley, 1997), which measures discriminative ability across all
+classification thresholds.
+
+A true positive for fault detection means that a faulty configuration is correctly identified, regardless
+of its fault category. A true positive for fault categorization means that the category of the fault is
+identified correctly, regardless of the root cause. A true positive for root-cause diagnosis requires
+both the Level 2 category and the Level 3 root cause to be identified correctly in the same inference
+path.
+
+Baselines.
+We compare DEFault++ against four prior techniques only on the Level 1 detection
+task. The baselines are evaluated on the same train/test split as DEFault++. Rule-based tech-
+niques are executed with their published rule definitions and thresholds after mapping the required
+observables to the closest available trace features in our dataset. AutoTrainer’s gradient-threshold
+rules map to our Training dynamics group. DeepDiagnosis adds rules that partially overlap with
+the Attention and Score groups. For baselines that require training, we train them only on the
+Level 1 fault-detection task. In each outer fold, the baseline is trained on the training split of
+DEFault-bench and tested on the held-out portion.
+We use the model types provided in the
+original replication packages (Zhang et al., 2021; Wardat et al., 2022; Cao et al., 2022; Jahan et al.,
+2025b).
+
+We keep the original rule thresholds unchanged. Changing them for DEFault-bench would adapt
+the baselines to our data, rather than evaluate the methods as prior work reported them. We do not
+compare Level 2 or Level 3 results since their labels do not align with our transformer component
+categories or root causes (see Table 9).
+
+Table 9: Baseline techniques’ coverage across all three levels
+
+Technique
+Paradigm
+Detection
+Categorization
+Root-Cause
+
+AutoTrainer (Zhang et al., 2021)
+Rule-based (5 rules)
+✓
+N/A
+N/A
+DeepDiagnosis (Wardat et al., 2022)
+Rule-based (8 rules)
+✓
+N/A
+N/A
+DeepFD (Cao et al., 2022)
+Flat ensemble (KNN+DT+RF)
+✓
+N/A
+N/A
+DEFault (Jahan et al., 2025b)
+Hierarchical RF
+✓
+N/A
+N/A
+
+DEFault++
+Neural hierarchical
+✓
+✓
+✓
+
+during training. We map each rule to the corresponding features in our dataset and apply
+the published thresholds without recalibration. AutoTrainer was able to produce binary
+detection decisions but its symptom types do not map to our fault categories.
+(ii) DeepDiagnosis (Wardat et al., 2022) extends AutoTrainer to eight symptom rules (adding
+unchanged weights, saturated activation, and out-of-range output) with a decision tree that
+maps detected symptoms to seven fix types. We apply the same feature-mapping strategy
+and thresholds. Its symptom labels likewise do not map to our fault categories.
+(iii) DeepFD (Cao et al., 2022) combines KNN, Decision Tree, and Random Forest classifiers
+with union voting to diagnose faults from runtime features. Its five diagnosis classes (e.g.,
+incorrect learning rate, wrong activation function) do not correspond to our fault categories.
+We evaluate DeepFD as a binary classifier for fault detection only.
+(iv) DEFault (Jahan et al., 2025b) uses a hierarchical Random Forest classifier that combines
+static and dynamic features to detect and categorize faults across seven coarse DNN-level
+categories (hyperparameters, activation function, loss function, optimizer, layer configura-
+tion, regularization, weights). These categories operate at a different abstraction level. We
+evaluate DEFault for binary detection only.
+
+5.3
+Implementation
+
+We implement the hierarchical model in PyTorch. We use separate MLPs for each feature group
+with hidden dimension h = 32 and a shared projection to e = 64 dimensions. We apply three
+rounds of message passing in the Fault Propagation Graph with the group-level adjacency matrix.
+Training uses Adam (Kingma & Ba, 2015) with learning rate 10−3, weight decay 10−4, and batch
+size 256. We train for up to 150 epochs with early stopping on the validation split. The loss weights
+are α = 1.0, λ = 1.0, β = 0.5, and γ = 0.3, with temperature τ = 0.1. We address fault-category
+and root-cause imbalance through inverse-frequency weighting in the corresponding classification
+losses and select a fixed set of random seeds for reproducibility. Section B (Table 27) gives the full
+hyperparameter configuration. The replication package (Jahan, 2026) contains the implementation,
+hyperparameter files, and trained models.
+
+Training loss converges by ∼epoch 100, at which point validation Detection F1 and Category F1
+also stabilize (Figures 10 and 11). Training with early stopping at 150 epochs is sufficient for the
+three-level hierarchy.
+
+Figure 10: Training dynamics for DEFault++ on the encoder architecture
+
+Figure 11: Training dynamics for DEFault++ on the decoder architecture
+
+5.4
+Answering RQ1: Effectiveness of Diagnosis
+
+To answer RQ1, we evaluate DEFault++ at the three diagnostic levels: fault detection (Level 1),
+fault categorization (Level 2), and root-cause diagnosis (Level 3). Encoder and decoder architec-
+tures are evaluated separately because their feature groups and label spaces differ.
+
+Table 10: DEFault++ performance on fault detection (Level 1)
+
+Metric
+Encoder Decoder
+
+AUROC
+0.9660
+0.9620
+Accuracy
+0.9455
+0.9107
+Macro-F1
+0.8238
+0.9088
+Weighted-F1
+0.9477
+0.9104
+Precision
+0.8014
+0.9125
+Recall
+0.8520
+0.9064
+
+Figure 12: ROC curves for fault detection on encoder and decoder
+
+1993), WikiText-2 (Merity et al., 2016), and OpenWebText (Gokaslan & Cohen, 2019)) introduced
+in the benchmark construction (Section 3).
+
+Table 11: DEFault++ performance (overall) on fault categorization (Level 2)
+
+Metric
+Encoder
+Decoder
+
+Accuracy
+0.8522
+0.8842
+Macro-F1
+0.8497
+0.8679
+Weighted-F1
+0.8531
+0.8850
+Precision
+0.8662
+0.8794
+Recall
+0.8403
+0.8649
+
+Table 12: DEFault++ performance (per-class) on fault categorization (Level 2)
+
+Encoder
+Decoder
+
+Category
+F1
+Precision
+Recall
+F1
+Precision
+Recall
+
+Embedding
+0.838
+0.852
+0.829
+0.862
+0.833
+0.897
+FFN
+0.836
+0.807
+0.871
+0.718
+0.673
+0.777
+Kernel
+0.771
+0.814
+0.740
+0.765
+0.848
+0.700
+KV Cache
+—
+—
+—
+0.758
+0.716
+0.822
+LayerNorm
+0.790
+0.775
+0.820
+0.843
+0.937
+0.766
+Masking
+0.917
+0.952
+0.886
+0.890
+0.927
+0.857
+Output
+0.889
+0.927
+0.864
+0.975
+0.980
+0.969
+Positional
+0.919
+0.950
+0.891
+0.927
+0.949
+0.911
+QKV
+0.825
+0.863
+0.792
+0.789
+0.772
+0.815
+Residual
+0.961
+0.965
+0.958
+0.995
+0.995
+0.995
+Score
+0.861
+0.847
+0.876
+0.946
+0.937
+0.957
+Variant
+0.741
+0.776
+0.717
+0.948
+0.986
+0.914
+
+Macro avg.
+0.850
+0.866
+0.840
+0.868
+0.879
+0.865
+
+Fault categorization (Level 2).
+DEFault++ achieved Macro-F1 of 0.850 on encoders and
+0.868 on decoders (Table 11). Precision and recall remained balanced (0.866/0.840 on encoders,
+0.879/0.865 on decoders), which indicates that the model did not trade one for the other. Table 12
+reports the per-category breakdown.
+
+Residual and Positional were the strongest categories. Residual reached F1 of 0.961 on encoders and
+0.995 on decoders, because the residual-stream feature group produced separable skip-connection
+measurements for the faults in this category. Positional reached 0.919 and 0.927 because positional-
+sensitivity features distinguished encoding faults from other categories. The weakest categories
+differed by architecture. On encoders, Variant (0.741) and Kernel (0.771) reported the lowest F1.
+On decoders, FFN (0.718) and KV Cache (0.758) were the most difficult. Variant differed sharply
+across architectures (F1 0.741 encoder vs. 0.948 decoder). One explanation is sample size. Encoder
+Variant had 24 instances (Table 5), the smallest category, while decoder Variant had 51 instances
+and may have benefited from cache-related discriminative features that are absent on encoders.
+
+Table 13: DEFault++ performance (overall) on root-cause diagnosis (Level 3)
+
+Metric
+Encoder
+Decoder
+
+Accuracy
+0.7953
+0.8264
+Macro-F1
+0.8512
+0.8670
+Weighted-F1
+0.8567
+0.8745
+Precision
+0.9407
+0.9475
+Recall
+0.7932
+0.8225
+
+Table 14: DEFault++ performance (per-category) on root-cause diagnosis (Level 3)
+
+Encoder
+Decoder
+
+Category
+F1
+Acc.
+Prec.
+Rec.
+F1
+Acc.
+Prec.
+Rec.
+
+Embedding
+0.879
+0.805
+0.972
+0.806
+0.877
+0.890
+0.972
+0.816
+FFN
+0.804
+0.808
+0.847
+0.778
+0.883
+0.777
+1.000
+0.803
+Kernel
+0.814
+0.740
+1.000
+0.706
+0.747
+0.691
+0.988
+0.676
+KV Cache
+—
+—
+—
+—
+0.881
+0.822
+1.000
+0.817
+LayerNorm
+0.821
+0.748
+0.917
+0.749
+0.890
+0.749
+0.969
+0.839
+Masking
+0.925
+0.871
+0.986
+0.874
+0.845
+0.755
+0.902
+0.801
+Output
+0.882
+0.825
+0.958
+0.822
+0.972
+0.969
+1.000
+0.947
+Positional
+0.930
+0.884
+0.992
+0.886
+0.975
+0.911
+1.000
+0.953
+QKV
+0.765
+0.693
+0.868
+0.694
+0.646
+0.629
+0.727
+0.592
+Residual
+0.908
+0.880
+0.927
+0.895
+0.958
+0.955
+0.961
+0.955
+Score
+0.835
+0.779
+0.879
+0.799
+0.908
+0.897
+0.926
+0.897
+Variant
+0.799
+0.717
+1.000
+0.717
+0.824
+0.871
+0.925
+0.773
+
+Macro avg.
+0.851
+0.795
+0.941
+0.793
+0.867
+0.826
+0.948
+0.823
+
+feature patterns.
+
+The strongest categories for root-cause diagnosis were Positional (0.930 encoder, 0.975 decoder),
+Masking (0.925 encoder, 0.845 decoder), and Residual (0.908 encoder, 0.958 decoder). Positional
+root causes produced distinct patterns in positional-sensitivity, attention-entropy, and pre-softmax
+score features.
+Residual root causes were distinguished because skip-connection integrity and
+gradient-norm features produced non-overlapping distributions across root causes within that cate-
+gory. QKV was the weakest category, with F1 of 0.765 on encoders and 0.646 on decoders, because
+three of its four root causes disturbed the same projection, alignment, and update-flow measure-
+ments simultaneously. Root-cause count alone did not explain the per-category ordering. Residual
+remained strong with five root causes because its features were well separated, while QKV remained
+weakest with four root causes because most of them activated the same feature groups. This pattern
+suggests that per-category difficulty depended more on feature separability than on the number of
+root causes.
+
+Hierarchical design.
+The hierarchical setup links the three levels at inference. Level 1 errors
+prevent a configuration from reaching Level 2, and Level 2 errors prevent it from reaching Level 3.
+The reported Level 3 metrics therefore reflect the complete inference path rather than an isolated
+root-cause classifier. The precision-recall gap at Level 3 (0.941 vs. 0.793 on encoders, 0.948 vs.
+0.823 on decoders) is consistent with this hierarchical filtering. Instances misclassified at Level 2
+cannot be recovered at Level 3, which lowers macro-recall, while the predictions DEFault++ does
+commit to remain mostly correct, which keeps macro-precision high.
+
+Summary of RQ1: Across the three diagnostic levels, DEFault++ detected transformer faults
+with AUROC above 0.96 on both architectures, categorized faults with Macro-F1 of 0.850
+(encoder) and 0.868 (decoder), and diagnosed root causes with Macro-F1 of 0.851 (encoder)
+and 0.867 (decoder), with macro-precision above 0.94 at Level 3.
+The strongest categories
+were those with distinct component-level measurements (Residual, Positional, Masking). QKV
+remained the hardest because most of its root causes activated overlapping feature groups.
+
+5.5
+Answering RQ2: Comparison with Existing Techniques
+
+To answer RQ2, we compared DEFault++ with four prior DL fault-detection techniques: Auto-
+Trainer (Zhang et al., 2021), DeepDiagnosis (Wardat et al., 2022), DeepFD (Cao et al., 2022), and
+DEFault (Jahan et al., 2025b). We restricted the comparison to Level 1 detection because the
+baselines do not expose label spaces that match the DEFault++ transformer categories or root
+causes. Comparing them at Level 2 or Level 3 would equate non-equivalent outputs.
+
+Table 15: Fault-detection comparison between DEFault++ and baselines
+
+Method
+Type
+AUROC (Enc)
+M-F1 (Enc)
+Acc. (Enc)
+AUROC (Dec)
+M-F1 (Dec)
+Acc. (Dec)
+
+DEFault++
+Neural hierarchical
+0.9660
+0.8238
+0.9455
+0.9620
+0.9088
+0.9107
+DEFault (Jahan et al., 2025b)
+Hierarchical RF
+0.8610
+0.5660
+0.8120
+0.9030
+0.7020
+0.8460
+DeepFD (Cao et al., 2022)
+Flat ensemble
+0.8340
+0.5140
+0.7810
+0.8810
+0.6550
+0.8190
+DeepDiagnosis (Wardat et al., 2022)
+Rule-based (8 rules)
+—
+0.3380
+0.7240
+—
+0.4820
+0.7710
+AutoTrainer (Zhang et al., 2021)
+Rule-based (5 rules)
+—
+0.2840
+0.6970
+—
+0.4270
+0.7440
+
+Rule-based techniques produce binary decisions without probabilistic scores, so AUROC is not applicable (—).
+
+DEFault++ outperformed all four baselines on both architectures (Table 15).
+On encoders,
+DEFault++ reached AUROC of 0.966 and Macro-F1 of 0.824. The strongest baseline at Level 1
+was DEFault, which reached AUROC of 0.861 and Macro-F1 of 0.566. DeepFD reached 0.834 and
+0.514. The two rule-based methods scored lowest. AutoTrainer reached Macro-F1 of 0.284 and
+DeepDiagnosis reached 0.338. AUROC is not applicable to AutoTrainer or DeepDiagnosis because
+both produce binary decisions without a probability score.
+On decoders, DEFault++ reached
+AUROC of 0.962 and Macro-F1 of 0.909. DEFault reached 0.903 and 0.702, DeepFD reached 0.881
+and 0.655, AutoTrainer reached 0.427, and DeepDiagnosis reached 0.482.
+
+The learned baselines outperformed the rule-based baselines at Level 1 because they observed
+runtime behavior at the model level rather than checking fixed symptom thresholds. Their feature
+spaces were designed for general DNN faults and did not represent attention distributions, QKV
+alignment, cache behavior, or component-level propagation.
+The rule-based baselines target
+gradient explosion, vanishing gradients, dying ReLU, and oscillating loss. These symptoms did
+not cover many silent transformer faults in our benchmark, which preserved normal loss curves
+and finite numerical values while changing internal attention behavior.
+
+We do not report Level 2 or Level 3 comparisons. AutoTrainer and DeepDiagnosis generate generic
+symptom labels that do not map to any fault category in our taxonomy. DeepFD and DEFault use
+DNN-level fault categories that were defined independently of transformer component boundaries.
+A numeric comparison at those levels would equate non-equivalent labels.
+We report baseline
+coverage in Table 9 instead.
+
+Summary of RQ2: On Level 1 fault detection, DEFault++ outperformed all four evalu-
+ated baselines across AUROC, Macro-F1, and accuracy. The improvement over DEFault and
+DeepFD indicates that DNN-level diagnostic features were insufficient for many transformer
+faults in our benchmark. The lower scores of AutoTrainer and DeepDiagnosis indicate that
+fixed training-symptom rules missed faults whose evidence appeared inside attention, projec-
+tion, cache, or residual behavior.
+
+5.6
+Answering RQ3: Ablation
+
+Ablation design.
+We assess the contribution of each architectural component by systematically
+removing it from DEFault++ and measuring the performance drop. We ablate two components:
+message passing in the Fault Propagation Graph and the separation loss Lsep. The separation loss
+applies only at Level 3. We define two variants for Levels 1 and 2 and four variants for Level 3 as
+follows.
+
+1. DEFault++. The complete model with message passing in the FPG and the separation
+loss at Level 3.
+
+2. −FPG. We remove message passing in the FPG while retaining Lsep at Level 3.
+This
+variant measures the contribution of propagation-informed feature interaction.
+
+3. −Sep (Level 3 only). We remove the separation loss (β = 0, γ = 0) while retaining
+FPG. This variant measures the contribution of within-category root-cause discrimination.
+
+4. −FPG−Sep.
+We remove both FPG and Lsep, retaining only the feature-group MLPs
+with projection. This variant tests the hierarchical classifier alone.
+
+To test whether the specific FPG topology matters beyond just having any graph structure, we
+define two additional topology variants as follows.
+
+1. Rewired. We keep the same number of nodes and edges as the FPG but randomly reassign
+edge endpoints while preserving the degree distribution, following the degree-preserving
+rewiring procedure of Maslov and Sneppen (Maslov & Sneppen, 2002).
+This rewiring
+preserves the overall graph density and local connectivity profile while breaking the
+meaningful propagation links between transformer components.
+
+2. Random. We replace the FPG with an Erdős–Rényi random graph (Erdős & Rényi, 1959)
+with approximately the same edge density. This replacement removes both the meaningful
+propagation links and the degree structure of the original FPG.
+
+Level 1: Fault detection.
+We find that removing message passing in the FPG modestly reduces
+detection performance on both architectures (Table 16). Binary detection is a coarse task. A fault
+that disrupts any transformer component shifts the overall feature distribution enough for the
+binary classifier to separate faulty from clean configurations. At this level, the classifier only needs
+to separate faulty from clean configurations. We observe that message passing adds cross-group
+information that improves the binary boundary, but the group-level features alone already support
+detection. We retain message passing at Level 1 because cross-component aggregation helps detect
+faults with weak local deviations, and the ablation confirms that removing it hurts detection.
+
+Table 16: Ablation study of Level 1 fault detection
+
+Architecture
+Variant
+AUROC
+Accuracy
+F1
+F1w
+Precision
+Recall
+
+Encoder
+DEFault++
+0.966
+0.946
+0.824
+0.948
+0.801
+0.852
+−FPG
+0.921
+0.922
+0.782
+0.924
+0.752
+0.816
+
+Decoder
+DEFault++
+0.962
+0.911
+0.909
+0.910
+0.912
+0.906
+−FPG
+0.949
+0.892
+0.890
+0.892
+0.890
+0.891
+
+Level 2: Fault categorization.
+We find that removing message passing in the FPG produces the
+largest drop in the entire ablation (Table 17). Categorization requires the classifier to distinguish
+among 11 fault categories on encoders and 12 on decoders, several of which affect overlapping
+feature groups. A QKV fault propagates to attention scores and the residual stream. A Score
+fault propagates to attention weights and onward to the residual stream, but through a narrower
+path than a QKV fault, which simultaneously affects both scores and values. Without message
+passing, we compute each group embedding independently, and the classifier can only infer cross-
+group relationships from the flat projection. With message passing, we route fault evidence along
+the FPG propagation edges before the projection step, producing representations that already
+encode how the fault spreads across components. We attribute the large drop to this loss of cross-
+group structure, because propagation patterns are the distinguishing evidence for categories with
+overlapping features.
+
+Table 17: Ablation study of Level 2 fault categorization
+
+Architecture
+Variant
+Accuracy
+F1
+F1w
+Precision
+Recall
+
+Encoder
+DEFault++
+0.852
+0.850
+0.853
+0.866
+0.840
+−FPG
+0.743
+0.742
+0.745
+0.757
+0.731
+
+Decoder
+DEFault++
+0.884
+0.868
+0.885
+0.879
+0.865
+−FPG
+0.790
+0.788
+0.791
+0.797
+0.783
+
+Table 18: Ablation study of Level 3 root cause diagnosis
+
+Architecture
+Variant
+Accuracy
+F1
+F1w
+Precision
+Recall
+
+Encoder
+DEFault++
+0.795
+0.851
+0.857
+0.941
+0.793
+−FPG
+0.778
+0.812
+0.819
+0.933
+0.776
+−Sep
+0.752
+0.756
+0.763
+0.910
+0.752
+−FPG−Sep
+0.702
+0.701
+0.711
+0.883
+0.690
+
+Decoder
+DEFault++
+0.826
+0.867
+0.875
+0.948
+0.823
+−FPG
+0.810
+0.833
+0.840
+0.940
+0.809
+−Sep
+0.781
+0.781
+0.788
+0.925
+0.781
+−FPG−Sep
+0.735
+0.734
+0.742
+0.896
+0.721
+
+We find that removing message passing in the FPG at Level 3 (while retaining the separation loss)
+produces a smaller drop. Message passing aggregates propagation-related evidence across groups
+before prototype comparison, but the root-cause discrimination problem centers on within-category
+separation rather than cross-group structure. We observe that removing both components together
+produces the largest overall drop, which confirms that message passing and the separation loss
+contribute complementary information at Level 3.
+
+Topology ablation.
+The preceding ablation compares the full FPG with no message passing at
+all. To test whether the specific FPG topology matters, we compare it with two alternative graph
+structures: Rewired (same density, shuffled edges) and Random (Erdős–Rényi graph with matched
+density). Table 19 reports Macro-F1 across all three levels. The results show a consistent ordering
+at every level and on both architectures: DEFault++ > Rewired > Random > −FPG. The FPG
+with the correct propagation structure outperforms both alternative topologies. Rewired edges
+preserve the graph density and degree distribution but break the meaningful propagation links,
+and the performance drops below the full FPG at every level. Random edges lose both the specific
+links and the degree structure of the original FPG, and performance drops further. Removing
+message passing entirely (−FPG) produces the lowest performance.
+
+Table 19: Topology ablation results using Macro-F1 across graph variants
+
+Level
+Architecture
+DEFault++
+Rewired
+Random
+−FPG
+
+L1
+Encoder
+0.824
+0.790
+0.786
+0.782
+Decoder
+0.909
+0.894
+0.892
+0.890
+
+L2
+Encoder
+0.850
+0.770
+0.754
+0.742
+Decoder
+0.868
+0.807
+0.796
+0.788
+
+L3
+Encoder
+0.851
+0.820
+0.816
+0.812
+Decoder
+0.867
+0.838
+0.835
+0.833
+
+The topology effect is strongest at Level 2, where DEFault++ outperforms Rewired by 0.080
+(encoder) and 0.061 (decoder) in Macro-F1. This is consistent with the earlier finding that fault
+categorization depends most on cross-group propagation structure. At Level 1 and Level 3, the
+topology differences are smaller because binary detection is a coarser task and root-cause diagnosis
+depends more on within-category separation than on cross-group structure.
+
+Summary of RQ3: Both FPG message passing and the separation loss contributed to DE-
+Fault++ performance. Removing FPG message passing reduced Macro-F1 most at Level 2
+(from 0.850 to 0.742 on encoders and from 0.868 to 0.788 on decoders), where cross-component
+propagation patterns distinguish categories with overlapping symptoms. Removing the sepa-
+ration loss reduced Level 3 Macro-F1 most (from 0.851 to 0.756 on encoders and from 0.867
+to 0.781 on decoders), where the model must separate root causes within the same category.
+The topology ablation showed that the specific FPG structure, not graph connectivity alone,
+explains the categorization gain (DEFault++ vs. Rewired: +0.080 encoder, +0.061 decoder at
+Level 2).
+
+5.7
+Answering RQ4: Explanation Faithfulness
+
+To answer RQ4, we evaluated whether the feature groups identified by DEFault++ supported the
+predicted root cause. We used the prototype-based explanation from Level 3. For each instance,
+DEFault++ compares the predicted root-cause prototype with the nearest alternative prototype
+and decomposes the distance gap by feature group (Equation (29)).
+
+Figure 13: Prototype-label agreement during training
+
+Prototype-label agreement during training.
+DEFault++ trains with two complementary
+objectives at Level 3. The cross-entropy heads classify root causes from logits, while the prototype-
+matching loss (Equation (28)) brings each sample closer to the correct prototype and farther
+from alternatives within the same fault category. We use the prototype classifier for explanation
+because the distance to a prototype decomposes group by group (Equation (29)), so each feature
+group receives its own contribution score. Cross-entropy logits produce a single prediction vector
+and do not offer this per-group breakdown.
+
+matching objectives produced consistent predictions despite optimizing different loss surfaces. Only
+the prototype classifier is used at inference.
+
+Figure 14: Group ablation analysis for the FPG-based explanation
+
+Group-ablation check.
+We tested the explanation through group ablation. For each sample, we
+identified the two groups with the largest importance scores (Equation (30)). The importance scores
+are normalized to sum to one, and the distribution is typically concentrated on a few groups. In our
+experiment, the top two groups captured a substantial share of the total score. We zeroed out these
+two groups and compared the drop in the prototype margin (the gap between the predicted and
+the nearest alternative prototype) with the drop obtained by zeroing two randomly chosen groups.
+Removing the most important groups reduced the gap more than removing random groups across all
+evaluated categories on both architectures (Figure 14). The most important groups therefore carried
+the diagnostic information that separated the predicted root cause from the nearest alternative.
+
+This result is a model-consistency check, not causal attribution. The benchmark does not provide
+independent feature-group ground truth. The ablation supports internal faithfulness of the expla-
+nation to the prototype decision, but it does not establish that the highlighted groups capture the
+true causal mechanism of the original fault. The real-world evaluation in Section 6 provides an
+additional check for selected cases. For each reproduced bug, we compare the feature groups high-
+lighted by DEFault++ with the components changed by the source bug fix. This checks whether
+the diagnostic trace is consistent with the code change, but it does not prove that the highlighted
+components are the true cause of the fault.
+
+Summary of RQ4: The FPG-based explanations are internally faithful to the prototype-based
+root-cause decision under the evaluated ablation. Removing the most important feature groups
+reduced the prototype margin more than removing random groups. This evidence supports
+internal faithfulness, but it does not establish external causal attribution because independent
+feature-group ground truth is unavailable.
+
+6
+Real-world Fault Evaluation
+
+faulty version with the fixed version using the same feature extraction technique used in the ex-
+perimental evaluation. DEFault++ detected 8 of the 11 faults, identified the correct fault category
+for 8, and identified the root cause for 4 (see Table 20). We report each result at the same three
+diagnostic levels used in the main evaluation. Fault detection (FD) checks whether DEFault++
+marks the faulty version as faulty. Fault categorization (FC) checks whether it assigns the fault to
+the correct transformer category. Root-cause diagnosis (RC) checks whether the predicted cause
+matches the cause confirmed by the bug fix of the source issue. The evidence column reports the
+feature group or feature that best reflects the faulty behavior.
+
+Table 20: Real-world evaluation of DEFault++ on 11 transformer faults
+
+Source
+Fault category
+DEFault++ result DEFault++ evidence
+Diagnostic relation/scope
+
+FD FC
+RC
+
+jax#23349
+Masking
+✓
+✓
+✓
+Attention: padding atten-
+tion mass
+Attention feature group
+
+pytorch#103082
+Masking
+✓
+✓
+✓
+Attention:
+future atten-
+tion mass
+Attention feature group
+
+transformers#19045Positional
+✓
+✓
+✗
+Positional: positional sen-
+sitivity
+Forward sequential propagation (M1)
+
+transformers#17886Positional
+✓
+✓
+✗
+Attention: inter-head co-
+sine similarity
+Forward sequential propagation (M1)
+
+ai-edge-torch#6
+QKV
+✓
+✓
+✓
+Score: pre-softmax score
+Simultaneous propagation (M2)
+nsa-pytorch#20
+KV Cache
+✓
+✓
+✗
+KV Cache:
+cache-related
+behavior
+Generation-time cache update path
+
+transformers#37574KV Cache
+✗
+✗
+✗
+–
+Generation-time cache behavior
+
+transformers#36096Score
+Crash*
+–
+Runtime failure before feature extrac-
+tion
+pytorch#116333
+Kernel
+✗
+✗
+✗
+–
+Backend stride validation
+transformers#35896Variant
+✓
+✓
+✗
+Attention:
+attention en-
+tropy
+Cross-layer propagation (M4)
+
+diffusers#11903
+QKV
+✓
+✓
+✓
+Optimization:
+projection
+update ratio
+QKV projection/update path
+
+Summary: FD - 8/11; FC - 8/11 categories; RC - 4/11 root causes.
+
+FD = fault detection; FC = fault categorization; RC = root-cause diagnosis. Crash* indicates an explicit runtime failure before
+feature extraction.
+
+We observed two masking faults in which the faulty versions assigned attention to tokens that
+should have been masked. In jax#23349, attention flowed to padding tokens; in pytorch#103082,
+attention flowed to future tokens. DEFault++ captured these faults through padding attention
+mass and future attention mass, respectively, and both values returned to zero after the fixes. We
+also observed the QKV fault in diffusers#11903 through a near-zero QKV update ratio.
+In
+that issue, LoRA updated stale projection modules while the forward pass used the fused QKV
+projection, hence the updated parameters did not affect the model output.
+
+Similarly, in transformers#35896, sliding-window attention was applied to the wrong layers. This
+changed the attention distribution at those layers through a cross-layer dependency (M4), which
+DEFault++ captured through per-layer attention entropy. Across these four cases, DEFault++
+identified the faulty component through a feature group connected to it in the FPG. This suggests
+that the FPG-based explanation can help interpret real-world faults when the fault affects connected
+feature groups.
+
+The KV-cache fault exposes a limitation of DEFault++. In nsa-pytorch#20, DEFault++ cor-
+rectly predicted the faulty status and the fault category (i.e., KV Cache). However, it incorrectly
+predicted the root cause as cache invalidation, while the root cause is update synchronization (i.e.,
+from ground truth labels of source issue). The cache update path was incorrect. Thus, the current
+token’s key-value vectors were not synchronized with the attention and prediction computation.
+
+DEFault++
+could
+not
+diagnose
+three
+real-world
+faults
+across
+all
+three
+levels.
+In
+transformers#37574, DEFault++ missed the fault as the faulty behavior appeared during au-
+toregressive generation, where cached key-value states from earlier decoding steps interact with
+the current token.
+DEFault++ captures cache-related behavior during fine-tuning, but it does
+not trace each cached decoding step during generation, which may miss abnormal behavior that
+appears only at generation time.
+
+In pytorch#116333, the fault came from backend stride validation rather than transformer-layer
+behavior.
+DEFault++ traces model-level fine-tuning dynamics.
+It does not capture low-level
+kernel-dispatch constraints. Detecting this fault would require system-level information beyond the
+model trace used by DEFault++. Finally, in transformers#36096, the faulty flex_attention
+implementation returned an attention tensor with an invalid rank. DEFault++ could not extract
+diagnostic features since the run failed before producing a valid model trace. We therefore treat
+this case as not applicable to DEFault++, rather than as a diagnostic failure.
+
+(a) Hierarchical diagnostic output
+
+Fault Detection
+Faulty
+(confidence: 0.98)
+
+Normal training loss, abnormal projection-update behavior
+
+Fault Categorization
+QKV
+(confidence: 0.91)
+
+Deviations in QKV alignment, projection update, attention entropy
+
+Root Cause Diagnosis
+Stale-parameter
+(confidence: 0.88)
+
+Near-zero update ratio for q_proj/v_proj, fused path active
+
+(b) Feature-group importance (wg)
+
+QKV alignment
+45%
+
+73% in QKV alignment
+and optimization
+
+Optimization
+28%
+
+Attention
+12%
+
+Score
+7%
+
+Other
+8%
+
+Figure 15: DEFault++ diagnosis and feature-group importance for the stale QKV fusion fault in Listing 2.1
+
+We use diffusers#11903 as a representative example of a silent QKV fault, which was also
+used in the motivating example (see Section 2).
+In this case, training completed normally,
+but LoRA updated projection parameters that were no longer used by the forward pass.
+The
+faulty implementation fused the query, key, and value projections into to_qkv, while the original
+projection modules remained accessible to LoRA. Figure 15 shows DEFault++’s three-level
+diagnosis and the feature-group importance scores for this fault.
+
+Level 1: Fault detection. DEFault++ classified the case as faulty, even though we found that the
+training loss curve decreased normally. The strongest signal came from the optimization feature
+group, where the update ratios for the stale projection modules were near zero relative to the
+active fused path.
+
+Level 2: Fault categorization. DEFault++ assigned the fault to the QKV category. We found that
+QKV alignment feature group contributed the most to this decision, while the attention score
+feature group provided secondary evidence.
+
+Level 3: Root-cause diagnosis. DEFault++ identified the root cause as a stale projection update
+path. The QKV alignment and Optimization feature groups together explain 73% of the normalized
+feature importance (Figure 15).
+This aligns with the repair decision because the fault affects
+both the projection path and the parameter updates. The repair ensures that LoRA updates the
+projection module used in the forward pass rather than the stale modules left after QKV fusion.
+
+7
+Developer Study
+
+We evaluated whether DEFault++ diagnoses help developers choose correct repair actions for
+transformer faults. Participants completed four debugging scenarios derived from reproduced real-
+world GitHub issues. For each scenario, they selected a repair action either from baseline materials
+alone or from the same materials plus the DEFault++ diagnosis.
+We measured repair-action
+accuracy, confidence, self-reported time, and perceived usefulness.
+
+7.1
+Study Design
+
+We used a within-subjects, counterbalanced design with two conditions (Wohlin et al., 2012). In
+the baseline condition, participants received a scenario description, observed behavior, and logs
+with metrics. In the DEFault++ assisted condition, participants received the same materials plus
+the DEFault++ diagnosis: Level 1 fault status, Level 2 fault category, Level 3 localized root cause,
+and supporting feature-group evidence.
+Each participant completed all four scenarios, two per
+condition. We counterbalanced condition assignment across two survey forms. This scenario-based
+evaluation follows prior developer studies of DL debugging techniques (Yuan et al., 2021; Manke
+et al., 2025).
+
+We derived the four scenarios from reproduced real-world GitHub issues (see Section 6), each
+representing a distinct transformer fault category (Table 21). For one scenario (S3), the output of
+DEFault++ was partially correct (see Table 23). We included this scenario to test whether the
+partial diagnosis would still help developers select the correct repair action.
+
+parameter change. The task measured whether participants could translate the available diagnostic
+evidence into the correct repair direction.
+
+Table 21: Developer-study scenarios and correct repair actions
+
+Scenario
+Source Issue
+Fault Category Correct Repair Action
+
+S1: Cached decoding visibility
+pytorch #103082
+Masking
+Fix the causal mask for cached decoding so
+the new token attends to the correct cached
+key positions.
+S2: Position-dependent scoring drift
+transformers #19045 Positional
+Recompute relative-position distances from
+the true token positions during cached de-
+coding.
+S3: Incremental state update mismatch†
+nsa-pytorch #20
+KV Cache
+Write the current token’s key-value vectors
+into the cache before computing attention
+and prediction scores.
+S4: Local-attention layer assignment
+transformers #35896 Variant
+Fix
+the
+layer-selection
+condition
+so
+local/sliding-window attention is applied
+to the intended layers.
+
+†In the assisted condition, DEFault++ correctly predicted the faulty status and KV Cache fault category, but incorrectly
+predicted the root cause as cache invalidation rather than update synchronization.
+
+The primary outcome was repair-action correctness, scored against the ground-truth fix from the
+source issue. We also collected self-reported confidence on a 5-point scale and self-reported time
+as a perceived-effort measure. After completing all scenarios, participants rated the clarity, useful-
+ness, and practical value of the DEFault++ diagnosis on 5-point Likert scales and answered two
+preference questions comparing the baseline and assisted conditions.
+
+7.2
+Participants
+
+The Dalhousie University Research Ethics Board 4 reviewed and approved the developer study. El-
+igibility required experience with transformer architectures in at least one of training, fine-tuning,
+inference, debugging, or evaluation (Yuan et al., 2021; Manke et al., 2025).
+We recruited 21
+practitioners through graduate student mailing lists, academic networks, and direct outreach. Par-
+ticipation was anonymous, voluntary, uncompensated, and hosted through Microsoft Forms.
+
+Table 22: Developer study participant demographics (N = 21)
+
+Characteristic
+Value
+N
+
+ML/DL experience
+Less than 1 year
+1
+1–2 years
+6
+3–5 years
+10
+More than 5 years
+4
+
+Prior transformer debugging Yes
+15
+No
+6
+
+Role (multi-select)
+Research assistant
+10
+Graduate student
+11
+Industry practitioner
+9
+
+7.3
+Results
+
+We report descriptive statistics for each scenario and condition, following prior vignette-based
+debugging studies such as UMLAUT (Yuan et al., 2021) and KUnit (Manke et al., 2025). As each
+repair-action response is selected from four options and each participant sees only two scenarios
+per condition, we treat the per-condition difference as an effect-size estimate rather than as the
+basis for a hypothesis test.
+
+Table 23: Repair accuracy and confidence by scenario and condition
+
+Scenario
+Condition
+N
+Correct
+Accuracy
+Confidence
+
+S1 (Masking)
+Baseline
+12
+8/12
+66.7%
+3.75
+S1 (Masking)
+Assisted
+9
+9/9
+100.0%
+4.11
+
+S2 (Positional)
+Baseline
+9
+4/9
+44.4%
+2.78
+S2 (Positional)
+Assisted
+12
+10/12
+83.3%
+3.75
+
+S3 (KV Cache)
+Baseline
+12
+7/12
+58.3%
+3.50
+S3 (KV Cache)
+Assisted
+9
+8/9
+88.9%
+4.11
+
+S4 (Variant)
+Baseline
+9
+5/9
+55.6%
+3.33
+S4 (Variant)
+Assisted
+12
+8/12
+66.7%
+4.08
+
+Total
+Baseline
+42
+24/42
+57.1%
+3.38
+Total
+Assisted
+42
+35/42
+83.3%
+4.00
+
+Repair accuracy. Across the four scenarios, participants selected the correct repair action in 24
+of 42 baseline responses (57.1%) and 35 of 42 DEFault++ assisted responses (83.3%), which is
+an increase of 26.2% (see Table 23). The largest improvement occurred for the positional fault,
+where baseline accuracy was lowest.
+The smallest improvement occurred for the variant fault,
+where the scenario already provided a clearer symptom-to-repair path. Under the assisted condi-
+tion with DEFault++, no participant selected the unrelated hyperparameter option (see Figure 16).
+
+Confidence. Participants also reported higher confidence under the assisted condition (M = 4.00,
+SD = 0.83) than under the baseline condition (M = 3.38, SD = 1.08). Confidence remained higher
+for correct responses than incorrect responses in both conditions, suggesting that DEFault++
+increased confidence without eliminating the distinction between correct and incorrect repair
+choices.
+
+Participant feedback.
+Participants rated the diagnostic output positively.
+Twenty participants
+(95%) agreed or strongly agreed that the output from DEFault++ was easy to understand
+(M = 4.14, SD = 0.48), and 19 (90%) agreed or strongly agreed that it helped them decide what
+repair to try first (M = 4.29, SD = 0.96). The same proportion reported that they would use a tool
+like DEFault++ in practice (M = 4.10, SD = 0.89). 15 participants (71%) preferred the assisted
+condition for debugging decision support.
+
+Within-subjects comparison.
+At the participant level, seven participants improved under the
+assisted condition, 14 showed no change, and none declined. Thus, no participant performed worse
+with DEFault++ assistance than without it.
+
+(a) Repair accuracy by scenario and condition
+
+(b) Likert agreement ratings
+
+Figure 16: Developer study results
+
+7.4
+Discussion
+
+The results suggest that DEFault++ is most useful when symptoms alone do not clearly indicate
+the repair. The largest improvement happened for the positional fault (S2), where participants had
+the weakest baseline performance. The smallest improvement occurred for the variant fault (S4),
+where the repair direction was clearer from the scenario description. This pattern supports the
+intended role of DEFault++ since it is designed to help developers translate internal fault evidence
+into a repair direction when the observable behavior is ambiguous.
+
+The incorrect baseline responses were mostly related but wrong repair choices, rather than un-
+related hyperparameter changes. This suggests that participants engaged with the scenarios but
+lacked enough diagnostic information to distinguish between relevant transformer components. The
+assisted condition provided that missing diagnostic information.
+
+Moreover, the perception ratings reinforce the repair-accuracy result. Most participants found the
+DEFault++ output understandable and useful for deciding what repair to try first. This result is
+consistent with related developer studies where UMLAUT helped participants find and fix more
+faults (Yuan et al., 2021), and KUnit participants reported that mocks were useful for independent
+component testing (Manke et al., 2025).
+
+8
+Limitations and Future Directions
+
+The Fault Propagation Graph (FPG) assumes that faults always propagate along the deterministic
+edges derived from the forward and backward pass.
+In practice, successive matrix multiplica-
+tions, normalization layers, and nonlinear activations can reduce or eliminate a fault’s effect before
+it reaches a downstream component. The current FPG does not model this reduction. Future
+work can run a fault-injection study to test whether downstream feature groups change as the
+FPG predicts. The FPG also assumes a standard transformer block structure and does not model
+architecture-specific parameter-tying shortcuts, such as the tied input-embedding and output-head
+weights in GPT-2-style decoders (see Table 6). Architectures that differ from the standard trans-
+former block layout may introduce propagation paths that the current graph does not represent.
+Future work can extend the graph with such architecture-specific edges and with relation-typed
+message passing that distinguishes the three mechanism classes.
+
+Our benchmark uses single-fault configurations, with one fault injected per training run.
+This
+design lets us connect the observed behavior to the injected fault, which is necessary for assigning
+the Level 2 category and the Level 3 root-cause label. It is also consistent with prior mutation-
+testing studies for deep learning, including DeepCrime and DeepMutation++.
+
+This restriction differs from DEFault (Jahan et al., 2025b), which considers compound faults in
+DNN programs by training a separate binary classifier for each fault category. That design can
+detect more than one fault category in the same run. We do not use the same strategy here be-
+cause transformer fault categories can affect the same internal components. For example, a QKV
+fault can affect the Score and Residual groups, and a Score fault can affect Attention weights.
+As Section 4.2 shows, these dependencies make it difficult for independent per-category classifiers
+to separate co-occurring faults reliably. Extending DEFault++ to compound faults would require
+multi-label diagnosis with explicit co-occurrence modeling, which is outside the scope of this work.
+The benchmark also covers seven models and nine tasks and it does not include larger-scale archi-
+tectures (e.g., mixture-of-experts models, multimodal models with cross-attention). Extending the
+evaluation to these architectures remains future work.
+
+9
+Threats to Validity
+
+Threats to internal validity (Wohlin et al., 2012) relate to experimental errors. The main threat
+is information leakage among configurations sharing the same model–task pair. We reduce this
+threat through nested grouped cross-validation that keeps all instances from the same model–task
+pair in the same outer fold, fits all preprocessing and hyperparameter selection only on the
+inner-training fold, and applies the same outer-fold assignments across all compared methods.
+A second threat is the joint training objective. Shared encoder means that changes in one loss
+can affect the representation available to the others.
+In particular, the separation loss targets
+root-cause discrimination and may guide the shared representation in ways that do not benefit
+Level 1 or Level 2. To reduce this threat, we apply the separation loss only to faulty samples within
+their ground-truth fault category (Section 4.5), which restricts its influence to within-category
+structure rather than the global representation. We also test the per-level impact through the
+ablation in RQ3.
+
+Threats to construct validity (Smith, 2005) relate to whether the benchmark and the diagnostic
+outputs reflect the intended diagnosis problem. The benchmark is produced by mutation operators
+rather than by naturally occurring faults (Jahan et al., 2026; Humbatova et al., 2021). We reduce
+this threat by deriving each operator from a real transformer fault root cause: the attention-internal
+categories come from the 555-fault attention taxonomy (Jahan et al., 2026), and the non-attention
+categories come from prior DNN fault taxonomies (Humbatova et al., 2020; Islam et al., 2019)
+that catalog DL faults from open-source projects.
+Class imbalance across categories and root
+causes is another construct-validity threat, which we address through Macro-F1 reporting and
+inverse-frequency class weighting (Buda et al., 2018).
+
+The mutation-killing decision adds further construct threats specific to DEForm.
+Our test is
+a one-sided sign-flip permutation test with n = 5 matched seeds, in contrast to DeepCrime’s
+generalized linear model with n = 20 (Humbatova et al., 2021). Five seeds are the smallest design
+that admits an exact one-sided test at α = 0.05, so the attainable p-value floor is 1/25 ≈0.031,
+and subtle faults whose effect size falls below this floor may be missed. To reduce the impact of
+this floor, we retain surviving mutants as Level 1 negative examples rather than discarding them,
+so the model still sees cases whose measured effect does not pass the killing test. The operator
+set is also not exhaustive: new attention variants, caching schemes, and kernel implementations
+continue to appear, and DEForm’s 45 operators cover root causes that were reported at the time
+the benchmark was built rather than every possible failure mode (Humbatova et al., 2021; Islam
+et al., 2019).
+
+To reduce the impact of an evolving fault landscape, we link mutation operators to the attention
+fault taxonomy (Jahan et al., 2026) and to prior DNN fault taxonomies (Humbatova et al., 2020;
+Islam et al., 2019) so that new operators can be added as those taxonomies are extended, without
+changing the diagnostic technique. Severity and layer indices are sampled according to a uniform
+distribution, which prevents overrepresentation of any specific magnitude or depth.
+
+Figure 17: Mutation scores per (model, task) pair under isKilled at α = 0.05. Cell values give the fraction
+of injected configurations killed by the task-performance criterion
+
+severity uniformly across {low, medium, high} rather than concentrating on aggressive faults,
+although trivial configurations cannot be eliminated without per-operator parameter tuning at
+scale.
+
+Finally, the FPG-based explanation is derived from the same model that produces the diagnosis,
+so the importance scores may reflect model behavior rather than the underlying causal mecha-
+nism. We test the explanation through the group-ablation check in RQ4 and the trace-to-code
+consistency checks in the real-world evaluation (Section 6). These tests check consistency within
+our evaluation, but they do not provide independent causal evidence.
+We therefore frame the
+explanation as evidence supporting the prediction rather than as causal attribution.
+
+The developer study (Section 7) carries two further external-validity threats. First, the sample is
+modest (N = 21); we use a within-subjects, counterbalanced design where each participant completes
+tasks under both baseline and DEFault++-assisted conditions, which reduces between-participant
+variation, although participants do not solve the same scenario in both conditions. Second, par-
+ticipants evaluated vignette-based scenarios rather than using DEFault++ in a live debugging
+environment. We base each vignette in reproduced real-world issues, use the same fault categories
+and diagnostic outputs as the main evaluation, and isolate the diagnostic signal from tool-usability
+confounds. This choice improves experimental control but may not fully capture the time pressure,
+context switching, code navigation, and iterative hypothesis testing of real debugging work, so we
+treat self-reported time as a perceived-effort measure rather than as an objective task-duration
+measure.
+
+10
+Related Work
+
+Fault Taxonomies. Empirical studies of Deep Learning (DL) programs have classified faults by
+root cause (Humbatova et al., 2020; Islam et al., 2019), covering training, hyperparameter, and
+layer-configuration faults across feed-forward, convolutional, and recurrent architectures. These
+taxonomies were proposed before the wide adoption of attention-based architectures and do not
+include transformer-specific fault patterns. The attention fault taxonomy (Jahan et al., 2025a;
+2026) addresses this gap by classifying 555 attention-related faults into seven categories and 25
+root-cause mechanisms. DEFault++ combines these attention categories with five non-attention
+categories drawn from the prior DNN taxonomies above (see Section 3.1).
+
+Table 24: Comparison of the DEFault-bench mutation process with existing mutation techniques
+
+Dimension
+DeepMut.++
+DeepCrime
+DeepFD
+PyTorchFI
+DEFault-bench
+
+Fault granularity
+Layer/param
+Source (AST)
+Program
+Bit/tensor
+Transformer unit
+Mechanism count
+17a
+24 impl.b
+5 types
+Bit-flip
+12 categories
+Architecture coverage FFNN/CNN/RNN Generic DNN Generic DNN CNN (infer.) Encoder + decoder
+Attention mechanisms
+✗
+✗
+✗
+✗
+✓
+Behavior change
+✗
+✗
+✗
+✗
+✓
+Decision basis
+Accuracy
+GLM + d
+Accuracy
+SDC rate
+Accuracy + sign-flip
+Noise control
+✗
+✓c
+✗
+✗
+✓
+Scale (reported)
+Varies
+1,760
+52 programs
+107+ inj.
+3,739
+Labeled traces
+✗
+✗
+✓
+✗
+✓
+
+a8 source-level + 9 model-level mechanisms (Hu et al., 2019). b35 defined, 24 implemented from real faults (Humbatova et al.,
+2021). cDeepCrime uses GLM with n=20 retrainings and Cohen’s d for statistical killing. ✓= supported; ✗= not supported.
+
+Mutation Testing for Deep Learning.
+Mutation testing is a well-established technique in
+software engineering for assessing test quality, typically by introducing small, controlled changes to
+a program and checking whether existing tests detect them (see Table 24). Several researchers have
+adapted this idea for deep learning. DeepMutation (Ma et al., 2018a) and DeepMutation++ (Hu
+et al., 2019) introduced mutation operators that modify training code, model structure, or learned
+parameters, and use mutation scores to quantify test adequacy for neural models.
+
+et al., 2023). DeepCrime (Humbatova et al., 2021) adopts a similar strategy, performing multiple
+retrainings and applying statistical tests with effect-size thresholds to determine whether a mutation
+has a significant impact.
+
+A smaller number of studies use injected faults explicitly for fault diagnosis. DeepFD (Cao et al.,
+2022) injects common fault types into deep learning programs and trains classifiers on runtime
+features to identify fault categories. Subsequent work extends this idea to larger corpora of faulty
+programs through data-driven localization (Wardat et al., 2023). These approaches remain limited
+for transformer architectures for two reasons. First, they target generic model and training faults
+(e.g., loss misconfiguration, incorrect layer numbers) rather than faults within the transformer
+architecture.
+Second, these works rely on high-level model performance (e.g., accuracy drop)
+and standard runtime features that do not capture the internal structure of attention-based models.
+
+Debugging Techniques for Deep Learning Programs. Recent work has framed DL fault diag-
+nosis as a classification problem using runtime information collected during training. DeepFD (Cao
+et al., 2022) extracts features from loss curves, gradients, weight statistics, and activation patterns,
+and trains a classifier to identify common training faults such as an incorrect loss function, learning
+rate, or activation function. DEFault (Jahan et al., 2025b) extends this idea into a hierarchical
+classifier that first detects whether a program is faulty and then assigns the fault to one of seven
+training or model fault categories. DEFault++ inherits this hierarchical structure, but changes the
+diagnostic target and the evidence source. It replaces architecture-agnostic DNN features with mea-
+surements taken from transformer components and adds root-cause diagnosis within each predicted
+category. As a result, DEFault++ can distinguish faults in QKV projection, masking, attention
+scoring, residual connections, and other transformer-specific components, whereas DeepFD and
+DEFault report generic DNN fault categories.
+
+Table 25: Comparison of fault diagnosis techniques for DL/DNN programs
+
+Technique
+Target
+FD
+FC
+RC
+Attn-Aware
+Explanation
+
+AutoTrainer (Zhang et al., 2021)
+DNN
+✓
+Partial (5)
+✗
+✗
+Rule-based
+UMLAUT (Yuan et al., 2021)
+DNN
+✓
+Partial
+✗
+✗
+Rule-based
+DeepDiagnosis (Wardat et al., 2022)
+DNN
+✓
+✓(8)
+✗
+✗
+Decision tree
+DeepLocalize (Wardat et al., 2021)
+DNN
+NaN/Inf only
+✗
+✗
+✗
+Numerical trace
+DeepFD (Cao et al., 2022)
+DNN
+✓
+✓(5)
+✗
+✗
+Feature attribution
+DEFault (Jahan et al., 2025b)
+DNN
+✓
+✓(7)
+✗
+✗
+SHAP
+ATTNChecker (Liang et al., 2025)
+Transformer
+NaN/Inf only
+✗
+✗
+✓
+✗
+AtPatch (Weng et al., 2026)
+Transformer
+Map outlier
+✗
+✗
+✓
+✗
+FT-Transformer (Dai et al., 2025)
+Transformer
+Soft errors
+✗
+✗
+✓
+✗
+
+DEFault++ (Ours)
+Transformer
+✓
+✓(12)
+✓(45)†
+✓
+FPG+prototype
+
+FD = fault detection; FC = fault categorization; RC = root-cause diagnosis.
+†DEFault++ covers 45 root causes in total. Of these, 40 apply to encoder models and all 45 apply to decoder models because
+KV Cache faults are decoder-specific.
+
+finer granularity: MODE (Ma et al., 2018b) and DeepFault (Eniser et al., 2019) localize faults at the
+neuron level, Apricot (Zhang & Chan, 2019) repairs faulty DNNs by adjusting model weights, and
+DeepSeer (Wang et al., 2023) supports interactive RNN debugging through learned state abstrac-
+tion. None of these techniques observe the runtime behavior of attention components or distinguish
+among transformer-specific fault categories. As a result, transformer faults that preserve normal
+loss curves, valid tensor shapes, and finite numerical values fall outside their detection scope, which
+is the gap DEFault++ targets.
+
+A third body of work uses static analysis to find DL faults before or independent of training.
+Structural and numerical analyzers (NeuraLint (Nikanjam et al., 2021), DEBAR (Zhang et al.,
+2020), NerdBug (Jafarinejad et al., 2021)) check meta-model graphs, tensor abstractions, and
+API usage.
+Symbolic and backend-comparison analyzers (DeepCheck (Gopinath et al., 2019),
+CRADLE (Pham et al., 2019)) test trained networks or compare backends to locate library-level
+bugs, and BugLab (Allamanis et al., 2021) self-supervises bug detection on general source code.
+FL4Deep (Morovati et al., 2024) occupies a middle position: it combines static and dynamic infor-
+mation through a knowledge graph and ranks candidate root causes over that graph.
+
+These techniques answer a different debugging question and therefore are not direct baselines
+for DEFault++.
+Static and library-level analyzers find faults that show up in program text,
+symbolic constraints, API usage, tensor abstractions, or backend inconsistencies.
+DEFault++
+targets faults that leave the transformer program structurally valid and numerically stable but
+change how attention components behave during training. A transformer can pass type checks,
+shape checks, and backend consistency checks while still producing abnormal attention behavior.
+The graph representations in NeuraLint and FL4Deep also serve a different purpose from the
+FPG: NeuraLint encodes program structure for pre-training checks, and FL4Deep encodes a
+static-plus-dynamic knowledge graph for ranking. In contrast, the FPG encodes how a fault in
+one transformer component reaches other components during training. We therefore treat these
+techniques as complementary and evaluate DEFault++ against dynamic techniques that use the
+same training-time input.
+
+Transformer-Specific Fault Analysis.
+The closest existing techniques to DEFault++ ana-
+lyze transformer-internal behavior, but each targets a narrower failure mode than the taxonomy
+in Figure 3. ATTNChecker (Liang et al., 2025) flags NaN or Inf values during attention com-
+putation, AtPatch (Weng et al., 2026) localizes attention-map anomalies at the patch level, FT-
+Transformer (Dai et al., 2025) addresses hardware soft-error tolerance for vision transformers, and
+Bug Attention Probe (Stein et al., 2025) applies attention probing for code understanding. None of
+them produces a fault category or a root cause across the transformer block. DEFault++ instead
+covers the full taxonomy and predicts faults at three levels: detection, category, and root cause.
+
+A separate line of transformer research uses input perturbation to study robustness and behav-
+ioral invariance (Jones et al., 2020; Ribeiro et al., 2020; Clark et al., 2019; Voita et al., 2019),
+including DeepTest (Tian et al., 2018) for autonomous-driving DNNs. These techniques target be-
+havioral failures exposed by perturbed inputs, whereas DEFault++ targets implementation faults
+that persist during normal training without input perturbation.
+
+Recent LLM-assisted debuggers such as SoapFL (Qin et al., 2025), LLM4FL (Rafi et al., 2024),
+ChatDBG (Levin et al., 2025), and BugReAct (Islam et al., 2026) reason over source code,
+execution logs, or bug reports to localize bugs in general software. They are complementary to
+DEFault++:
+they read software artifacts after a failure is reported, while DEFault++ reads
+
+training-time traces from transformer components and predicts a transformer-specific category
+and root cause.
+
+Explainability for Fault Diagnosis. Diagnostic output is more actionable when it exposes the
+evidence behind the prediction.
+Existing explanation methods fall into two families.
+Post-hoc
+methods compute explanations after a model has produced a decision. SHAP (Lundberg & Lee,
+2017), DiCE (Mothilal et al., 2020), and Anchors (Ribeiro et al., 2018) return feature attributions,
+counterfactual examples, or rule-based explanations from a trained classifier. DEFault (Jahan et al.,
+2025b) used this style of explanation in its hierarchical diagnosis. Inherently interpretable meth-
+ods build the explanation into the model itself. Prototype networks (Snell et al., 2017) represent
+each class as a learned prototype and explain a prediction through similarity to that prototype.
+Concept-bottleneck models (Koh et al., 2020) route predictions through human-readable interme-
+diate concepts. DEFault++ follows the inherently interpretable line. Its diagnosis identifies which
+runtime feature groups distinguish the predicted root cause from the nearest alternative, and thus
+the explanation comes from the same model that produced the diagnosis rather than from a separate
+analysis applied afterward.
+
+11
+Conclusion
+
+We presented DEFault++, a transformer-specific hierarchical diagnostic technique for detecting,
+categorizing, and localizing faults in transformer models.
+DEFault++ extends the hierarchical
+diagnosis idea introduced for FFNNs, CNNs, and RNNs by DEFault (Jahan et al., 2025b) to
+transformer architectures, and it reports which feature groups provide the main evidence for each
+diagnosis. DEFault++ organizes the diagnosis around a Fault Propagation Graph that encodes
+how faults propagate between transformer components. To support both training and evaluation,
+we constructed DEFault-bench, a benchmark of 3,739 labeled instances produced by DEForm, our
+transformer-specific mutation technique.
+On DEFault-bench, DEFault++ achieves an AUROC
+above 0.96 for detection, a Macro-F1 above 0.85 for categorization, and a hierarchical root-cause
+Macro-F1 above 0.85 on both encoder and decoder architectures. In a developer study with 21 prac-
+titioners across four debugging scenarios, the repair-action accuracy was 83.3% with DEFault++
+assistance and 57.1% without it, and 90% of participants indicated that they would use such a tool in
+practice. Future work includes extending DEFault++ to compound faults, larger-scale architectures
+(e.g., mixture-of-experts and multimodal models), and live debugging environments. The replica-
+tion package, including DEFault-bench, the DEForm operators, and the trained models, is publicly
+available at
+
+Acknowledgements
+
+The construction of DEFault-bench required approximately 18,600 GPU-hours, executed on
+NVIDIA A100 (40 GB) and NVIDIA H100 (80 GB) GPUs provided through the Digital Research
+Alliance of Canada (formerly Compute Canada). We gratefully acknowledge the Digital Research
+Alliance of Canada for the computational resources that made this work possible.
+
+References
+
+Miltiadis Allamanis, Henry Jackson-Flux, and Marc Brockschmidt. Self-supervised bug detection
+and repair. In Advances in Neural Information Processing Systems, volume 34, pp. 27865–27876,
+2021.
+
+Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv preprint
+arXiv:1607.06450, 2016.
+
+Houssem Ben Braiek and Foutse Khomh. Testing feedforward neural networks training programs.
+ACM Transactions on Software Engineering and Methodology, 32(4):1–61, 2023.
+
+Sid Black, Stella Biderman, Eric Hallahan, Quentin Anthony, Leo Gao, Laurence Golding, Horace
+He, Connor Leahy, Kyle McDonell, Jason Phang, Samuel Pittman, Jonathan Tow, Ben Wang, and
+Samuel Weinbach. Gpt-neo: Large scale autoregressive language modeling with mesh-tensorflow.
+arXiv preprint arXiv:2104.00006, 2021.
+
+Andrew P. Bradley. The use of the area under the ROC curve in the evaluation of machine learning
+algorithms. Pattern Recognition, 30(7):1145–1159, 1997. doi: 10.1016/S0031-3203(96)00142-2.
+
+Mateusz Buda, Atsuto Maki, and Maciej A. Mazurowski. A systematic study of the class imbalance
+problem in convolutional neural networks. Neural networks, 106:249–259, 2018.
+
+Jialun Cao, Meiziniu Li, Xiao Chen, Ming Wen, Yongqiang Tian, Bo Wu, and Shing-Chi Cheung.
+Deepfd: Automated fault diagnosis and localization for deep learning programs. In Proceedings
+of the IEEE/ACM International Conference on Software Engineering (ICSE), pp. 573–585, 2022.
+
+Rich Caruana. Multitask learning. Machine Learning, 28(1):41–75, 1997.
+
+Gautam Chakrabarti, Vinod Grover, Bastiaan Aarts, Xiangyun Kong, Manjunath Kudlur, Yuan
+Lin, Jaydeep Marathe, Mike Murphy, and Jian-Zhong Wang. Cuda: Compiling and optimizing
+for a gpu platform. Procedia Computer Science, 9:1910–1919, 2012.
+
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira Pinto, Jared
+Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri,
+Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan,
+Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavar-
+ian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plap-
+pert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol,
+Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William
+Saunders, Christopher Hesse, Andrew N. Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan
+Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter
+Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba.
+Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374, 2021.
+
+Kevin Clark, Urvashi Khandelwal, Omer Levy, and Christopher D Manning. What does bert look
+at? an analysis of bert’s attention. In Proceedings of the 2019 ACL Workshop BlackboxNLP, pp.
+276–286, 2019.
+
+Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré.
+Flashattention: Fast and
+memory-efficient exact attention with io-awareness. In Advances in Neural Information Process-
+ing Systems, volume 35, pp. 16344–16359, 2022.
+
+Alana de Santana Correia and Esther Luna Colombini.
+Attention, please!
+a survey of neural
+attention models in deep learning. Artificial Intelligence Review, 55(8):6037–6124, 2022.
+
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert: Pre-training of deep
+bidirectional transformers for language understanding. In Proceedings of the 2019 conference of
+the North American chapter of the association for computational linguistics: human language
+technologies, pp. 4171–4186, 2019.
+
+Yihe Dong, Jean-Baptiste Cordonnier, and Andreas Loukas. Attention is not all you need: Pure
+attention loses rank doubly exponentially with depth. In Proceedings of the International Con-
+ference on Machine Learning (ICML), pp. 2793–2803, 2021.
+
+Hasan Ferit Eniser, Simos Gerasimou, and Alper Sen. Deepfault: Fault localization for deep neural
+networks. In International Conference on Fundamental Approaches to Software Engineering, pp.
+171–189, Cham, 2019. Springer International Publishing.
+
+Pál Erdős and Alfréd Rényi. On random graphs I. Publicationes Mathematicae Debrecen, 6:290–297,
+1959.
+
+Andre Esteva, Brett Kuprel, Roberto A Novoa, Justin Ko, Susan M Swetter, Helen M Blau, and
+Sebastian Thrun. Dermatologist-level classification of skin cancer with deep neural networks.
+nature, 542(7639):115–118, 2017.
+
+Kawin Ethayarajh.
+How contextual are contextualized word representations?
+Comparing the
+geometry of BERT, ELMo, and GPT-2 embeddings.
+In Proceedings of the 2019 Conference
+on Empirical Methods in Natural Language Processing (EMNLP), pp. 55–65, 2019.
+
+Michael G Findley, Kyosuke Kikuta, and Michael Denly.
+External validity.
+Annual Review of
+Political Science, 24(1):365–393, 2021.
+
+Ben Bariach, Laura Weidinger, Tu Vu, Alek Andreev, Antoine He, Kevin Hui, Sheleem Kashem,
+Amar Subramanya, Sissie Hsiao, Demis Hassabis, Koray Kavukcuoglu, Adam Sadovsky, Quoc
+Le, Trevor Strohman, Yonghui Wu, Slav Petrov, Jeffrey Dean, and Oriol Vinyals. Gemini: a
+family of highly capable multimodal models. arXiv preprint arXiv:2312.11805, 2023.
+
+Aaron Gokaslan and Vanya Cohen. OpenWebText corpus, 2019.
+/OpenWebTextCorpus.
+
+Phillip Good. Permutation, Parametric, and Bootstrap Tests of Hypotheses. Springer, 3rd edition,
+2005.
+
+Divya Gopinath, Mengshi Zhang, Kaiyuan Wang, Ismet Burak Kadron, Corina Pasareanu, and
+Sarfraz Khurshid.
+Symbolic execution for importance analysis and adversarial generation in
+neural networks. In Proceedings of the IEEE International Symposium on Software Reliability
+Engineering (ISSRE), pp. 313–322. IEEE, 2019.
+
+Chuan Guo, Geoff Pleiss, Yu Sun, and Kilian Q. Weinberger. On calibration of modern neural
+networks. In Proceedings of the 34th International Conference on Machine Learning (ICML),
+pp. 1321–1330. PMLR, 2017.
+
+Qiang Hu, Lei Ma, Xiaofei Xie, Bing Yu, Yang Liu, and Jianjun Zhao. Deepmutation++: A muta-
+tion testing framework for deep learning systems. In Proceedings of the IEEE/ACM International
+Conference on Automated Software Engineering (ASE), pp. 1158–1161. IEEE, 2019.
+
+Nargiz Humbatova, Gunel Jahangirova, Gabriele Bavota, Vincenzo Riccio, Andrea Stocco, and
+Paolo Tonella. Taxonomy of real faults in deep learning systems. In Proceedings of the IEEE/ACM
+International Conference on Software Engineering (ICSE), pp. 1110–1121, 2020.
+
+Nargiz Humbatova, Gunel Jahangirova, and Paolo Tonella. Deepcrime: mutation testing of deep
+learning systems based on real faults. In Proceedings of the ACM SIGSOFT International Sym-
+posium on Software Testing and Analysis (ISSTA), pp. 67–78, 2021.
+
+Ashraful Islam, Benjamin Lundell, Harpreet Sawhney, Sudipta N Sinha, Peter Morales, and
+Richard J Radke. Self-supervised learning with local contrastive loss for detection and semantic
+segmentation. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer
+Vision, pp. 5624–5633, 2023.
+
+Md Johirul Islam, Giang Nguyen, Rangeet Pan, and Hridesh Rajan. A comprehensive study on deep
+learning bug characteristics. In Proceedings of the ACM Joint European Software Engineering
+Conference and Symposium on the Foundations of Software Engineering (ESEC/FSE), pp. 510–
+520, 2019.
+
+Niful Islam, Ragib Shahriar Ayon, Deepak George Thomas, Shibbir Ahmed, and Mohammad War-
+dat. When agents fail: A comprehensive study of bugs in llm agents with automated labeling.
+arXiv preprint arXiv:2601.15232, 2026.
+
+Foad Jafarinejad, Krishna Narasimhan, and Mira Mezini. Nerdbug: automated bug detection in
+neural networks. In Proceedings of the 1st ACM International Workshop on AI and Software
+Testing/Analysis, pp. 13–16, 2021.
+
+Sigma Jahan, Saurabh Singh Rajput, Tushar Sharma, and Mohammad Masudur Rahman. Taxon-
+omy of faults in attention-based neural networks, 2025a. URL
+.04925.
+
+Sigma Jahan, Mehil B Shah, Parvez Mahbub, and Mohammad Masudur Rahman.
+Improved
+Detection and Diagnosis of Faults in Deep Neural Networks Using Hierarchical and Explain-
+able Classification .
+In Proceedings of the IEEE/ACM International Conference on Software
+Engineering (ICSE), pp. 2944–2956, 2025b.
+doi:
+10.1109/ICSE55347.2025.00224.
+URL
+
+Sigma Jahan, Saurabh Rajput, Tushar Sharma, and Mohammad Masudur Rahman. Why attention
+fails: A taxonomy of faults in attention-based neural networks. In Proceedings of the IEEE/ACM
+International Conference on Software Engineering (ICSE), 2026.
+
+Erik Jones, Robin Jain, and Percy Liang. Automatically finding bugs in a classifier: A systematic
+approach. arXiv preprint arXiv:2003.02907, 2020.
+
+Hans Kamp and Barbara Partee. Prototype theory and compositionality. Cognition, 57(2):129–191,
+1995.
+
+Prannay Khosla, Yonglong Tian, Huiwen Wang, Ce Liu, Phillip Isola, Dilip Krishnan, Yao Tian,
+Tatsunori B. Hashimoto, Alan Yuille, Quoc V. Le, Cordelia Schmid, and Trevor Darrell. Super-
+vised contrastive learning. In Advances in Neural Information Processing Systems, 2020.
+
+Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Proceedings
+of the 3rd International Conference on Learning Representations (ICLR), 2015.
+
+Thomas N. Kipf and Max Welling. Semi-supervised classification with graph convolutional net-
+works. In International Conference on Learning Representations, 2017.
+
+Pang Wei Koh, Thao Nguyen, Yew Siang Tang, Stephen Mussmann, Emma Pierson, Been Kim, and
+Percy Liang. Concept bottleneck models. In Proceedings of the 37th International Conference
+on Machine Learning (ICML), volume 119 of Proceedings of Machine Learning Research, pp.
+5338–5348. PMLR, 2020.
+
+Simon Kornblith, Mohammad Norouzi, Honglak Lee, and Geoffrey Hinton. Similarity of neural net-
+work representations revisited. In Proceedings of the 36th International Conference on Machine
+Learning (ICML), pp. 3519–3529. PMLR, 2019.
+
+Kyla H. Levin, Nicolas van Kempen, Emery D. Berger, and Stephen N. Freund. ChatDBG: Aug-
+menting debugging with large language models.
+In Proceedings of the ACM Joint European
+Software Engineering Conference and Symposium on the Foundations of Software Engineering
+(ESEC/FSE). ACM, 2025. doi: 10.1145/3729355.
+
+Qimai Li, Zhichao Han, and Xiao-Ming Wu. Deeper insights into graph convolutional networks for
+semi-supervised learning. In Proceedings of the AAAI Conference on Artificial Intelligence, pp.
+3538–3545, 2018.
+
+Shuai Lin, Chen Liu, Pan Zhou, Zi-Yuan Hu, Shuojia Wang, Ruihui Zhao, Yefeng Zheng, Liang
+Lin, Eric Xing, and Xiaodan Liang. Prototypical graph contrastive learning. IEEE transactions
+on neural networks and learning systems, 35(2):2747–2758, 2022.
+
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Joshi Mandar, Danqi Chen, Omer Levy, Mike
+Lewis, Luke Zettlemoyer, and Veselin Stoyanov. Roberta: A robustly optimized bert pretraining
+approach. arXiv preprint arXiv:1907.11692, 2019.
+
+Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Con-
+ference on Learning Representations (ICLR), 2019.
+
+Scott M. Lundberg and Su-In Lee.
+A unified approach to interpreting model predictions.
+In
+Advances in Neural Information Processing Systems (NeurIPS), volume 30, 2017.
+
+Lei Ma, Fuyuan Zhang, Jiyuan Sun, Minhui Xue, Bo Li, Felix Juefei-Xu, Chao Xie, Li Li, Yang Liu,
+Jianjun Zhao, and Yadong Wang. Deepmutation: Mutation testing of deep learning systems. In
+Proceedings of the IEEE International Symposium on Software Reliability Engineering (ISSRE),
+pp. 100–111. IEEE, 2018a.
+
+Shiqing Ma, Yingqi Liu, Wen-Chuan Lee, Xiangyu Zhang, and Ananth Grama. Mode: automated
+neural network model debugging via state differential analysis and input selection. In Proceedings
+of the ACM Joint European Software Engineering Conference and Symposium on the Foundations
+of Software Engineering (ESEC/FSE), pp. 175–186, 2018b.
+
+Abdulrahman Mahmoud, Neeraj Aggarwal, Alex Nobbe, Jose Rodrigo Sanchez Vicarte, Sarita V.
+Adve, Christopher W. Fletcher, Iuri Frosio, and Siva Kumar Sastry Hari. Pytorchfi: A runtime
+perturbation tool for dnns. In 50th Annual IEEE/IFIP International Conference on Dependable
+Systems and Networks Workshops, DSN Workshops 2020, Valencia, Spain, June 29 - July 2,
+2020, pp. 25–31. IEEE, 2020. doi: 10.1109/DSN-W50199.2020.00014. URL
+10.1109/DSN-W50199.2020.00014.
+
+Ruchira Manke, Mohammad Wardat, Foutse Khomh, and Hridesh Rajan.
+Mock deep testing:
+Toward separate development of data and models for deep learning.
+In Proceedings of the
+IEEE/ACM 47th International Conference on Software Engineering, ICSE ’25, pp. 2970–2982.
+IEEE Press, 2025.
+ISBN 9798331505691.
+doi:
+10.1109/ICSE55347.2025.00220.
+URL
+
+Mitchell P. Marcus, Beatrice Santorini, and Mary Ann Marcinkiewicz. Building a large annotated
+corpus of English: The Penn Treebank. Computational Linguistics, 19(2):313–330, 1993.
+
+Sergei Maslov and Kim Sneppen. Specificity and stability in topology of protein networks. Science,
+296(5569):910–913, 2002.
+
+Sam McCandlish, Jared Kaplan, Dario Amodei, and OpenAI Dota Team. An empirical model of
+large-batch training. arXiv preprint arXiv:1812.06162, 2018.
+
+Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mixture
+models. arXiv preprint arXiv:1609.07843, 2016. Introduces the WikiText datasets.
+
+Evan Miller. Attention is off by one.
+.html, 2023. Blog post.
+
+Mohammad Mehdi Morovati, Amin Nikanjam, and Foutse Khomh.
+Fault localization in deep
+learning-based software: A system-level approach. arXiv preprint arXiv:2411.08172, 2024.
+
+Marius Mosbach, Maksym Andriushchenko, and Dietrich Klakow. On the stability of fine-tuning
+bert: Misconceptions, explanations, and strong baselines. In International Conference on Learn-
+ing Representations, 2021. URL
+
+Ramaravind K. Mothilal, Amit Sharma, and Chenhao Tan. DiCE: Diverse counterfactual expla-
+nations for machine learning classifiers. In Proceedings of the 2020 Conference on Fairness, Ac-
+countability, and Transparency (FAT*), pp. 607–617. ACM, 2020. doi: 10.1145/3351095.3372850.
+
+Gireen Naidu, Tranos Zuva, and Elias Mmbongeni Sibanda. A review of evaluation metrics in
+machine learning algorithms. In Computer science on-line conference, pp. 15–25. Springer, 2023.
+
+Amin Nikanjam, Houssem Ben Braiek, Mohammad Mehdi Morovati, and Foutse Khomh. Auto-
+matic fault detection for deep learning programs using graph transformations. ACM Transactions
+on Software Engineering and Methodology, 31(1):1–27, 2021.
+
+NVIDIA. Nvidia deep learning profiler (dlprof) user guide, 2021.
+
+OpenAI. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.
+
+Denis Paperno, German Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, Raffaella Bernardi,
+Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Roberto Fernández.
+The LAMBADA
+dataset: Word prediction requiring broad discourse context. In Proceedings of ACL 2016, 2016.
+
+Hung Viet Pham, Thibaud Lutellier, Weizhen Qi, and Lin Tan. Cradle: cross-backend validation to
+detect and localize bugs in deep learning libraries. In Proceedings of the IEEE/ACM International
+Conference on Software Engineering (ICSE), pp. 1027–1038. IEEE, 2019.
+
+Yihao Qin, Shangwen Wang, Yiling Lou, Jinhao Dong, Kaixin Wang, Xiaoling Li, and Xiaoguang
+Mao. SoapFL: A standard operating procedure for LLM-based method-level fault localization.
+IEEE Transactions on Software Engineering, 51(4):1173–1187, 2025. doi: 10.1109/TSE.2025.3
+543187.
+
+Ketai Qiu, Niccolò Puccinelli, Matteo Ciniselli, and Luca Di Grazia. From today’s code to tomor-
+row’s symphony: The ai transformation of developer’s routine by 2030. ACM Transactions on
+Software Engineering and Methodology, 34(5), 2025. ISSN 1049-331X. doi: 10.1145/3709353.
+
+Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. Language
+models are unsupervised multitask learners. OpenAI blog, 2019.
+
+Md Nakhla Rafi, Dong Jae Kim, Tse-Hsun Chen, and Shaowei Wang. A multi-agent approach to
+fault localization via graph-based retrieval and reflexion. arXiv preprint arXiv:2409.13642, 2024.
+
+Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. Anchors: High-precision model-agnostic
+explanations. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 32, 2018.
+
+Lucas Roquet, Fernando Fernandes dos Santos, Paolo Rech, Marcello Traiola, Olivier Sentieys,
+and Angeliki Kritikakou. Cross-layer reliability evaluation and efficient hardening of large vision
+transformers models. In Proceedings of the 61st ACM/IEEE Design Automation Conference, pp.
+1–6, 2024.
+
+Olivier Roy and Martin Vetterli. The effective rank: A measure of effective dimensionality. In 2007
+15th European signal processing conference, pp. 606–610. IEEE, 2007.
+
+Sebastian Ruder.
+An overview of multi-task learning in deep neural networks.
+arXiv preprint
+arXiv:1706.05098, 2017.
+
+Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. Distilbert, a distilled version
+of BERT: Smaller, faster, cheaper and lighter. arXiv preprint arXiv:1910.01108, 2019.
+
+Gregory T Smith. On construct validity: issues of method and measurement. Psychological assess-
+ment, 17(4):396, 2005.
+
+Jake Snell, Kevin Swersky, and Richard Zemel. Prototypical networks for few-shot learning. In
+Advances in Neural Information Processing Systems (NeurIPS), volume 30, 2017.
+
+Adam Stein, Arthur Wayne, Aaditya Naik, Mayur Naik, and Eric Wong. Where’s the bug? atten-
+tion probing for scalable fault localization. arXiv preprint arXiv:2502.13966, 2025.
+
+Florian Tambon, Foutse Khomh, and Giuliano Antoniol. A probabilistic framework for mutation
+testing in deep neural networks. Information and Software Technology, 155:107129, 2023. doi:
+10.1016/j.infsof.2022.107129. URL
+pii/S0950584922002385. Also available as arXiv:2208.06018 [cs.SE].
+
+Yuchi Tian, Kexin Pei, Suman Jana, and Baishakhi Ray. DeepTest: Automated testing of deep-
+neural-network-driven autonomous cars. In Proceedings of the 40th International Conference on
+Software Engineering (ICSE), pp. 303–314, Gothenburg, Sweden, 2018. ACM. doi: 10.1145/31
+80155.3180220.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez,
+Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information
+Processing Systems, pp. 5998–6008, 2017.
+
+Elena Voita, Jean-Baptiste Talbot, Rico Sennrich Yandex Research Ivan Titov University of Ed-
+inburgh Moiseev, and Rico Sennrich. Analyzing multi-head self-attention: Specialized heads do
+the heavy lifting, the rest can be pruned. In Proceedings of the 57th Annual Meeting of the
+Association for Computational Linguistics (ACL), pp. 5797–5808, 2019.
+
+Alex Wang, Amanpreet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel R. Bowman.
+GLUE: A multi-task benchmark and analysis platform for natural language understanding. In
+Proceedings of ICLR 2019, 2019.
+
+Feng Wang and Huaping Liu. Understanding the behaviour of contrastive loss. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition, pp. 2495–2504, 2021.
+
+Mohammad Wardat, Wei Le, and Hridesh Rajan. Deeplocalize: Fault localization for deep neural
+networks. In Proceedings of the IEEE/ACM International Conference on Software Engineering
+(ICSE), pp. 251–262. IEEE, 2021.
+
+Mohammad Wardat, Breno Dantas Cruz, Wei Le, and Hridesh Rajan. Deepdiagnosis: automatically
+diagnosing faults and recommending actionable fixes in deep learning programs. In Proceedings
+of the IEEE/ACM International Conference on Software Engineering (ICSE), pp. 561–572, 2022.
+
+Mohammad Wardat, Breno Dantas Cruz, Wei Le, and Hridesh Rajan. An effective data-driven
+approach for localizing deep learning faults. arXiv preprint arXiv:2307.08947, 2023.
+
+Kun Wei, Zhe Xu, and Cheng Deng.
+Compress to one point: Neural collapse for pre-trained
+model-based class-incremental learning. In Proceedings of the AAAI Conference on Artificial
+Intelligence, volume 39, pp. 21465–21473, 2025.
+
+Shihao Weng, Yang Feng, Jincheng Li, Yining Yin, Xiaofei Xie, and Jia Liu. Atpatch: Debugging
+transformers via hot-fixing over-attention. arXiv preprint arXiv:2601.21695, 2026.
+
+Claes Wohlin, Per Runeson, Martin Höst, Magnus C. Ohlsson, Björn Regnell, and Anders Wesslén.
+Experimentation in Software Engineering. Springer, 2012.
+
+Tom Nuno Wolf, Fabian Bongratz, Anne-Marie Rickmann, Sebastian Pölsterl, and Christian
+Wachinger.
+Keep the faith: Faithful explanations in convolutional neural networks for case-
+based reasoning. In Proceedings of the AAAI conference on artificial intelligence, volume 38, pp.
+5921–5929, 2024.
+
+Dangwei Wu, Beijun Shen, Yuting Chen, He Jiang, and Lei Qiao. Tensfa: detecting and repairing
+tensor shape faults in deep learning systems. In Proceedings of the IEEE International Symposium
+on Software Reliability Engineering (ISSRE), pp. 11–21. IEEE, 2021.
+
+Ruibin Xiong, Yunchang Yang, Di He, Kai Zheng, Shuxin Zheng, Chen Xing, Huishuai Zhang,
+Yanyan Lan, Liwei Wang, and Tie-Yan Liu. On layer normalization in the transformer architec-
+ture. In Proceedings of the 37th International Conference on Machine Learning, volume 119 of
+Proceedings of Machine Learning Research. PMLR, 2020. URL
+s/v119/xiong20b.html.
+
+Ming Yan, Junjie Chen, Xiangyu Zhang, Lin Tan, Gan Wang, and Zan Wang. Exposing numerical
+bugs in deep learning via gradient back-propagation. In Proceedings of the ACM Joint European
+Software Engineering Conference and Symposium on the Foundations of Software Engineering
+(ESEC/FSE), pp. 627–638, 2021.
+
+Zhuang Yuan, Antoine Tixier, Aashish Rastogi, Hung Bui, Ben Ramos, Raymond Toth, and Anup
+Rao. Umlaut: Debugging deep learning models using dynamic analysis. In Proceedings of the
+IEEE/ACM International Conference on Automated Software Engineering (ASE), pp. 1080–1091,
+2021.
+
+Shuangfei Zhai, Tatiana Likhomanenko, Etai Littwin, Dan Busbridge, Jason Ramapuram, Yuren
+Zhang, and Joshua M. Susskind. Stabilizing transformer training by preventing attention entropy
+collapse. In Proceedings of the International Conference on Machine Learning (ICML), pp. 40770–
+40803, 2023b.
+
+Hao Zhang and W. K. Chan.
+Apricot: A weight-adaptation approach to fixing deep learning
+models. In Proceedings of the 34th IEEE/ACM International Conference on Automated Software
+Engineering (ASE), pp. 376–387, San Diego, CA, USA, 2019. IEEE. doi: 10.1109/ASE.2019.000
+43.
+
+Xiaoyu Zhang, Juan Zhai, Shiqing Ma, and Chao Shen. Autotrainer: An automatic dnn training
+problem detection and repair system. In Proceedings of the IEEE/ACM International Conference
+on Software Engineering (ICSE), pp. 359–371. IEEE, 2021.
+
+Yuhao Zhang, Luyao Ren, Liqian Chen, Yingfei Xiong, Shing-Chi Cheung, and Tao Xie. Detecting
+numerical bugs in neural network architectures.
+In Proceedings of the ACM Joint European
+Software Engineering Conference and Symposium on the Foundations of Software Engineering
+(ESEC/FSE), pp. 826–837, 2020.
+
+A
+DEFault++ Dataset Construction Hyperparameters
+
+Table 26 lists the full fine-tuning hyperparameters used to construct DEFault-bench (Section 3).
+Encoder and decoder configurations are presented side by side.
+
+Table 26: Encoder and decoder fine-tuning hyperparameters used to construct DEFault-bench
+
+Parameter
+Encoder
+Decoder
+
+Epochs
+5
+5
+Batch size
+16
+8
+Optimizer
+AdamW
+AdamW
+Learning rate
+2 × 10−5
+5 × 10−5
+
+Weight decay
+0.01
+0.01
+ϵ
+10−8
+10−8
+
+Max gradient norm
+1.0
+1.0
+Warmup ratio
+0.06
+0.06
+Schedule
+Linear with warmup
+Linear with warmup
+Precision
+fp16 (mixed)
+fp16 (mixed)
+Max sequence length
+—
+512
+Seeds
+{42, 123, 456, 789, 101112}
+{42, 123, 456, 789, 101112}
+
+B
+DEFault++ Parameters
+
+Table 27: Hyperparameter configuration for the DEFault++ neural hierarchical model
+
+Architecture
+Optimization
+Loss / Temperature / Evaluation
+
+Embedding dimension
+64
+Learning rate
+0.001
+α (detection)
+1.0
+Group hidden dimension
+32
+Weight decay
+1 × 10−4
+β (category)
+0.5
+GNN message-passing layers
+3
+Batch size
+256
+γ (prototype)
+0.3
+Dropout
+0.1
+Max epochs
+150
+λ (root cause)
+1.0
+Early stopping patience
+20
+βsibling (contrast.)
+0.5
+Prototype temperature τ
+0.1
+Sibling contrastive τs
+0.1
+Cross-validation folds
+5
+Fold strategy
+GroupKFold

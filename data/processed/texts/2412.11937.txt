@@ -1,0 +1,1049 @@
+Precise Length Control in Large Language Models
+
+Bradley Butcher, Michael O’Keefe1, James Titchener1,∗
+
+arXiv:2412.11937v1 [cs.CL] 16 Dec 2024
+
+1Strategic Research Group, Raytheon UK
+
+Abstract
+
+Large Language Models (LLMs) are increasingly used in production
+systems, powering applications such as chatbots, summarization, and
+question answering. Despite their success, controlling the length of their
+response remains a significant challenge, particularly for tasks requiring
+structured outputs or specific levels of detail. In this work, we propose
+a method to adapt pre-trained decoder-only LLMs for precise control of
+response length. Our approach incorporates a secondary length-difference
+positional encoding (LDPE) into the input embeddings, which counts
+down to a user-set response termination length. Fine-tuning with LDPE
+allows the model to learn to terminate responses coherently at the desired
+length, achieving mean token errors of less than 3 tokens. We also intro-
+duce Max New Tokens++, an extension that enables flexible upper-bound
+length control, rather than an exact target. Experimental results on tasks
+such as question answering and document summarization demonstrate
+that our method enables precise length control without compromising re-
+sponse quality.
+
+1
+Introduction
+
+In recent years, Large Language Models (LLMs) have become essential compo-
+nents of various production systems, revolutionising the way we interact with
+technology. From chatbots like ChatGPT to applications in document summari-
+sation, question answering, and content rewriting, LLMs have demonstrated re-
+markable capabilities in understanding and generating human-like text [4, 3].
+These models, trained on vast amounts of data, have the potential to transform
+industries and enhance user experiences across a wide range of domains.
+However, despite their impressive performance, LLMs often generate un-
+predictable length responses even when prompted with specific instructions for
+how long the response should be.
+This is particularly problematic in tasks
+that require structured outputs, or varying levels of detail, such as document
+
+∗Corresponding author:
+
+1
+
+summarisation [5]. In situations where concise summaries are needed, an LLM
+might generate overly lengthy responses, while in cases where more comprehen-
+sive summaries are desired, the model might produce insufficient detail. This
+lack of control over response length limits the practical applicability of LLMs in
+real-world scenarios.
+To address this limitation, we present a novel method to fine-tune pre-trained
+LLMs to enable precise control of response length. Our approach adapts the
+length-difference positional encoding (LDPE) proposed by [27] to decoder-only
+transformer architectures. This is achieved by incorporating a countdown mech-
+anism that starts from a predetermined response length. During the training
+process the model considers this countdown as a signal and implicitly learns
+the concept of “token budget”, i.e. how many tokens are remaining to generate
+an appropriate response. A user-specified token budget can then be provided
+at inference time, thereby facilitating the generation of responses with specified
+lengths for downstream tasks.
+The main contributions of our paper are as follows:
+
+1. We adapt LDPE for length control in decoder-only LLMs and investigate
+the optimal way to add the encodings to a question response pair.
+
+2. We demonstrate the effectiveness of our approach through experiments on
+various tasks, including question answering and document summarisation.
+
+3. Our results demonstrate precise control of response length without re-
+duction in response quality, enhancing the flexibility and applicability of
+LLMs in real-world scenarios.
+
+The remainder of this paper is organised as follows.
+Section 2 provides
+an overview of related work in the field of LLMs and output length control.
+Section 3 describes our methodology, explaining how we fine-tune LLMs with
+an additional positional encoding to provide a countdown mechanism. Section 4
+details our experimental setup and the tasks used for evaluation.
+Section 5
+presents and discusses the results obtained from our experiments. Section 6
+concludes the paper and outlines potential future directions for research. Finally,
+Section 7 details some of the limitations of the work which could be addressed
+to improve the method.
+
+2
+Related Work
+
+Positional encoding is used to directly provide transformers with information
+about the absolute or relative position of each token [28, 25]. Multiple tech-
+niques have been proposed to augment the standard positional encoding with a
+secondary encoding containing useful positional information. For example using
+a secondary encoding to align digit positions of operands has been shown to pro-
+vide greatly improved numerical calculation capabilities [19]. More generally, an
+additional learned context dependent encoding allows models to perform a va-
+riety of tasks requiring different levels of positional understanding [7]. Here we
+
+2
+
+explore adding a secondary positional encoding scheme to allow direct control
+over the response length.
+Previous approaches for length control in text generation have primarily
+focused on encoder-decoder models for tasks like summarisation. For instance,
+[13] proposed methods to initialise the LSTM cell of the decoder with a learnable
+vector based on the desired length (LenInit) or input an embedding representing
+the remaining length at each decoding step (LenEmb). This work was extended
+in [30] (LenAtten) to separate the length information from the decoder hidden
+states to better exploit the remaining length information. In [17] a length aware
+attention mechanism is used to modifiy the attention matrix based on the length-
+budget dynamically during the decoding process. Most relevant to our work,
+[27] introduced length-difference positional encoding (LDPE), which modifies
+the sinusoidal positional encoding in encoder-decoder transformer models to
+give information about the remaining length to the end of the text.
+While effective for custom encoder-decoder architectures, these methods are
+not compatible with the large pre-trained decoder-only LLMs that have become
+prevalent in recent years. Decoder-only LLMs like GPT-3 [3] do not have an ex-
+plicit length input during generation, making length control more challenging.
+It has been shown that the response length is important for human evalua-
+tion scores, and early work suggested controlling the response length by simply
+restricting the generation of the end-of-text token until a predefined response
+length was met [23]. However, this provides only coarse-grained control and
+may lead to unnatural responses.
+Prompt-based fine-tuning is the most common method used to control the
+response length in LLMs [32, 16]. For example [8] prompts GPT-3 to summarise
+articles in a given number of sentences. In [12] reinforcement learning is used
+to fine-tune decoder-only LLMs using a rule-based reward model.
+The type
+of prompt (more than, less than, equal to, between) determines the reward
+function, which is calculated using the target and output length.
+Although
+these methods are applicable to pre-trained decoder-only LLMs and provide
+some high level control over the response length, they do not provide precise
+control of the response length down to the word or token level. In this work
+we demonstrate a simple method to achieve precise token level control of the
+response length that can be applied directly to pre-trained LLMs.
+
+3
+Method
+
+In this section, we describe our proposed method for controlling the output
+length of LLMs by adapting the length-difference positional encoding (LDPE)
+proposed by [27] to the decoder-only transformer architecture.
+Our approach consists of two main components: (1) fine-tuning pre-trained
+LLMs with an added encoding counting down to the response termination point,
+and (2) applying the reverse encoding during inference to control the length of
+the generated response.
+
+3
+
+3.1
+Adding Reverse Positional Encodings to SoTA LLMs
+
+In the transformer architecture [28], positional encodings are used to provide
+information about the position of each token in the input sequence. The LDPE
+scheme, as introduced by [27], essentially reverses these encodings to show the
+model the remaining distance to the end of the generated sequence. In this
+paper we demonstrate an effective way to integrate a similar length control
+scheme into current state-of-the-art decoder-only LLMs.
+Current open source transformer models have typically undergone extensive
+pre-training using rotary positional embeddings (RoPE) to provide positional
+information [26]. Because of this it would likely be detrimental to the model’s
+performance to modify the RoPE to apply length control via LDPE. Thus in or-
+der to avoid interfering with the RoPE, we apply LDPE by adding an additional
+absolute positional encoding to the input token embeddings.
+An additional consideration when applying LDPE to decoder-only models
+is that, because they process both the user’s prompt and the model’s response
+as a continuous sequence without distinct encoding and decoding stages, they
+lack a clear separation between the two. This introduces some ambiguity about
+whether the reverse encodings should start at the beginning of the prompt,
+or only to the beginning of the models response. We investigate applying the
+LDPE encoding to the entire prompt-response pair, and also only applying it
+to the models response. We refer to the former simply as LDPE, and the latter
+as offset reverse positional encoding (ORPE), since the encoding is effectively
+offset by the prompt length (see Fig. 1).
+
+Figure 1:
+A simplified diagram of the reverse positional encoding methods
+applied a target response length of 100 tokens and a question length of 5 tokens
+(L = 105 and n = 5). For LDPE a positional encoding of PE(iLDPE, k) is added
+to each token embedding. For ORPE no encoding is added to the prompt part
+of the text, then a encoding countdown from iORPE = L −n to iORPE = 1 is
+added to the response.
+
+To represent the reverse positional encodings in the embedding space of a
+LLM we use the standard sinusoidal encodings [27, 28]:
+
+PE(i, 2k) = sin
+
+i
+
+
+,
+(1)
+
+10000
+2k
+
+d
+
+PE(i, 2k + 1) = cos
+
+i
+
+
+.
+(2)
+
+10000
+2k
+
+d
+
+4
+
+Here i represents the tokens position in the sequence, k is the index within the
+embedding dimension, and d is the total number of dimensions in the embedding
+space.
+In order to utilise the LDPE we adjust the order that the positional encodings
+are used by reversing them to count down towards i = 1. Additionally for the
+case of Offset Reverse Positional Encoding (ORPE) we introduce an offset so
+that no encoding is applied to the prompt, and the countdown starts from the
+end of the input prompt.
+Formally, let (X, Y ) = x1, . . . , xn, yn+1, . . . yL be a sequence of tokens con-
+sisting of a prompt and response, where n is the prompt length and L is the
+total length of the prompt response pair. For LDPE we augment the ith token
+embedding by adding the corresponding LDPE encoding PE(iLDPE, k), where,
+iLDPE = (L + 1) −i.
+Similarly, for ORPE we add the encoding PE(iORPE, k), where iORPE =
+(L + 1) −i, but no encoding is added to the tokens that make up the prompt
+(i.e.
+for i ≤n).
+By offsetting the start of the reverse positional encoding
+to coincide with the beginning of the model’s response, we ensure that the
+countdown only applies to the generated text, not the input prompt.
+The
+arrangement of the reverse positional encodings is demonstrated in Figure 1,
+using word-level tokenization for illustrative purposes only.
+
+3.2
+Fine-tuning with Reverse Positional Encodings
+
+To incorporate the additional encoding into the LLM, we fine-tune pre-trained
+open-source LLMs with the LDPE or ORPE embeddings added to the original
+input embeddings.
+Given a fine-tuning dataset of prompt-response pairs,
+
+D = (X1, Y1), (X2, Y2), . . . , (Xm, Ym)
+(3)
+
+where Xi is the prompt and Yi is the corresponding target response, we
+fine-tune the LLM to minimise the following loss function:
+
+|Yi|
+X
+
+m
+X
+
+L = −
+
+j=1
+log P(yi,j|Xi, Ri,<j, yi,<j)
+(4)
+
+i=1
+
+where yi,j is the j-th token of the target response Yi, and yi,<j denotes the
+tokens preceding yi,j with corresponding LDPE (or ORPE) encodings Ri,<j.
+By adding the reverse positional encodings during fine-tuning, the LLM learns
+to generate responses of the desired length, as the model can use the countdown
+information provided by the encodings.
+
+3.2.1
+Adapting Existing LLMs
+
+Directly adding reverse positional encodings to the token embeddings of an off-
+the-shelf LLM may not yield optimal results due to differences in scale between
+
+5
+
+the learned embeddings and the positional encodings. To address this, we in-
+troduce a scaling term that balances the magnitude of ORPE with the token
+embeddings. Let E = e1, e2, . . . , en be the token embeddings of the input se-
+quence X. We compute the scaled embeddings for both LDPE and ORPE (R′)
+as follows:
+
+R′ = R · |E|F
+
+|R|F
+(5)
+
+where |E|F and |R|F denote the Frobenius norm of the token embeddings and
+the reverse positional embeddings, respectively. By scaling the reverse positional
+embeddings with the ratio of the Frobenius norms, we ensure that they have
+a similar magnitude to the token embeddings, allowing the LLM to effectively
+incorporate the length control signal during fine-tuning and inference.
+The final input to the LLM, ˆE, is computed by adding the scaled reverse
+positional embeddings to the token embeddings:
+
+ˆE = E + R′
+(6)
+
+This adaptation allows existing LLMs to benefit from the length-controlling
+properties of reverse positional embeddings without requiring significant modi-
+fications to the model architecture.
+
+3.3
+Inference with Length Control
+
+At inference time, we control the length of the generated response by providing
+the a reverse positional embedding that counts down to the target length. Given
+a prompt X and a desired response length L, we generate the reverse positional
+encoding R and normalize it according to Equation 5 before adding R to the
+token embeddings. The LLM then generates the response token by token, condi-
+tioning on the prompt, R, and the previously generated tokens. The generation
+process continues until an end-of-sequence token is generated, which given the
+fine-tuning process should be approximately around the target length. By ma-
+nipulating the reverse positional embeddings termination length, we can control
+the length of the generated response, enabling the LLM to produce concise or
+verbose answers as required by the application.
+
+3.4
+Max New Tokens++
+
+While generating responses with exact lengths can be useful in certain applica-
+tions, there are scenarios where specifying upper-bound on the desired length is
+more appropriate. The widely-used transformers library [29] achieves this simply
+by stopping generation once the sequence exceeds the user specified maximum
+length. However, this approach does not provide the model with an awareness
+of its remaining “token budget” during the generation process, which may lead
+to suboptimal response quality.
+To address this limitation, we propose a content-aware length control method
+that allows the model to learn to terminate the response at or before a user
+
+6
+
+set maximum response length. During fine-tuning with the LDPE (or ORPE)
+reverse encodings, we introduce a random increase in the length of the LDPE
+sequence. This has the effect of exposing the model to training samples where
+the ground truth text terminates naturally before the final token of the LDPE.
+The random increase in length is sampled from a half-normal distribution. The
+long tail of the half-normal distribution is truncated to a user set maximum
+shift.
+The random positive shift is added to the position index of reverse posi-
+tional encoding. Thus the ith encoding is given by PE(ishift, k), where ishift is
+determined randomly for each training sample according to,
+
+ishift = (L + 1) −i + HalfNormal(σ)
+(7)
+
+By exposing the model to various target response lengths for the same in-
+put prompt during training, we encourage it to learn to generate coherent and
+relevant responses that can be equal to or shorter than the user set response
+length. The half-normal distribution is chosen because it has a higher probabil-
+ity of yielding small values or the shift, ensuring that the model still observes
+the original target lengths more frequently, providing a valuable learning signal.
+To further improve the model’s ability to generate responses with varying
+lengths, we employ a curriculum learning approach [1] by gradually increasing
+the scale parameter σ of the half-normal distribution throughout the training
+process. Initially, σ is set to a small value, resulting in shifts that are close
+to zero. This encourages the model to focus on learning to generate responses
+that closely match the true response length. As training progresses, σ is slowly
+increased according to an exponential schedule:
+
+σt = σ0 exp
+t
+
+T log
+σmax
+
+
+(8)
+
+σ0
+
+where σ0 and σmax are the initial and maximum values of σ, respectively, t is
+the current training step, and T is the total number of training steps.
+The
+values of σ0 and σmax are treated as hyperparameters and can be tuned to
+control the level of length variability and the trade-off between conciseness and
+informativeness.
+Our updated Max New Tokens++ method offers a principled approach to
+generating responses with a desired maximum length while allowing the model to
+learn when to terminate the response based on the input prompt and generated
+content. This enables the model to produce more concise and relevant responses
+compared to the naive generation stopping criterion, enhancing the flexibility
+and applicability of language models in real-world scenarios.
+
+4
+Experimental Setup
+
+This section provides an overview of the models, data and hyperparameters used
+to evaluate the performance of the LDPE and ORPE methods. For brevity, in
+
+7
+
+the following section, only the LDPE results will be shown and discussed, and
+the corresponding ORPE results can be found in the Appendix.
+
+Data
+A combination of the OpenOrca [15] and MMLU [9] datasets was used
+for training.
+A training set of 110,000 samples was constructed by combin-
+ing 100,000 OpenOrca samples with 10,000 MMLU samples (from across all
+topics). These datasets were combined to cover a wider range of topics and
+sequence lengths, and to utilise both human and synthetically generated data.
+An evaluation set of 200 samples was constructed in the same manner, taking
+100 samples from each dataset. All training and evaluation data was in English,
+including the datasets and benchmarks discussed in Sections 5.1.2 and 5.1.3.
+
+Models
+Experiments were performed by fine-tuning both Mistral 7B [11] and
+Llama3 8B [20]. These models were chosen as they are exemplary represen-
+tations of modern LLMs with robust architectures and significant parameter
+counts, whilst still being small enough to train on a single NVIDIA RTX A6000
+GPU. The instruct versions of both models were used, and their forward pass
+methods were modified to add the appropriate LDPE encodings.
+
+Baseline Models
+As a baseline for general model response quality we simply
+used the pretrained Mistral 7B Instruct and Llama3 8B Instruct models without
+any reverse encoding added. Additionally as a baseline method of length control
+we fine-tuned Mistral with the target response length included in the prompt,
+for example “Answer the following question in 112 tokens:”.
+
+Hyperparameters
+Both models were trained for a single epoch using the en-
+tire training dataset and a batch size of 1 with gradient accumulation of 5. All
+models were trained using the AdamW optimiser [18] with β1 = 0.9, β2 = 0.99
+and ϵ = 1×10−8, with a learning rate of 0.0003 and a linear learning rate sched-
+ule. These hyperparameter settings were obtained via manual experimentation
+and evaluation until satisfactory results were obtained.
+
+Low Rank Adaptation
+Low Rank Adaptation (LoRA) [10] was employed to
+efficiently train all models. LoRA allows for efficient incorporation of the addi-
+tional reverse positional encodings without overwriting the pretraining weights.
+A rank of 16, an α of 32 and a dropout rate of 0.05 was used to train all models.
+
+5
+Results
+
+5.1
+Exact Length Control
+
+5.1.1
+Q&A
+
+To demonstrate the effectiveness of the method we evaluated its performance on
+the OpenOrca dataset. A set of 20 samples were selected and different length
+
+8
+
+responses were generated for each, ranging from 10 to 200 tokens. The generated
+responses length was then compared to the target length. This analysis was
+performed for three different approaches: prompting without length control,
+fine-tuned prompting, and the LDPE method. Figure 2 presents the results of
+this comparison. The corresponding ORPE results are similar to LDPE and
+can be found in Figure 6 in the Appendix.
+
+Figure 2: Comparison of target and response lengths for different length control
+approaches on a question-answering task. The ideal response length is indicated
+by the dashed line in each panel.
+Top left: results for prompting Mistral
+without length control. Top right: results for fine-tuned prompting Mistral.
+Bottom left: results for LDPE fine tuned Mistral 7B model. Bottom right:
+results for LDPE fine tuned Llama3 8B model.
+
+As shown in the top-left panel of Figure 2, prompting without any length
+control results in a wide spread of response lengths, with many responses signif-
+icantly deviating from the ideal length. This highlights the need for an effective
+length control mechanism in question-answering systems. The top-right panel
+of Figure 2 demonstrates the performance of fine-tuned prompting, where the
+
+9
+
+model is fine-tuned with length information.
+While this approach improves
+the alignment between the target and response lengths compared to prompt-
+ing without length control, there is still a noticeable deviation from the ideal
+response length for many samples. Note that these two baseline experiments
+were performed with Mistral only as we expect the performance to be similar
+for Llama.
+In contrast, our LDPE length control method, shown in the bottom panels
+of Figure 2, achieves a near-perfect alignment between the target and response
+lengths. This showcases the effectiveness of the method in controlling the exact
+length of the generated responses in a question-answering setting. The ORPE
+version of the results shows similar performance, with slightly more outliers.
+Some example text responses for a range of target lengths can be seen in Table 1
+in the Appendix.
+
+5.1.2
+Summarisation
+
+To evaluate the performance of our content-aware length control method, we
+generated a dataset of summaries using the CNN/DailyMail dataset [21]. We
+selected a subset of 1000 articles from the training split and generated summaries
+for each article using five different system prompts, each targeting a specific
+summary length or style:
+
+• A one-sentence summary
+
+• A one-paragraph summary
+
+• A long, detailed summary not exceeding the original article length
+
+• A 100-word summary
+
+• A short, concise summary
+
+The summaries were generated using the OpenAI API with the GPT-3.5-
+turbo-0125 model [22].
+For each combination of article and system prompt,
+we recorded the generated summary, its length, and the corresponding system
+prompt and article. The resulting dataset was then used to evaluate the sum-
+marisation quality of our LDPE fine-tuned models, as well as a baseline Mistral
+model that was fine-tuned for prompt based length control. Each model was
+prompted to generate a summary of a full article from the CNN/DailyMail
+dataset, and the target length of the summary was set to the length of each of
+the 5 GPT-3.5 summaries. For the LDPE fine-tuned models the target length
+was given to the model only via the LDPE encodings, whereas for the prompt
+fine-tuned model the target length as was added to the prompt.
+The qual-
+ity of the summary was assessed by calculating the BERT scores between the
+generated summary and the corresponding GPT-3.5 summary.
+Figure 3 presents the mean BERT scores for the summarisation tasks, binned
+into different target response length ranges. Additional detailed summarisation
+quality results, including ROUGE scores, can be found in Table 1 in the Ap-
+pendix.
+We compared both the Mistral and Llama models with the LDPE
+
+10
+
+Figure 3:
+Results for length the length controlled summarisation task. Mod-
+els used are LDPE fine-tuned Mistral and Llama (-LDPE), as well as the
+Mistral baseline model fine-tuned for prompted based length control (Mistral-
+Prompted). Left: BERT scores between summaries and GPT-3.5 ground truth
+summaries. Right: Mean absolute error (MAE) between the number of tokens
+in model’s summary and the target number of tokens.
+
+fine-tuning, as well as the baseline Mistral model fine-tuned for length control
+via prompting (Mistral-Prompted). The results show that the summary qual-
+ity was stable across all three models and for different response lengths. The
+average BERT scores across all summaries were 0.698 for Mistral-LDPE, 0.699
+for Llama-LDPE, and 0.698 the baseline Mistral-Prompted model. The length
+accuracy of the summaries was significantly better for the LDPE fine-tuned
+models as shown in Figure 3. The mean length error between the target sum-
+mary length and the models summary was 2.8 and 2.4 tokens for Mistral-LDPE
+and Llama-LDPE respectively. The mean error for the Mistral-prompted was
+an order of magnitude larger at 24.8 tokens. Overall the results suggest that the
+models are still capable of generating high-quality summaries after fine-tuning
+with LDPE, and have developed the capability for fine-grained length control.
+
+5.1.3
+Benchmarking Response Quality
+
+To identify any degradation in the quality of the model’s responses after fine-
+tuning, we evaluated the models against a number of standard benchmarks.
+We ran all benchmarks using the LM Evaluation Harness [6]. LM Evaluation
+Harness evaluates models against common benchmarks using the log-likelihood
+of correct or incorrect responses from the model to score the task. The bench-
+marks evaluated were the Abstraction and Reasoning Corpus (ARC) [14], Hel-
+laSwag [31], PIQA [2], and WINOGRANDE [24].
+We found that the LDPE fine-tuned models had an increased reliance on
+the instruction tokens used in fine-tuning. Thus instruction tokens were added
+into the appropriate places for each evaluation task. Futhermore, for question
+answer (QA) style tasks such as ARC and PIQA the LDPE funetuned models
+performed poorly unless the LDPE encodings were added to the ‘answer’ part of
+the evaluation. Likely the poor results were due to the log-likelihood of correct
+or incorrect response being dominated by the additional model perplexity due
+
+11
+
+to the lack of LDPE embeddings. Therefore to evaluate the LDPE fine-tuned
+models on QA tasks we modified the LM Evaluation Harness to optionally apply
+the LDPE countdown to the queries. Note that this gave the model additional
+information about the response length, but no information about whether a
+specific question response pair was correct or incorrect.
+The results are shown in Figure 4 for the LDPE fine-tuned Mistral and Llama
+models (Mistral-LDPE and Llama-LDPE) as well as the base instruct versions
+(-base). The results show that the LDPE fine-tuned model’s performance was
+generally preserved after fine-tuning, except for a reduction in Mistral’s perfor-
+mance on the Hellaswag benchmarks.
+
+Figure 4:
+Performance of length controlled and baseline models against a range
+of standard benchmarks. All evaluations used zero-shot prompting. The labels
+Mistral and Llama correspond to Mistral-7B-Instruct and Llama-3-8B-Instruct
+respectively. The tag -LDPE means the model was fine-tuned with the LDPE.
+Additionally LDPE were added during the evaluation.
+
+5.2
+Max New Tokens++
+
+Figure 5 shows the comparison between the token limit and response length
+for a Mistral model fine-tuned using the Max New Tokens++ method with
+σ0 = 0.1 and σmax = 2048.
+For shorter token limits the responses closely
+follow the identity line, while for longer token limits there is a deviation towards
+shorter responses. Even though there is a shift in median away from identity
+the 95% confidence interval still follows closely. This indicates that the model
+still possesses a notion of “token budget”, and that it uses this token budget to
+smoothly terminate the longer responses as they approach the token limit.
+
+6
+Conclusion
+
+In this work we introduce a method to fine-tune decoder-only LLMs to enable
+precise control of the response length. This is achieved by adding an additional
+reverse positional encoding to the transformer architecture. This encoding pro-
+vides the model with information about how many more tokens should be gen-
+
+12
+
+Figure 5:
+Plot of token limit vs response length for using a Max New Tokens++
+fine-tuned Mistral model on a question-answering task. This technique has not
+been applied to Llama but we expect the performance to be fairly similar based
+on the similarity of the earlier results for exact length control.
+
+erated. During fine-tuning, the model learns to use this countdown to structure
+its responses to terminate smoothly at the end of the countdown.
+We investigated two different methods of applying reverse positional encod-
+ings, Length Difference Positional Encoding (LDPE), and Offset Reverse Posi-
+tional Encoding (ORPE). The difference between the two methods is the point
+in the prompt-response pair at which the reverse encoding begins. LDPE simply
+adds the reverse encoding to the entire prompt-response pair, whereas in ORPE
+the encoding is offset so that it is only applied to the model’s response. Our
+results demonstrate that both LDPE and ORPE effectively control the response
+length without degrading the underlying performance of the LLM. There does
+not appear to be a significant different in performance between the two methods.
+Preliminary work was also presented for the Max New Tokens++ method.
+This is a way of implementing an upper bound on the number of generated
+tokens rather than an exact target. The results show that this method is effective
+at training the model provide responses that terminate smoothly at or before the
+token limit is reached. This prevents the generation of needlessly long answers
+in an attempt to meet the target length imposed by the LDPE encoding.
+Overall, this work shows that the addition of a specialized positional encod-
+ing during fine-tuning enables precise control over when the model outputs the
+
+13
+
+end of sentence token, without degrading response quality. While we focused
+on controlling the generation of the EOS token to terminate the response on
+command, this approach could be generalised to control the generation of other
+tokens or potentially influence other aspects of LLM generation.
+
+7
+Limitations
+
+We have identified several limitations in our work that could be addressed to
+improve the evaluation and effectiveness of the proposed length control method.
+Firstly, we fine-tuned our models on relatively small question-answer-focused
+datasets. The impact of dataset size and diversity on learning length control
+remains unclear. Secondly, our experiments were limited to the instruct versions
+of Mistral 7B and Llama3 8B models, both within the 7-8B parameter range and
+instruction fine-tuned. While this made them suitable for further fine-tuning
+with a QA dataset, it remains an open question how well the proposed length
+control techniques generalise to other models.
+Another limitation is that the countdown mechanism in our approach is
+based on tokens rather than words or characters, the latter of which may be
+more relevant for user applications. Future research could explore using LDPE
+to count down words or characters instead of tokens. Additionally, incorporating
+the relative progress towards the termination length, rather than the absolute
+number of remaining tokens, might enhance the model’s ability to generalise
+across various response lengths. Finally, we utilised standard sinusoidal posi-
+tional encodings in a reverse and offset order throughout this work. These en-
+codings, originally designed to provide information about token ordering, might
+not be optimal for our specific use case where the focus is on counting down to
+a termination point.
+Addressing these limitations in future work would provide a more robust
+evaluation of the proposed length control method and potentially enhance its
+applicability and performance across different models and datasets.
+
+References
+
+[1] Yoshua Bengio, J´erˆome Louradour, Ronan Collobert, and Jason Weston.
+Curriculum learning. In Proceedings of the 26th annual international con-
+ference on machine learning, pages 41–48, 2009.
+
+[2] Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin
+Choi. PIQA: reasoning about physical commonsense in natural language.
+CoRR, abs/1911.11641, 2019.
+
+[3] Tom B Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Ka-
+plan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sas-
+try, Amanda Askell, et al. Language models are few-shot learners. arXiv
+preprint arXiv:2005.14165, 2020.
+
+14
+
+[4] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert:
+Pre-training of deep bidirectional transformers for language understanding.
+arXiv preprint arXiv:1810.04805, 2018.
+
+[5] Mahak Gambhir and Vishal Gupta. Recent automatic text summarization
+techniques: a survey. Artificial Intelligence Review, 47(1):1–66, 2017.
+
+[6] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black,
+Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain
+Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa,
+Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang
+Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou.
+A framework for few-shot language model evaluation, 12 2023.
+
+[7] Olga Golovneva, Tianlu Wang, Jason Weston, and Sainbayar Sukhbaatar.
+Contextual position encoding: Learning to count what’s important. arXiv
+preprint arXiv:2405.18719, 2024.
+
+[8] Tanya Goyal, Junyi Jessy Li, and Greg Durrett. News summarization and
+evaluation in the era of gpt-3. arXiv preprint arXiv:2209.12356, 2022.
+
+[9] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika,
+Dawn Song, and Jacob Steinhardt. Measuring massive multitask language
+understanding, 2021.
+
+[10] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi
+Li, Shean Wang, and Weizhu Chen. Lora: Low-rank adaptation of large
+language models. CoRR, abs/2106.09685, 2021.
+
+[11] Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford,
+Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna
+Lengyel, Guillaume Lample, Lucile Saulnier, L´elio Renard Lavaud, Marie-
+Anne Lachaux, Pierre Stock, Teven Le Scao, Thibaut Lavril, Thomas
+Wang, Timoth´ee Lacroix, and William El Sayed. Mistral 7b, 2023.
+
+[12] Renlong Jie, Xiaojun Meng, Lifeng Shang, Xin Jiang, and Qun Liu.
+Prompt-based length controlled generation with reinforcement learning.
+ArXiv, abs/2308.12030, 2023.
+
+[13] Yuta Kikuchi, Graham Neubig, Ryohei Sasano, Hiroya Takamura, and
+Manabu Okumura. Controlling output length in neural encoder-decoders.
+In Proceedings of the 2016 Conference on Empirical Methods in Natural
+Language Processing, pages 1328–1338, 2016.
+
+[14] Chao Lei, Nir Lipovetzky, and Krista A. Ehinger. Generalized planning for
+the abstraction and reasoning corpus, 2024.
+
+[15] Wing Lian, Bleys Goodson, Eugene Pentland, Austin Cook, Chanvichet
+Vong, and ”Teknium”.
+Openorca: An open dataset of gpt augmented
+flan reasoning traces.
+
+OpenOrca, 2023.
+
+15
+
+[16] Pengfei Liu, Weizhe Yuan, Jinlan Fu, Zhengbao Jiang, Hiroaki Hayashi,
+and Graham Neubig. Pre-train, prompt, and predict: A systematic survey
+of prompting methods in natural language processing. ACM Computing
+Surveys, 55:1 – 35, 2021.
+
+[17] Yizhu Liu, Qi Jia, and Kenny Zhu. Length control in abstractive summa-
+rization by pretraining information selection. In Proceedings of the 60th
+Annual Meeting of the Association for Computational Linguistics (Volume
+1: Long Papers), pages 6885–6895, 2022.
+
+[18] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization,
+2019.
+
+[19] Sean McLeish, Arpit Bansal, Alex Stein, Neel Jain, John Kirchenbauer,
+Brian R Bartoldson, Bhavya Kailkhura, Abhinav Bhatele, Jonas Geiping,
+Avi Schwarzschild, et al. Transformers can do arithmetic with the right
+embeddings. arXiv preprint arXiv:2405.17399, 2024.
+
+[20] Meta. Introducing Meta Llama 3: The most capable openly available LLM
+to date — ai.meta.com.
+
+2024. [Accessed 13-05-2024].
+
+[21] Ramesh Nallapati, Bowen Zhou, Cicero Nogueira dos santos, Caglar Gul-
+cehre, and Bing Xiang. Abstractive text summarization using sequence-to-
+sequence rnns and beyond, 2016.
+
+[22] OpenAI. GPT3.5 Turbo-0125, 2024.
+
+[23] Stephen Roller, Emily Dinan, Naman Goyal, Da Ju, Mary Williamson,
+Yinhan Liu, Jing Xu, Myle Ott, Kurt Shuster, Eric Michael Smith,
+et al.
+Recipes for building an open-domain chatbot.
+arXiv preprint
+arXiv:2004.13637, 2021.
+
+[24] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin
+Choi. WINOGRANDE: an adversarial winograd schema challenge at scale.
+CoRR, abs/1907.10641, 2019.
+
+[25] Peter Shaw, Jakob Uszkoreit, and Ashish Vaswani.
+Self-attention with
+relative position representations. arXiv preprint arXiv:1803.02155, 2018.
+
+[26] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng
+Liu.
+Roformer: Enhanced transformer with rotary position embedding.
+Neurocomputing, 568:127063, 2024.
+
+[27] Sho Takase and Naoaki Okazaki. Positional encoding to control output se-
+quence length. In Proceedings of the 2019 Conference of the North Amer-
+ican Chapter of the Association for Computational Linguistics: Human
+Language Technologies, Volume 1 (Long and Short Papers), pages 3999–
+4004, 2019.
+
+16
+
+[28] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you
+need. In Advances in neural information processing systems, pages 5998–
+6008, 2017.
+
+[29] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement
+Delangue, Anthony Moi, Pierric Cistac, Tim Rault, R´emi Louf, Morgan
+Funtowicz, et al. Huggingface’s transformers: State-of-the-art natural lan-
+guage processing. arXiv preprint arXiv:1910.03771, 2019.
+
+[30] Zhongyi Yu, Zhenghao Wu, Hao Zheng, Zhe XuanYuan, Jefferson Fong,
+and Weifeng Su. Lenatten: An effective length controlling unit for text
+summarization. CoRR, abs/2106.00316, 2021.
+
+[31] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin
+Choi.
+Hellaswag: Can a machine really finish your sentence?
+CoRR,
+abs/1905.07830, 2019.
+
+[32] Yubo Zhang, Xingxing Zhang, Xun Wang, Si-Qing Chen, and Furu Wei.
+Latent prompt tuning for text summarization.
+ArXiv, abs/2211.01837,
+2022.
+
+17
+
+Appendix A
+Example length controlled outputs
+
+Examples of length controlled outputs from the LDPE finetuned Llama model
+are shown in Table. 1. For the same prompt, the model is asked to generate
+responses of varied length. This results in controlled levels of detail, while still
+answering the question correctly.
+
+18
+
+Question
+
+Extract the answer to the question from the following context. Question: What’s the expensive
+rock mean Context: Buddhist schools vary on the exact nature of the path to liberation, the
+importance and canonicity of various teachings and scriptures, and especially their respective
+practices. Buddhism denies a creator deity and posits that mundane deities such as Mahabrahma
+are misperceived to be a creator. The foundations of Buddhist tradition and practice are the
+Three Jewels: the Buddha, the Dharma (the teachings), and the Sangha (the community).
+Taking ””refuge in the triple gem”” has traditionally been a declaration and commitment to
+being on the Buddhist path, and in general distinguishes a Buddhist from a non-Buddhist. Other
+practices are Ten Meritorious Deeds including, giving charity to reduce the greediness; following
+ethical precepts; renouncing conventional living and becoming a monastic; the development of
+mindfulness and practice of meditation; cultivation of higher wisdom and discernment; study
+of scriptures; devotional practices; ceremonies; and in the Mahayana tradition, invocation of
+buddhas and bodhisattvas.
+
+Responses
+Target
+length
+
+Response
+length
+
+10
+12
+
+There is no answer.
+
+90
+89
+
+The context does not provide an answer to the question ””What’s the expen-
+sive rock mean?”” The context is about Buddhist schools and their practices,
+and it does not mention anything about an expensive rock. Therefore, it is
+not possible to extract an answer to the question from the given context. The
+question seems to be unrelated to the context and requires a separate answer
+or information that is not provided in the given context.
+
+150
+149
+
+The context does not provide an answer to the question ””What’s the expen-
+sive rock mean?”” The context is about Buddhist schools and their practices,
+including the Three Jewels, Ten Meritorious Deeds, and other practices. It
+also mentions the denial of a creator deity and the importance of scriptures
+and teachings in different Buddhist schools. However, there is no mention of
+an ””expensive rock”” in the context. Therefore, it is not possible to extract
+an answer to the question from the given context. The question seems to be
+unrelated to the context and requires a separate answer or information that is
+not provided in the given context.
+
+200
+197
+
+The context provided does not directly answer the question about the expen-
+sive rock. However, it does provide information about the nature of the path to
+liberation, the importance and canonicity of various teachings and scriptures,
+and especially their respective practices in Buddhist schools. The context also
+mentions the Three Jewels, which are the Buddha, the Dharma (the teach-
+ings), and the Sangha (the community). Taking ””refuge in the triple gem””
+has traditionally been a declaration and commitment to being on the Buddhist
+path, and in general distinguishes a Buddhist from a non-Buddhist. There-
+fore, the answer to the question about the expensive rock is not provided in
+the given context. It is important to note that the context provided is about
+Buddhist schools and their practices, and it does not mention anything about
+an expensive rock. If you have any further questions or if you would like to
+know more about Buddhist schools and their practices, feel free to ask.
+
+Table 1:
+Example generated responses using ORPE fine tuned Llama3 8B.
+Note that special tokens, instruction tokens and linebreaks have been removed
+from the text but not from the token count.
+
+19
+
+Appendix B
+Summarization quality
+
+As explained in Section 5.1.2, the summarization quality of the LDPE fine-
+tuned models was evaluated against 1000 articles from the CNN/DailyMail
+dataset [21]. The similarity of the summaries generated by the length controlled
+finetuned models were compared to summaries generated using the OpenAI
+API with the GPT-3.5-turbo-0125 model [22]. In table 2 the full results of this
+comparison are shown, including F1 ROUGE-1, ROUGE-2 and ROUGE-Lsum
+scores for each model and summary length range.
+
+Model
+Target length
+(tokens)
+BERT
+score
+R-1
+R-2
+R-Lsum
+
+0 to 100
+0.715
+0.522
+0.304
+0.420
+100 to 200
+0.690
+0.497
+0.231
+0.331
+200 to 300
+0.713
+0.554
+0.264
+0.380
+300 to 400
+0.695
+0.544
+0.242
+0.403
+400 to 500
+0.680
+0.531
+0.230
+0.403
+
+Llama-LDPE
+
+0 to 100
+0.712
+0.516
+0.303
+0.416
+100 to 200
+0.692
+0.501
+0.232
+0.330
+200 to 300
+0.701
+0.530
+0.248
+0.351
+300 to 400
+0.696
+0.531
+0.233
+0.388
+400 to 500
+0.690
+0.537
+0.238
+0.405
+
+Mistral-LDPE
+
+0 to 100
+0.714
+0.513
+0.301
+0.415
+100 to 200
+0.690
+0.497
+0.230
+0.328
+200 to 300
+0.706
+0.540
+0.260
+0.362
+300 to 400
+0.696
+0.530
+0.233
+0.380
+400 to 500
+0.686
+0.522
+0.233
+0.398
+
+Mistral-Prompted
+
+Table 2: BERT and ROUGE F1 scores between length-controlled model sum-
+maries and the GPT-3.5-turbo-0125 model [22]. Models used are LDPE fine-
+tuned Mistral and Llama (-LDPE), as well as the Mistral baseline model fine-
+tuned for prompt based length control (Mistral-Prompted).
+
+20
+
+Appendix C
+Offset reverse positional encoding
+(ORPE) results
+
+We investigated the effect of offseting the reverse positional encodings so that
+no encoding was applied to the prompt. The logic being that in length con-
+trol information should only be needed in the models response, and not in the
+prompt. This is shown diagramatically by the iORPE row in Fig 1.
+The results of the QA length control experiment for models fine-tuned with
+the ORPE version of the reverse encoding are shown in Fig. 6. For this experi-
+ment the same data and method was used as described in Sec. 5.1.1. The results
+show effective length control, but ultimately no improvement over the slightly
+more straightforward LDPE technique.
+
+Figure 6: Comparison of target and response lengths for different length control
+approaches on a question-answering task. The ideal response length is indicated
+by the dashed line in each panel. Left: results for ORPE fine-tuned Mistral 7B
+model. Right: results for ORPE fine-tuned Llama3 8B model.
+
+21

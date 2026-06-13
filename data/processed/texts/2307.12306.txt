@@ -1,0 +1,4168 @@
+Tackling the Curse of Dimensionality with Physics-Informed Neural Networks
+
+Zheyuan Hu*
+Khemraj Shukla†
+George Em Karniadakis†
+Kenji Kawaguchi*
+
+Abstract
+
+The curse-of-dimensionality taxes computational resources heavily with exponentially increasing computational
+cost as the dimension increases. This poses great challenges in solving high-dimensional partial differential equations
+(PDEs), as Richard E. Bellman first pointed out over 60 years ago. While there has been some recent success in solving
+numerical PDEs in high dimensions, such computations are prohibitively expensive, and true scaling of general
+nonlinear PDEs to high dimensions has never been achieved. We develop a new method of scaling up physics-informed
+neural networks (PINNs) to solve arbitrary high-dimensional PDEs. The new method, called Stochastic Dimension
+Gradient Descent (SDGD), decomposes a gradient of PDEs’ and PINNs’ residual into pieces corresponding to
+different dimensions and randomly samples a subset of these dimensional pieces in each iteration of training PINNs.
+We prove theoretically the convergence and other desired properties of the proposed method. We demonstrate in
+various diverse tests that the proposed method can solve many notoriously hard high-dimensional PDEs, including the
+Hamilton-Jacobi-Bellman (HJB) and the Schr¨odinger equations in tens of thousands of dimensions very fast on a
+single GPU using the PINNs mesh-free approach. Notably, we solve nonlinear PDEs with nontrivial, anisotropic, and
+inseparable solutions in less than one hour for 1,000 dimensions and in 12 hours for 100,000 dimensions on a single
+GPU using SDGD with PINNs. Since SDGD is a general training methodology of PINNs, it can be applied to any
+current and future variants of PINNs to scale them up for arbitrary high-dimensional PDEs.
+
+arXiv:2307.12306v6 [cs.LG] 17 May 2024
+
+1
+Introduction
+
+The curse-of-dimensionality (CoD) refers to the computational and memory challenges when dealing with high-
+dimensional problems that do not exist in low-dimensional settings. The term was first introduced in 1957 by Richard
+E. Bellman [7, 20], who was working on dynamic programming, to describe the exponentially increasing costs due to
+high dimensions. Later, the concept was adopted in various areas of science, including numerical partial differential
+equations (PDEs), combinatorics, machine learning, probability, stochastic analysis, and data mining. In the context
+of numerically solving PDEs, an increase in the dimensionality of the PDE’s independent variables tends to lead
+to a corresponding exponential rise in computational costs needed for obtaining an accurate solution. This poses a
+considerable challenge for all existing algorithms.
+Physics-Informed Neural Networks (PINNs) are highly practical in solving PDE problems [54]. Compared to
+other methods, PINNs can solve various PDEs in general form, enabling mesh-free solutions and handling complex
+geometries. Additionally, PINNs leverage the interpolation capability of neural networks to provide accurate predictions
+throughout the domain, unlike other methods for high-dimensional PDEs, which can only compute the value of PDEs at
+a single point or are restricted to certain PDE types [1, 21, 52]. Due to neural networks’ flexibility and expressiveness,
+in principle, the set of functions representable by PINNs have the ability to approximate high-dimensional PDE
+solutions. However, PINNs may also fail in tackling CoD due to insufficient memory and slow convergence when
+dealing with high-dimensional PDEs. For example, when the dimension of PDE is very high, even just using one
+collocation point can lead to an insufficient memory error due to the massive high-dimensional derivatives in the PDE.
+Unfortunately, the aforementioned high-dimensional and high-order cases often occur for very useful PDEs, such as
+the Hamilton-Jacobi-Bellman (HJB) equation in stochastic optimal control, the Fokker-Planck equation in stochastic
+analysis and high-dimensional probability, and the Black-Scholes equation in mathematical finance, etc. These PDE
+examples pose a grand challenge to the application of PINNs in effectively tackling real-world large-scale problems.
+To scale up PINNs for arbitrary high-dimensional PDEs, we propose a training method of PINNs by decomposing
+and sampling gradients of PDE’s and PINN’s residual, which we name stochastic dimension gradient descent (SDGD).
+It accelerates the training of PINNs while significantly reducing the memory cost, thereby realizing the training of
+any high-dimensional PDEs with acceleration. Specifically, we scale up and speed up PINNs by decomposing the
+computational and memory bottleneck, namely the gradient of the residual loss that contains massive PDE terms
+
+along numerous dimensions. We propose a novel decomposition of the gradient of the residual loss into each piece
+corresponding to each dimension of PDEs. Then, at each training iteration, we sample a subset of these dimensional
+pieces to optimize PINNs. Although we use only a subset per iteration, this sampling process is ensured to be
+an unbiased estimator of the full gradient of all dimensions, which is then used to guarantee convergence for all
+dimensions.
+SDGD enables more efficient parallel computations, fully leveraging multi-GPU computing to scale up and expedite
+the speed of PINNs. Parallelizing the computation of mini-batches of different dimensional pieces across multiple
+devices can expedite convergence. This is akin to traditional SGD over data points, which allows simultaneous
+computation on different machines. SDGD also accommodates the use of gradient accumulation on resource-limited
+machines to enable larger batch sizes and reduce gradient variance. It involves accumulating gradients from multiple
+batches to form a larger batch size for stochastic gradients, reducing the variance of each stochastic gradient on a single
+GPU. Due to the refined and general partitioning offered by SDGD that samples both collocation points and PDE
+dimensions, our gradient accumulation can be executed on devices with limited resources, ideal for edge computing.
+We theoretically prove that the stochastic gradients generated by SDGD are unbiased. Based on this, we also
+provide convergence guarantees for our method. Additionally, our theoretical analysis shows that under the same batch
+size and memory cost, proper batch sizes for PDE terms/dimensions and residual points can minimize gradient variance
+and accelerate convergence, an outcome not possible solely with conventional SGD over points. SDGD extends and
+generalizes traditional SGD over points, providing stable, low-variance stochastic gradients while enabling smaller
+batch sizes and reduced memory usage.
+We conduct extensive experiments on several high-dimensional PDEs. We investigate the relationship between
+SDGD and vanilla SGD over collocation points, where the latter is stable and widely adopted to reduce memory cost in
+previous work. We vary SDGD’s batch sizes of PDE terms/dimensions and collocation points to study the stability and
+convergence speed of SDGD under certain memory budgets. Experimental results show that our proposed SDGD is as
+stable as SGD over points on nonlinear high-dimensional PDEs and can accelerate convergence. We also demonstrate
+the guideline for selecting the batch sizes of PDE terms/dimensions and collocation points in SDGD.
+Furthermore, we showcase large-scale PDEs where traditional PINN training directly fails due to an out-of-memory
+(OOM) error. Concretely, with the further speed-up method via sampling PDE terms/dimensions in both forward and
+backward passes, we can train PINNs on nontrivial nonlinear PDEs in 100,000 dimensions in 12 hours of training time,
+while the traditional PINN training methods exceed the GPU memory limit directly. An in-depth comparison between
+vanilla PINN training and SDGD is also provided.
+After validating the effectiveness of SDGD compared to SGD over collocation points, we compare the algorithms
+with other methods, e.g., [1, 21, 52]. Our algorithm outperforms other methods on multiple nonlinear parabolic PDEs.
+Additionally, our method enables mesh-free training and prediction across the entire domain, while other methods
+typically only provide predictions at a single point. Furthermore, we combine our algorithm with adversarial training,
+notorious for its slowness in high-dimensional machine learning, and our algorithm significantly accelerates it. We
+also demonstrate the generality of our method by applying it to the Schr¨odinger equation, which has broad connections
+with quantum physics. Overall, our method provides a paradigm shift for performing large-scale PINN training.
+The rest of this paper is arranged as follows. We present related work in Section 2, our main algorithm for
+accelerating and scaling up PINNs in Section 3, theoretical analysis of our algorithms’ convergence in Section 4,
+numerical experiments in Section 5, and conclusion in Section 6. In the Appendices, we include more examples and
+details of our method and prove the theories.
+
+2
+Related Work
+
+2.1
+Physics-Informed Machine Learning
+
+the neural tangent kernel to demonstrate the global convergence of PINNs. Mishra et al. [49] derived an estimate for
+the generalization error of PINNs, considering both the training error and the number of training samples. In a different
+approach, Shin et al. [56] adapted the Schauder approach and the maximum principle to provide insights into the
+convergence behavior of the minimizer as the number of training samples tends towards infinity. They demonstrated
+that the minimizer converges to the solution in both C0 and H1. Furthermore, Lu et al. [43] employed the Barron space
+within the framework of two-layer neural networks to conduct a prior analysis on PINN with the softplus activation
+function. This analysis is made possible by drawing parallels between the softplus and ReLU activation functions.
+More recently, Hu et al. [26] employed the Rademacher complexity concept to measure the generalization error for
+both PINNs and the extended PINNs variant (XPINNs [33] and APINNs [25]).
+
+2.2
+Machine Learning PDEs Solvers in High-Dimensions
+
+Numerous attempts have been made to tackle high-dimensional PDEs by deep learning to overcome the curse of
+dimensionality. In the PINN literature, [60] showed that to learn a high-dimensional HJB equation, the L∞loss is
+required. The authors of [23] proposed to parameterize PINNs by the Gaussian smoothed model and to optimize
+PINNs without back-propagation by Stein’s identity, avoiding the vast amount of differentiation in high-dimensional
+PDE operators to accelerate the convergence of PINNs. Separable PINN [12] considers a per-axis sampling of residual
+points in high-dimensional spaces, thereby reducing the computational cost and enlarging the batch size of residual
+points in PINN via tensor product. However, this method [12] focuses on acceleration on only modest (less than 4)
+dimensions and is designed mainly for increasing the number of collocation points in 3D PDEs, whose separation
+of sampling points becomes intractable in high-dimensional spaces. Han et al. [21, 22] proposed the DeepBSDE
+solver for high-dimensional PDEs based on the classical BSDE method, and they used deep learning to approximate
+unknown functions. Extensions of the DeepBSDE method were presented in [2, 10, 24, 30, 35]. Becker et al. [6] solved
+high-dimensional optimal stopping problems via deep learning. The authors of [1] combined splitting methods and
+deep learning to solve high-dimensional PDEs. Raissi [52] leveraged the relationship between high-dimensional PDEs
+and stochastic processes whose trajectories provide supervision for deep learning. Despite the effectiveness of the
+methods in [1, 21, 52, 22], they can only be applied to a certain restricted class of PDEs. Wang et al. [61, 62] proposed
+tensor neural networks with efficient numerical integration and separable structures for solving high-dimensional
+Schr¨odinger equations in quantum physics. Zhang et al. [66] proposed using PINNs for solving stochastic differential
+equations by representing their solutions via spectral dynamically orthogonal and bi-orthogonal methods. Zang et al.
+[65] proposed a weak adversarial network that solves PDEs using the weak formulation. The deep Galerkin method
+(DGM) [58] optimizes networks to satisfy the high-dimensional PDE operator, where the derivatives are estimated via
+Monte Carlo. The deep Ritz method (DRM) [63] considers solving high-dimensional variation PDE problems.
+In the numerical PDE literature, there have been attempts to scale numerical methods to high dimensions, e.g.,
+proper generalized decomposition (PGD) [11], multi-fidelity information fusion algorithm [51], and ANOVA [47, 67].
+Darbon and Osher [13] proposed a fast algorithm for solving high-dimensional Hamilton-Jacobi equations if the
+Hamiltonian is convex and positively homogeneous of degree one. The multilevel Picard method [3, 4, 5, 31, 32]
+is another approach for approximating solutions of high-dimensional parabolic PDEs, which reformulates the PDE
+problem as a stochastic fixed point equation, which is then solved by multilevel and nonlinear Monte-Carlo. Similar to
+Beck et al. [1] and Han et al. [21], the multilevel Picard method can only output the solution’s value on one test point
+and can only be applied to a certain restricted class of parabolic PDEs.
+
+2.3
+Stochastic Gradient Descent
+
+variance and PINNs convergence.
+
+3
+Method
+
+3.1
+Physics-Informed Neural Networks (PINNs)
+
+In this paper, we focus on solving the following partial differential equations (PDEs) defined on a domain Ω⊂Rd:
+
+Lu(x) = R(x) in Ω,
+Bu(x) = B(x) on Γ,
+(1)
+
+where L and B are the differential operators for the residual in Ωand for the boundary/initial condition on Γ. PINN
+[54] is a neural network-based PDE solver via minimizing the following boundary Lb(θ) and residual loss Lr(θ)
+functions.
+
+nb
+X
+
+nr
+X
+
+L(θ) = λbLb(θ) + λrLr(θ) = λb
+
+i=1
+|Buθ(xb,i) −B(xb,i)|2 + λr
+
+i=1
+|Luθ(xr,i) −R(xr,i)|2.
+(2)
+
+nb
+
+nr
+
+where λb, λr > 0 are the weights for balancing the losses. nb, nr are the number of boundary points {xb,i}nb
+i=1 ⊂Γ
+and residual points {xr,i}nr
+i=1 ⊂Ω, respectively. uθ is the neural network model parameterized by θ.
+
+3.2
+Methodology for High-Dimensional PDEs
+
+We first adopt the simple high-dimensional second-order Poisson’s equation for illustration; then, we move to the
+general case covering a variety of high-dimensional PDEs.
+
+3.2.1
+Introductory Case of the High-Dimensional Poisson’s Equation
+
+We consider a simple high-dimensional second-order Poisson’s equation for illustration:
+
+d
+X
+
+∂2
+
+∂x2
+i
+u(x) = R(x),
+x ∈Ω⊂Rd,
+(3)
+
+∆u(x) =
+
+i=1
+
+where u is the unknown exact solution, and uθ is our PINN model parameterized by θ. The memory scales quadratically
+as d increases due to the growing network size at the first input layer of uθ and the increasing number of second-order
+derivatives. So, for extremely high-dimensional PDEs containing many second-order terms, using only one collocation
+point can lead to insufficient memory, whose memory cost cannot be further reduced in the traditional SGD over
+collocation points scenario. The huge memory cost is also incurred by the large input size at the first layer of uθ, which
+is the same as the PDE dimensionality.
+However, the memory problem is solvable by inspecting the residual loss on the collocation point x:
+
+!2
+
+d
+X
+
+∂2
+
+ℓ(θ) = 1
+
+∂x2
+i
+uθ(x) −R(x)
+
+,
+(4)
+
+2
+
+i=1
+
+The gradient with respect to the model parameters θ for training the PINN is
+
+d
+X
+
+! d
+X
+
+!
+
+∂2
+
+∂
+∂θ
+∂2
+
+grad(θ) := ∂ℓ(θ)
+
+∂x2
+i
+uθ(x) −R(x)
+
+.
+(5)
+
+∂θ
+=
+
+∂x2
+i
+uθ(x)
+
+i=1
+
+i=1
+
+We are only differentiating with respect to parameters θ on the d PDE terms
+∂2
+
+∂x2
+i uθ(x), which is the memory bottleneck
+in the backward pass since the shape of the gradient is proportional to both the PDE dimension and the parameter count
+of the PINN. In contrast, the first part
+
+Pd
+i=1
+∂2
+
+∂x2
+i uθ(x) −R(x)
+
+
+is a scalar, which can be precomputed and detached
+from the GPU since it is not involved in the backpropagation for θ. Since the full gradient grad(θ) is the sum of d
+independent terms, we can sample several terms for stochastic gradient descent (SGD) using the sampled unbiased
+gradient estimator. Concretely, our algorithm can be summarized as follows:
+
+2. For i = 1, 2, · · · , d, compute
+∂2
+
+∂x2
+i uθ(x). If i ∈I, then keep the gradient with respect to θ, else we detach it
+from the GPU to save memory. After detachment, the term will not be involved in the costly backpropagation,
+and its gradient with respect to θ will not be computed.
+
+3. Compute the unbiased stochastic gradient used to update the model
+
+d
+X
+
+! X
+
+!
+
+∂2
+
+∂2
+
+gradI(θ) = d
+
+∂
+∂θuθ(x)
+
+∂x2
+i
+uθ(x) −R(x)
+
+.
+(6)
+
+∂x2
+i
+
+|I|
+
+i=1
+
+i∈I
+
+4. If not converged, go to 1.
+
+Our algorithm enjoys the following good properties and extensions:
+
+• Low memory cost: Since the main cost is from the backward pass, and we are only backpropagating over terms
+with i ∈I, the cost is the same as the corresponding |I|-dimensional PDE.
+
+• Unbiased stochastic gradient: Our gradient is an unbiased estimator of the true full batch gradient, i.e.,
+EI [gradI(θ)] = grad(θ), so that modern SGD accelerators such as Adam [38] can be adopted.
+
+• Accumulate gradient for full batch GD: For the full GD that exceeds the memory, we can select non-overlapping
+index sets {Ik}k∈K such that ∪kIk = {1, 2, · · · , d}, then we can combine these minibatch gradients to get the
+full gradient,
+1
+|K|
+P
+
+k gradIk(θ) = grad(θ). This baseline process is memory-efficient but time-consuming. It is
+memory-efficient since it divides the entire computationally intensive gradient into the sum of several stochastic
+gradients whose computations are memory-efficient. This operation is conducted one by one using the “For loop
+from i = 1 to d”. But it is rather time-consuming because the “For loop” cannot be parallelized.
+
+A common practice in PINNs is to sample stochastic collocation points to reduce the batch size of points, which is
+a common way to reduce memory costs in previous methods and even the entire field of deep learning. Next, we
+compare SDGD with SGD over collocation points:
+
+• SGD on collocation points has a minimum batch size of 1 point plus the d-dimensional equation, i.e., the
+minimal cost of vanilla SGD over train collocation/residual points solely is choosing one residual point x and
+backpropagate model parameters θ through all the d dimensions:
+
+d
+X
+
+!
+d
+X
+
+!
+
+∂2
+
+∂2
+
+∂
+∂θuθ(x)
+
+∂x2
+i
+uθ(x) −R(x)
+
+grad(θ) =
+
+∂x2
+i
+
+(7)
+
+i=1
+
+i=1
+
+|
+{z
+}
+backproprogation over d dimensions
+
+• SDGD can be combined with SGD on points, so its minimal batch size is 1 point plus 1D equation, i.e., selecting
+a point and then backpropagating over only one dimension with the unbiased stochastic gradient as follows:
+
+!
+∂2
+
+d
+X
+
+∂2
+
+∂
+∂θuθ(x)
+
+
+∂x2
+i
+uθ(x) −R(x)
+
+grad{i}(θ) = d
+
+∂x2
+i
+
+(8)
+
+i=1
+
+|
+{z
+}
+backproprogation over 1 dimension
+
+• Thus, our method SDGD can solve high-dimensional PDEs arbitrarily since its minimal computational cost will
+grow much more slowly than conventional SGD as the dimension d increases. Empirically, it is interesting to
+see how the two SGDs affect convergence. In particular, B-point + D-term with the same B × D quantity has
+the same memory cost, e.g., 50-point-100-terms and 500-point-10-terms.
+
+3.2.2
+General Case
+
+Now, we move from the simple Poisson’s equation to more general cases. We are basically performing the following
+decomposition on the PDE differential operator/PDE terms:
+
+NL
+X
+
+Lu =
+
+i=1
+Liu,
+(9)
+
+• In the d-dimensional Poisson cases, NL = d and Liu =
+∂2
+
+∂x2
+i u(x). This observation also highlights the
+significance of decomposition methods for high-dimensional Laplacian operators. The computational bottleneck
+in many high-dimensional second-order PDEs often lies in the high-dimensional Laplacian operator.
+
+• Consider the d-dimensional Fokker–Planck (FP) equations, which are ubiquitous in science and engineering.
+It is originally derived from statistical mechanics to describe the evolution of stochastic differential equations
+(SDEs). Recently, a real-world application of SDE and its associated FP equation is for generative modeling
+[59]. Furthermore, it also generalizes the Black-Scholes equation in mathematical finance, the Hamilton-Jacobi-
+Bellman equation in optimal control, and Schr¨odinger equation in quantum physics.
+
+d
+X
+
+d
+X
+
+∂2
+
+∂u(x, t)
+
+∂
+∂xi
+[Fi(x)u(x, t)] + 1
+
+∂t
+= −
+
+∂xi∂xj
+[Dij(x)u(x, t)] ,
+(10)
+
+2
+
+i=1
+
+i,j=1
+
+where x = (x1, x2, . . . , xn) is a d-dimensional vector, u(x, t) is the probability density function of the
+stochastic process x(t), Fi(x) is the i-th component of the drift coefficient vector F (x), and Dij(x) is the
+(i, j)-th component of the diffusion coefficient matrix D(x). Then, our decomposition over the PDE terms is
+
+d
+X
+
+d
+X
+
+∂2
+
+Lu = ∂u(x, t)
+
+∂
+∂xi
+[Fi(x)u(x, t)] −1
+
+∂t
++
+
+∂xi∂xj
+[Dij(x)u(x, t)]
+
+2
+
+i=1
+
+i,j=1
+
+(11)
+
+1
+
+d
+X
+
+d
+X
+
+2
+∂2
+
+∂xi∂xj
+[Dij(x)u(x, t)]
+
+=
+
+d2
+∂u(x, t)
+
+∂t
++ 1
+
+d
+∂
+∂xi
+[Fi(x)u(x, t)] −1
+
+i,j=1
+Liju(x),
+
+=
+
+i,j=1
+
+2
+∂2
+∂xi∂xj [Dij(x)u(x, t)] .
+
+where we denoted Liju(x) =
+1
+d2
+∂u(x,t)
+
+∂t
++ 1
+
+d
+∂
+∂xi [Fi(x)u(x, t)] −1
+
+• The d-dimensional bi-harmonic equation: ∆2u(x) = 0, x ∈Ω⊂Rd, where ∆= Pd
+i=1
+∂2
+
+∂x2
+i is the Laplacian
+operator. For this high-dimensional fourth-order PDE, we can decompose as follows for the PDE operator/terms:
+
+d
+X
+
+d
+X
+
+∂4
+
+i,j=1
+Liju(x),
+where Liju(x) =
+∂4
+
+Lu = ∆2u(x) =
+
+∂x2
+i ∂x2
+j
+u(x) =
+
+∂x2
+i ∂x2
+j
+u(x).
+(12)
+
+i,j=1
+
+• For other high-dimensional PDEs, their complexity arises from the dimensionality itself. Therefore, it is always
+possible to find decomposition methods that can alleviate this complexity.
+
+We go back to the algorithm after introducing these illustrative examples; the computational and memory bottleneck
+is the residual loss:
+ℓ(θ) = 1
+
+2 (Lu(x) −R(x))2 .
+(13)
+
+The gradient with respect to the model parameters θ for training the PINN is
+
+NL
+X
+
+! NL
+X
+
+!
+
+grad(θ) = ∂ℓ(θ)
+
+∂
+∂θLiuθ(x)
+
+i=1
+Liuθ(x) −R(x)
+
+.
+(14)
+
+∂θ
+=
+
+i=1
+
+Subsequently, we are sampling the red part to reduce memory cost and to accelerate training. Our algorithm can be
+summarized in Algorithm 1.
+
+3.3
+Extensions: Gradient Accumulation and Parallel Computing
+
+Algorithm 1 Training Algorithm for scaling-up by sampling the dimension in the backward pass.
+
+1: while NOT CONVERGED do
+2:
+Choose random indices I ⊂{1, 2, · · · , NL} where |I| is the cardinality of the set I, which is the batch size
+over PDE terms, where we can set |I| ≪NL to minimize memory cost.
+3:
+for i ∈{1, 2, · · · , NL} do
+
+4:
+compute Liuθ(x). If i ∈I, then keep the gradient with respect to θ; else, we detach it from the GPU to
+save memory. After detachment, the term will not be involved in the costly backpropagation, and its gradient with
+respect to θ will not be computed, which saves GPU memory costs.
+5:
+end for
+6:
+Compute the unbiased stochastic gradient used to update the model as below:
+
+NL
+X
+
+! X
+
+!
+
+∂
+∂θLiuθ(x)
+
+gradI(θ) = NL
+
+i=1
+Liuθ(x) −R(x)
+
+.
+(15)
+
+|I|
+
+i∈I
+
+7: end while
+
+3.4
+Further Speed-up via Simultaneous Sampling in Forward and Backward Passes
+
+In this section, we discuss how to accelerate further large-scale PINN training based on our proposed memory reduction
+methods to make it both fast and memory efficient.
+Although the proposed methods in the previous Algorithm 1 can significantly reduce memory cost and use SDGD
+to obtain some acceleration through gradient randomness, the speed is still slow for particularly large-scale problems
+because we need to calculate each term {Liu(x)}NL
+i=1 in the forward pass one by one, and we are only omitting some
+these terms in the backward pass to scale up. For example, in extremely high-dimensional cases, we may need to
+calculate thousands of second-order derivatives of PINN, and the calculation speed is clearly unacceptable.
+To overcome this bottleneck, we can perform the same unbiased sampling on the forward pass to accelerate it while
+ensuring that the entire gradient is unbiased. I.e., we only select some indices for calculation in the forward pass and
+select another set of indices for the backward pass, combining them into a very cheap yet unbiased stochastic gradient.
+Mathematically, consider the full gradient grad(θ) again given in equation (14). We choose two random and
+independent indices sets I, J ⊂{1, 2, · · · , NL} for the sampling of the backward and the forward passes, respectively.
+The corresponding stochastic gradient is:
+
+
+
+
+
+
+
+
+
+!
+
+X
+
+gradI,J(θ) = NL
+
+NL
+
+∂
+∂θLiuθ(x)
+
+X
+
+j∈J
+Ljuθ(x)
+
+−R(x)
+
+.
+(16)
+
+
+
+
+
+|I|
+
+|J|
+
+i∈I
+
+Since I, J are independent, the gradient estimator is unbiased: EI,JgradI,J(θ) = grad(θ). Our algorithm can be
+summarized in Algorithm 2.
+
+Algorithm 2 Training Algorithm for scaling-up and further speeding-up by sampling forward and backward passes.
+
+1: while NOT CONVERGED do
+2:
+Choose random indices I, J ⊂{1, 2, · · · , NL}, where we can set |I| ≪NL to minimize memory cost and
+|J| ≪NL to further speed up.
+3:
+for i ∈I do
+4:
+compute Liuθ(x) and keep the gradient with respect to θ.
+
+5:
+end for
+6:
+for j ∈J do
+7:
+compute Ljuθ(x) and detach it to save memory cost.
+8:
+end for
+9:
+Compute the unbiased stochastic gradient used to update the model given in equation (16).
+10: end while
+
+Algorithm 3 Training Algorithm for scaling-up and more speeding-up by sampling both the forward and backward
+passes only once.
+
+1: while NOT CONVERGED do
+2:
+Choose random indices I ⊂{1, 2, · · · , NL}, where we can set |I| ≪NL to minimize memory cost and to
+further speed up.
+
+3:
+for i ∈I do
+4:
+compute Liuθ(x) and keep the gradient with respect to θ.
+5:
+end for
+6:
+Compute the stochastic gradient used to update the model
+
+NL
+
+!
+
+! X
+
+!
+
+∂
+∂θLiuθ(x)
+
+gradI,I(θ) = NL
+
+X
+
+i∈I
+Liuθ(x)
+
+−R(x)
+
+.
+
+|I|
+
+|I|
+
+i∈I
+
+7: end while
+
+3.5
+Additional Speed-up via Sampling Only Once
+
+In the previous section, we introduced Algorithm 2, which aims to accelerate SDGD by randomly sampling forward
+and backward passes. To ensure unbiased gradients, we independently sample the forward and backward passes.
+However, this leads to additional computational overhead. If we used the same sample for both the forward and
+backward passes, our computational cost would be even lower than Algorithm 2, resulting in further acceleration.
+Nonetheless, the gradients obtained in this manner are biased due to the correlations between the forward and backward
+pass samples, and the batch size for sampling dimension |I| controls the bias: a larger batch size |I| leads to smaller
+bias. Fortunately, in practice, this approach often converges rapidly. We introduce this in Algorithm 3.
+The empirical success of Algorithm 3 can be attributed to the bias-speed tradeoff and its relatively low bias in
+practice. Algorithm 3 is the fastest due to the sampling only once. It can converge well thanks to the low bias in practice,
+as long as the batch size for sampling dimension |I| is not too small, which will be experimentally demonstrated in
+Section 5.1.2.
+
+4
+Theory
+
+In this section, we analyze the convergence of our proposed Algorithms 1 and 2.
+
+4.1
+SDGD is Unbiased
+
+In previous sections, we have shown that the stochastic gradients generated by our proposed SDGD are unbiased:
+
+Theorem 4.1. The stochastic gradients gradI(θ) and gradI,J(θ) in our Algorithms 1 and 2, respectively, parameterized
+by index sets I, J, are an unbiased estimator of the full-batch gradient grad(θ) using all PDE terms, i.e., the expected
+values of these estimators match that of the full-batch gradient, EI[gradI(θ)] = EI,J[gradI,J(θ)] = grad(θ).
+
+Proof. We prove the theorem in A.1.
+
+4.2
+SDGD Reduces Gradient Variance
+
+In this subsection, we aim to show that SDGD can be regarded as another form of SGD over PDE terms, serving as a
+complement to the commonly used SGD over residual points. Specifically, |B|-point + |I|-term where |B|, |I| ∈Z+
+
+problem. Additionally, during testing, we focus on relative errors, and normalization here is, in essence, a normalization
+concerning dimensionality following the relative error we care about. The full batch gradient is given by
+
+NL
+X
+
+Nr
+X
+
+Nr
+X
+
+!
+
+g(θ) :=
+1
+NrN 2
+L
+
+n=1
+(Luθ(xn) −R(xn)) ∂
+
+∂θ Luθ(xn) =
+1
+NrN 2
+L
+
+∂
+∂θ Liuθ(xn)
+
+.
+(17)
+
+n=1
+(Luθ(xn) −R(xn))
+
+i=1
+
+If the random index sets I ⊂{1, 2, · · · , NL} and B ⊂{1, 2, · · · , Nr} are chosen, then the SDGD gradient with |B|
+residual points and |I| PDE terms using these index sets is
+
+X
+
+!
+
+gB,I(θ) =
+1
+|B||I|NL
+
+∂
+∂θLiuθ(xn)
+
+X
+
+n∈B
+(Luθ(xn) −R(xn))
+
+,
+(18)
+
+i∈I
+
+where | · | computes the cardinality of a set. It is straightforward to show that EB,I[gB,I(θ)] = g(θ).
+
+Theorem 4.2. For the random index sets (B, I) where I ⊂{1, 2, · · · , NL} is that for indices of PDE terms/dimensions
+and B ⊂{1, 2, · · · , Nr} is that for indices of residual points, then
+
+VB,I[gB,I(θ)] = C1|I| + C2|B| + C3
+
+|B||I|
+,
+(19)
+
+where V computes the variance of a random variable, C1, C2, C3 are constants independent of B, I but dependent on
+model parameters θ.
+
+Proof. We prove the theorem in A.2.
+
+Theorem 4.2 focuses on the gradient variance after fixing the current model parameter θ, i.e., given θ at the current
+epoch, we investigate the SDGD gradient variance at the next optimization round.
+Intuitively, the variance of the stochastic gradient tends to decrease as the batch sizes (|B|, |I|) increase, and it
+converges to zero for |B|, |I| →∞, where we considered sampling with replacement to make the theorem clear.
+Further, the SDGD gradient variance can be rewritten as C1
+
+|I| +
+C3
+|B||I|, where B is the set for sampling residual
+points and I is that for sampling PDE terms/dimensions. C1 is the variance from points, and therefore, sampling more
+points, i.e., increasing |B|, can reduce it. Similarly, C2 is the variance from PDE terms/dimensions. C3 is related to
+the variance due to the correlation between sampling points and PDE terms/dimensions.
+This verifies that SDGD can be regarded as another form of SGD over PDE terms, serving as a complement to the
+commonly used SGD over residual points. |B|-point + |I|-term with the same |B| × |I| quantity has the same memory
+cost. According to Theorem 4.2, under the same memory budget, i.e., |B| × |I| is fixed, then there exists a particular
+choice of batch sizes |B| and |I| that minimizes the gradient variance, in turn accelerating and stabilizing convergence.
+This is because the stochastic gradient variance VB,I[gB,I(θ)] is a function of finite batch sizes |B| and |I|, which
+therefore can achieve its minimum value at a certain choice of batch sizes.
+Let us take the extreme cases as illustrative examples. The first extreme case is when the PDE terms have no
+variance, meaning that the terms ∂
+
+|B| + C2
+
+∂θLiuθ(xn) are identical for all i after we fix n, i.e., C2 = 0, and the SDGD variance
+becomes C1|I|+C3
+
+|B||I|
+. In this case, if a memory budget of, for example, |B||I| = 100 units is given, the optimal choice
+would be to select 100 points and one PDE term with the minimum variance, i.e., we obtain the lowest SDGD variance
+by choosing |B| = 100 and |I| = 1. Choosing more PDE terms would not decrease the gradient variance and would
+be less effective than using the entire memory budget for sampling points. Conversely, if the points have no variance
+in terms of the gradient they induce, i.e., C1 = 0, the optimal choice would be one point and 100 PDE terms, i.e.,
+|I| = 100 and |B| = 1. In practice, the selection of residual points and PDE terms will inevitably introduce some
+variance. Therefore, in the case of a fixed memory cost, the choice of batch size for PDE terms and residual points
+involves a tradeoff. Increasing the number of PDE terms reduces the variance contributed by the PDE terms but also
+decreases the number of residual points, thereby increasing the variance of the points. Conversely, decreasing the
+number of PDE terms reduces the variance from the points but increases the variance from the PDE terms. Thus, there
+exists an optimal selection strategy to minimize the overall gradient variance since the choices of batch sizes are finite.
+
+4.3
+Gradient Variance Bound and Convergence of SDGD
+
+To establish the convergence of unbiased stochastic gradient descent, we require either Lipschitz continuity of the
+gradients [40] or bounded variances [14, 48], with the latter leading to faster convergence. To prove this property, we
+need to take the following steps. Firstly, we define the neural network serving as the surrogate model in PINN.
+
+Definition 4.1. (Neural Network). A deep neural network (DNN) uθ : x = (x1, . . . , xd) ∈Rd 7→uθ(x) ∈R,
+parameterized by θ of depth L is the composition of L linear functions with element-wise non-linearity σ, is expressed
+as uθ(x) = WLσ(WL−1σ(· · · σ(W1x) · · · ), where x ∈Rd is the input, and Wl ∈Rml×ml−1 is the weight matrix at
+l-th layer with d = m0 and mL = 1. The parameter vector θ is the vectorization of the collection of all parameters.
+We denote h as the maximal width of the neural network, i.e., h = max(mL, · · · , m0).
+
+For the nonlinear activation function σ, the residual ground truth R(x), we assume the following:
+
+Assumption 4.1. We assume that the activation function is smooth and |σ(k)(x)| ≤1 and σ(k) is 1-Lipschitz, for all
+0 ≤k ≤n, where n is the highest order of the PDE under consideration, σ(k) denotes the kth order derivative of σ,
+e.g., the sine and cosine activations. We assume that |R(x)| ≤R for all x ∈Ωwhere R is a constant.
+
+Remark 1. The sine and cosine functions naturally satisfy the aforementioned conditions. As for the hyperbolic
+tangent (tanh) activation function, when the order n of the PDE is determined, there exists a constant Cn such that the
+activation function Cn tanh(x) satisfies the given assumptions. This constant can be absorbed into the weights of the
+neural network. This is because both the tanh function and its derivatives up to order n are bounded.
+
+Assumption 4.1 gives the boundedness of the activation function σ and the residual ground truth R(x). Furthermore,
+to establish the stochastic gradient variance bounds for SDGD, we also need to assume the boundedness of the PDE
+differential operators Li where L = PNL
+i=1 Li, as follows.
+
+Assumption 4.2. We assume the highest-order derivative in the PDE operator L = PNL
+i=1 Li is n. We view each Li as
+
+x, u(x), ∂u(x)
+
+∂xn
+
+, which is a mapping Rd+1+d+···+dn →R since
+
+∂x , · · · , ∂nu(x)
+
+∂x , · · · , ∂nu(x)
+
+∂xn
+
+7→Li
+
+x, u(x), ∂u(x)
+
+x ∈Rd, ∂nu(x)
+
+∂xn
+∈Rdn. Then, we assume that each PDE operator Li is bounded in the sense that if its input space
+
+x, u(x), ∂u(x)
+
+∂xn
+
+∈Rd+1+d+···+dn is compact, then the output space of Li is bounded.
+
+∂x , · · · , ∂nu(x)
+
+The motivation is that x is in a compact domain, i.e., the finite set of training residual/collocation points, since the
+training is finished in finite time. Due to Lemma 4.1, high-order derivatives of the neural network, i.e., ∂nuθ(x)
+
+∂xn
+, can
+also be bounded in a compact domain by bounded optimization trajectory assumption stated later in Theorem 4.3, i.e.,
+the parameter θ is assumed to be bounded during optimization. Combining these guarantees the PINN residual’s and
+SDGD-PINN gradient’s boundedness throughout the optimization, which can lead to convergence thanks to bounded
+gradient variance [14, 48]. Assumption 4.2 is realistic since most PDE coefficients are constant or continuous functions.
+
+Lemma 4.1. (Bounding the Neural Network Derivatives) Consider the neural network defined as Definition 4.1 with
+parameters θ, depth L, and width h, then the neural network’s derivatives can be bounded as follows.
+
+vec
+∂n
+
+L−1
+Y
+
+∂xn uθ(x)
+
+
+
+
+≤(n −1)!dn−1(L −1)n−1M(L)
+
+l=1
+M(l)n,
+(20)
+
+vec
+∂
+
+L−1
+Y
+
+∂θ
+∂n
+
+∂xn uθ(x)
+
+
+
+
+≤h2n!dn(L −1)nM(L)
+
+l=1
+M(l)n+1 max {∥x∥, 1} ,
+(21)
+
+where M(l) = max {∥Wl∥, 1}, n is the derivative order, the norms are all vector or matrix 2 norms and vec
+denotes vectorization of the high-order derivative tensor, and h is the maximal width of the neural network, i.e.,
+h = max(mL, · · · , m0).
+
+Proof. The proof is presented in A.3.
+
+Remark 2. Intuitively, given the order of the PDE and the neural network structure, it is observed that both of them
+are finite. Consequently, the norms of the higher-order derivatives of the network are necessarily bounded by a quantity
+related to its weight matrices, the number of layers, the width, the PDE order, and the network input x.
+
+From the boundedness of the derivatives of the neural network in PINN given by Lemma 4.1, coupled with our
+assumed boundedness of the PDE operator in Assumption 4.2, we can infer that the PINN residual is also bounded,
+i.e., the boundedness of the numerical values obtained when the PDE operator acts on the neural network of PINN,
+which can further ensure bounded stochastic gradient variance during SDGD optimization.
+Next, we define the SGD trajectory, and we will demonstrate the convergence of the SGD trajectory based on the
+stochastic gradients provided by our Algorithms 1 and 2.
+
+Definition 4.2. (SGD Trajectory) Given step sizes (learning rates) {γn}∞
+n=1, and the initialized PINN parameters θ1,
+then the update rules of SGD using Algorithms 1 and 2 are
+
+θn+1 = θn −γngB,J(θn),
+(22)
+
+θn+1 = θn −γngB,I,J(θn),
+(23)
+
+respectively. Here, the stochastic gradient produced by Algorithm 1 gB,I(θ) is given in equation (18) , and the
+stochastic gradient produced by Algorithm 2 is
+
+
+
+
+
+
+
+
+
+X
+
+!
+
+∂
+∂θLiuθ(xn)
+
+gB,I,J(θ) =
+1
+|B||I|NL
+
+NL
+
+X
+
+X
+
+j∈J
+Ljuθ(xn)
+
+−R(xn)
+
+,
+(24)
+
+
+
+|J|
+
+n∈B
+
+i∈I
+
+where B is the index set sampling over the residual points, while I and J sample the PDE terms in the backward and
+forward passes, respectively.
+
+Since the PINN optimization landscape is generally nonconvex, we consider SDGD’s convergence to the regular
+minimizer defined as follows. Kawaguchi [37] demonstrates that such a “regular minimizer” can be good enough in
+practice.
+
+Definition 4.3. (Regular Minimizer) In PINN’s general nonconvex optimization landscape. We say that a local
+minimizer θ∗is a regular minimizer if H(θ∗) ≻0, i.e., the PINN loss function’s Hessian matrix at θ∗is positive
+definite.
+
+The following theorem demonstrates the convergence rate of SDGD in PINN training. The statement follows
+Theorem 4 in Mertikopoulos et al. [48] and the proof is to check if the conditions in that theorem can be satisfied in
+our setting.
+
+Theorem 4.3. (Convergence of SDGD under Bounded Gradient Variance) Assume Assumptions 4.1 and 4.2 hold,
+fix some tolerance level δ > 0, suppose that the SGD trajectories given in equations (22, 23) are bounded, i.e.,
+∥W n
+l ∥≤M(l) for all epoch n where the collection of all {W n
+l }L
+l=1 is θn, and that the regular minimizer of the
+PINN loss is θ∗as defined in Definition 4.3, and that the SGD step size follows the form γn = γ/(n + m)p for some
+p ∈(1/2, 1] and large enough γ, m > 0, then
+
+1. There exist neighborhoods U and U1 of θ∗such that, if θ1 ∈U1, the event
+
+E∞= {θn ∈U for all n ∈N}
+(25)
+
+occurs with probability at least 1 −δ, i.e., P(E∞|θ1 ∈U1) ≥1 −δ.
+
+2. Conditioned on E∞, we have
+E[∥θn −θ∗∥2|E∞] ≤O(1/np).
+(26)
+
+Proof. The proof is presented in A.4.
+
+Remark 3. The convergence rate of stochastic gradient descent is O(1/np), where O represents the constant involved,
+including the variance of the stochastic gradient. A larger variance of the stochastic gradient leads to slower
+convergence, while a smaller variance leads to faster convergence. The selection of the learning rate parameters γ
+and m depends on the specific optimization problem itself. For example, in a PINN problem, suitable values of γ and
+m ensure that the initial learning rate is around 1e-4, which is similar to the common practice for selecting learning
+rates.
+
+Remark 4. The theorem is mainly due to Theorem 4 in Mertikopoulos et al. [48], which is proved via checking if
+the required conditions are satisfied. The convergence result is local and requires that the initialized neural network
+parameter θ1 in the first epoch be inside the neighborhood U1. A proper neural network weight/parameter initialization,
+e.g., Xavier initialization [15] used in our experiment, can mitigate this. This approach avoids the problem of
+initializing weights with too large or too small values, thus ensuring that the loss and gradient do not explode to
+infinity or vanish to zero during forward and backward passes, contributing to a small initial loss function value, which
+signifies a starting point close to a local minimum and stable gradient and fast convergence.
+
+4.4
+Discussion on Batch Sizes Selection
+
+We have introduced our SDGD algorithms with three batch sizes: |B| for the batch size of residual points, |I| for the
+dimensions included in the backward pass, and |J| for the dimensions included in the forward pass; see the stochastic
+gradients in equations (17, 18, 24). In this subsection, we further discuss how to choose batch sizes.
+Firstly, both computational cost and memory consumption expand with the increase in batch sizes |B|, |I|, |J|.
+Additionally, SDGD’s stochastic gradient variance diminishes with larger batch sizes, facilitating better convergence.
+Therefore, it represents a tradeoff between computational load and performance. Further, memory consumption is
+directly linked to |B|·|I|, where |B| represents the number of residual points and |I| involves the number of dimensions
+participating in the backward pass. |J| has nothing to do with the memory cost since it is for the forward pass detached
+from the GPU after computation.
+Users should determine the appropriate batch size based on their GPU memory capacity. Given a specified memory
+constraint, i.e., once the |B| · |I| value is determined, we recommend a balanced selection to ensure similarity between
+the two batch sizes, i.e., |I| ≈|B|. Extremely unbalanced cases, such as setting one batch size to a minimum of 1,
+are not advised. We explain the negative effect of unbalanced batch sizes as follows. If the batch size for residual
+points, |B|, is too small, it can hinder the GPU from leveraging its advantage in large-batch parallel computing. The
+parallel nature of neural network inferences for each residual point cannot be used, resulting in slower execution
+due to the exceptionally small batch size of points |B|. Meanwhile, if one reduces the batch for sampling dimension
+|I| too much, we cannot reuse the computation graphs for the derivatives along different dimensions, leading to a
+significant slowdown. Specifically, taking the high-dimensional Laplacian operator as an example, the neural network’s
+second-order derivative with respect to the j-th dimension is given by
+
+L−1
+X
+
+∂2uθ(x)
+
+l=1
+(WLΦL−1(x) · · · Wl+1)diag(Ψl(x) · · · Ψ1(x)(W1):,j)(Wl · · · Φ1(x)W1),
+(27)
+
+∂x2
+j
+=
+
+where Φl(x) = diag[σ′(Wlσ(Wl−1σ(· · · σ(W1x))))] ∈Rml×ml, and Ψl(x) = diag[σ′′(Wlσ(Wl−1σ(· · · σ(W1x))))] ∈
+Rml×ml. For all dimensions j, the computations of Φl(x) and Ψl(x) are shared. Thus, computing multiple derivatives
+on one computational graph is faster than computing them from scratch without reusing the shared part. Hence, we
+recommend sampling an appropriate dimension batch size, such as 100 or more, and we avoid choosing a too small |I|
+to reuse the computation graph properly.
+As for the choice of |J| in Algorithm 2, we recommend setting |J| ≈|I|. This is because both |I| and |J| represent
+the dimension batch size, ensuring that the computational load for both forward and backward passes is roughly equal
+and the variances of the two samplings are similar. Although |J| does not affect memory consumption, setting it
+excessively large is not advisable, as it would resemble Algorithm 1, being memory-efficient but suffering from slow
+computation due to excessive forward pass workload.
+
+4.5
+Comparison with Latest Work
+
+Recently, a line of work has been proposed for high-dimensional PINN, including Random Smoothing PINN (RS-
+PINN) [28], Hutchinson trace estimation (HTE) PINN [27], and Score-PINN [29]. We compare these three latest
+papers with our SDGD proposed in this paper. Generally speaking, we demonstrate that SDGD is still more general,
+universal, applicable, easily implementable, contributory to high-order and high-dimensional PINN’s theory, and tends
+to have lower variance in most scenarios despite these latest follow-ups.
+
+4.5.1
+Comparison with RS-PINN
+
+RS-PINN [28] is another way to speed up and scale up PINN for high-dimensional PDEs, first proposed by He et al.
+[23]. However, we show that RS-PINN [28] is worse than SDGD-PINN in several aspects. First, RS-PINN cannot deal
+with PDEs with more than second-order terms since the corresponding variance reduction form cannot be derived,
+while SDGD applies to arbitrary high-dimensional high-order PDEs. Second, RS-PINN smoothes the network, and
+thus, it can only model smooth PDE solutions, i.e., RS-PINN is not a universal approximator. On the other hand,
+SDGD employs a regular neural network and is universal. Third, RS-PINN requires sampling, which leads to bias
+when dealing with nonlinear PDEs like the Sine-Gordon equation, as pointed out in Section 4.3 of RS-PINN paper
+[28]. Fourth, we compare RS-PINN with SDGD-PINN in Table 5 in this paper, where He et al. [23] is the RS-PINN.
+However, we demonstrate that SDGD is much faster than RS-PINN.
+Overall, the bias, over-smoothness, and limitation on lower-than-second-order derivatives threaten RS-PINN’s
+application. SDGD is better in these senses. SDGD also outperforms RS-PINN significantly in numerical experiments.
+
+4.5.2
+Comparison with HTE
+
+HTE’s [27] is another method for accelerating high-dimensional PINN. We compare SDGD with HTE in (1) gradient
+variance; (2) applicability and generality; (3) flexibility in code implementation; (4) numerical experiment; (5)
+theoretical contribution. Overall, SDGD is better than HTE [27] in these crucial aspects.
+
+1. Gradient variance: We first compare the variance of SDGD and HTE theoretically. Overall, SDGD and HTE
+have distinct pros and cons, but SDGD will be more stable in most high-dimensional PDEs than HTE.
+
+Hu et al. [27] gave examples where SDGD/HTE can be better and cases where they perform the same in their
+Section 3.3.2, which is the comprehensive and fair comparison showing that HTE is not necessarily better than
+SDGD.
+
+We further demonstrate that SDGD’s variance can be more stable than HTE in most extremely high-dimensional
+problems. Using the setting of second-order PDEs in Section 3.3.2 of HTE [27], SDGD and HTE both estimate
+the Hessian trace stochastically. The HTE paper shows that HTE’s variance comes from the off-diagonal
+terms, whose number grows quadratically with dimensionality. SDGD’s variance comes from the variability of
+on-diagonal terms, whose number grows linearly with dimension. Hence, with growing PDE dimensionality,
+HTE tends to suffer from more variance due to a faster-growing number of off-diagonal terms. In other words,
+the number of off-diagonal terms injecting noise into HTE’s stochastic gradient grows quadratically fast, while
+the number of on-diagonal terms injecting noise into SDGD only grows linearly.
+
+To conclude, regarding gradient variance, SDGD and HTE have distinct pros and cons, but SDGD will be more
+stable in most high-dimensional PDEs than HTE.
+
+2. Applicability and generality: Next, we compare the applicability of SDGD and HTE. SDGD can be applied
+to arbitrary high-dimensional and high-order PDEs thanks to the general decomposition of PDE operators
+L = PNL
+i=1 Li based on dimensionality. In contrast, HTE can only be used for first-order, second-order, and
+biharmonic PDEs, which enables the Tensor-Vector Product proposed in HTE.
+
+More specifically, HTE [27]’s Section 3.5.2 acknowledges HTE’s limitation. In contrast, we are always
+emphasizing SDGD’s generality to arbitrary PDEs throughout this paper.
+
+3. Implementation flexibility: Furthermore, SDGD is more flexible and can be implemented in both PyTorch [50]
+and JAX [8]. However, HTE [27] can only be implemented with JAX [8] Taylor mode auto-differentiation. The
+HTE paper [27] acknowledges HTE’s limitation in Section 3.2.3.
+
+In fact, PyTorch [50] is still more widely used than JAX [8] and has minimal requirements on the computer
+system. Hence, SDGD is more implementable than HTE.
+
+Additionally, regarding implementation, SDGD and HTE are compared in JAX implementation using Section
+5.1’s setting in the HTE paper [27]. We implemented other experiments (Sections 5.2, 5.3, and 5.4) in PyTorch
+since our baselines are also implemented in PyTorch. Thus, we keep the deep learning package the same for fair
+comparison and reproducible research.
+
+4. Numerical experiments: Meanwhile, we compare HTE and SDGD experimentally. As shown by Table 1 in
+the HTE paper [27], if both are implemented in JAX [8] and under fair comparison with the same memory and
+speed budgets, they perform similarly. So, SDGD and HTE are comparable in this case.
+
+But, as mentioned before, SDGD is more applicable and implementable than HTE, and SDGD generally has a
+low variance with the growing PDE dimension.
+
+5. Theoretical contribution: SDGD’s Section 4 provides a convergence theory for general high-order and high-
+dimensional PINN. This theoretical contribution can also be applied to bound the HTE gradient variance. It can
+also guarantee future work on general high-order and high-dimensional PINN.
+
+Overall, SDGD is better than HTE, especially regarding the variance in growing PDE dimension, generality, and
+implementation.
+
+4.5.3
+Comparison with Score-PINN
+
+5
+Experiments
+
+In this section, we conduct extensive experiments to demonstrate the stable and fast convergence of SDGD over several
+nonlinear PDEs. In particular, we compare our PINN-based method with other non-PINN mainstream approaches for
+solving high-dimensional PDEs [1, 21, 52], especially in terms of accuracy. We also demonstrate SDGD’s convergence
+in 100,000-dimensional nonlinear PDEs with complicated exact solutions. All the experiments in the main text are
+done on an NVIDIA A100 GPU with 80GB memory using PyTorch implementation [50].
+
+5.1
+SDGD Can Deal with Inseparable and Effectively High-Dimensional PDE Solutions
+
+Herein, we test the ability of SDGD to deal with linear/nonlinear PDEs with nonlinear, inseparable, and effectively
+high-dimensional PDE exact solutions in PINN’s residual loss. Specifically, we consider the following exact solution:
+
+uexact(x) =
+
+1 −∥x∥2
+2
+
+d−1
+X
+
+!
+
+i=1
+ci sin(xi + cos(xi+1) + xi+1 cos(xi))
+
+,
+(28)
+
+where ci ∼N(0, 1). Here the term
+
+1 −∥x∥2
+2
+
+is for a zero boundary condition on the unit sphere and for preventing
+the boundary from leaking the information of the solution, as we want to test SDGD’s ability to fit the residual where
+sampling over dimensions is employed. Furthermore, the following PDEs are considered in the unit ball Bd, all of
+which are associated with a zero boundary condition on the unit sphere:
+
+• Poisson equation
+∆u(x) = g(x),
+x ∈Bd,
+(29)
+
+where g(x) = ∆uexact(x).
+
+• Allen-Cahn equation
+∆u(x) + u(x) −u(x)3 = g(x),
+x ∈Bd,
+(30)
+
+where g(x) = ∆uexact(x) + uexact(x) −uexact(x)3.
+
+• Sine-Gordon equation
+∆u(x) + sin (u(x)) = g(x),
+x ∈Bd,
+(31)
+
+where g(x) = ∆uexact(x) + sin (uexact(x)).
+
+We would like to emphasize that the PDEs and the exact PDE solutions used here are highly nontrivial and challenging.
+
+• Nonlinear, inseparable, and effectively high-dimensional PDE exact solution: This PDE cannot be reduced to a
+lower-dimensional problem, and the exact solution of the PDE cannot be decomposed into lower-dimensional
+functions. It is worth noting that in the exact solution, all pairs of variables, both xi and xi+1, exhibit pairwise
+interactions and are highly coupled.
+
+• Anisotropic and nontrivial PDE exact solution: In addition, due to the random coefficients ci ∼N(0, 1) along
+different dimensions, the exact solution is anisotropic, which poses an additional challenge to SDGD. The exact
+solution is also highly nontrivial; its value’s standard deviation is large in high-dimensional spaces.
+
+• PDEs with different levels of nonlinearities: We test both linear and nonlinear PDEs to verify SDGD’s robustness.
+
+• Zero boundary condition to test SDGD on the residual part: In a d-dimensional problem, the boundary is
+typically (d −1)-dimensional. Therefore, if the boundary conditions are nontrivial, the boundary loss will leak
+information at a rate of (d −1)/d. To assess the impact of sampling the dimension in the residual loss in SDGD,
+we maintain a zero boundary condition to eliminate its interference. This also makes the PDE more challenging,
+as we have no knowledge of the exact solution from the boundary.
+
+• Unable to solve via traditional methods: These elliptic PDEs are traditionally solved by finite difference or finite
+element methods, which suffer from the curse of dimensionality, whose costs grow exponentially with respect
+to the dimension. The related work mentioned before, e.g., [1, 21, 54], is mainly tailored for time-dependent
+parabolic PDEs. Thus, traditional methods directly fail in these cases.
+
+The training details are as follows. The model is a 4-layer multi-layer perceptron network with 128 hidden units,
+which is trained via Adam [38] for 10K epochs, with an initial learning rate 1e-3, which linearly decays to zero at the
+end of the optimization. We select 100 random residual points at each Adam epoch (i.e., |B| = 100) and 20K fixed
+testing points uniformly from the unit ball. We utilize Algorithm 3 with a minibatch of 100 dimensions to randomly
+sample the second-order derivatives along various dimensions in the Laplacian operator in all the PDEs, i.e., |I| = 100.
+For vanilla PINN baseline [54], we use full dimension gradient descent with |I| equals the PDE dimensionality. We
+adopt the following model structure to automatically satisfy the zero boundary condition, which helps the model avoid
+boundary loss and avoid sampling the boundary points [45]:
+
+uSDGD
+θ
+(x) = (1 −∥x∥2
+2)uθ(x),
+(32)
+
+where uθ(x) is the neural network and uSDGD
+θ
+(x) is the boundary-augmented model. The hard constraint technique for
+PINN is popular to avoid the additional boundary loss [45]. We repeat our experiment 5 times with 5 independent
+random seeds.
+
+PDE
+Metric
+100 D
+1,000 D
+5,000 D
+10,000 D
+100,000 D
+Poisson
+Rel. L2 Error
+7.189E-3
+5.609E-4
+1.768E-3
+N.A.
+N.A.
+Allen-Cahn
+Rel. L2 Error
+7.187E-3
+5.617E-4
+1.773E-3
+N.A.
+N.A.
+Sine-Gordon
+Rel. L2 Error
+7.192E-3
+5.642E-4
+1.782E-3
+N.A.
+N.A.
+Time (Hour)
+0.05
+4.75
+30.54
+N.A.
+N.A.
+Memory (MB)
+1328
+4425
+56563
+>81252
+>81252
+
+Vanilla PINN
+
+PDE
+Metric
+100 D
+1,000 D
+5,000 D
+10,000 D
+100,000 D
+Poisson
+Rel. L2 Error
+7.189E-3
+5.611E-4
+1.758E-3
+1.850E-3
+2.175E-3
+Allen-Cahn
+Rel. L2 Error
+7.187E-3
+5.615E-4
+1.762E-3
+1.864E-3
+2.178E-3
+Sine-Gordon
+Rel. L2 Error
+7.192E-3
+5.641E-4
+1.795E-3
+1.854E-3
+2.177E-3
+Time (Hour)
+0.05
+0.75
+1.18
+1.5
+12
+Memory (MB)
+1328
+1788
+3335
+4527
+32777
+
+SDGD (Ours)
+
+Table 1: Relative L2 error, time, and memory costs for vanilla PINNs [54] and SDGD (Ours) across different PDEs
+under various high dimensions. Vanilla PINNs [54] run out-of-memory for an A100 GPU with 81252MB memory
+in more than 5,000 D, while SDGD scales up to 100,000 D. SDGD’s errors are similar to those of vanilla PINNs in
+relatively lower dimensions (100 D, 1,000 D, and 5,000 D) while being much faster and more memory-efficient.
+
+The test relative L2 errors and the convergence time are shown in Table 1, while the convergence curve of SDGD
+is shown in Figure 1. The main observations from the results are as follows.
+
+• Stable performances: SDGD demonstrates remarkable stability across various dimensions and different nonlinear
+PDEs, with relative L2 errors testing at approximately 1e-3. Furthermore, given that we have provided the
+same exact solution for each PDE and have kept the training and testing point samples fixed by using the
+same random numbers, the convergence curves of SDGD for different PDEs are remarkably similar. This is
+especially noticeable for Poisson and Allen-Cahn, where the convergence curves exhibit minimal distinctions.
+This highlights the stability of SDGD in the face of PDE nonlinearity.
+
+• Linear computational cost: Furthermore, SDGD’s memory and optimization time costs exhibit linear growth
+with respect to dimensionality. For instance, when transitioning from 10K dimensions to 100K dimensions, both
+memory and time costs increase by less than a factor of 10.
+
+• SDGD scales up PINNs to extremely high dimensions: In the case of 100K dimensions, we opted for |I| = 100
+dimensions for SDGD. If we were to employ the conventional full-batch gradient descent across all dimensions,
+even with just one residual point, the memory cost would surpass SDGD’s current setting by a factor of 10. This
+greatly exceeds the 80GB memory limit of an A100 GPU. Thus, SDGD allows for the scalability of PINN to
+handle large-scale PDE problems.
+
+• Smoother convergence curve in higher dimensions: We observe that the convergence curves of SDGD are
+smoother in high-dimensional scenarios, which could be attributed to the tendency of high-dimensional functions
+to be smoother thanks to the blessing of dimensionality.
+
+SDGD on 100D PDEs
+
+SDGD on 1K Dimensional PDEs
+
+100
+
+100
+
+SDGD: 100D Poisson PDE
+SDGD: 100D Sine-Gordon PDE
+SDGD: 100D Allen-Cahn PDE
+
+SDGD: 1K Dimensional Poisson PDE
+SDGD: 1K Dimensional Sine-Gordon PDE
+SDGD: 1K Dimensional Allen-Cahn PDE
+
+10
+1
+
+Relative L2 Error
+
+Relative L2 Error
+
+10
+1
+
+10
+2
+
+10
+3
+
+10
+2
+
+0
+2000
+4000
+6000
+8000
+10000
+Epoch
+
+0
+2000
+4000
+6000
+8000
+10000
+Epoch
+
+SDGD on 10K Dimensional PDEs
+
+SDGD on 100K Dimensional PDEs
+
+100
+
+100
+
+SDGD: 10K Dimensional Poisson PDE
+SDGD: 10K Dimensional Sine-Gordon PDE
+SDGD: 10K Dimensional Allen-Cahn PDE
+
+SDGD: 100K Dimensional Poisson PDE
+SDGD: 100K Dimensional Sine-Gordon PDE
+SDGD: 100K Dimensional Allen-Cahn PDE
+
+10
+1
+
+Relative L2 Error
+
+Relative L2 Error
+
+10
+1
+
+10
+2
+
+10
+2
+
+0
+2000
+4000
+6000
+8000
+10000
+Epoch
+
+0
+2000
+4000
+6000
+8000
+10000
+Epoch
+
+Figure 1: SDGD convergence curve for the Poisson, Allen-Cahn, and Sine-Gordon PDEs in 100, 1K, 10K, and 100K
+dimensions.
+
+second-order derivatives in the high-dimensional Laplacian operator. Consequently, when dealing with 10,000
+dimensions, regular PINNs surpass the memory capacity of an A100 GPU of 81252 MB. Moreover, in scenarios
+where vanilla PINNs can handle dimensions less than 5,000 D, the performance of SDGD is comparable, with
+the added benefits of significant acceleration and reduced memory consumption. In 100 D, since our batch size
+for dimension is |I| = 100, SDGD and vanilla PINN are the same algorithm. These results demonstrate that
+SDGD scales up and speeds up PINNs in very high dimensions.
+
+In sum, SDGD with PINN can tackle the CoD in solving nonlinear high-dimensional PDEs with inseparable and
+complicated solutions.
+
+5.1.1
+Ablation Study 1: Effect of the Batch Sizes for Residual Points and Sampled Dimensions
+
+Remark
+|I| · |B| = 104
+Lower Batch Sizes
+# of Sampled Dimensions |I|
+100
+1,000
+10
+10,000
+1
+100
+10
+10
+# of Residual Points |B|
+100
+10
+1,000
+1
+10,000
+10
+100
+10
+Relative L2 Error
+2.177E-3
+2.190E-3
+2.185E-3
+2.180E-3
+N.A.
+2.203E-3
+2.189E-3
+2.794E-3
+Speed (second per iteration)
+4.35s/it
+3.21s/it
+56.13s/it
+31.25s/it
+546.56s/it
+0.85s/it
+5.72s/it
+0.45s/it
+Time (Hour)
+12.08
+8.92
+155.92
+86.81
+1518.22
+2.37
+15.89
+1.25
+Memory (MB)
+32777
+32481
+33056
+32163
+33458
+5823
+5965
+1849
+
+Table 2: SDGD results for the 100,000-dimensional Sine-Gordon equation with anisotropic solutions under various
+batch sizes.
+
+In this section, we investigate the impact of the batch sizes of residual points |B| and dimensions sampled |I| in
+SDGD on its convergence results. We adopt the same experimental settings of 100,000-dimensional Sine-Gordon
+equations and hyperparameter choices as in Section 5.1, except we control these two batch sizes |B| and |I| in
+Algorithm 3. The results are presented in Table 2, where we manipulate the batch sizes in eight different cases with
+(|I|, |B|) = (100, 100) or (1000, 10) or (10, 1000) or (10000, 1) or (1, 10000) or (100, 10) or (10, 100) or (10, 10).
+We remark that the total batch size |I| · |B| = 104 for the first five cases. So, they should have similar memory costs
+according to Section 4.4. For the other three cases with (|I|, |B|) = (100, 10) or (10, 100) or (10, 10), we remark that
+we chose even smaller total batch sizes. For each case, we report the test relative L2 error, speed (second per iteration),
+total running time for 10K iterations, and GPU memory cost in MB.
+
+• Firstly, regarding performance, the convergence results of the final relative L2 error are quite consistent among
+various settings, indicating that SDGD is robust to the choice of batch size. Particularly, smaller batch sizes
+like (|I| = 100, |B| = 10), (|I| = 10, |B| = 100), and (|I| = 10, |B| = 10) converge only slightly worse than
+larger ones but with faster speeds, suggesting that selecting fewer points and dimensions is sufficient when
+dealing with high-dimensional PINNs.
+
+• As for memory consumption, let us consider the first five settings; if the total batch size (the numerical value
+of |I| · |B| = 104 for these five cases) remains the same, the memory usage is generally comparable. When
+selecting more points, additional memory is consumed due to the inherent memory usage of each point, but this
+constitutes only a small fraction of the total memory.
+
+• Regarding speed, we observe that reducing any batch sizes, |I| or |B|, accelerates the training. Specifically, the
+case “(|I|, |B|) = (100, 100)” runs slower than the case “(|I|, |B|) = (100, 10)” and the case “(|I|, |B|) = (10,
+100)”, and all of them run slower than the case with smallest batch size “(|I|, |B|) = (10, 10)”.
+
+• Consider the five cases with the same total batch size |I| · |B| = 104. We observed that extremely unbalanced
+batch sizes, e.g., “(|I|, |B|) = (10000, 1)” and “(|I|, |B|) = (1, 10000)”, result in particularly slow speeds.
+Conversely, in cases where a more balanced batch size is chosen, e.g., “(|I|, |B|) = (100, 100)”, the computation
+tends to run faster. If the batch size for residual points |B| is excessively small, the advantage of GPU parallel
+computing with large batches of residual points cannot be utilized, leading to a slowdown in speed. If the
+batch size for dimensions |I| is too small, it sacrifices the reuse of the computational graph for calculating the
+second-order derivatives along each dimension, resulting in slower execution, consistent with our analysis in
+Section 4.4.
+
+In summary, this section demonstrates the stability of SDGD concerning batch size. It highlights that achieving good
+convergence results in high-dimensional PINNs can be accomplished with a small batch of randomly selected points
+and dimensions using SDGD. We also validate the guideline for batch size selection in Section 4.4.
+
+5.1.2
+Ablation Study 2: Comparisons between Algorithms 1, 2, and 3
+
+Algorithm
+Metric
+1,000 D
+10,000 D
+100,000 D
+
+Relative L2 Error
+5.134E-4
+N.A.
+N.A.
+Time (Hour)
+4.36
+>24
+>120
+Memory (MB)
+1788
+4527
+32777
+
+Algorithm 1
+
+Relative L2 Error
+5.193E-4
+1.682E-3
+2.039E-3
+Time (Hour)
+1.08
+1.8
+14.4
+Memory (MB)
+1788
+4527
+32777
+
+Algorithm 2
+
+Relative L2 Error
+5.641E-4
+1.854E-3
+2.177E-3
+Time (Hour)
+0.75
+1.5
+12
+Memory (MB)
+1788
+4527
+32777
+
+Algorithm 3
+
+Table 3: Comparisons between Algorithms 1, 2, and 3 on the Sine-Gordon equations in various dimensions.
+
+We have demonstrated the rapid convergence of SDGD on complex nonlinear PDEs using Algorithm 3 and
+its stability in particularly high dimensions across various nonlinear PDEs. Next, we will compare the speed and
+efficacy of Algorithms 1, 2, and 3. Given the stability of SDGD across various PDEs, we will employ the example
+of the nonlinear Sine-Gordon PDE in various dimensions, as discussed in Section 5.1. We have maintained identical
+experimental hyperparameters to focus specifically on comparing the algorithms as in the previous section. Furthermore,
+for the batch sizes of the three algorithms, including the batch sizes for residual/collocation points (|B|), PDE
+terms/dimensions in the forward pass (|J|), and PDE terms/dimensions for the backward pass (|I|), we consistently
+chose |B| = |I| = |J| = 100, ensuring a fair comparison.
+The results are shown in Table 3. The memory cost of the three algorithms is the same because their values
+of |I| and |B| are equivalent, representing the number of residual points and dimensions involved in the backward
+pass, respectively. Regarding speed, Algorithm 1 necessitates a forward pass for all dimensions. Despite being
+memory-efficient, its speed is compromised by the massive forward pass computation, particularly in extremely high
+dimensions. Algorithm 3 is slightly faster than Algorithm 2. This is attributed to the fact that the former samples only
+once, utilizing the same set of dimensions for both forward and backward passes. In contrast, the latter requires two
+separate sets of dimensions for these passes. Regarding performance, Algorithm 1 slightly outperforms Algorithm 2,
+which, in turn, is slightly better than Algorithm 3. This is because we employ more randomness to accelerate at the
+expense of introducing a certain degree of gradient variance. Nevertheless, Algorithm 3, the fastest in terms of speed,
+proves to be quite effective, with marginal differences compared to more precise algorithms.
+
+5.2
+Nonlinear Fokker-Planck PDEs and Comparison with Strong Baselines
+
+Next, we present further results comparing our method based on PINN and other strong non-PINN baselines [1, 21, 52]
+for several nonlinear PDEs without analytical solutions. Thus, we adopt other methods’ settings and evaluate the model
+on one test point, where we show that SDGD-PINNs are state-of-the-art (SOTA) models that still outperform other
+competitors. Concretely, the following nonlinear PDEs are considered:
+
+• Allen-Cahn equation.
+
+∂tu(x, t) = ∆u(x, t) + u(x, t) −u(x, t)3,
+(x, t) ∈Rd × [0, 0.3],
+(33)
+
+with the initial condition u(x, t = 0) = arctan(maxi xi). We aim to approximate the solution’s true value on
+the one test point (x, t) = (0, · · · , 0, 0.3).
+
+• Semilinear heat equation.
+
+∂tu(x, t) = ∆u(x, t) + 1 −u(x, t)2
+
+1 + u(x, t)2 ,
+(x, t) ∈Rd × [0, 0.3],
+(34)
+
+Method
+PDE
+Dim=101
+Dim=102
+Dim=103
+Dim=104
+
+FBSNN [52]
+Allen-Cahn
+1.339E-3
+2.184E-3
+7.029E-3
+5.392E-2
+DeepBSDE [21]
+Allen-Cahn
+4.581E-3
+2.516E-3
+2.980E-3
+2.975E-3
+DeepSplitting [1]
+Allen-Cahn
+3.642E-3
+1.563E-3
+2.369E-3
+2.962E-3
+SDGD (Ours)
+Allen-Cahn
+7.815E-4
+3.142E-4
+7.042E-4
+2.477E-4
+
+Method
+PDE
+Dim=101
+Dim=102
+Dim=103
+Dim=104
+
+FBSNN [52]
+Semilinear Heat
+3.872E-3
+8.323E-4
+7.705E-3
+1.426E-2
+DeepBSDE [21]
+Semilinear Heat
+3.024E-3
+3.222E-3
+3.510E-3
+4.279E-3
+DeepSplitting [1]
+Semilinear Heat
+2.823E-3
+3.432E-3
+3.439E-3
+3.525E-3
+SDGD (Ours)
+Semilinear Heat
+1.052E-3
+5.263E-4
+6.910E-4
+1.598E-3
+
+Method
+PDE
+Dim=101
+Dim=102
+Dim=103
+Dim=104
+
+FBSNN [52]
+Sine-Gordon
+2.641E-3
+4.283E-3
+2.343E-1
+5.185E-1
+DeepBSDE [21]
+Sine-Gordon
+3.217E-3
+2.752E-3
+2.181E-3
+2.630E-3
+DeepSplitting [1]
+Sine-Gordon
+3.297E-3
+2.674E-3
+2.170E-3
+2.249E-3
+SDGD (Ours)
+Sine-Gordon
+2.265E-3
+2.310E-3
+1.674E-3
+1.956E-3
+
+Table 4: Results of various methods on the Allen-Cahn, semilinear heat, and sine-Gordon PDEs with different
+dimensions. The evaluation metric is all relative L1 error on one test point. SDGD (Ours) is the state-of-the-art (SOTA)
+method.
+
+• Sine-Gordon equation.
+
+∂tu(x, t) = ∆u(x, t) + sin (u(x, t)) ,
+(x, t) ∈Rd × [0, 0.3],
+(35)
+
+with the initial condition u(x, t = 0) = 5/(10 + 2∥x∥2). We aim to approximate the solution’s true value on
+the one test point (x, t) = (0, · · · , 0, 0.3).
+
+The reference values of these PDEs on the test point are computed by the multilevel Picard method [5, 31] with
+sufficient theoretical accuracy. The exact solutions of these nonlinear PDEs are not solvable analytically and are highly
+nontrivial and nonseparable. The residual points of PINN are chosen along the trajectories of the stochastic processes
+that those PDEs correspond to:
+
+t ∼Unif[0, 0.3], x ∼N(0, (0.3 −t) · Id×d).
+(36)
+
+More training details are as follows. The model is a 4-layer multi-layer perceptron network with 1024 hidden units,
+which is trained via Adam [38] for 10K epochs, with an initial learning rate 1e-3 which decays exponentially with
+exponent 0.9995. We discretize the time into a stepsize of 0.015 and select boundary and residual points from
+|B| = 100 random SDE trajectories at each Adam epoch. We assign unity weight to the residual loss and 20 weight to
+the boundary loss, where in the latter, we fit the initial condition and its first-order derivative concerning x. We utilize
+Algorithm 2 with a minibatch of |I| = |J| = 10 dimensions to randomly sample the second-order derivatives along
+various dimensions in the Laplacian in all the PDEs. We repeat our experiment 5 times with 5 independent random
+seeds.
+The results for these three nonlinear PDEs are shown in Table 4. PINN surpasses other methods in all dimensions
+and for all types of PDEs. Whether it is predicting the entire domain or the value at a single point, PINN is capable of
+handling both scenarios. This is attributed to the mesh-free nature of PINN and its powerful interpolation capabilities.
+
+5.3
+SDGD Accelerates PINN’s Adversarial Training in HJB PDEs
+
+In Wang et al. [60], it was demonstrated that the class of Hamilton-Jacobi-Bellman (HJB) equation [21, 60] could only
+be effectively solved using adversarial training, which approximates the L∞loss. Specifically, they consider the HJB
+equation with linear-quadratic-Gaussian (LQG) control:
+
+∂tu(x, t) + ∆u(x, t) −∥∇xu(x, t)∥2 = 0,
+x ∈Rd, t ∈[0, 1]
+
+u(x, T) = g(x),
+(37)
+
+where g(x) is the terminal condition/cost to be chosen. We can use the exact solution for testing and benchmarking
+PINNs’ performances:
+
+u(x, t) = −log
+Z
+
+2(1 −t)y))dy
+
+.
+(38)
+
+Rd(2π)−d/2 exp(−∥y∥2/2) exp(−g(x −
+p
+
+• Logarithm cost:
+
+g(x) = log
+1 + ∥x∥2
+
+
+(39)
+
+2
+
+following many previous papers [21, 23, 52, 60] to obtain the HJB-Log case. We demonstrate that SDGD is the
+state-of-the-art (SOTA) high-dimensional PDE solver, where SDGD outperforms these previous methods on this
+classical benchmark PDE, especially the closely related PINN-based approach in [23, 60].
+
+• Rosenbrock cost:
+
+1 + Pd−1
+i=1
+
+c1,i(xi −xi+1)2 + c2,ix2
+i+1
+
+
+!
+
+,
+(40)
+
+g(x) = log
+
+2
+
+where c1,i, c2,i ∼Unif[0.5, 1.5]. This nonconvex cost function will lead to a PDE exact solution that is
+anisotropic and asymmetric along dimensions, highly coupled and inseparable. Notable, in the exact solution, all
+pairs of variables, both xi and xi+1, exhibit pairwise interactions and are highly coupled. The corresponding
+HJB PDE has an effective dimension of d + 1, i.e., it can not be reduced to low-dimensional subproblems. This
+case is called the HJB-Rosenbrock case.
+
+The solution’s integration in HJB PDE cannot be analytically solved, necessitating Monte Carlo integration for
+approximation. We use the relative L2 error approximating u as the evaluation metric for this equation.
+In this example of the HJB equation with LQG control, we decompose the residual prediction of PINN along each
+dimension as follows:
+
+d
+X
+
+
+∂tu(x, t) + d ∂2u
+
+∂x2
+i
+−µ∥∇xu(x, t)∥2
+
+.
+(41)
+
+∂tu(x, t) + ∆u(x, t) −µ∥∇xu(x, t)∥2 = 1
+
+d
+
+i=1
+
+Despite its ability to maintain a low maximal memory cost during training, adversarial training approximating
+the L∞loss is widely recognized for its slow and inefficient nature [55], which poses challenges in applying it to
+high-dimensional HJB equations with LQG control. Adversarial training involves optimizing two loss functions: one
+for the PINN parameters, minimizing the loss through gradient descent, and another for the residual point coordinates,
+maximizing the PINN loss to approximate the L∞loss. This adversarial minimax process, known as adversarial
+training, is computationally demanding, often requiring multiple rounds of optimization before the resulting residual
+points can effectively optimize the PINN parameters.
+The current state-of-the-art (SOTA) research by Wang et al. [60] and He et al. [23] has successfully scaled
+adversarial training to 250 dimensions. In this study, we use SDGD to enhance the scalability and efficiency of
+adversarial training of PINN in high-dimensional HJB equations.
+The implementation details are given as follows. We use a four-layer PINN with 1024 hidden units, trained by an
+Adam optimizer [38] with a learning rate = 1e-3 at the beginning and decay linearly to zero. We modified the PINN
+structure to make the terminal condition automatically satisfied [45]:
+
+uHJB-LQG
+θ
+(x, t) = uθ(x, t)(1 −t) + g(x),
+(42)
+
+HJB-Log Results for u
+Wang et al. [60]
+He et al. [23]
+SDGD (Ours)
+Dim
+Time
+Rel. L2 Error
+Time
+Rel. L2 Error
+Time
+Rel. L2 Error
+250
+38 hours
+1.182E-2
+12 hours
+1.370E-2
+210 minutes
+6.147E-3
+1,000
+>5 days
+N.A.
+>5 days
+N.A.
+217 minutes
+5.852E-3
+10,000
+OOM
+N.A.
+OOM
+N.A.
+481 minutes
+4.926E-2
+100,000
+OOM
+N.A.
+OOM
+N.A.
+855 minutes
+4.852E-2
+HJB-Rosenbrock Results for u
+Wang et al. [60]
+He et al. [23]
+SDGD (Ours)
+Dim
+Time
+Rel. L2 Error
+Time
+Rel. L2 Error
+Time
+Rel. L2 Error
+250
+38 hours
+1.207E-2
+12 hours
+1.413E-2
+210 minutes
+5.419E-3
+1,000
+>5 days
+N.A.
+>5 days
+N.A.
+217 minutes
+4.153E-3
+10,000
+OOM
+N.A.
+OOM
+N.A.
+481 minutes
+4.168E-2
+100,000
+OOM
+N.A.
+OOM
+N.A.
+855 minutes
+4.091E-2
+
+Table 5: Relative L2 error results, running time across different dimensions for the baselines and ours, for two HJB
+equations requiring adversarial training of PINNs. In all dimensions, our method significantly outperforms the other
+two baselines in terms of accuracy and speed. The baselines, employing full batch gradient descent, experience
+slower speed and increased memory requirements in higher-dimensional scenarios. In contrast, our approach utilizes
+Algorithm 3, which employs stochastic gradient descent over PDE terms, resulting in faster computation and relatively
+lower memory consumption.
+
+5.4
+Schr¨odinger Equation
+
+Here, we scale up the Tensor Neural Networks (TNNs) [61, 62] for solving very high-dimensional Schr¨odinger
+equations. Due to its unique characteristics, the Schr¨odinger equation cannot be addressed by the traditional PINN
+framework and requires a specialized TNN network structure and corresponding loss function for high-dimensional
+eigenvalue problems. However, our method can still be flexibly integrated into this framework for scaling up
+Schr¨odinger equations, demonstrating the versatility of our approach. In contrast, other methods specifically designed
+for high-dimensional equations exhibit much greater limitations.
+
+5.4.1
+Tensor Neural Network (TNN) for Solving Schr¨odinger Equation
+
+In general, the Schr¨odinger equation can be viewed as a high-dimensional eigenvalue problem.
+
+−∆u(x) + v(x)u(x) = λu(x),
+x ∈Ω,
+u(x) = 0,
+x ∈∂Ω,
+(43)
+
+where Ω= Ω1 × Ω2 × · · · × Ωd ⊂Rd and each Ωi = (ai, bi), i = 1, · · · , d is a bounded interval in R, v(x) is a
+known potential function, u(x) is the unknown solution and λ is the unknown eigenvalue of the high-dimensional
+eigenvalue problem. This problem can be addressed via the variational principle:
+
+Ω|∇Φ(x)|2dx +
+R
+
+Ωv(x)Φ(x)2dx
+R
+
+R
+
+λ = min
+Φ(x)
+
+ΩΦ(x)2dx
+.
+(44)
+
+The integrals are usually computed via the expensive quadrature rule, e.g., Gaussian quadrature:
+Z
+
+Ω
+Φ(x)dx ≈
+X
+
+n∈N
+w(n)Φ(x(n)),
+(45)
+
+where N is the index set for the quadrature points. The size N grows exponentially as the dimension increases,
+incurring the curse of dimensionality. Hence, traditional methods for solving Schr¨odinger equations suffer from the
+curse of dimensionality due to the exponential growth of the grid size in the quadrature for numerical integral in the
+equation’s variational form. So, traditional methods cannot be used even in the lowest 100-dimensional case in our
+experiment. To overcome this issue, the Tensor Neural Network (TNN) adopts a separable function network structure
+to reduce the computational cost associated with integration:
+
+p
+X
+
+d
+Y
+
+Φ(x; θ) =
+
+where xi is the ith dimension of the input point x, and ϕj(xi; θi) is the jth output of the sub-wavefunction network
+parameterized by θi, and p is the predefined rank of the TNN model. The integral by quadrature rule of the TNN can
+be calculated efficiently:
+
+p
+X
+
+p
+X
+
+p
+X
+
+d
+Y
+
+d
+Y
+
+d
+Y
+
+Z
+
+Z
+
+Z
+
+X
+
+ni∈Ni
+w(ni)ϕj(x(ni); θi),
+(47)
+
+Ωi
+ϕj(xi; θi)dxi ≈
+
+i=1
+ϕj(xi; θi)dx =
+
+Ω
+Φ(x; θ)dx =
+
+Ω
+
+j=1
+
+i=1
+
+j=1
+
+i=1
+
+j=1
+
+where Ni is the index set for the ith dimensional numerical integral. Thus, the numerical integrals can be computed
+along each axes separately to reduce the exponential cost to linear cost. We refer the readers to [61, 62] for more
+details. With the efficient quadrature achieved by TNN’s separable structure, the loss function to be minimized is
+
+n∈N w(n)|∇Φ(x(n); θ)|2 + P
+
+n∈N w(n)v(x(n))Φ(x(n); θ)2
+P
+
+min
+θ
+ℓ(θ) =
+P
+
+n∈N w(n)Φ(x(n); θ)2
+,
+(48)
+
+where Φ(x; θ) is the neural network wave function with trainable parameters θ.
+The primary computational bottleneck of TNNs for this problem lies in the first-order derivatives in the loss
+function, while other terms only contain zero-order terms with lower computational and memory costs. Since TNN
+is a separable architecture, the d-dimensional Schr¨odinger equation requires computing the first-order derivatives
+and performing quadrature integration for each of the d subnetworks. Consequently, the computational cost scales
+linearly with the dimension. In comparison to previous examples of PINN solving PDEs, TNN incurs larger memory
+consumption for first-order derivatives due to the non-sharing of network parameters across different dimensions,
+i.e., d independent first-order derivatives of d distinct subnetworks are required, resulting in increased computational
+requirements.
+Mathematically, the computational and memory bottleneck is the gradient with respect to the first-order term of the
+neural network wave function Φ(x; θ)
+
+n∈N
+w(n)
+d
+X
+
+2!
+
+∂
+∂xi
+Φθ(x(n))
+
+n∈N
+w(n) ∂
+
+∂
+∂θ
+
+∂θ|∇Φθ(x(n))|2 =
+X
+
+grad(θ) =
+X
+
+.
+(49)
+
+i=1
+
+By employing the proposed SDGD approach, we can simplify the entire gradient computation:
+
+n∈N
+w(n)
+
+d
+|I|
+
+2!
+
+∂
+∂xi
+Φθ(x(n))
+
+∂
+∂θ
+
+gradI(θ) =
+X
+
+X
+
+,
+(50)
+
+i∈I
+
+where I ⊂{1, 2, · · · , d} is a random index set. Therefore, we can sample the entire gradient at the PDE term level to
+reduce memory and computational costs, and the resulting stochastic gradient is unbiased, i.e., EI[gradI(θ)] = grad(θ)
+ensuring the convergence of our method. The gradient accumulation can also be done for large-scale problems by our
+method; see Section 3.3 for details.
+It is important to note that our method is more general compared to the traditional approach of SGD solely based
+on quadrature points. In particular, in extremely high-dimensional cases, even computing the gradient for a single
+quadrature point may lead to an out-of-memory (OOM) error. This is because the traditional approach requires a
+minimum batch size of d PDE terms and 1 quadrature point, where d is the dimensionality of the PDE. However, our
+method further reduces the computational load per batch to only 1 PDE term and 1 quadrature point.
+
+5.4.2
+Experimental Setup
+
+We consider the Coupled Quantum Harmonic Oscillator (CQHO) potential function: v(x) = Pd
+i=1 x2
+i −
+Pd−1
+i=1 xixi+1, where all pairs of variables, both xi and xi+1, exhibit pairwise interactions and are highly cou-
+pled. The original problem is defined on an infinite interval. Therefore, we truncate the entire domain to [−5, 5]d. The
+
+r
+
+1 −cos
+
+iπ
+d+1
+
+. We use the same model structure and hyperparameters as
+
+exact smallest eigenvalue is λ = Pd
+i=1
+
+Wang et al. [61]. For this problem, we test the effectiveness of the Gradient Accumulation method in Section 3.3 based
+on our further decomposition of PINN’s gradient.
+The test metric we report is the L1 relative error of the minimum eigenvalue, given by |λtrue−λapprox|
+
+|λtrue|
+. Due to the
+diminishing nature of the eigenfunctions in high dimensions, we only report the accuracy of the eigenvalues. It is
+important to note that the eigenvalues carry physical significance as they represent the ground state energy.
+
+Relative L1 Error of Eigenvalue for the CQHO Problem
+
+Relative L1 Error of Eigenvalue for the CQHO Problem
+
+CQHO: Gradient Acc. with Dim=100, Batch=50
+
+CQHO: Gradient Acc. with Dim=1000, Batch=500
+
+100
+
+100
+
+10
+2
+
+10
+2
+
+Relative L1 Error
+
+Relative L1 Error
+
+10
+4
+
+10
+4
+
+10
+6
+
+10
+6
+
+0
+10000
+20000
+30000
+40000
+50000
+Epoch
+
+0
+10000
+20000
+30000
+40000
+50000
+Epoch
+
+Relative L1 Error of Eigenvalue for the CQHO Problem
+
+Relative L1 Error of Eigenvalue for the CQHO Problem
+
+CQHO: Gradient Acc. with Dim=10000, Batch=5000
+
+CQHO: Gradient Acc. with Dim=20000, Batch=2500
+
+100
+
+100
+
+10
+2
+
+10
+2
+
+Relative L1 Error
+
+Relative L1 Error
+
+10
+4
+
+10
+4
+
+10
+6
+
+10
+6
+
+0
+10000
+20000
+30000
+40000
+50000
+Epoch
+
+0
+10000
+20000
+30000
+40000
+50000
+Epoch
+
+Figure 2: Coupled quantum harmonic oscillator (CQHO) problem: convergence curve of our algorithm (gradient
+accumulation) under different dimensions.
+
+5.4.3
+Experimental Results
+
+On the CQHO problem, our gradient accumulation method achieves training in 2 ∗104 dimensions within the limited
+GPU memory in Figure 2. In all dimensions, SDGD achieves a stable relative error of less than 1e-6. Note that gradient
+accumulation performs theoretically the same as full batch GD, so we do not compare their results, but the former
+can save GPU memory, thus scaling up PDEs to higher dimensions. These results demonstrate the scalability of our
+method for PINN and PDE problems and highlight its generality, making it applicable to various physics-informed
+machine-learning problems.
+During the early stages of optimization, we observe quick convergence of TNNs. Since the model parameters are
+initialized randomly, there is more room for improvement. At this point, the gradients of the loss function with respect
+to the parameters can be relatively large. Larger gradients result in more significant updates to the parameters, leading
+to faster convergence.
+Despite the satisfactory convergence results, these problems demonstrate one shortcoming of our proposed
+approach. Our method is primarily designed to address the computational bottleneck arising from high-dimensional
+differentiations in PDEs. However, if the problem itself is large-scale and does not stem from differential equations,
+our method cannot be directly applied. Specifically, in the case of the Schr¨odinger equation, due to the separable
+nature of its network structure, we employ a separate neural network for each dimension. This results in significant
+memory consumption, even without involving differentials. Additionally, in this problem, we cannot sample the points
+of integration / residual points because there is an integral term in the denominator. If we sample the integral in
+the denominator, the resulting stochastic gradient will be biased, leading to poor convergence. Therefore, for such
+problems, designing an improved unbiased stochastic gradient remains an open question.
+
+6
+Conclusions
+
+The potential limitation of SDGD is that it requires a relatively larger batch size for the dimension when dealing
+with extremely high-dimensional PDEs. A too-small batch size may incur high stochastic gradient variance that slows
+down the convergence. In addition, for PDEs not following the boundary+residual forms, like the Schr¨odinger equation,
+a special loss function is generally required, which may cause the core memory bottleneck to not be in the dimension
+that SDGD focuses on. This causes the minimum memory that SDGD can obtain to grow faster with dimensions.
+In summary, the new SDGD-PINN framework is a paradigm shift in the way we solve high-dimensional PDEs as it
+can tackle arbitrary nonlinear PDEs, of any dimension providing high accuracy at extremely fast speeds.
+
+Acknowledgments
+
+The work of ZH and KK was supported by the Singapore Ministry of Education Academic Research Fund Tier 1 grant
+(Grant number: T1 251RES2207). The work of KS and GEK was supported by the MURI-AFOSR FA9550-20-1-0358
+projects and by the DOE SEA-CROGS project (DE-SC0023191). GEK was also supported by the ONR Vannevar
+Bush Faculty Fellowship (N00014-22-1-2795).
+
+A
+Proof
+
+A.1
+Proof of Theorem 4.1
+
+The unbiasedness of the stochastic gradient in Algorithm 1 can be derived as follows:
+
+NL
+X
+
+!
+
+"
+NL
+
+#
+
+∂
+∂θLiuθ(x)
+
+X
+
+EI [gradI(θ)] =
+
+EI
+
+i=1
+Liuθ(x) −R(x)
+
+|I|
+
+i∈I
+
+! " NL
+X
+
+NL
+X
+
+(51)
+
+#
+
+∂
+∂θLiuθ(x)
+
+i=1
+Liuθ(x) −R(x)
+
+=
+
+i=1
+
+= grad(θ).
+
+The unbiasedness of the stochastic gradient in Algorithm 2 can be derived as follows:
+
+
+
+
+
+
+
+
+
+#
+
+"
+NL
+
+∂
+∂θLiuθ(x)
+
+NL
+
+X
+
+X
+
+EI,J
+
+gradI,J(θ)
+
+=
+
+EJ
+
+EI
+
+j∈J
+Ljuθ(x)
+
+−R(x)
+
+|J|
+
+|I|
+
+i∈I
+
+! " NL
+X
+
+(52)
+
+NL
+X
+
+#
+
+∂
+∂θLiuθ(x)
+
+i=1
+Liuθ(x) −R(x)
+
+=
+
+i=1
+
+= grad(θ).
+
+A.2
+Proof of Theorem 4.2
+
+Lemma A.1. Suppose that we have N fixed numbers a1, a2, · · · , aN and we choose k random numbers {Xi}k
+i=1 from
+them, i.e., each Xi is a random variable and Xi = an with probability 1/N for all n ∈{1, 2, · · · , N}, and Xi are
+independent. Then the variance of the unbiased estimator Pk
+i=1 Xi/k for a = PN
+n=1 an is
+1
+kn
+Pn
+i=1(ai −¯a)2.
+
+Proof of Lemma A.1. Since the samples Xi are i.i.d.,
+
+n
+X
+
+"Pk
+i=1 Xi
+
+#
+
+= 1
+
+k V[Xi] = 1
+
+V
+
+i=1
+(ai −¯a)2
+(53)
+
+k
+
+kn
+
+Proof of Theorem 4.2. We assume that the total full batch is with Nr residual points {xi}Nr
+i=1 and NL PDE terms
+L = PNL
+i=1 Li, then the residual loss of the PINN is
+
+Nr
+X
+
+1
+2NrN 2
+L
+
+where we normalize over both the number of residual points and the number of PDE terms. The full batch gradient is:
+
+Nr
+X
+
+i=1
+(Luθ(xi) −R(xi)) ∂
+
+g(θ) =
+1
+NrN 2
+L
+
+∂θLuθ(xi)
+
+
+
+
+
+NL
+X
+
+Nr
+X
+
+∂
+∂θLjuθ(xi)
+
+=
+1
+NrN 2
+L
+
+i=1
+(Luθ(xi) −R(xi))
+
+
+
+
+
+j=1
+
+(55)
+
+j=1
+(Luθ(xi) −R(xi))
+∂
+
+NL
+X
+
+Nr
+X
+
+∂θLjuθ(xi)
+
+
+=
+1
+NrN 2
+L
+
+i=1
+
+
+
+
+
+
+
+
+
+
+
+
+
+NL
+X
+
+NL
+X
+
+Nr
+X
+
+∂
+∂θLjuθ(xi)
+
+=
+1
+NrN 2
+L
+
+−R(xi)
+
+j=1
+Ljuθ(xi)
+
+.
+
+
+
+
+
+
+
+
+
+j=1
+
+i=1
+
+From the viewpoint of Algorithm 1, the full batch gradient is the mean of NrNL terms:
+
+j=1
+(Luθ(xi) −R(xi))
+∂
+
+NL
+X
+
+NL
+X
+
+Nr
+X
+
+Nr
+X
+
+∂θLjuθ(xi)
+
+:=
+1
+NrN 2
+L
+
+g(θ) =
+1
+NrN 2
+L
+
+j=1
+gi,j(θ),
+(56)
+
+i=1
+
+i=1
+
+where we denote
+
+gi,j(θ) = (Luθ(xi) −R(xi))
+∂
+
+∂θLjuθ(xi)
+
+.
+(57)
+
+The stochastic gradient generated by Algorithm 1 is given by
+
+
+
+
+
+gB,J(θ) =
+1
+|B||J|NL
+
+∂
+∂θLjuθ(xi)
+
+=
+1
+|B||J|NL
+
+X
+
+X
+
+X
+
+X
+
+i∈B
+(Luθ(xi) −R(xi))
+
+j∈J
+gi,j(θ).
+(58)
+
+j∈J
+
+i∈B
+
+We have the variance
+
+VB,J[gB,J(θ)] = EB,J[(gB,J(θ) −g(θ))2] = EB,J[gB,J(θ)2] −EB,J[g(θ)2] = EB,J[gB,J(θ)2] −g(θ)2.
+(59)
+
+From high-level perspective, VB,J[gB,J(θ)] should be a function related to |B| and |J|. Thus, under the constraint that
+|B| · |J| is the same for different SGD schemes, we can choose B and J properly to minimize the variance of SGD to
+accelerate convergence.
+
+2
+
+j∈J
+(Luθ(xi) −R(xi))
+∂
+
+
+
+∂θLjuθ(xi)
+
+
+EB,J[gB,J(θ)2] =
+1
+|B|2|J|2N 2
+L
+EB,J
+
+X
+
+X
+
+
+
+i∈B
+
+j,j′∈J
+(Luθ(xi) −R(xi))
+∂
+
+" X
+
+∂θLjuθ(xi)
+
+·
+
+=
+1
+|B|2|J|2N 2
+L
+EB,J
+
+(60)
+
+X
+
+i,i′∈B
+
+(Luθ(xi′) −R(xi′))
+∂
+
+∂θLj′uθ(xi′)
+#
+
+.
+
+The entire expectation can be decomposed into four parts (1) i = i′, j = j′, (2) i ̸= i′, j = j′, (3) i = i′, j ̸= j′, (4)
+i ̸= i′, j ̸= j′. For the first part
+
+j∈J
+(Luθ(xi) −R(xi))2
+∂
+
+" X
+
+∂θLjuθ(xi)
+2 #
+
+1
+|B|2|J|2N 2
+L
+EB,J
+
+X
+
+i∈B
+
+(Luθ(xi) −R(xi))2
+∂
+
+"
+
+∂θLjuθ(xi)
+2 #
+
+=
+1
+|B||J|N 2
+L
+Ei,j
+
+=
+1
+|B||J|N 2
+L
+Ei,j[gi,j(θ)2]
+
+(61)
+
+NL
+X
+
+Nr
+X
+
+=
+1
+|B||J|NrN 3
+L
+
+j=1
+gi,j(θ)2
+
+i=1
+
+where we denote C1 =
+1
+NrN3
+L
+PNr
+i=1
+PNL
+j=1 gi,j(θ)2 which is independent of B, J.
+In the second case, since the ith sample and the i′th sample are independent for i ̸= i′, we have
+
+j∈J
+(Luθ(xi) −R(xi)) (Luθ(xi′) −R(xi′))
+∂
+
+∂θLjuθ(xi)
+∂
+
+" X
+
+∂θLjuθ(xi′)
+#
+
+1
+|B|2|J|2N 2
+L
+EB,J
+
+X
+
+i̸=i′∈B
+
+∂θLjuθ(xi)
+∂
+
+(Luθ(xi) −R(xi)) (Luθ(xi′) −R(xi′))
+∂
+
+"
+
+∂θLjuθ(xi′)
+#
+
+=
+|B| −1
+|B||J|N 2
+L
+Ei,i′,j
+
+= C2 · |B| −1
+
+|B||J| .
+
+(62)
+In the third case, due to the same reason,
+
+j̸=j′∈J
+(Luθ(xi) −R(xi))2
+∂
+
+∂θLjuθ(xi)
+∂
+
+" X
+
+∂θLj′uθ(xi)
+#
+
+1
+|B|2|J|2N 2
+L
+EB,J
+
+X
+
+i∈B
+
+(Luθ(xi) −R(xi))2
+∂
+
+∂θLjuθ(xi)
+∂
+
+"
+
+∂θLj′uθ(xi)
+#
+
+=
+|J| −1
+|B||J|N 2
+L
+Ei,j,j′
+
+(63)
+
+= C3 · |J| −1
+
+|B||J| .
+
+In the last case,
+
+j̸=j′∈J
+(Luθ(xi) −R(xi)) (Luθ(xi′) −R(xi′))
+∂
+
+∂θLjuθ(xi)
+∂
+
+∂θLj′uθ(xi′)
+#
+
+" X
+
+1
+|B|2|J|2N 2
+L
+EB,J
+
+X
+
+i̸=i′∈B
+
+(Luθ(xi) −R(xi)) (Luθ(xi′) −R(xi′))
+∂
+
+∂θLjuθ(xi)
+∂
+
+∂θLj′uθ(xi′)
+#
+
+"
+
+= (|B| −1)(|J| −1)
+
+|B||J|N 2
+L
+Ei,i′,j,j′
+
+#!2
+
+"
+
+= (|B| −1)(|J| −1)
+
+Ei,j
+
+(Luθ(xi) −R(xi)) (Luθ(xi′) −R(xi′))
+
+|B||J|N 2
+L
+
+= (|B| −1)(|J| −1)
+
+|B||J|
+g(θ)2
+
+(64)
+Taking together
+
+VB,J[gB,J(θ)] = EB,J[gB,J(θ)2] −g(θ)2
+
+= C1 + C2(|B| −1) + C3(|J| −1) + (1 −|B| −|J|)g(θ)2
+
+(65)
+
+|B||J|
+
+= C4|J| + C5|B| + C6
+
+|B||J|
+.
+
+A.3
+Proof of Lemma 4.1
+
+Lemma. (Lemma 4.1 in the Main Text, Bounding the Neural Network Derivatives) Consider the neural network defined
+as Definition 4.1 with parameters θ, depth L, and width h, then the neural network’s derivatives can be bounded as
+follows.
+
+vec
+∂n
+
+L−1
+Y
+
+∂xn uθ(x)
+
+
+
+
+≤(n −1)!dn−1(L −1)n−1M(L)
+
+l=1
+M(l)n,
+(66)
+
+vec
+∂
+
+L−1
+Y
+
+∂θ
+∂n
+
+∂xn uθ(x)
+
+
+
+
+≤h2n!dn(L −1)nM(L)
+
+l=1
+M(l)n+1 max {∥x∥, 1} ,
+(67)
+
+Proof. Recall that the PINN’s neural network structure in Definition 4.1:
+
+uθ(x) = WLσ(WL−1σ(· · · σ(W1x) · · · ).
+
+After taking the derivative with respect to x, there is only one Rd vector term:
+
+∂uθ(x)
+
+∂x
+= WL · Φ(1)
+L−1(x)WL−1 · · · · · Φ(1)
+1 (x)W1 ∈Rd,
+(68)
+
+where Φ(n)
+l
+(x) = diag[σ(n)(Wlσ(Wl−1σ(· · · σ(W1x) · · · )] ∈Rml×ml and σ(n) denotes the activation function’s
+nth-order derivative which is also a pointwise function. Hence, the first-order derivative’s two norm has an upper
+bound of QL
+l=1 ∥M(l)∥due to bounded activation function in Assumption 4.1, i.e., ∥Φ(n)
+l
+(x)∥≤1. More specifically,
+since ∥AB∥≤∥A∥∥B∥for all matrices A, B, we have
+
+L−1
+Y
+
+L
+Y
+
+L
+Y
+
+L
+Y
+
+≤
+
+∂uθ(x)
+
+Φ(1)
+l
+(x)
+
+
+
+≤
+
+l=1
+∥Wl∥
+
+l=1
+∥Wl∥≤
+
+l=1
+M(l).
+(69)
+
+∂x
+
+l=1
+
+After taking the second derivative, due to the nested structure of the neural network, the result will be the sum of
+L −1 parts induced by the derivative of each Φ(1)
+l
+(x), 1 ≤l ≤L −1 with respect to x. Each of the L −1 parts is a
+Rd×d matrix, and we further treat each row of them as one Rd vector term. Hence, there are d(L −1) number of Rd
+
+vector terms in total:
+
+(L−1
+X
+
+)
+
+∂2uθ(x)
+
+l=1
+(WLΦ(1)
+L−1(x) · · · Wl+1)diag(Φ(2)
+l
+(x)Wl · · · Φ(2)
+1 (x)(W1):,j)(Wl · · · Φ(1)
+1 (x)W1)
+
+∂x2
+=
+
+1≤j≤d
+(70)
+
+where we call each (WLΦ(1)
+L−1(x) · · · Wl+1)diag(Φ(2)
+l
+(x)Wl · · · Φ(2)
+1 (x)(W1):,j)(Wl · · · Φ(1)
+1 (x)W1) ∈Rd as a Rd
+
+vector term. Each of these d(L −1) number of Rd vector terms has an upper bound of ML
+QL−1
+l=1 M 2
+l :
+
+
+
+(WLΦ(1)
+L−1(x) · · · Wl+1)diag(Φ(2)
+l
+(x)Wl · · · Φ(2)
+1 (x)(W1):,j)(Wl · · · Φ(1)
+1 (x)W1)
+
+
+
+(71)
+
+L−1
+Y
+
+L
+Y
+
+L
+Y
+
+!
+lY
+
+!
+
+
+Φ(2)
+l
+(x)Wl · · · Φ(2)
+1 (x)(W1):,j
+
+
+
+≤
+
+!
+
+l=1
+M 2
+l .
+(72)
+
+≤
+
+k=1
+∥Wk∥
+
+k=1
+∥Wk∥
+
+k=1
+∥Wl∥
+
+≤ML
+
+In sum, for the second-order derivative, we have the lemma holds for the second-order case:
+
+L−1
+Y
+
+vec
+∂2uθ(x)
+
+
+
+
+
+≤d(L −1)ML
+
+l=1
+M 2
+l .
+(73)
+
+∂x2
+
+Next, we try to discover the induction rule. For the nth order derivative with n ≥1, it is the sum and the
+concatenation of (n −1)!dn−1(L −1)n−1 number of Rd vector terms (0! = 1), where each of them is bounded by
+M(L) QL−1
+l=1 M(l)n. Furthermore, each of the terms contains the product of at most n(L −1) matrix-valued function
+depending on x, which are {Φ(1)
+l
+(x)}L−1
+l=1 , {Φ(2)
+l
+(x)}L−1
+l=1 , · · · {Φ(n)
+l
+(x)}L−1
+l=1 . They are crucial in the product rule of
+derivatives.
+For instance, in the first-order derivative where n = 1, there is only one Rd term, bounded by QL
+l=1 M(l). This
+term also contains the product of L −1 matrix-valued function depending on x, which are {Φ(1)
+l
+(x)}L−1
+l=1 .
+For instance, in the second-order case where n = 2, the result is the sum and the concatenation of d(L −1) terms,
+which are (WLΦ(1)
+L−1(x) · · · Wl+1)diag(Φ(2)
+l
+(x)Wl · · · Φ(2)
+1 (x)(W1):,j)(Wl · · · Φ(1)
+1 (x)W1) ∈Rd. Each of them can
+be bounded by M(L) QL−1
+l=1 M(l)2. These terms also contain the product of at most 2(L −1) matrix-valued function
+depending on x, which are {Φ(1)
+l
+(x)}L−1
+l=1 and {Φ(2)
+l
+(x)}L−1
+l=1 .
+Using the principle of induction, after taking the nth derivative, there will be (n −1)!dn−1(L −1)n−1 number
+of Rd vector terms, and each term has an upper bound of ML
+QL−1
+l=1 M n
+l . Each term contains at most n(L −1)
+matrix-valued function depending on x. The key to the proof is that
+
+L−1
+Y
+
+lY
+
+∂ϕ(n)
+l
+(x)
+∂x
+= ϕ(n+1)
+l
+(x)Wl · · · ϕ(n+1)
+1
+(x)W1,
+
+k=1
+∥Wk∥≤
+
+l=1
+M(l),
+∀l ≤L −1,
+(74)
+
+where ϕ(n)
+l
+(x) = σ(n)(Wlσ(Wl−1σ(· · · σ(W1x) · · · ) and Φ(n)
+l
+(x) = diag
+
+ϕ(n)
+l
+(x)
+
+. In other words, taking deriva-
+
+tive to Φ(n)
+l
+(x) = diag
+
+ϕ(n)
+l
+(x)
+
+with respect to x will generate (l −1) more matrix-valued functions depending on
+
+x, which are
+n
+Φ(n+1)
+k
+(x)
+ol−1
+
+k=1. The term’s upper bound is multiplied/enlarged by at most QL−1
+l=1 M(l).
+
+Consequently, for the case of (n + 1)th order derivative, it is the sum and the concatenation of at most (n −
+1)!dn−1(L −1)n−1 · n(L −1) · d = n!dn(L −1)n number of Rd vector terms, where (n −1)!dn−1(L −1)n−1 is
+the number of Rd vector terms in the nth order derivative, n(L −1) is the number of x-dependent matrix-valued
+functions in each term which is crucial in the product rule of derivatives, and d is due to the derivative tensor
+size. Each of these terms is bounded by M(L) · QL−1
+i=1 M(l)n · QL−1
+i=1 M(l) = M(L) · QL−1
+i=1 M(l)n+1. Each of
+these terms contains the product of at most (n + 1)(L −1) matrix-valued functions depending on x, which are
+{Φ(1)
+l
+(x)}L−1
+l=1 , {Φ(2)
+l
+(x)}L−1
+l=1 , · · · {Φ(n+1)
+l
+(x)}L−1
+l=1 . Hence, our induction assumption holds. Also, the norm of
+(n + 1)th order derivative tensor will be upper bounded by
+
+
+
+
+vec
+∂n+1
+
+∂xn+1 uθ(x)
+
+
+
+
+(75)
+
+L−1
+Y
+
+L−1
+Y
+
+≤(n −1)!dn−1(L −1)n−1 · nd(L −1) · M(L)
+
+l=1
+M(l)n ·
+
+l=1
+M(l)
+(76)
+
+L−1
+Y
+
+= n!dn(L −1)nM(L)
+
+l=1
+M(l)n+1.
+(77)
+
+If we further take the derivative with respect to Wl, the same logic and induction still apply. Concretely, we
+consider the derivatives with respect to the model parameter θ first. Since θ = {Wl}L
+l=1, we consider Wl
+
+∂uθ(x)
+
+∂Wl
+=
+h
+WLΦ(1)
+L−1(x) · · · WlΦ(1)
+l
+(x)
+iT
+· σ (Wl−1 · · · σ(W1x) · · · ) ∈Rml×ml−1,
+l > 1.
+(78)
+
+∂uθ(x)
+
+∂W1
+=
+h
+WLΦ(1)
+L−1(x) · · · W1Φ(1)
+1 (x)
+iT
+· x ∈Rm1×d
+(79)
+
+∂Wl
+is at most a Rh2 vector, whose each entry is bounded by QL
+l=1 M(l) for l ̸= 1.
+
+For all layer index l, ∂uθ(x)
+
+For l = 1, it is bounded by QL
+l=1 M(l) · ∥x∥. Furthermore, each of the terms contains the product of at most
+(L −1) matrix-valued function depending on x, which are {Φ(1)
+l
+(x)}L−1
+l=1 . They are crucial in the product rule
+of derivatives. Hence, our previous induction still applies to each of the h2 entries, and the final bound will be
+h2n!dn(L −1)nM(L) QL−1
+l=1 M(l)n+1 max {∥x∥, 1}. Intuitively, max {∥x∥, 1} is due to the derivative concerning
+W1, h2 is due to the size of model parameters, n + 1 is due to the nth order derivatives for x and another derivative for
+θ.
+
+A.4
+Proof of Theorem 4.3
+
+Theorem. (Theorem 4.3 in the Main Text, Convergence of SDGD under Bounded Gradient Variance) Assume
+Assumptions 4.1 and 4.2 hold, fix some tolerance level δ > 0, suppose that the SGD trajectories given in equations
+(22, 23) are bounded, i.e., ∥W n
+l ∥≤M(l) for all epoch n where the collection of all {W n
+l }L
+l=1 is θn, and that the
+regular minimizer of the PINN loss is θ∗as defined in Definition 4.3, and that the SGD step size follows the form
+γn = γ/(n + m)p for some p ∈(1/2, 1] and large enough γ, m > 0, then
+
+1. There exist neighborhoods U and U1 of θ∗such that, if θ1 ∈U1, the event
+
+E∞= {θn ∈U for all n ∈N}
+(80)
+
+occurs with probability at least 1 −δ, i.e., P(E∞|θ1 ∈U1) ≥1 −δ.
+
+2. Conditioned on E∞, we have
+E[∥θn −θ∗∥2|E∞] ≤O(1/np).
+(81)
+
+Due to Assumption 4.2, the values generated by the PDE operator acting on the neural network and its derivative
+with respect to model parameters θ (the gradient for optimization) will also fall into a bounded domain throughout the
+optimization, whose closure is compact.
+Since we bound the gradient produced by physics-informed loss functions, we can further bound the gradient
+variance during PINN training using SDGD.
+For the stochastic gradient produced by Algorithm 1,
+
+NL
+X
+
+Nr
+X
+
+j=1
+∥gi,j(θ) −g(θ)∥2 ≤
+2
+|B||J|NL
+max
+i,j ∥gi,j(θ)∥2,
+(82)
+
+VB,J(gB,J(θ)) ≤
+1
+|B||J|NrN 2
+L
+
+i=1
+
+where gi,j(θ) := (Luθ(xi) −R(xi))
+∂
+
+∂θLjuθ(xi)
+
+.
+For the stochastic gradient produced by Algorithm 2,
+
+! 
+
+
+
+X
+
+!
+
+NL
+|K|
+
+∂
+∂θLjuθ(xi)
+
+gB,J,K(θ) =
+1
+|B||J|NL
+
+X
+
+X
+
+k∈K
+Lkuθ(xi)
+
+−R(xi)
+
+
+
+j∈J
+
+i∈B
+
+(83)
+
+∂
+
+
+Lkuθ(xi) −R(xi)
+
+∂θLjuθ(xi)
+
+,
+
+=
+1
+|B||J||K|
+
+X
+
+X
+
+X
+
+NL
+
+i∈B
+
+j∈J
+
+k∈K
+
+NL
+X
+
+NL
+X
+
+Nr
+X
+
+k=1
+(gi,j,k(θ) −g(θ))2 ≤
+2
+|B||J||K| max
+i,j,k ∥gi,j,k(θ)∥2,
+(84)
+
+VB,J,K(gB,J,K(θ)) ≤
+1
+|B||J||K|NrN 2
+L
+
+i=1
+
+j=1
+
+∂
+
+where gi,j,k(θ) :=
+
+Lkuθ(xi) −R(xi)
+
+∂θLjuθ(xi)
+
+.
+Consequently,
+
+NL
+
+∂
+∂θLjuθ(xi)
+
+
+
+
+,
+(85)
+
+∥gi,j(θ)∥≤∥Luθ(xi) −R(xi)∥
+
+
+
+
+∂
+∂θLjuθ(xi)
+
+
+
+
+≤
+
+max
+i,j |Ljuθ(xi)| + R
+
+max
+i,j
+
+∥gi,j,k(θ)∥≤
+
+
+
+
+Lkuθ(xi) −R(xi)
+
+∂
+∂θLjuθ(xi)
+
+
+
+
+.
+(86)
+
+∂
+∂θLjuθ(xi)
+
+
+
+
+≤
+
+max
+i,j |Ljuθ(xi)| + R
+
+max
+i,j
+
+NL
+
+∂θLjuθ(xi)
+
+
+can be bounded throughout the optimization process thanks to Lemma 4.1 and
+Assumption 4.2, the gradient variance during optimization is universally bounded and finite, i.e., the gradient variance
+bounds are agnostic of the epoch n.
+Thus, we complete the proof by applying Theorem 4 in Mertikopoulos et al. [48].
+
+Since |Ljuθ(xi)| and
+
+
+∂
+
+References
+
+[1] Christian Beck, Sebastian Becker, Patrick Cheridito, Arnulf Jentzen, and Ariel Neufeld. Deep splitting method
+for parabolic pdes. SIAM Journal on Scientific Computing, 43(5):A3135–A3154, 2021.
+
+[2] Christian Beck, Weinan E, and Arnulf Jentzen. Machine learning approximation algorithms for high-dimensional
+fully nonlinear partial differential equations and second-order backward stochastic differential equations. Journal
+of Nonlinear Science, 29:1563–1619, 2019.
+
+[3] Christian Beck, Lukas Gonon, and Arnulf Jentzen.
+Overcoming the curse of dimensionality in the nu-
+merical approximation of high-dimensional semilinear elliptic partial differential equations. arXiv preprint
+arXiv:2003.00596, 2020.
+
+[4] Christian Beck, Fabian Hornung, Martin Hutzenthaler, Arnulf Jentzen, and Thomas Kruse. Overcoming the
+curse of dimensionality in the numerical approximation of allen–cahn partial differential equations via truncated
+full-history recursive multilevel picard approximations. Journal of Numerical Mathematics, 28(4):197–222,
+2020.
+
+[5] Sebastian Becker, Ramon Braunwarth, Martin Hutzenthaler, Arnulf Jentzen, and Philippe von Wurstemberger.
+Numerical simulations for full history recursive multilevel picard approximations for systems of high-dimensional
+partial differential equations. arXiv preprint arXiv:2005.10206, 2020.
+
+[6] Sebastian Becker, Patrick Cheridito, Arnulf Jentzen, and Timo Welti. Solving high-dimensional optimal stopping
+problems using deep learning. European Journal of Applied Mathematics, 32(3):470–514, 2021.
+
+[7] Richard Bellman. Dynamic programming. Princeton University Press, 1957.
+
+[8] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George
+Necula, Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, and Qiao Zhang. JAX: composable transforma-
+tions of Python+NumPy programs, 2018.
+
+[9] Shengze Cai, Zhiping Mao, Zhicheng Wang, Minglang Yin, and George Em Karniadakis. Physics-informed
+neural networks (pinns) for fluid mechanics: A review. Acta Mechanica Sinica, 37(12):1727–1738, 2021.
+
+[10] Quentin Chan-Wai-Nam, Joseph Mikael, and Xavier Warin. Machine learning for semi linear pdes. Journal of
+scientific computing, 79(3):1667–1712, 2019.
+
+[11] Francisco Chinesta, Pierre Ladeveze, and Elias Cueto. A short review on model order reduction based on proper
+generalized decomposition. Archives of Computational Methods in Engineering, 18(4):395, 2011.
+
+[12] Junwoo Cho, Seungtae Nam, Hyunmo Yang, Seok-Bae Yun, Youngjoon Hong, and Eunbyung Park. Sep-
+arable pinn: Mitigating the curse of dimensionality in physics-informed neural networks. arXiv preprint
+arXiv:2211.08761, 2022.
+
+[13] J´erˆome Darbon and Stanley Osher. Algorithms for overcoming the curse of dimensionality for certain hamilton–
+jacobi equations arising in control theory and elsewhere. Research in the Mathematical Sciences, 3(1):19,
+2016.
+
+[14] Benjamin Fehrman, Benjamin Gess, and Arnulf Jentzen. Convergence rates for the stochastic gradient descent
+method for non-convex objective functions. The Journal of Machine Learning Research, 21(1):5354–5401, 2020.
+
+[15] Xavier Glorot and Yoshua Bengio. Understanding the difficulty of training deep feedforward neural networks. In
+Proceedings of the thirteenth international conference on artificial intelligence and statistics, pages 249–256.
+JMLR Workshop and Conference Proceedings, 2010.
+
+[16] Somdatta Goswami, Aniruddha Bora, Yue Yu, and George Em Karniadakis. Physics-informed neural operators.
+arXiv preprint arXiv:2207.05748, 2022.
+
+[17] Somdatta Goswami, Ameya D Jagtap, Hessam Babaee, Bryan T Susi, and George Em Karniadakis. Learning
+stiff chemical kinetics using extended deep neural operators. arXiv preprint arXiv:2302.12645, 2023.
+
+[19] Ehsan Haghighat, Maziar Raissi, Adrian Moure, Hector Gomez, and Ruben Juanes. A physics-informed deep
+learning framework for inversion and surrogate modeling in solid mechanics. Computer Methods in Applied
+Mechanics and Engineering, 379:113741, 2021.
+
+[20] PC Hammer. Adaptive control processes: a guided tour (r. bellman), 1962.
+
+[21] Jiequn Han, Arnulf Jentzen, and Weinan E. Solving high-dimensional partial differential equations using deep
+learning. Proceedings of the National Academy of Sciences, 115(34):8505–8510, 2018.
+
+[22] Jiequn Han, Arnulf Jentzen, et al. Deep learning-based numerical methods for high-dimensional parabolic partial
+differential equations and backward stochastic differential equations. Communications in mathematics and
+statistics, 5(4):349–380, 2017.
+
+[23] Di He, Shanda Li, Wenlei Shi, Xiaotian Gao, Jia Zhang, Jiang Bian, Liwei Wang, and Tie-Yan Liu. Learning
+physics-informed neural networks without stacked back-propagation. In International Conference on Artificial
+Intelligence and Statistics, pages 3034–3047. PMLR, 2023.
+
+[24] Pierre Henry-Labordere. Deep primal-dual algorithm for bsdes: Applications of machine learning to cva and im.
+Available at SSRN 3071506, 2017.
+
+[25] Zheyuan Hu, Ameya D Jagtap, George Em Karniadakis, and Kenji Kawaguchi. Augmented physics-informed
+neural networks (apinns): A gating network-based soft domain decomposition methodology. arXiv preprint
+arXiv:2211.08939, 2022.
+
+[26] Zheyuan Hu, Ameya D. Jagtap, George Em Karniadakis, and Kenji Kawaguchi. When do extended physics-
+informed neural networks (xpinns) improve generalization? SIAM Journal on Scientific Computing, 44(5):A3158–
+A3182, 2022.
+
+[27] Zheyuan Hu, Zekun Shi, George Em Karniadakis, and Kenji Kawaguchi. Hutchinson trace estimation for
+high-dimensional and high-order physics-informed neural networks. Computer Methods in Applied Mechanics
+and Engineering, 424:116883, 2024.
+
+[28] Zheyuan Hu, Zhouhao Yang, Yezhen Wang, George Em Karniadakis, and Kenji Kawaguchi. Bias-variance
+trade-off in physics-informed neural networks with randomized smoothing for high-dimensional pdes. arXiv
+preprint arXiv:2311.15283, 2023.
+
+[29] Zheyuan Hu, Zhongqiang Zhang, George Em Karniadakis, and Kenji Kawaguchi. Score-based physics-informed
+neural networks for high-dimensional fokker-planck equations. arXiv preprint arXiv:2402.07465, 2024.
+
+[30] Cˆome Hur´e, Huyˆen Pham, and Xavier Warin. Deep backward schemes for high-dimensional nonlinear pdes.
+Mathematics of Computation, 89(324):1547–1579, 2020.
+
+[31] Martin Hutzenthaler, Arnulf Jentzen, Thomas Kruse, Tuan Anh Nguyen, and Philippe von Wurstemberger.
+Overcoming the curse of dimensionality in the numerical approximation of semilinear parabolic partial differential
+equations. Proceedings of the Royal Society A, 476(2244):20190630, 2020.
+
+[32] Martin Hutzenthaler, Arnulf Jentzen, Thomas Kruse, et al. Multilevel picard iterations for solving smooth
+semilinear parabolic heat equations. Partial Differential Equations and Applications, 2(6):1–31, 2021.
+
+[33] Ameya D Jagtap and George Em Karniadakis. Extended physics-informed neural networks (xpinns): A general-
+ized space-time domain decomposition based deep learning framework for nonlinear partial differential equations.
+Communications in Computational Physics, 28(5):2002–2041, 2020.
+
+[34] Ameya D Jagtap, Dimitrios Mitsotakis, and George Em Karniadakis. Deep learning of inverse water waves
+problems using multi-fidelity data: Application to serre–green–naghdi equations. Ocean Engineering, 248:110775,
+2022.
+
+[35] Shaolin Ji, Shige Peng, Ying Peng, and Xichuan Zhang. Three algorithms for solving high-dimensional fully
+coupled fbsdes through deep learning. IEEE Intelligent Systems, 35(3):71–84, 2020.
+
+[36] George Em Karniadakis, Ioannis G Kevrekidis, Lu Lu, Paris Perdikaris, Sifan Wang, and Liu Yang. Physics-
+informed machine learning. Nature Reviews Physics, 3(6):422–440, 2021.
+
+[38] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. ICLR, 2015.
+
+[39] Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, Andrew Stuart,
+and Anima Anandkumar. Neural operator: Learning maps between function spaces with applications to pdes.
+Journal of Machine Learning Research, 24(89):1–97, 2023.
+
+[40] Yunwen Lei, Ting Hu, Guiying Li, and Ke Tang. Stochastic gradient descent for nonconvex learning without
+bounded gradient assumptions. IEEE transactions on neural networks and learning systems, 31(10):4394–4400,
+2019.
+
+[41] Zongyi Li, Nikola Borislavov Kovachki, Kamyar Azizzadenesheli, Burigede liu, Kaushik Bhattacharya, Andrew
+Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential equations. In
+International Conference on Learning Representations, 2021.
+
+[42] Zongyi Li, Hongkai Zheng, Nikola Kovachki, David Jin, Haoxuan Chen, Burigede Liu, Kamyar Azizzadenesheli,
+and Anima Anandkumar. Physics-informed neural operator for learning partial differential equations. arXiv
+preprint arXiv:2111.03794, 2021.
+
+[43] Jianfeng Lu, Yulong Lu, and Min Wang. A priori generalization analysis of the deep ritz method for solving high
+dimensional elliptic equations. arXiv preprint arXiv:2101.01708, 2021.
+
+[44] Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learning nonlinear
+operators via deeponet based on the universal approximation theorem of operators. Nature machine intelligence,
+3(3):218–229, 2021.
+
+[45] Lu Lu, Raphael Pestourie, Wenjie Yao, Zhicheng Wang, Francesc Verdugo, and Steven G Johnson. Physics-
+informed neural networks with hard constraints for inverse design. SIAM Journal on Scientific Computing,
+43(6):B1105–B1132, 2021.
+
+[46] Tao Luo and H. Yang. Two-layer neural networks for partial differential equations: Optimization and generaliza-
+tion theory. ArXiv, abs/2006.15733, 2020.
+
+[47] Kaspar M¨artens and Christopher Yau. Neural decomposition: Functional anova with variational autoencoders. In
+International Conference on Artificial Intelligence and Statistics, pages 2917–2927. PMLR, 2020.
+
+[48] Panayotis Mertikopoulos, Nadav Hallak, Ali Kavis, and Volkan Cevher. On the almost sure convergence of
+stochastic gradient descent in non-convex problems. Advances in Neural Information Processing Systems,
+33:1117–1128, 2020.
+
+[49] Siddhartha Mishra and Roberto Molinaro. Estimates on the generalization error of physics informed neural
+networks (pinns) for approximating pdes. arXiv preprint arXiv:2006.16144, 2020.
+
+[50] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen,
+Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: An imperative style, high-performance deep
+learning library. Advances in neural information processing systems, 32, 2019.
+
+[51] Paris Perdikaris, Daniele Venturi, and George Em Karniadakis. Multifidelity information fusion algorithms for
+high-dimensional systems and massive data sets. SIAM Journal on Scientific Computing, 38(4):B521–B538,
+2016.
+
+[52] Maziar Raissi. Forward-backward stochastic neural networks: Deep learning of high-dimensional partial
+differential equations. arXiv preprint arXiv:1804.07010, 2018.
+
+[53] Maziar Raissi and George Em Karniadakis. Hidden physics models: Machine learning of nonlinear partial
+differential equations. Journal of Computational Physics, 357:125–141, 2018.
+
+[54] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A deep learning
+framework for solving forward and inverse problems involving nonlinear partial differential equations. Journal of
+Computational Physics, 378:686–707, 2019.
+
+[55] Ali Shafahi, Mahyar Najibi, Mohammad Amin Ghiasi, Zheng Xu, John Dickerson, Christoph Studer, Larry S
+Davis, Gavin Taylor, and Tom Goldstein. Adversarial training for free!
+Advances in Neural Information
+Processing Systems, 32, 2019.
+
+[56] Yeonjong Shin, Jerome Darbon, and George Em Karniadakis. On the convergence of physics informed neural
+networks for linear second-order elliptic and parabolic type pdes. arXiv preprint arXiv:2004.01806, 2020.
+
+[57] Khemraj Shukla, Vivek Oommen, Ahmad Peyvan, Michael Penwarden, Luis Bravo, Anindya Ghoshal, Robert M
+Kirby, and George Em Karniadakis. Deep neural operators can serve as accurate surrogates for shape optimization:
+a case study for airfoils. arXiv preprint arXiv:2302.00807, 2023.
+
+[58] Justin Sirignano and Konstantinos Spiliopoulos. Dgm: A deep learning algorithm for solving partial differential
+equations. Journal of computational physics, 375:1339–1364, 2018.
+
+[59] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole.
+Score-based generative modeling through stochastic differential equations. In International Conference on
+Learning Representations, 2021.
+
+[60] Chuwei Wang, Shanda Li, Di He, and Liwei Wang. Is $lˆ2$ physics informed loss always suitable for training
+physics informed neural network? In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho,
+editors, Advances in Neural Information Processing Systems, 2022.
+
+[61] Yifan Wang, Pengzhan Jin, and Hehu Xie. Tensor neural network and its numerical integration. arXiv preprint
+arXiv:2207.02754, 2022.
+
+[62] Yifan Wang, Yangfei Liao, and Hehu Xie. Solving schr\”{o} dinger equation using tensor neural network. arXiv
+preprint arXiv:2209.12572, 2022.
+
+[63] E. Weinan and Ting Yu. The deep ritz method: A deep learning-based numerical algorithm for solving variational
+problems. Communications in Mathematics and Statistics, 6:1–12, 2017.
+
+[64] Yibo Yang and Paris Perdikaris. Adversarial uncertainty quantification in physics-informed neural networks.
+Journal of Computational Physics, 394:136–152, 2019.
+
+[65] Yaohua Zang, Gang Bao, Xiaojing Ye, and Haomin Zhou. Weak adversarial networks for high-dimensional
+partial differential equations. Journal of Computational Physics, 411:109409, 2020.
+
+[66] Dongkun Zhang, Ling Guo, and George Em Karniadakis. Learning in modal space: Solving time-dependent
+stochastic pdes using physics-informed neural networks. SIAM Journal on Scientific Computing, 42(2):A639–
+A665, 2020.
+
+[67] Zhongqiang Zhang, Minseok Choi, and George Em Karniadakis. Error estimates for the anova method with
+polynomial chaos interpolation: Tensor product functions. SIAM Journal on Scientific Computing, 34(2):A1165–
+A1186, 2012.

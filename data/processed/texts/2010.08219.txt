@@ -1,0 +1,1988 @@
+HOW DOES WEIGHT SHARING HELP IN
+NEURAL ARCHITECTURE SEARCH?
+
+Yuge Zhang, Quanlu Zhang & Yaming Yang
+Microsoft Research
+
+ABSTRACT
+
+arXiv:2010.08219v2 [cs.LG] 5 May 2021
+
+Weight sharing, as an approach to speed up architecture performance estima-
+tion has received wide attention. Instead of training each architecture separately,
+weight sharing builds a supernet that assembles all the architectures as its submod-
+els. However, there has been debate over whether the NAS process actually ben-
+eﬁts from weight sharing, due to the gap between supernet optimization and the
+objective of NAS. To further understand the effect of weight sharing on NAS, we
+conduct a comprehensive analysis on ﬁve search spaces, including NAS-Bench-
+101, NAS-Bench-201, DARTS-CIFAR10, DARTS-PTB, and ProxylessNAS. We
+ﬁnd that weight sharing works well on some search spaces but fails on others. Tak-
+ing a step forward, we further identiﬁed biases accounting for such phenomenon
+and the capacity of weight sharing. Our work is expected to inspire future NAS
+researchers to better leverage the power of weight sharing.
+
+1
+INTRODUCTION
+
+Over recent years, weight-sharing NAS has emerged as a way to search for architectures under very
+limited resources, and has been gaining popularity (Pham et al., 2018; Liu et al., 2019; Cai et al.,
+2019; Bender et al., 2018). It builds all architectures into a supernet where each architecture is a
+submodel. Once the supernet has been trained, architectures can be directly evaluated by inheriting
+weights from the supernet, thus saving the huge cost to train each architecture from scratch.
+
+Weight sharing is built on the hypothesis that an architecture’s performance estimated within a su-
+pernet indicates its real performance. However, such hypothesis has been long questioned. Many
+analytical papers have conducted empirical analysis on whether and how weight sharing helps in
+ﬁnding the best architecture (Bender et al., 2018; Luo et al., 2019; Yu et al., 2019; Yang et al.,
+2019a; Zhang et al., 2020; Pourchot et al., 2020; Yu et al., 2020; Bender et al., 2020). Though
+valuable insights have been delivered, the understanding of weight sharing still only touches a tip of
+the iceberg. Futhermore, due to the differences in search spaces and experiment setups, sometimes
+different works even draw contradictory conclusions (Bender et al., 2018; Li & Talwalkar, 2019).
+
+For a deeper understanding, we conduct a more comprehensive study spanning ﬁve search spaces:
+NAS-Bench-101 (Ying et al., 2019), NAS-Bench-201 (Dong & Yang, 2020), DARTS-CIFAR10,
+DARTS-PTB (Liu et al., 2019), and ProxylessNAS (Cai et al., 2019). The study reveals that, for
+some spaces, NAS can beneﬁt from weight sharing to ﬁnd a good-performing architecture, while
+for others, it hardly works. We then analyzed the results to dig out the reason for such phenomenon.
+Our experiments exclude the factor of sharing density of weights and training instability, and point
+the cause directly to the bias towards certain operators, connections and model sizes. We noticed
+that weight sharing performs better when the bias coincides with the actual rank of architectures.
+
+Since weight sharing struggles to identify the best architectures, some works resort to pruning search
+space in order to increase the probability of ﬁnding the best, e.g., RL-based methods (Pham et al.,
+2018; Bender et al., 2020) and heuristic methods (You et al., 2020; Hu et al., 2020; Chen et al., 2019;
+Li et al., 2019). To identify the upper limit to which weight sharing can correctly prune the search
+space, we compared weight sharing on pruned NAS-Bench series. We came to a conclusion that
+weight sharing is able to ﬁnd top-10% architectures, but struggles to ﬁnd the best.
+
+• We conduct a comprehensive study on ﬁve different search spaces, spanning from CNN to
+RNN. The pairwise comparison between different spaces reveals more convincing insights,
+and also explains some contradictory conclusions drawn from previous papers.
+• To the best of our knowledge, we are the ﬁrst to systematically analyze the performance of
+weight sharing on pruned search space.
+• We released a NAS benchmark containing more than 500 architectures where the ground truth1
+of each architecture is also reported, which we expect will facilitate NAS research.2
+
+2
+WEIGHT SHARING BENCHMARK
+
+In this section, we conduct a comprehensive study of weight sharing on ﬁve search spaces. For all the
+experiments, we adopt uniform sampling to train a supernet, i.e., single-path one shot (SPOS) (Guo
+et al., 2019), as it is a generalized approach and it can also be seen as a basic component of other
+advanced sampling methods that exclude other training tricks. Details about experiment setups
+including search spaces and evaluation methodology can be found in Appendix A.
+
+Longer training does not guarantee better results. As previous works (Chu et al., 2019b;a; Guo
+et al., 2019; Luo et al., 2019) pointed out that supernet needs to be trained sufﬁciently to beneﬁt
+NAS, we ﬁrst vary the training epochs exponentially instead of using a ﬁxed training schedule.
+From the perspective of average validation performance, supernet converges well and there is no
+sign of over-ﬁtting (see Appendix D). However, as shown in Figure 1, a longer training does not
+guarantee a better ranking model. For example, on DARTS-CIFAR10, correlation achieves 0.54
+when trained with 64 epochs, but later decreases to around 0.2 with longer training. On PTB, the
+correlation can be even worse than 0. There is a similar phenomenon on top-k. Although top-k is
+not very sensitive to the changes in correlation, performance of selected architecture could still drop
+when supernet is trained longer.
+
+75
+
+94
+
+0.65
+
+0.6
+
+70
+
+93
+
+GT Performance
+
+GT Performance
+
+0.60
+
+Correlation
+
+Correlation
+
+65
+
+92
+
+Top-1
+Top-10
+Random Top-1
+Random Top-10
+GT Best
+Correlation
+
+Top-1
+Top-10
+Random Top-1
+Random Top-10
+GT Best
+Correlation
+
+0.4
+
+0.55
+
+60
+
+91
+
+0.2
+
+90
+
+0.50
+
+55
+
+0.0
+
+89
+
+50
+
+128 256 512 1k
+2k
+4k
+8k
+16k
+Epochs
+
+32
+64 128 256 512 1k
+2k
+4k
+Epochs
+
+(a) NAS-Bench-101
+
+(b) NAS-Bench-201
+
+55
+
+76.25
+
+0.50
+
+GT Performance
+
+GT Performance
+
+GT Performance
+
+0.0
+
+0.8
+
+97
+
+Correlation
+
+Correlation
+
+Correlation
+
+76.00
+
+60
+
+0.25
+
+0.2
+
+Top-1
+Top-10
+Correlation
+
+Top-1
+Top-5
+Correlation
+
+Top-1
+Top-10
+Correlation
+0.4
+
+0.6
+
+75.75
+
+0.00
+
+65
+
+96
+
+75.50
+
+0.25
+
+0.4
+
+70
+
+32 64 128256512 1k
+
+32 64 128256512 1k 2k 4k 8k
+
+128256512 1k 2k 4k
+
+Epochs
+
+Epochs
+
+Epochs
+
+(d) ProxylessNAS
+
+(c) DARTS-CIFAR10
+
+(e) DARTS-PTB
+
+Figure 1: We show correlation, top-k (i.e., best ground truth of k architectures selected with the
+help of weight sharing) and random top-k (i.e., best ground truth of randomly-selected k architec-
+tures). We also show the best ground truth (in green dash-dot line) if the metric is available. Details
+explanation on metrics are in Appendix A.
+
+Effectiveness of weight sharing relies on search space. We draw the conclusion by comparing the
+results across different search spaces. For example, on NAS-Bench-201, the correlation can be as
+high as 0.7, whereas using weight-sharing to guide NAS on DARTS-PTB can be even worse than
+
+random search. On search spaces where correlation is greater than 0.4, weight-sharing NAS still
+outperforms random search by a clear margin on top-k performance.
+
+Reducing
+the
+sharing
+density
+hardly helps. Zhang et al. (2020)
+pointed out the intuition that sub-
+models have interference with each
+other, and thus proposed to reduce
+the density of weight sharing (i.e.,
+how many different architectures
+are sharing the weight of one op-
+erator). However, our experiments
+show that this is only true when the
+sharing density is substantially low.
+For example, in Figure 2, the im-
+provement is only noticeable when
+the downscaling factor is up to 64
+on NAS-Bench-201, at which time
+the search space only contains 244
+different architectures.
+On NAS-
+Bench-101, no increasing trend is observed at all.
+
+0.9
+
+0.8
+
+Best Ground Truth of Top-10
+
+Best Ground Truth of Top-10
+
+71
+
+93.5
+
+0.7
+
+0.8
+
+Correlation
+
+Correlation
+
+70
+
+0.6
+
+93.0
+
+69
+
+0.7
+
+Weight Sharing
+Random Search
+Correlation
+
+Weight Sharing
+Random Search
+Correlation
+
+0.5
+
+92.5
+
+68
+
+0.4
+
+0.6
+
+1x
+4x
+16x
+64x
+256x
+1032x
+Search Space Downscaling Factor
+
+1x
+4x
+16x
+64x
+259x
+1091x
+Search Space Downscaling Factor
+
+(a) NAS-Bench-101
+
+(b) NAS-Bench-201
+
+Figure 2: Comparison between random search and weight-
+sharing NAS as we decrease the sharing density by conducting
+NAS on a randomly-downscaled search space. We show top-
+10 accuracy (blue and red lines) for weight sharing and ran-
+dom search, respectively, and correlation in black lines, when
+search space is k times smaller than the original one. The
+error-bars and regions are min/max across 3 different runs.
+
+Weight sharing imposes a consistent bias. One may attribute the failure of weight sharing to the
+instability of random-path gradient descent, bad hyper-parameters. But according to our study, that
+is not the case. As shown in Figure 3, despite trained with different epochs, supernets are highly-
+agreeable when ranking architectures, even though they can be unanimously wrong (e.g., nega-
+tive GT-correlation on DARTS-PTB). Similar consistency are also seen between different datasets,
+hyper-parameters and training tricks (Appendix C). The bias imposed by weight sharing seems
+consistent and lies in the intrinsics of weight sharing itself.
+
+1
+0.86
+0.86
+0.84
+0.51
+0.68
+
+1
+0.5
+0.37
+0.37
+0.34
+0.12
+
+1
+0.44
+0.38
+0.37
+0.55
+0.17
+
+1
+0.69
+0.69
+0.69
+0.51 -0.079
+
+64
+256
+1k
+4k
+GT
+P
+
+64
+256
+1k
+4k
+GT
+P
+
+256
+1k
+4k
+16k
+GT
+P
+
+256
+512
+1k
+2k
+4k
+GT
+
+0.86
+1
+0.98
+0.94
+0.62
+0.78
+
+0.5
+1
+0.96
+0.95
+0.71
+0.51
+
+0.44
+1
+0.9
+0.86
+0.13
+0.19
+
+0.69
+1
+0.99
+0.99
+0.51 -0.18
+
+0.86
+0.98
+1
+0.97
+0.62
+0.75
+
+0.37
+0.96
+1
+0.99
+0.68
+0.48
+
+0.38
+0.9
+1
+0.95
+0.2
+0.33
+
+0.69
+0.99
+1
+1
+0.53 -0.18
+
+0.84
+0.94
+0.97
+1
+0.6
+0.72
+
+0.37
+0.95
+0.99
+1
+0.72
+0.52
+
+0.37
+0.86
+0.95
+1
+0.24
+0.35
+
+0.69
+0.99
+1
+1
+0.54 -0.18
+
+0.51
+0.62
+0.62
+0.6
+1
+0.67
+
+0.34
+0.71
+0.68
+0.72
+1
+0.75
+
+0.55
+0.13
+0.2
+0.24
+1
+0.41
+
+0.51
+0.51
+0.53
+0.54
+1
+-0.22
+
+0.68
+0.78
+0.75
+0.72
+0.67
+1
+
+0.12
+0.51
+0.48
+0.52
+0.75
+1
+
+0.17
+0.19
+0.33
+0.35
+0.41
+1
+
+-0.079 -0.18 -0.18 -0.18 -0.22
+1
+
+256
+1k
+4k
+16k
+GT
+P
+
+64
+256
+1k
+4k
+GT
+P
+
+64
+256
+1k
+4k
+GT
+P
+
+256
+512
+1k
+2k
+4k
+GT
+
+(a) NAS-Bench-101
+
+(b) NAS-Bench-201
+
+(c) DARTS-CIFAR10
+
+(d) DARTS-PTB
+
+Figure 3: Mutual correlation among the ranking produced by weight sharing under different budgets
+(number of epochs), number of parameters (P) and ground truth performance (GT).
+
+95
+
+58
+
+94
+
+70
+
+Ground Truth
+
+Ground Truth
+
+Ground Truth
+
+59
+
+93
+
+65
+
+None
+Skip
+Conv1x1
+Conv3x3
+AvgPool
+
+92
+
+60
+
+Tanh
+ReLU
+Sigmoid
+Identity
+
+91
+
+Conv3x3
+Conv1x1
+MaxPool
+
+60
+
+61
+
+90
+
+55
+
+62
+
+89
+
+20
+40
+60
+Supernet Performance
+
+68
+69
+70
+71
+
+86
+88
+90
+Supernet Performance
+
+Supernet Performance
+
+(b) NB-201 (Edge 0-3)
+
+(c) PTB (2nd activation)
+
+(a) NB-101 (Node 1)
+
+Figure 4: Relationship between supernet performance and ground truth
+performance, grouped by decision on a speciﬁc operator, as stated in
+parenthesis. The most biased candidate is highlighted.
+
+outperforming all the attempts from weight sharing to estimate a good rank. Moreover, We ﬁnd that
+weight sharing performs better in search spaces with higher GT-Param correlations. Sometimes,
+weight sharing even has a higher correlation with model size than its correlation with ground truth,
+in which case, weight sharing learns to ﬁnd big models, rather than good-performing models.
+
+Weight sharing is biased towards certain operators. We support this claim by reviewing the ar-
+chitecture distribution grouped by decisions of operators. Some typical cases are shown in Figure 4.
+For NAS-Bench-101, Conv3x3 is clearly preferred by weight sharing. Fortunately, architectures
+with Conv3x3 indeed have relatively good performance and that is why top-k on NAS-Bench-101 is
+fairly good. On NAS-Bench-201, weight sharing still favors Conv3x3 as the operator connecting in-
+put node to output node of a cell, but almost all architectures with top ground truth accuracy choose
+the skip connection instead. This accounts for the fact that top-10 is almost no better than top-1
+in Figure 1. Similarly, on DARTS-PTB, Tanh, the activation function which is favored by weight
+sharing, turns out to be a worse option.
+
+3
+CAPACITY OF WEIGHT SHARING
+
+Since
+identifying
+the
+top
+architectures
+with
+weight
+sharing is difﬁcult, previous
+works resort to weight shar-
+ing as a method to prune the
+worst, hoping to improve the
+performance distribution of
+search space, thus increase
+likelihood of ﬁnding the best.
+On search space weight shar-
+ing still works reasonably
+well (NAS-Bench-101 and
+201), we ask the following
+question: is weight sharing
+still effective on a pruned
+search space? To answer the
+question, we test the capacity
+of weight sharing, after which prune factor NAS with weight sharing does not gain more beneﬁts.
+
+74
+
+0.8
+
+0.8
+
+Best Ground Truth of Top-10
+
+Best Ground Truth of Top-10
+
+94.0
+
+73
+
+0.6
+
+0.6
+
+93.5
+
+72
+
+Correlation
+
+Correlation
+
+71
+
+0.4
+
+93.0
+
+0.4
+
+70
+
+Weight Sharing
+Random Search
+Correlation
+
+Weight Sharing
+Random Search
+Correlation
+
+0.2
+
+92.5
+
+69
+
+0.2
+
+92.0
+
+0.0
+
+68
+
+1x
+4x
+16x
+64x
+256x
+1032x
+Search Space Prune Factor
+
+1x
+4x
+16x
+64x
+259x
+1091x
+Search Space Prune Factor
+
+(a) NAS-Bench-101
+
+(b) NAS-Bench-201
+
+Figure 5: Comparison between random search and weight-sharing
+NAS on best-architecture subsets of search spaces. When search
+space is k times smaller than the original one, we show top-10 ac-
+curacy (blue and red lines) for weight sharing and random search,
+respectively, and correlation in black lines. The error-bars are the
+min and max across 3 different runs.
+
+In particular, we run experiments on sub-search-space of NAS-Bench-101 and 201, by keeping a
+subset of architectures with the best ground truth performance (detailed setups in Appendix A).
+We vary the subset size and plot the ﬁgures shown in Figure 5. On NAS-Bench-101, we can see
+the advantage of weight sharing against random search becomes less obvious as the correlation
+goes down. This aligns with the intuition because the best architectures have very close accuracy
+and are hard to distinguish. Interestingly, on NAS-Bench-201, the advantage of weight sharing
+against random search is neither steadily increasing, nor gradually diminishes. It seems that weight
+sharing is reaching its limit when the prune factor is 8x, at which point, the advantage of weight
+sharing compared to random search becomes very little. However, after this point there could still
+be opportunities for weight sharing, as the correlation grows up to 0.6 when the space is pruned 128
+times smaller. We conjecture that this phenomenon is a result of certain operators biased by weight
+sharing being removed from search space (e.g., the bad-performing Conv3x3 on NAS-Bench-201).
+
+4
+CONCLUSION
+
+REFERENCES
+
+Gabriel Bender, Pieter-Jan Kindermans, Barret Zoph, Vijay Vasudevan, and Quoc Le. Understanding and
+simplifying one-shot architecture search. In Jennifer Dy and Andreas Krause (eds.), Proceedings of the
+35th International Conference on Machine Learning, volume 80 of Proceedings of Machine Learning
+Research, pp. 550–559, Stockholmsm¨assan, Stockholm Sweden, 10–15 Jul 2018. PMLR. URL
+//proceedings.mlr.press/v80/bender18a.html.
+
+Gabriel Bender, Hanxiao Liu, Bo Chen, Grace Chu, Shuyang Cheng, Pieter-Jan Kindermans, and Quoc V Le.
+Can weight sharing outperform random architecture search? an investigation with tunas. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 14323–14332, 2020.
+
+Han Cai, Ligeng Zhu, and Song Han. ProxylessNAS: Direct neural architecture search on target task and hard-
+ware. In International Conference on Learning Representations, 2019. URL
+net/forum?id=HylVB3AqYm.
+
+Xin Chen, Lingxi Xie, Jun Wu, and Qi Tian. Progressive differentiable architecture search: Bridging the
+depth gap between search and evaluation.
+2019 IEEE/CVF International Conference on Computer Vi-
+sion (ICCV), Oct 2019. doi: 10.1109/iccv.2019.00138. URL
+2019.00138.
+
+Xiangxiang Chu, Bo Zhang, Jixiang Li, Qingyuan Li, and Ruijun Xu. Scarlet-nas: Bridging the gap between
+stability and scalability in weight-sharing neural architecture search, 2019a.
+
+Xiangxiang Chu, Bo Zhang, Ruijun Xu, and Jixiang Li. Fairnas: Rethinking evaluation fairness of weight
+sharing neural architecture search, 2019b.
+
+Xuanyi Dong and Yi Yang. Nas-bench-201: Extending the scope of reproducible neural architecture search,
+2020.
+
+Zichao Guo, Xiangyu Zhang, Haoyuan Mu, Wen Heng, Zechun Liu, Yichen Wei, and Jian Sun. Single path
+one-shot neural architecture search with uniform sampling. arXiv preprint arXiv:1904.00420, 2019.
+
+Yiming Hu, Yuding Liang, Zichao Guo, Ruosi Wan, Xiangyu Zhang, Yichen Wei, Qingyi Gu, and Jian Sun.
+Angle-based search space shrinking for neural architecture search, 2020.
+
+Liam Li and Ameet Talwalkar. Random search and reproducibility for neural architecture search, 2019.
+
+Xiang Li, Chen Lin, Chuming Li, Ming Sun, Wei Wu, Junjie Yan, and Wanli Ouyang. Improving one-shot nas
+by suppressing the posterior fading, 2019.
+
+Hanxiao Liu, Karen Simonyan, and Yiming Yang. DARTS: Differentiable architecture search. In Interna-
+tional Conference on Learning Representations, 2019.
+URL
+id=S1eYHoC5FX.
+
+Renqian Luo, Tao Qin, and Enhong Chen. Understanding and improving one-shot neural architecture opti-
+mization, 2019.
+
+Hieu Pham, Melody Guan, Barret Zoph, Quoc Le, and Jeff Dean. Efﬁcient neural architecture search via
+parameters sharing. In Jennifer Dy and Andreas Krause (eds.), Proceedings of the 35th International Con-
+ference on Machine Learning, volume 80 of Proceedings of Machine Learning Research, pp. 4095–4104,
+Stockholmsm¨assan, Stockholm Sweden, 10–15 Jul 2018. PMLR. URL
+press/v80/pham18a.html.
+
+Alo¨ıs Pourchot, Alexis Ducarouge, and Olivier Sigaud. To share or not to share: A comprehensive appraisal of
+weight-sharing, 2020.
+
+Charles Spearman. The proof and measurement of association between two things. 1961.
+
+Mingxing Tan and Quoc V. Le. Efﬁcientnet: Rethinking model scaling for convolutional neural networks, 2019.
+
+Mingxing Tan, Bo Chen, Ruoming Pang, Vijay Vasudevan, Mark Sandler, Andrew Howard, and Quoc V. Le.
+Mnasnet: Platform-aware neural architecture search for mobile. 2019 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR), Jun 2019. doi: 10.1109/cvpr.2019.00293. URL
+doi.org/10.1109/CVPR.2019.00293.
+
+Antoine Yang, Pedro M. Esperanc¸a, and Fabio M. Carlucci. Nas evaluation is frustratingly hard, 2019a.
+
+Chris Ying, Aaron Klein, Eric Christiansen, Esteban Real, Kevin Murphy, and Frank Hutter. NAS-bench-
+101: Towards reproducible neural architecture search. In Kamalika Chaudhuri and Ruslan Salakhutdinov
+(eds.), Proceedings of the 36th International Conference on Machine Learning, volume 97 of Proceedings of
+Machine Learning Research, pp. 7105–7114, Long Beach, California, USA, 09–15 Jun 2019. PMLR. URL
+
+Shan You, Tao Huang, Mingmin Yang, Fei Wang, Chen Qian, and Changshui Zhang. Greedynas: Towards fast
+one-shot nas with greedy supernet, 2020.
+
+Kaicheng Yu, Christian Sciuto, Martin Jaggi, Claudiu Musat, and Mathieu Salzmann. Evaluating the search
+phase of neural architecture search, 2019.
+
+Kaicheng Yu, Rene Ranftl, and Mathieu Salzmann. How to train your super-net: An analysis of training
+heuristics in weight-sharing nas, 2020.
+
+Arber Zela, Julien Siems, and Frank Hutter. Nas-bench-1shot1: Benchmarking and dissecting one-shot neural
+architecture search. In International Conference on Learning Representations, 2020. URL
+openreview.net/forum?id=SJx9ngStPH.
+
+Yuge Zhang, Zejun Lin, Junyang Jiang, Quanlu Zhang, Yujing Wang, Hui Xue, Chen Zhang, and Yaming Yang.
+Deeper insights into weight sharing in neural architecture search, 2020.
+
+Barret Zoph and Quoc V. Le. Neural architecture search with reinforcement learning, 2016.
+
+Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V Le. Learning transferable architectures for scal-
+able image recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition,
+pp. 8697–8710, 2018.
+
+A
+EXPERIMENT SETUPS
+
+A.1
+SEARCH SPACES
+
+We present a summary of 5 search spaces we used for our experiments in Table 1. Below is a detailed
+description of the 5 search spaces and how we use weight sharing on these search spaces.
+
+NAS-Bench-101.
+To make diagnose of one-shot methods possible and fully leverage previous-
+computed benchmark results, we design a sub search space of NAS-Bench-101 (Ying et al., 2019),
+which is also referred in NAS-Bench-1Shot1 (Zela et al., 2020). Our search space is similar to
+search space 3 in NAS-Bench-1Shot1, with subtle differences to fully align with NAS-Bench-101:
+(i) We use the same channel number conﬁguration as NAS-Bench-101. (ii) We force the number
+of intermediate nodes in a cell to be exactly 5, to avoid introducing an extra zero-op. (iii) In NAS-
+Bench-101, all intermediate nodes are concatenated to the output node of a cell, after which input
+node (after 1x1 conv if necessary) is added to the output. The channel number of intermediate nodes
+is the output channel divided by the number of intermediate nodes (instead of all incoming nodes).
+Instead of introducing dynamic convolutions, we forbid the connection from input to output, force
+the output node to concatenate 2 of the intermediate 5 nodes. (iv) We do not deduplicate isomorphic
+cells. In the end, we end up with 95985 different cells, and 42228 deduplicate isomorphic ones.
+Following the guidelines recommended by NAS-Bench-101, we split the original CIFAR-10 training
+set into 40k for training and 10k for validation. The original test set is used for testing.
+
+DARTS-CIFAR10.
+The search space on CIFAR-10 dataset adopted in DARTS (Liu et al., 2019)
+is very similar to the ones used by Pham et al. (2018); Zoph et al. (2018), except that all nodes in a
+cell are concatenated into the output and there are subtle differences in convolution with stride = 2
+in reduction cell. Previous works handle the search space differently. For example, DARTS expands
+the combinations of operators and inputs, thus the supernet is 3 – 4 times larger than that constructed
+following ENAS (Pham et al., 2018). In our paper, we use the straight-forward supernet-building
+which is proposed in ENAS.
+
+ProxylessNAS.
+We follow ProxylessNAS-GPU (Cai et al., 2019) setting, with 1.35 width mul-
+tiplier. During training, all architectures are equally likely to be sampled. In evaluation, we only
+consider architectures that ﬁt in mobile settings and ﬁlter out the architectures with FLOPs greater
+than 600M.
+
+DARTS-PTB.
+We use the RNN cell search space consisting of 8 choices of activation function
+and choices of predecessors, following Liu et al. (2019). We use the ofﬁcial train, valid and test split
+provided by Penn Treebank.
+
+We present a summary of all search spaces in Table 1.
+
+Table 1: Summary of search spaces.
+
+Valid space size
+Dataset
+Task
+Space type
+NAS-Bench-101
+95985
+CIFAR-10
+Image classiﬁcation
+Cell-wise Zoph et al. (2018)
+NAS-Bench-201
+15284
+CIFAR-100
+Image classiﬁcation
+Cell-wise
+DARTS-CIFAR10
+2.76 · 1020
+CIFAR-10
+Image classiﬁcation
+Cell-wise
+ProxylessNAS
+2.22 · 1017
+ImageNet
+Image classiﬁcation
+Chain-wise Zoph & Le (2016)
+DARTS-PTB
+2.64 · 109
+Penn Treebank
+Language modelling
+Cell-wise
+
+A.2
+EVALUATION METHODOLOGY
+
+Single-path one shot.
+In single-path one shot, an architecture is sampled per mini-batch with the
+objective of minimizing the expectation of loss, i.e.,
+
+Eα∼A[Lval(N(φ, α))]
+(1)
+
+where A is the architecture search space, φ is the supernet weights, and N is the corresponding
+architecture using weights from supernet. When evaluating a submodel, we ﬁrst extract it from
+supernet inheriting supernet weights, calibrate Batch-Norm statistics (Guo et al., 2019; Bender et al.,
+2018; Pourchot et al., 2020; Yu et al., 2020), and then evaluate it on the full validation set (top-1
+accuracy for image classiﬁcation task and perplexity for language modelling). When calculating the
+metrics (including correlation and top-k), we sample and evaluate 1k architectures for NAS-Bench
+series, 100 for DARTS series, and 20 for ProxylessNAS.
+
+Hyper-parameter settings.
+We list important hyper-parameters for supernet training in Table 2.
+We run the training with 1000 epochs if not otherwise speciﬁed.
+
+Table 2: Summary of hyper-parameters used in supernet training. BN calib batch size / steps (Bender
+et al., 2018) are the conﬁguration of batch-norm calibration before evaluation of each architecture.
+
+NB-101
+NB-201
+DARTS-C
+Proxyless
+DARTS-PTB
+Batch size
+256
+256
+448
+1024
+256
+Initial LR
+0.1
+0.05
+0.1
+0.2
+40
+LR Decay
+Cosine
+Cosine
+Cosine
+Cosine
+Fixed
+Weight decay
+0.0001
+0.0005
+0.0003
+0.0005
+8 · 107
+Gradient clip
+5
+5
+5
+0
+0.1
+BN calib batch size
+400
+400
+200
+400
+-
+BN calib steps
+25
+25
+100
+25
+0
+# GPUs
+1
+1
+4
+8
+1
+
+For ground truth training, we completely followed the settings mentioned in the original paper,
+except those which are tuned to ﬁt into our GPU capacity (batch size = 96 for DARTS-CIFAR10,
+and 1024 for ProxylessNAS).
+
+Metrics.
+Following previous works, we use the following metrics to assess the effectiveness of
+weight sharing in NAS:
+
+• Correlation: Following Yu et al. (2020); Pourchot et al. (2020); Zhang et al. (2020); Li &
+Talwalkar (2019), we show the correlation between supernet performance and ground truth
+performance. We will use Spearman correlation (Spearman, 1961) in this paper. A higher
+correlation means better consistency. Correlations are calculated on a randomly sampled subset
+(1k for NAS-Bench series, 100 for DARTS series, 20 for ProxylessNAS).
+
+• Top-k: We randomly sample 1k architectures, choose top-k based on their performance eval-
+uated on supernet, and obtain their ground truth performance. We then use report test perfor-
+mance of the architecture with the best ground truth performance on validation set.
+
+Search space pruning.
+To keep the best performing subset of search space, we adopt the method
+to keep the architectures with best ground truths. In practice, the ground truths are usually not
+available and replaced with the estimation by weight sharing methods (Pham et al., 2018; You et al.,
+2020). Note that we did not prune the search space at operator level, as previously done in Chen
+et al. (2019); Hu et al. (2020).
+
+B
+PERFORMANCE BENCHMARK
+
+For the purposes of conducting multiple experiments mentioned in our paper, we trained 377 archi-
+tectures on DARTS-CIFAR10, 36 architectures on ProxylessNAS and 137 architectures on DARTS-
+PTB, independently from scratch. We show the distribution in Figure 6, where each point corre-
+sponds to an architecture, and publish these results for the usage of future researches.
+
+97.50
+
+56
+
+76.25
+
+97.25
+
+57
+
+76.00
+
+97.00
+
+Test perplexity
+
+Accuracy
+
+58
+
+Accuracy
+
+75.75
+
+96.75
+
+59
+
+75.50
+
+96.50
+
+Others
+Random
+Supernet selections
+DARTS 2nd order
+
+60
+
+Random
+Supernet selections
+
+96.25
+
+Random
+Supernet selections
+DARTS 2nd order
+
+75.25
+
+61
+
+96.00
+
+75.00
+
+62
+
+525
+550
+575
+600
+FLOPs (M)
+
+58
+60
+62
+64
+
+2.0
+2.5
+3.0
+3.5
+4.0
+Parameters (M)
+
+Valid perplexity
+
+(c) DARTS-PTB
+
+(a) DARTS-CIFAR10
+
+(b) ProxylessNAS
+
+Figure 6: Efﬁciency-latency distribution of our sampled ground-truths. For DARTS-PTB, we show
+the relationship between validation perplexity and test perplexity because model sizes are same for
+all architectures.
+
+C
+EFFECT OF SUPERNET TRAINING TRICKS
+
+Table 3: Comparison of correlation with ground truth (Corr-GT), top-10, and correlation with base-
+line (Corr-BL) after varying training settings and applying training tricks.
+
+Group
+Corr-BL
+Corr-GT ↑(∆)
+Top-10 ↑(∆)
+NAS-Bench-101 (1k epochs)
+1.000
+0.618
+93.45
+FairNAS (Chu et al., 2019b)
+0.967
+0.683 (+0.064)
+93.64 (+0.19)
+Multi-Path (Pham et al., 2018)
+0.963
+0.626 (+0.007)
+93.87 (+0.42)
+LR=0.05, WD=3 · 104
+0.982
+0.608 (-0.010)
+93.13 (-0.32)
+Different Seed
+0.982
+0.630 (+0.012)
+93.59 (+0.14)
+NAS-Bench-101 (2k epochs)
+1.000
+0.659
+93.82
+FairNAS
+0.964
+0.652 (-0.007)
+93.41 (-0.41)
+Multi-Path
+0.963
+0.656 (-0.002)
+93.64 (-0.18)
+LR=0.05, WD=3 · 104
+0.970
+0.611 (-0.048)
+93.45 (-0.37)
+Different Seed
+0.979
+0.644 (-0.014)
+93.45 (-0.37)
+NAS-Bench-201 (2k epochs)
+1.000
+0.701
+69.66
+FairNAS
+0.978
+0.716 (+0.015)
+69.87 (+0.21)
+Multi-Path
+0.984
+0.706 (+0.005)
+70.05 (+0.39)
+CIFAR-10
+0.915
+0.831 (+0.130)
+69.87 (+0.21)
+ImageNet-16-120
+0.962
+0.711 (+0.010)
+69.72 (+0.06)
+
+1
+0.99 0.67 0.47 0.51 0.55 0.62 0.66 0.62 0.61 0.6 0.63 0.64 0.61 0.61 0.68 0.66 0.65 0.63 0.63 0.66
+
+1.00 0.75 -0.16 0.02 0.34 0.64 0.71 0.67 0.68 0.70 0.72 0.72 0.71 0.71 0.74 0.80 0.64 0.79 0.66 0.83 0.71
+
+GT valid
+
+Ground truth
+
+0.99
+1
+0.68 0.47 0.51 0.55 0.62 0.66 0.62 0.61 0.6 0.64 0.65 0.61 0.62 0.69 0.67 0.66 0.63 0.63 0.66
+
+0.75 1.00 -0.23 -0.11 0.12 0.44 0.51 0.47 0.48 0.51 0.52 0.52 0.51 0.51 0.54 0.60 0.46 0.60 0.48 0.64 0.54
+
+GT test
+
+Parameters
+
+0.67 0.68
+1
+0.65 0.68 0.76 0.78 0.8 0.75 0.73 0.72 0.79 0.78 0.78 0.75 0.82 0.83 0.79 0.82 0.81 0.8
+
+-0.16 -0.23 1.00 0.92 0.77 0.31 -0.00 -0.08 -0.10 -0.12 -0.11 -0.10 -0.11 -0.10 -0.12 -0.18 -0.09 -0.14 -0.09 -0.19 -0.12
+
+Parameters
+
+Naive 16
+
+0.47 0.47 0.65
+1
+0.95 0.88 0.82 0.79 0.82 0.81 0.79 0.83 0.81 0.82 0.8 0.82 0.8 0.82 0.85 0.86 0.8
+
+0.02 -0.11 0.92 1.00 0.87 0.45 0.20 0.12 0.09 0.07 0.08 0.10 0.09 0.10 0.09 0.02 0.09 0.04 0.08 -0.01 0.06
+
+Naive 128
+
+Naive 32
+
+0.51 0.51 0.68 0.95
+1
+0.9 0.86 0.83 0.86 0.85 0.84 0.87 0.84 0.86 0.84 0.87 0.83 0.85 0.9 0.91 0.84
+
+0.34 0.12 0.77 0.87 1.00 0.74 0.50 0.39 0.37 0.35 0.37 0.40 0.38 0.39 0.40 0.35 0.35 0.36 0.34 0.33 0.34
+
+Naive 256
+
+Naive 64
+
+0.55 0.55 0.76 0.88 0.9
+1
+0.96 0.94 0.95 0.94 0.92 0.96 0.95 0.97 0.95 0.94 0.94 0.95 0.95 0.96 0.95
+
+0.64 0.44 0.31 0.45 0.74 1.00 0.85 0.77 0.76 0.75 0.77 0.79 0.77 0.78 0.78 0.76 0.74 0.77 0.73 0.75 0.74
+
+Naive 512
+
+Naive 128
+
+0.62 0.62 0.78 0.82 0.86 0.96
+1
+0.97 0.98 0.96 0.94 0.98 0.98 0.98 0.97 0.97 0.97 0.97 0.96 0.96 0.97
+
+0.71 0.51 -0.00 0.20 0.50 0.85 1.00 0.95 0.96 0.95 0.95 0.97 0.96 0.96 0.96 0.92 0.92 0.92 0.92 0.90 0.92
+
+Naive 1k
+
+Naive 256
+
+0.66 0.66 0.8 0.79 0.83 0.94 0.97
+1
+0.97 0.95 0.95 0.98 0.98 0.98 0.97 0.96 0.96 0.96 0.94 0.94 0.96
+
+0.67 0.47 -0.08 0.12 0.39 0.77 0.95 1.00 0.99 0.98 0.98 0.98 0.99 0.99 0.98 0.93 0.97 0.92 0.96 0.89 0.95
+
+Naive 2k
+
+Naive 512
+
+0.62 0.62 0.75 0.82 0.86 0.95 0.98 0.97
+1
+0.98 0.97 0.97 0.98 0.98 0.98 0.95 0.95 0.96 0.93 0.94 0.95
+
+0.68 0.48 -0.10 0.09 0.37 0.76 0.96 0.99 1.00 0.99 0.99 0.98 0.99 0.99 0.98 0.94 0.97 0.94 0.96 0.90 0.96
+
+Naive 4k
+
+Naive 1k
+
+0.61 0.61 0.73 0.81 0.85 0.94 0.96 0.95 0.98
+1
+0.98 0.96 0.97 0.96 0.98 0.93 0.92 0.94 0.92 0.92 0.93
+
+0.70 0.51 -0.12 0.07 0.35 0.75 0.95 0.98 0.99 1.00 0.99 0.98 0.98 0.98 0.97 0.94 0.97 0.95 0.97 0.91 0.96
+
+Naive 8k
+
+Naive 2k
+
+0.6
+0.6 0.72 0.79 0.84 0.92 0.94 0.95 0.97 0.98
+1
+0.95 0.96 0.95 0.97 0.91 0.9 0.92 0.89 0.9 0.91
+
+0.72 0.52 -0.11 0.08 0.37 0.77 0.95 0.98 0.99 0.99 1.00 0.98 0.99 0.98 0.97 0.95 0.97 0.96 0.97 0.93 0.97
+
+Naive 16k
+
+Naive 4k
+
+0.63 0.64 0.79 0.83 0.87 0.96 0.98 0.98 0.97 0.96 0.95
+1
+0.98 0.99 0.97 0.97 0.96 0.97 0.96 0.96 0.97
+
+0.72 0.52 -0.10 0.10 0.40 0.79 0.97 0.98 0.98 0.98 0.98 1.00 0.99 0.99 0.99 0.94 0.96 0.93 0.95 0.91 0.95
+
+Naive 1k, diff seed
+
+FairNAS 2k
+
+0.64 0.65 0.78 0.81 0.84 0.95 0.98 0.98 0.98 0.97 0.96 0.98
+1
+0.98 0.98 0.96 0.96 0.97 0.94 0.95 0.97
+
+0.71 0.51 -0.11 0.09 0.38 0.77 0.96 0.99 0.99 0.98 0.99 0.99 1.00 0.99 0.99 0.95 0.97 0.95 0.96 0.92 0.96
+
+Naive 2k, diff seed
+
+FairNAS 2k, diff seed
+
+0.61 0.61 0.78 0.82 0.86 0.97 0.98 0.98 0.98 0.96 0.95 0.99 0.98
+1
+0.98 0.96 0.96 0.97 0.95 0.95 0.97
+
+0.71 0.51 -0.10 0.10 0.39 0.78 0.96 0.99 0.99 0.98 0.98 0.99 0.99 1.00 0.99 0.95 0.96 0.95 0.96 0.92 0.96
+
+Multi-path 2k
+
+Naive 1k, diff hparams
+
+0.61 0.62 0.75 0.8 0.84 0.95 0.97 0.97 0.98 0.98 0.97 0.97 0.98 0.98
+1
+0.94 0.95 0.96 0.93 0.93 0.95
+
+0.74 0.54 -0.12 0.09 0.40 0.78 0.96 0.98 0.98 0.97 0.97 0.99 0.99 0.99 1.00 0.95 0.95 0.94 0.95 0.92 0.95
+
+Naive 2k, diff hparams
+
+Multi-path 2k, diff seed
+
+0.68 0.69 0.82 0.82 0.87 0.94 0.97 0.96 0.95 0.93 0.91 0.97 0.96 0.96 0.94
+1
+0.97 0.96 0.97 0.97 0.96
+
+0.80 0.60 -0.18 0.02 0.35 0.76 0.92 0.93 0.94 0.94 0.95 0.94 0.95 0.95 0.95 1.00 0.93 0.99 0.94 0.99 0.97
+
+FairNAS 1k
+
+CIFAR-10 512
+
+0.66 0.67 0.83 0.8 0.83 0.94 0.97 0.96 0.95 0.92 0.9 0.96 0.96 0.96 0.95 0.97
+1
+0.97 0.97 0.96 0.97
+
+0.64 0.46 -0.09 0.09 0.35 0.74 0.92 0.97 0.97 0.97 0.97 0.96 0.97 0.96 0.95 0.93 1.00 0.93 0.99 0.89 0.97
+
+FairNAS 1k, diff seed
+
+ImageNet-16-120 512
+
+0.65 0.66 0.79 0.82 0.85 0.95 0.97 0.96 0.96 0.94 0.92 0.97 0.97 0.97 0.96 0.96 0.97
+1
+0.96 0.96 0.98
+
+0.79 0.60 -0.14 0.04 0.36 0.77 0.92 0.92 0.94 0.95 0.96 0.93 0.95 0.95 0.94 0.99 0.93 1.00 0.95 0.99 0.97
+
+FairNAS 2k
+
+CIFAR-10 1k
+
+0.63 0.63 0.82 0.85 0.9 0.95 0.96 0.94 0.93 0.92 0.89 0.96 0.94 0.95 0.93 0.97 0.97 0.96
+1
+0.98 0.96
+
+0.66 0.48 -0.09 0.08 0.34 0.73 0.92 0.96 0.96 0.97 0.97 0.95 0.96 0.96 0.95 0.94 0.99 0.95 1.00 0.91 0.98
+
+Multi-path 1k
+
+ImageNet-16-120 1k
+
+0.63 0.63 0.81 0.86 0.91 0.96 0.96 0.94 0.94 0.92 0.9 0.96 0.95 0.95 0.93 0.97 0.96 0.96 0.98
+1
+0.96
+
+0.83 0.64 -0.19 -0.01 0.33 0.75 0.90 0.89 0.90 0.91 0.93 0.91 0.92 0.92 0.92 0.99 0.89 0.99 0.91 1.00 0.95
+
+CIFAR-10 2k
+
+Multi-path 1k, diff seed
+
+0.66 0.66 0.8
+0.8 0.84 0.95 0.97 0.96 0.95 0.93 0.91 0.97 0.97 0.97 0.95 0.96 0.97 0.98 0.96 0.96
+1
+
+0.71 0.54 -0.12 0.06 0.34 0.74 0.92 0.95 0.96 0.96 0.97 0.95 0.96 0.96 0.95 0.97 0.97 0.97 0.98 0.95 1.00
+
+Multi-path 2k
+
+ImageNet-16-120 2k
+
+GT test
+
+GT valid
+
+FairNAS 1k
+
+FairNAS 2k
+
+FairNAS 2k
+
+CIFAR-10 1k
+
+CIFAR-10 2k
+
+Ground truth
+
+Parameters
+
+Parameters
+
+FairNAS 1k, diff seed
+
+FairNAS 2k, diff seed
+
+Naive 1k
+
+Naive 2k
+
+Naive 4k
+
+Naive 8k
+
+Naive 1k
+
+Naive 2k
+
+Naive 4k
+
+Multi-path 1k
+
+Multi-path 2k
+
+Multi-path 2k
+
+CIFAR-10 512
+
+Naive 16k
+
+Naive 16
+
+Naive 32
+
+Naive 64
+
+Naive 1k, diff seed
+
+Naive 2k, diff seed
+
+Multi-path 1k, diff seed
+
+Multi-path 2k, diff seed
+
+Naive 1k, diff hparams
+
+Naive 2k, diff hparams
+
+Naive 128
+
+Naive 256
+
+Naive 512
+
+Naive 128
+
+Naive 256
+
+Naive 512
+
+ImageNet-16-120 1k
+
+ImageNet-16-120 2k
+
+ImageNet-16-120 512
+
+(a) NAS-Bench-101
+
+(b) NAS-Bench-201
+
+1.00 0.77 0.43 0.41 0.35 0.55 0.18 0.13 0.21 0.20 0.21 0.24 0.23
+
+Ground truth
+
+1.00 0.89 0.73 0.66 0.70 0.69 0.72 0.75 0.79 0.83
+
+GT Top1
+
+1.00 0.98 -0.12 -0.08 -0.18 -0.18 -0.18 -0.22
+
+GT valid
+
+0.77 1.00 0.44 0.44 0.36 0.48 0.25 0.23 0.32 0.31 0.29 0.34 0.34
+
+GT diff seed
+
+0.89 1.00 0.79 0.66 0.72 0.75 0.76 0.76 0.78 0.81
+
+GT Top5
+
+0.43 0.44 1.00 0.99 0.32 0.18 0.26 0.12 0.25 0.27 0.28 0.29 0.28
+
+FLOPs
+
+0.98 1.00 -0.13 -0.07 -0.18 -0.17 -0.17 -0.22
+
+GT test
+
+0.73 0.79 1.00 0.73 0.66 0.68 0.70 0.67 0.69 0.69
+
+FLOPs
+
+0.41 0.44 0.99 1.00 0.36 0.17 0.32 0.19 0.32 0.33 0.33 0.35 0.33
+
+Parameters
+
+-0.12 -0.13 1.00 0.40 0.52 0.55 0.55 0.62
+
+Naive 128
+
+0.35 0.36 0.32 0.36 1.00 0.36 0.35 0.30 0.38 0.37 0.38 0.39 0.42
+
+Naive 32
+
+0.66 0.66 0.73 1.00 0.71 0.76 0.77 0.77 0.82 0.80
+
+Parameters
+
+-0.08 -0.07 0.40 1.00 0.69 0.69 0.69 0.51
+
+0.55 0.48 0.18 0.17 0.36 1.00 0.45 0.44 0.40 0.38 0.36 0.37 0.38
+
+Naive 256
+
+Naive 64
+
+0.70 0.72 0.66 0.71 1.00 0.97 0.97 0.97 0.93 0.90
+
+Naive 32
+
+0.18 0.25 0.26 0.32 0.35 0.45 1.00 0.91 0.88 0.85 0.83 0.81 0.79
+
+Naive 128
+
+0.69 0.75 0.68 0.76 0.97 1.00 0.97 0.97 0.94 0.91
+
+-0.18 -0.18 0.52 0.69 1.00 0.99 0.99 0.51
+
+Naive 64
+
+Naive 512
+
+0.13 0.23 0.12 0.19 0.30 0.44 0.91 1.00 0.93 0.90 0.88 0.86 0.87
+
+Naive 256
+
+0.72 0.76 0.70 0.77 0.97 0.97 1.00 0.99 0.96 0.93
+
+Naive 128
+
+-0.18 -0.17 0.55 0.69 0.99 1.00 1.00 0.53
+
+Naive 1k
+
+0.21 0.32 0.25 0.32 0.38 0.40 0.88 0.93 1.00 0.94 0.93 0.92 0.91
+
+Naive 512
+
+0.75 0.76 0.67 0.77 0.97 0.97 0.99 1.00 0.97 0.95
+
+Naive 256
+
+0.20 0.31 0.27 0.33 0.37 0.38 0.85 0.90 0.94 1.00 0.97 0.95 0.96
+
+Naive 1k
+
+-0.18 -0.17 0.55 0.69 0.99 1.00 1.00 0.54
+
+Naive 2k
+
+0.79 0.78 0.69 0.82 0.93 0.94 0.96 0.97 1.00 0.98
+
+Naive 512
+
+0.21 0.29 0.28 0.33 0.38 0.36 0.83 0.88 0.93 0.97 1.00 0.96 0.97
+
+Naive 2k
+
+-0.22 -0.22 0.62 0.51 0.51 0.53 0.54 1.00
+
+Naive 4k
+
+0.24 0.34 0.29 0.35 0.39 0.37 0.81 0.86 0.92 0.95 0.96 1.00 0.96
+
+Naive 4k
+
+0.83 0.81 0.69 0.80 0.90 0.91 0.93 0.95 0.98 1.00
+
+Naive 1k
+
+0.23 0.34 0.28 0.33 0.42 0.38 0.79 0.87 0.91 0.96 0.97 0.96 1.00
+
+Naive 8k
+
+GT test
+
+GT valid
+
+Naive 1k
+
+Naive 2k
+
+Naive 4k
+
+Naive 128
+
+Naive 256
+
+Naive 512
+
+GT Top1
+
+GT Top5
+
+FLOPs
+
+Parameters
+
+Naive 1k
+
+Naive 32
+
+Naive 64
+
+Naive 128
+
+Naive 256
+
+Naive 512
+
+FLOPs
+
+GT diff seed
+
+Ground truth
+
+Parameters
+
+Naive 1k
+
+Naive 2k
+
+Naive 4k
+
+Naive 8k
+
+Naive 32
+
+Naive 64
+
+Naive 128
+
+Naive 256
+
+Naive 512
+
+(e) ProxylessNAS
+
+(d) DARTS-PTB
+
+(c) DARTS-CIFAR10
+
+Figure 7: Mutual correlations of all trained supernets and ground truths on various search spaces.
+
+100
+
+60
+
+Supernet Performance
+
+Supernet Performance
+
+0.5
+
+0.6
+
+86.41 89.72 91.64 92.53 92.87
+
+45.77 49.01 50.90
+
+80
+
+Correlations
+
+41.56
+
+78.97
+
+Correlations
+
+0.4
+
+0.4
+
+37.65
+
+40
+
+68.34
+
+60
+
+0.2
+
+25.87
+
+0.3
+
+Correlations
+Avg Supernet Perf
+Avg GT Perf
+
+Correlations
+Avg Supernet Perf
+Avg GT Perf
+
+20
+
+46.87
+
+15.61
+
+0.0
+
+40
+
+0.2
+
+6.76
+9.27
+
+0.2
+
+26.06
+
+16
+32
+64
+128 256 512
+1k
+2k
+4k
+Epochs
+
+32
+64
+128 256 512
+1k
+2k
+4k
+8k
+Epochs
+
+(a) NAS-Bench-201
+
+(b) DARTS-CIFAR10
+
+0.1
+
+75
+
+0.65
+
+90
+
+Correlations
+Avg Supernet Perf
+Avg GT Perf
+
+60
+
+88.38 90.58 91.00 91.00 91.21
+
+Supernet Performance
+
+Supernet Performance
+
+72.27 73.26
+
+Supernet Performance
+
+70
+
+70.80
+
+80
+
+65
+
+83.48
+
+0.0
+
+0.60
+
+Correlations
+
+Correlations
+
+66.31
+
+67.84
+
+65
+
+70
+
+70.04
+69.16
+68.74
+
+70
+
+69.95
+
+0.55
+
+0.1
+
+62.70
+
+75
+
+60
+
+60
+
+76.55
+
+Correlations
+Avg Supernet Perf
+Avg GT Perf
+
+80
+
+0.50
+
+Avg Supernet Perf
+Proxyless-G Perf
+
+55
+
+50
+
+0.2
+
+85
+
+48.07
+
+84.31
+
+53.02
+
+32
+64
+128 256 512
+1k
+Epochs
+
+128
+256
+512
+1k
+2k
+4k
+8k
+16k
+Epochs
+
+128
+256
+512
+1k
+2k
+4k
+Epochs
+
+(d) ProxylessNAS
+
+(e) DARTS-PTB
+
+(c) NAS-Bench-101
+
+Figure 8: Accuracy and correlation with respect to the number of epochs. The dotted line is the
+average ground truth performance, i.e., performance of architectures when they are trained inde-
+pendently. Correlation line on ProxylessNAS is missing because we could not get a fair number of
+ground truths, and the dotted line is the accuracy of “Proxyless-GPU” architecture.
+
+D
+CONVERGENCE OF SUPERNET
+
+Here, we discuss the convergence of supernet. We computed the average supernet performance, i.e.,
+average accuracy of submodels evaluated on supernet. As shown in Figure 8, there is a clear trend
+that extended training will boost supernet performance on all ﬁve search spaces and the performance
+is expected to continue to increase the training epochs. There is no sign of over-ﬁtting. On NAS-
+Bench-101, supernet performance even surpasses average ground truth. Better average accuracy
+implies that the validation loss in Equation 1 is optimized better. However, this does not mean the
+supernet is more capable of identifying top architectures, as the correlation sometimes goes lower.

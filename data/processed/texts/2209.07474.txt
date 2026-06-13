@@ -1,0 +1,1406 @@
+On the Surprising Effectiveness of Transformers in
+Low-Labeled Video Recognition
+
+Farrukh Rahman12∗
+Ömer Mubarek13∗
+Zsolt Kira1
+
+1Georgia Institute Of Technology
+2Microsoft
+3HERE Technologies
+
+arXiv:2209.07474v3 [cs.CV] 26 Oct 2022
+
+Abstract
+
+Recently vision transformers have been shown to be competitive with convolution-
+based methods (CNNs) broadly across multiple vision tasks. The less restrictive in-
+ductive bias of transformers endows greater representational capacity in comparison
+with CNNs. However, in the image classiﬁcation setting this ﬂexibility comes with
+a trade-off with respect to sample efﬁciency, where transformers require ImageNet-
+scale training. This notion has carried over to video where transformers have not yet
+been explored for video classiﬁcation in the low-labeled or semi-supervised settings.
+Our work empirically explores the low data regime for video classiﬁcation and
+discovers that, surprisingly, transformers perform extremely well in the low-labeled
+video setting compared to CNNs. We speciﬁcally evaluate video vision transform-
+ers across two contrasting video datasets (Kinetics-400 and SomethingSomething-
+V2) and perform thorough analysis and ablation studies to explain this observation
+using the predominant features of video transformer architectures. We even show
+that using just the labeled data, transformers signiﬁcantly outperform complex
+semi-supervised CNN methods that leverage large-scale unlabeled data as well.
+Our experiments inform our recommendation that semi-supervised learning video
+work should consider the use of video transformers in the future.
+
+1
+Introduction
+
+Deep learning has achieved signiﬁcant success in various video recognition tasks. Recent improve-
+ments have been driven by switching from convolutional neural networks (CNNs) to transformer
+architectures. The success of transformers on tasks in natural language [1] and machine translation
+[2] has inspired their adaptation for visual tasks such as image classiﬁcation [3; 4] and object
+detection [5]. The attention mechanism [6] used by transformers is effective at learning long range
+relations between sets of inputs which makes them a natural extension to spatio-tempororal video
+tasks as video is also sequential. Recent work has realized this potential and Video Transformers
+(VTs) have been effective on a range of video tasks, including activity recognition.
+
+Just like for image classiﬁcation, the application of transformers to videos has largely been
+driven by large-scale datasets [7; 8]. Indeed, transformers are more ﬂexible models with a less
+restrictive inductive bias, leading to greater representational capacity compared to CNNs. This
+leads to data-efﬁciency concerns [9]. While specialized architectures can somewhat ameliorate
+this [10; 11], the dominant usage still involves ImageNet-scale training for image classiﬁcation (at
+least ImageNet-1K or IN1k) and Kinetics-scale training for videos.
+
+It is therefore not clear whether transformers would be suited to the challenging low-labeled video
+setting. In our work, we perform a thorough empirical analysis on the use of vision transformers
+
+*Equal Contribution
+
+Figure 1: Transformers-like vs CNN-like architectures in low-labeled video classiﬁcation settings for
+K400 and SSv2. While the gap at 100% is small, the gap increases as labeled training data decreases
+across both datasets. Note the higher variance of Transformer based architectures compared with
+CNNs. This is likely due to the variance in architecture designs between CNNs and Transformers
+commonly used for video recognition.
+
+for video classiﬁcation in the low labeled regime. Through experiments, we arrive at the ﬁnding
+that despite the popularity of CNNs in such works, and the intuition that transformers often require
+more data, transformer-based models far surpass convolution-based architectures in low-labeled
+supervised video classiﬁcation across multiple datasets (Figure 1 & Tabs. 1- 2)
+
+Based on this ﬁnding, we conduct a rigorous investigation into which types of transformers are es-
+pecially suited to this task, and why. Speciﬁcally, we study Video Swin Transformer [12], Uniformer
+[13], ViViT [14], and MViT [15] over K400 [7] and SSv2 [8] in the low-labeled setting alongside
+several CNN based architectures. Our observations lead to ablations for Video Swin for the key
+components such as shifted window, relative position bias, and spatial pretraining on 1N1k [16].
+Through this we identify spatial pretraining on IN1k as the primary source for the observed perfor-
+mance gap with CNNs. We further modiﬁed Video Swin transformer to explicitly mimic Uniformer’s
+Local-Local-Global-Global attention pattern which leads to slight improvements on K400.
+
+Further, one setting that utilizes less labels along-side larger-scale unlabeled data is semi-supervised
+learning. Among existing semi-supervised video classiﬁcation works [17; 18; 19; 20; 21], the focus
+has tended to be on architectures based on convolutional neural networks (CNNs), owing to the rapidly
+expanding set of video architectures of this type. While transformers have set new fully-supervised
+benchmarks, surprisingly, none of the recent semi-supervised video classiﬁcation works have explored
+transformer-based architectures for this problem. One reason is that transformers are thought to be
+data-inefﬁcient based on image classiﬁcation works [10; 3; 9]. Moreover the attention operation’s
+quadratic cost is compounded by the temporal dimension in video. Recent work ameliorates this lim-
+itation with VTs by re-injecting a local inductive bias [4; 22; 13], factorizing the space-time attention
+mechanism [3; 23], and/or using hierarchical feature learning [4; 24]. We show that transformers using
+labeled data alone can beat all existing complex semi-supervised CNN-based methods, which lever-
+age the larger-scale unlabeled as well. This result suggests that the community should focus on such
+architectures, in addition to other orthogonal algorithmic improvements as transformer-based models
+can serve as a strong foundation for developing semi-supervised methods for video classiﬁcation tasks.
+
+In summary, we make the following novel observations:
+
+1. Video Swin Transformers outperform CNNs and other video transformers overall for low-
+labeled video classiﬁcation.
+
+2. Through ablations we discover initialization with image level pretraining is the key factor
+for the success of vision transformers in video.
+
+3. Modifying VST to be more global in the latter stages improves its low-labeled performance
+marginally on K400 while remaining competitive on SSv2, however cannot make up the
+gap with Uniformer.
+
+4. Despite their popularity in semi-supervised video classiﬁcation, CNNs are signiﬁcantly
+outperformed by Vision transformers over multiple types of video datasets, without even
+leveraging the unlabeled data.
+
+2
+Related Work
+
+2.1
+CNNs for Video recognition
+
+The success of CNNs on images led to natural early extensions on video [25; 26; 27]. Video is a
+sequential task where spatial information changes temporally. Video frames are temporally correlated
+leading to information redundancy. One approach is to reduce the problem to a single frame problem
+for feature extraction and apply pooling on the sequence of features [28]. This pooling, however,
+loses temporal information. To learn ﬁner spatio-temporal features, prior works [29; 30; 31; 28]
+extend 2D spatial convolution to 3D spatiotemporal convolutions.
+
+Simonyan et al. [32] use both RGB with optical ﬂow through two stream networks improves both
+performance and efﬁciency and Feichtenhofer et al. [33; 34] extend this approach by adding residual
+connections [35] in the architecture or fusion between the streams. Tran et al. [36; 37] observe 3D
+spatio-temporal convolutions can be factorized to 2D spatial followed by 1D temporal convolution
+(R(2+1)3D) increasing expressivity of the model (interleaving more nonlinear activations) while
+beneﬁting optimization. Carreira et al [38] improve the efﬁciency of 3D convolutions by using
+inception [39] and bootstrapping 3D ﬁlters from 2D CNNs trained on Imagenet [16]. TSM (temporal
+shift module) [40] tackles efﬁciency by shifting temporal information allowing efﬁcient mixing of
+information which can be used for both 2D and 3D CNNs. The notion that spatial characteristics in
+activity recognition change at a slower rate than motion motivated a two-stream method Slowfast
+[41]. Slowfast incorporates two RGB streams, the ﬁrst a slow pathway to capture the former and a
+faster pathway to capture the latter, and fuses them. Feichtenhofer et al. [42] design a method that
+starts from an efﬁcient 2D architecture and expands itself across multiple axis.
+
+2.2
+Self-attention for Video Recognition
+
+Sequence modeling has often been paired with CNNs owing to the temporal nature of video; early
+works [30; 43; 44] apply a sequence learner (eg. LSTM) over convolutions to learn the evolution
+of spatial features over time. The success of self-attention (SA) [6; 45; 46] across various NLP tasks
+[2; 1] has inspired its use in computer vision with success across multiple visual tasks [47; 48]. SA
+acts as a method to dynamically weight features based on the input, conferring the capacity to ﬂexibly
+select aspects of the input that are more relevant to the task. This naturally extends to video analysis
+where spatial, channel-wise, or temporal attention may be relevant breaking past the local inductive
+bias imposed by convolution. SA has been applied on video alongside a sequential learner such as
+a LSTM [49] or directly with CNN based feature maps [47; 50; 51; 52]. Recent success with SA as
+a standalone layer for vision [3; 53] has been extended to video [14; 13; 12; 23; 54; 24; 55; 15]. SA
+is an operation that scales with input size making computation with high dimensional spatiotemporal
+inputs inefﬁcient. An approach introduced by ViT [3] image domain is to patchify and linearly
+embed the input which has also been adopted for other video transformer architectures. While this
+ameliorates SA’s complexity by reducing the number of visual tokens, other approaches have been
+explored to further reduce complexity. These include factorizing spatial and temporal attention
+allowing for specialization along either of the axes [14; 23; 54], hierarchical representation with
+pooled attention [24; 15] or adding convolution-like inductive bias [12; 13].
+
+2.3
+Semi-supervised learning for low labeled video classiﬁcation
+
+The semi-supervised learning (SSL) setting considers the scenario where copious unlabeled
+examples are present with some smaller amount of labeled data (1%, 5%, or 10% are typical
+labeled splits). A naive approach might be to simply use the labeled data only, discarding the
+unlabeled data. However, SSL seeks to improve upon this by using both labeled and unlabeled
+data. The success of SSL in image classiﬁcation [56; 57] has been recently extended to video
+classiﬁcation [17; 18; 19; 20; 21; 58; 59]. These methods, however, use convolution-based backbones;
+self-attention based methods such as video transformers have not been explored to our knowledge.
+
+Figure 2: Side-by-side comparison of main differences amongst the VT architectures: Video Swin
+Transformer [12], Uniformer [13] and ViViT [14]. Architecture diagrams taken from respective
+works.
+
+3
+Preliminaries - Vision Transformers
+
+Given their success in NLP and machine translation tasks, recently transformer based architectures
+have been applied to image and video tasks. A fundamental vision transformer architecture is ViT [3]
+which is a near direct transfer of [2] for image classiﬁcation. Speciﬁcally, instead of attending over
+image pixels, ViT divides an image into non-overlapping patches, applies a linear projection to these
+image patches and converts these 2D patches into a sequence of 1D tokens. This sequence of linear
+embeddings is then passed to the transformer. The success of ViT has led to numerous transformer
+inspired architectures for video classiﬁcation. ViViT [14], a straightforward extension of ViT to
+video, divides and projects 3D patches to a sequence of tokens. Global self-attention has a quadratic
+O(n2) computational cost with respect to the input sequence length n. This bottlenecks the size of
+the context window allowable for sequence modeling. For text, this bottleneck can be mitigated partly
+by tokenizing text through sub-word tokenization [60] or byte pair encoding [61], ie. compressing
+the sequence into a smaller set of tokens. Self-attention over pixels is intractable, hence images
+are broken up into non-overlapping patches and embedded as visual tokens; a procedure which
+naturally extends to video at the cost of additional complexity due to increased dimensionality of
+each spatio-temporal token. Recent approaches for vision transformers seek to use stronger inductive
+biases such as local windows and hierarchical representation to further reduce computational
+complexity while retaining modeling ﬂexibility.
+
+We focus on empirically studying various VTs architectures: Video Swin Transformer [12],
+Uniformer [13], ViViT [14], and MViT [15] are chosen to capture different architectural styles that
+have shown high performance on the Kinetics-400 [7] and Something-Something v2 [8]. ViViT
+extends ViT to video using global self-attention between all spatio-temporal tokens. Uniformer and
+Video Swin Transformer (VST) on the other hand introduce inductive biases, namely replacing or
+combining global with local self-attention. Uniformer combines the two by using local attention in
+a CNN-like manner for early stages followed by global self-attention during the latter stages. Video
+Swin Transformer completely replaces global attention with local and uses window shifting to mix
+tokens through local attention.
+
+3.1
+Vision Transformer Architectures
+
+Each vision transformer architecture tackles maintaining modeling ﬂexibility with efﬁciency through
+related but different mechanisms. (See Fig. 2 for illustration of architectural comparison.)
+
+3.1.1
+ViViT
+
+ViViT [14] is an extension of ViT to video which computes global self-attention over spatio-temporal
+tokens. These tokens are generated by dividing the input to non-overlapping patches and are linearly
+embedded. Spatio-temporal inputs have greater number of tokens making global-self attention
+inefﬁcient; as a result Arnab et al. studied several variants for increasing efﬁciency. We study two
+
+of these variants which were shown to have the highest performance on video classiﬁcation tasks,
+ViViT Spatio-temporal (ST) and ViViT Factorized Encoder (FE).
+
+• ViViT SpatioTemporal (ST): This is the default conﬁguration, where global attention is computed
+over all of the spatiatemporal tokens, as described above.
+• ViViT Factorised Encoder (FE): Factorized Encoder, in contrast to FSE, uses two encoders:
+One for spatial tokens which is effectively a ViT, and another for temporal. Global self-attention
+is computed for tokens within an individual frame to obtain a spatial representation, which are
+computed for each frame in the video and concatenated together to apply temporal self-attention.
+
+3.1.2
+Video Swin Transformer
+
+Video Swin Transformer [12] (VST) adds several features to compensate for the lack of inductive
+bias in ViViT. For our experiments we used Swin Small for K400 and Swin Base for SSv2 (following
+[12]).
+
+• Local Self Attention: Video Swin Transformer computes self-attention within non-overlapping
+local windows throughout its architecture. This limits the number of visual tokens a given query
+token attends to, increasing efﬁciency compared to traditional extensions like ViViT.
+• Shifted Window Attention: The local windows in Video Swin Transformer do not have connec-
+tions among each other, ie. tokens in one local window cannot attend to those in another. Therefore,
+while localized self-attention is more efﬁcient, there is a tradeoff with reduced modeling power.
+To maintain the model’s capacity, Swin architecture implements shifted window partitioning in
+successive blocks. Tokens from one local window are "shifted" or substituted with those from
+another window for successive local attention computation. This encourages mixing of information
+while maintaining the efﬁciency of local windowed attention, a concept similar to temporal shift
+module for CNNs [40].
+• Patch Merging Layers: Swin Transformer creates CNN-like hierarchical representation via Patch
+Merging layers. As the architecture gets deeper, these layers reduce the number of tokens. The input
+token size (T ×H×W ×C) reduces to (T ×H/2×W/2×2C) all the way to (T ×H/8×W/8×8C).
+This effectively increases the reach of local attention throughout the network as the receptive ﬁeld
+for a given token increases deeper into the network.
+• Relative Position Bias: Instead of using absolute position embedding, Swin Transformer adds a
+relative position bias to each head during attention computation. This bias provides translation
+invariance like CNNs [4].
+
+3.1.3
+Uniformer
+
+At the heart of the Uniformer [22] architecture lies Multi-Head Relation Aggregator (MHRA).
+Depending on how MHRA is instatiated lends itself to behave like a convolution-like operation or
+global self attention. This concept is naturally extended for spatio-temporal inputs [13] by increasing
+the number of tokens similar to other architectures. Li et al. experiment with various conﬁgurations,
+eg. Local-Local-Local-Local vs Local-Local-Global-Global which denotes the instatiation for
+MHRA used. Local-Local-Global-Global (LLGG) was the best performing Uniformer conﬁguration
+(performing 3D convolution over the visual tokens during early stages followed by global self
+attention in later stages). For both of K400 and SSv2, we used Uniformer Small conﬁguration as
+it obtained very competitive performance and similar results to the other transformers with 100%
+labeled data.
+
+• Shallow Layers: In the shallow layers/stages, where the number of tokens is high, Uniformer uses
+Local MHRA; learning from local spatiotemporal neighborhoods. Local MHRA is akin to 3D
+CNNs [31; 62]
+• Deep Layers: When moving into deeper layers/stages, learning focuses on global content. This
+Global MHRA module resembles global self-attention in transformers. This is responsible for aiding
+in temporal modeling of longer-term relations between tokens. Overall Uniformer uses a similar
+notion of using CNNs for extraction of ﬁner spatiotemporal (or 2D spatial) features followed by a
+form of aggregation, relational weighting, or further sequence modeling of said features [47; 49; 30].
+• Hierarchical Representation: Similar to Swin Transformer [4], Uniformer produces hierarchical
+representation by reducing the number of tokens as the network gets deeper.
+
+3.1.4
+MViTv2: Multiscale Vision Transformer
+
+Improved Multiscale Vision Transformer (MViTv2) is a uniﬁed architecture for image and video
+classiﬁcation [15] that improves upon MViTv1 [24]. MViTv1 similar to transformers such as
+Uniformer [13] and Swin [12; 4] in that they attempt to ameliorate training efﬁciency by adding
+inductive bias to ViT while maintaining model ﬂexibility. MViT is motivated by the notion of
+multiscale feature hierarchy [24]; achieved by allowing the transformer to expand its channel
+dimensions while pooling spatiotemporal resolution.
+
+• Multi Head Pooling Attention MHPA Multi-head Pooling attention endows the self-attention
+operation with a pooling operation over the Keys, Queries, Values (K, Q, V ). This pooling along
+each dimension reducing both the spatial and temporal resolution of the token representations
+which is fed into self-attention, improving efﬁciency of the self-attention operation [15].
+
+• Decomposed Relative Position Embedding MViTv1 uses absolute positional embeddings to give
+self-attention some notion of positional relational information between visual tokens. This is
+common as the softmax in self-attention is permutation equivariant akin to selecting from a set.
+Absolute position affects relations between visual tokens to be dependent on where they occur in
+the input despite their relative positions being equal [15]. MViTv2 uses relative position embedding
+to mitigate this by performing a pairwise spatiotemporal relative position embedding within the
+self-attention module.
+
+3.2
+Datasets
+
+Our experiments were conducted on two widely-used large scale video action datasets: Kinetics-400
+[7] and Something-Something v2 [8]. K400 consists of over 200K training examples across 400
+classes. Each sample is a 10s long YouTube video clip that is human action centric, i.e. focuses
+on human-human or human-object interactions. SSv2 has 220K videos, each 2-6 seconds duration
+over 174 classes. SSv2 is also human-object focused but is centered around everyday interactions
+between humans as objects; the object and background are more consistent in comparison with
+Kinetics. As such SSv2 requires more temporal modeling to distinguish ﬁner motion, rather than
+leveraging frame-level static object information. This observation has been further quantiﬁed on
+mini-SSv2 and mini-Kinetics by Chen et al [63]. This contrast makes them good candidates for
+studying transformers vs CNNs in low-labeled scenarios.
+
+4
+Experiments
+
+We seek to understand empirically how VTs compare to CNNs under low labeled data settings for
+Action Recognition. Current intuition suggests that transformers, due to their ﬂexibility and weaker
+inductive bias, require large amounts of training data [3; 9]. If true, it’s important to measure the gap
+between the two as it will inform future research directions for both low-labeled and semi-supervised
+video understanding settings. CNN and transformer architectures are spatially pretrained on IN1K
+[16] for K400 and trained on IN1k and K400 100% for SSv2.
+
+4.1
+How do Vision Transformers compare to CNNs in low labeled video classiﬁcation
+settings?
+
+We compared several Video Vision Transformers (VTs) with CNNs in low labeled data settings on
+Kinetics-400 (K400) action recognition dataset using 1%, 5% and 10% of training data, without
+using any unsupervised data. VST, Uniformer, MViTv2 and ViViT are compared against various
+purely Convolutional architectures with ResNet-50 [35] backbone trained on IN1K as baselines;
+namely R3D [36], I3D [62] which are both 3D CNNs as well as C2D [47]) which is a 2D CNN.
+I3D typically uses an additional Optical ﬂow [32] path in addition to RGB; this was not used which
+effectively made I3D a R3D. Moreover we pair these CNNs up with Non-local Networks [47]
+conferring the architectures additional global expressivity similar to attention.
+
+For K400 on 1% split, VTs signiﬁcantly outperform the CNNs; with VST [12] obtaining signiﬁcant
+increase over the best CNN based model C2D-NL-R50 [47] (32.3% vs 19.79%). Transformers
+perform better at 1% over CNNs, eventually widening the gap before it closes close to 100% labeled
+data. As the percentage of labeled data increases from 1% to 100%, the gap between VTs and CNNs
+
+closes. This is a surprising observation as VTs are considered less sample efﬁcient due to their more
+ﬂexible modesling capacity with fewer inductive biases. However, our results indicate that spatially
+pretrained VTs outperform CNNs at low labeled settings.
+
+Architecture
+Top-1 Accuracy
+# Params (M)
+Flops (G)
+1%
+5%
+10%
+100%
+
+I3D-R50 [38]
+13.73(-3.79)
+33.49
+44.37(-4.73)
+73.5‡ (-2.5)
+28.1
+28.5
+I3D-NL-R50 [47]
+13.86 (-2.14)
+34.18 (-0.69)
+44.7 (-4.4)
+74‡ (-2)
+35.4
+36.7
+C2D-R50 [47]
+18.13 (-1.66)
+35.1 (-3.13)
+45.77 (-3.33)
+71.61‡ (-4.39)
+24.3
+19.6
+C2D-NL-R50 [47]
+19.79
+38.23
+46.93 ( (-2.71)
+-
+31.7
+27.8
+R3D-50 from [64]
+16† (-2.13)
+-
+49.1†
+76.0†
+-
+-
+ViViT FE [14]
+24.91 (+5.12)
+41.98 (+3.75)
+48.84 (-0.26)
+78.4† (+2.4)
+115.1
+284
+ViViT ST [14]
+23.99 (+4.2)
+40.47 (2.24)
+46.49 (-2.61)
+79.9† (+3.9)
+88.9
+455.2
+Uniformer Small [13]
+22.52 (+2.73)
+47.71 (+9.48)
+56.01 (+6.91)
+80.8† (+4.8)
+21.4
+167.2
+MViTv2 Small [13]
+22.17 (+2.38)
+47.59 (+9.36)
+56.96 (+7.86)
+81.0 † (+5)
+34.5
+64.5
+Video Swin Small [12]
+32.3 (+12.56)
+52.37 (+14.14)
+60.66 (+11.56)
+80.6† (+4.6)
+49.8
+166
+
+Table 1: Top 1% accuracy results on K400 for various low-labeled settings for CNN-based (top
+half) vs Transformer-based (bottom half). Differences are computed against the highest performing
+CNN-based model for each split in bold. Refer to supplemental for top-5 acc results. †Result from
+respectively cited work. ‡Result from [65].
+
+These results contradict the aforementioned intuition: not only is superior performance observed for
+VTs, but also they have a large gap at low labeled settings that increases with decreasing training data,
+Uniformer being the only exception. Our observations indicate methods that apply 3D convolution
+(Uniformer, I3D, R3D) are less data efﬁcient (even when they reach similar performance at 100%)
+in comparison with 2D CNNs or Swin Transformer. The latter, when spatially pretrained, transfers
+better to spatially dominant datasets like Kinetics. In contrast, on SSv2 3D convolutions pick up
+and Uniformer outperforms the others (Tab. 2).
+
+4.2
+How do VTs compare among themselves?
+
+A comparison of VT performance in Tab. 1 shows that in low-labeled settings Swin Transformer out-
+performs all other transformers by far on K400. The difference is highly pronounced at 1% split: Swin
+at 32.3%, the runner up (ViViT FE) at 24.91%. While the Uniformer and the two variants of ViViT
+have very similar performance at 1%, Uniformer dominates the ViViT variants at 5% and 10% splits.
+
+The superior performance of Swin over Uniformer is consistent with the superiority of VTs over
+CNNs: the ﬁrst two of the four Uniformer stages behave like 3D convolutions. On the other hand,
+Swin is closer to a pure transformer-based architecture, which mixes its strong spatial pre-training
+with shifted attention. Both Swin and Uniformer outperform ViViT variants. The locality inductive
+biases Swin and Uniformer inject seem to help prevent noisy information from mixing from tokens
+far away. On the other hand, ViViT is susceptible to such noise as it computes global attention.
+
+A different picture arises in Tab. 2, which compares accuracies of VST and Uniformer for SSv2.
+At 1% and 100% of the training data, both VTs perform similar, with VST accuracy being slightly
+higher. However, for 5% and 10% splits, Uniformer clearly outperforms VST (2). This behaviour
+(compared to K400) can be attributed to the different nature of the datasets [63] . SSv2 challenges
+modeling of ﬁner motions, as the background and objects are the same across multiple classes. 3D
+convolution is better able to capture ﬁner spatio-temporal features as compared to sequence modeling.
+Uniformer seems to be able to leverage this as it use 3D convolutions during early layers resulting
+in better performance on SSv2.
+
+4.3
+Why do VTs outperform CNNs at low labeled data settings?
+
+Our ﬁnding that VTs outperform CNNs in low-labeled video is nonintuive as it is commonly thought
+that transformers require large scale training to make up for their ﬂexibility [3; 10; 9].
+
+VTs beneﬁt from increased representation capacity due to self-attention layers: VTs use the attention
+layers to model global relations between tokens. On the other hand, receptive ﬁeld of the CNNs
+locally limits the type of global relations which can be learned.
+
+Architecture
+Top-1 Accuracy
+1%
+5%
+10%
+100%
+I3D-R50 [38]
+8.47 (-1.59)
+24.3 (-2.5)
+32.92(-3.25)
+-
+I3D-NL-R50 [47]
+8.42(-1.64)
+24.85(-1.95)
+32.59(-3.58)
+-
+C2D-R50 [47]
+7.16 (-2.9)
+-
+20.16 (-16.01)
+-
+C2D-NL-R50 [47]
+7.31 (-2.75)
+-
+21.19 (-16.04)
+-
+SlowFast-R50 [41]
+10.06
+26.8
+36.17
+63‡
+Video Swin Base [12]
+14.3 (+4.11)
+30.0 (+3.2)
+37.5(+1.33)
+65.67 (+2.67)
+Uniformer Small [13]
+12.77 (+2.9)
+36.14 (+9.34)
+44.81 (+8.64)
+63.5†(+0.5)
+MViTv2 Small [15]
+16.88 (+6.82)
+35.88 (+9.08)
+41.94 (+5.77)
+68.2†(+5.2)
+Table 2: Top 1% accuracy on SSv2 for various low-labeled settings. CNN-based (top half) vs.
+Transformer-based (bottom half). Differences are computed against baseline CNN-based model in
+bold. Refer to supplemental for full results. †Result obtained from respectively cited work. ‡Result
+obtained from [65].
+
+Swin transformer uses local attention via shifted local windows. These local windows are larger than
+CNN kernels and every second layer, the windows shift, such that attention is calculated between
+tokens not in the same original local window. This allows a token to compute self-attention with
+other tokens outside their local neighborhood. At the same time, local MSAs are known outperform
+global MSAs in VTs [66].
+
+Uniformer employs local convolutions in the ﬁrst two stages and switches to global MSA only after
+the resolution (i.e. number of tokens) is low enough. Both Swin and Uniformer inject some sort
+of locality inductive bias back into the transformer architecture.
+
+Furthermore, these two architectures are multi-stage transformers, where the number of tokens
+reduces as the network gets deeper with each stage [12; 13]. The result of this multi-stage architecture
+is hierarchical feature map resolutions like those in CNNs.
+
+4.4
+Video Swin Transformer Ablation Study
+
+To better understand VST’s performance and reasons described above, we conduct several ablations
+in low labeled data settings, see Tab. 3. VST absent shifted windows is still competitive compared to
+CNNs across all splits and datasets. ie. spatial pretraining along with local window attention is still
+sufﬁcient for VST to be better or competitive with CNNs across both K400 and SSv2.
+
+VSTs implement local self-attention using shifted windows, employ relative position bias and are
+pretrained on ImageNet. In each of the ablations, we have stripped VST from only one of these
+features and examined the performance degradation from the full conﬁguration. Ablation results
+for K400 and SSv2 are shown in Tab. 3.
+
+Removal of any of the three features degrades the performance for all data splits, as shown in Tab. 3.
+
+Ablation
+Top-1 Acc. K400
+Top-1 Acc. SSv2
+1%
+5%
+10%
+1%
+5%
+10%
+None (Baseline)
+32.3
+52.4
+60.7
+14.3
+30.0
+37.5
+Shifted Window
+28.6 (-3.7)
+50.3 (-2.1)
+57.7 (-3.0)
+11.8 (-2.5)
+24.6 (-5.4)
+31.4 (-6.1)
+Relative Position Bias
+20.0 (-12.3)
+47.1 (-5.3)
+55.5 (-5.2)
+7.9 (-6.4)
+20.8 (-9.2)
+27.6 (-9.9)
+IN1k pretrain
+2.3 (-30.0)
+8.8 (-43.6)
+14.1 (-46.6)
+8.5 (-5.8)
+22 (-8.0)
+29.7 (-7.8)
+(K400+IN1k) pretrain
+-
+-
+-
+1.5 (-12.8)
+4.6 (-25.4)
+8.1 (-29.4)
+Table 3: Video Swin Transformer ablation study on K400 and SSv2
+
+Removal of Shifted Window: Instead of computing global attention across all tokens, VST calcu-
+lates self-attention conﬁned into a smaller local window. While this approach improves computational
+complexity, it reduces the model’s representation power. This is because the local windows are non-
+overlapping, and no attention is computed between two windows. To overcome this limitation,
+VST implements a shifted window approach, which computes self-attention between more tokens
+belonging to other neighboring windows but is still a much more light-weight operation than global
+attention. In our ablation study, we constrained self-attention to within local windows only and
+removed the shifted window feature. As expected, the model’s representation power took a hit, as
+
+shown in Tab. 3.
+Removal of Relative Position Bias: VST uses relative position bias to represent the distance be-
+tween the patches withing the local windows. This term is used during the attention computation.
+Furthermore, Swin [4] and VST [12] skip absolute position embedding. Therefore, removal of the
+relative position bias robs the model of any position information and therefore causes a stronger
+performance drop than the removal of the shifted window (Tab. 3).
+
+No Pretraining: Removal of ImageNet 1K pretraining from VST has the strongest negative impact
+on model performance. For the 1% split, top 1 accuracy drops from 32.3% to 2.29%, with the model
+barely learning anything. A similar behaviour is observed across all splits. These results shows that
+pretraining is crucial for VTs to perform well on action recognition tasks at low-labeled settings.
+
+4.5
+Importance of Pretraining for VTs versus CNNs
+
+Next, we investigate the impact of pretraining in CNN performance and compare it to VTs. Tab. 4
+shows the performance comparison for R3D50 and VST without pretraining at 1% and 10%. At 1%,
+both VST and R3D50 are close; yet at 10%, R3D50 has substantially higher performance. Ie. at
+10% R3D50 learns much faster than VST and does not suffer as much as VST without pretraining.
+VST leverages spatial information to video understanding better than CNN or CNN plus Non-local
+network based methods.
+
+Architecture
+Top-1 Accuracy
+1%
+10%
+R3D-50 in [64]
+3.2†
+39.6†
+Slow-R50 [41]
+4.81
+31.68
+MViTv2 [15] Small
+3.1
+33.68
+Uniformer [13]
+4.9
+27.17
+VST Small [12]
+2.29
+14.11
+Table 4: CNN vs Transformer performance on K400 without IN1k pretraining. Absent any spatial
+pretraining CNNs are still more sample efﬁcient on video compared to video transformers.
+
+4.6
+Can VST generalize Uniformer’s structure?
+
+Recall that VST employs windowed local self-attention throughout all of its stages to mitigate
+computational complexity of attention. This, however, restricts its capacity. This is mitigated by
+shifting patches to a different local window prior to performing windowed self-attention. This shifting
+occurs in subsequent self-attention layers in the network. In addition to shifted window approach,
+patches are merged through the network reducing the number of visual tokens gradually. As the
+window size of the self-attention is ﬁxed, fewer tokens make subsequent windowed self-attention
+"more global" creating hierarchical representations deeper in the network.
+Uniformer, on the other hand, uses 3D convolution for shallow layers to aggregate information from
+tokens locally and for deeper layers employs typical global self-attention. The architecture reaches
+better accuracy using global rather than local attention in these deeper layers. Furthermore, reduced
+tokens at deeper layers increase efﬁciency.
+
+Architecture
+Kinetics Top-1 Accuracy
+SSv2 Top-1 Accuracy
+1%
+5%
+10%
+100%
+1%
+5%
+10%
+100%
+Uniformer Small
+22.52
+47.71
+56.01
+80.8
+12.77
+36.14
+44.81
+63.5
+VST
+32.3
+52.37
+60.66
+78.39
+13.77
+28.97
+36.07
+64.95
+VST-LLGG (Ours)
+32.56
+52.78
+60.69
+78.95
+12.92
+28.66
+37.72
+65.17
+Table 5: VST-LLGG vs VST vs Uniformer performance. Note: Video Swin Small was used for VST
+and VST-LLGG on K400 and Base for SSv2.
+
+VST’s [12] dominant performance on K400 (Tab. 1 compared with Uniformer’s [13] dominant
+performance on SSv2 (Tab. 2) in low-labeled setting motivated Swin-LLGG. Our observations
+indicate VST’s inductive biases strongly transfer knowledge from spatial pretraining to spatiotemporal
+
+classiﬁcation on datasets that are signiﬁcantly more spatially dominant such as K400[7]; this is not
+the case for SSv2 [8] which is less spatially dominant [63]. Motivated by this, we investigate whether
+VST can generalize Uniformer’s notion of local attention for early layers followed by global attention
+for later layers. This was done by relaxing the last 2 stages of VST from local to global attention
+(VST-LLGG). As shown in Tab. 5 VST-LLGG marginally increases performance on K400 but does
+not improve performance on SSv2. ie. Swin cannot make up the gap with Uniformer on SSv2 where
+perhaps 3D convolution as mentioned earlier may learn ﬁner temporal features that are more relevant
+for the SSv2 dataset. VST naturally has global attention during the ﬁnal stage due to patch merging.
+Hence the representation has already reached a level of hierarchy such that global attention is not
+as meaningful deeper in the network, ie. local attention on the deeper hierarchical representations
+of VST is effectively global attention already leading to minor gains with VST-LLGG.
+
+5
+Low-labeled Supervised Training vs Semi-Supervised methods
+
+In low-labeled settings, surprisingly simply using transformers trained on available labeled video
+data achieved greater performance over semi-supervised methods that use both labeled and unlabeled
+video data (see Tab. 6). Speciﬁcally Video Swin transformer by itself achieves greater performance
+and other transformers are still relatively competitive despite not using any extra unlabeled video
+data. Typical architectures used in video semi-supervised work tend to be on the lower complexity
+side (ResNet-18) and an argument can be made this contributes to the performance gap. In addition
+not all the video SSL methods use CNNs pretrained on IN1K; however they see signiﬁcantly more
+video data. Despite these limitations in comparison, the signiﬁcant gap transformers exhibit is a
+promising result given the domain shift between images and video. Tab. 6
+
+Method
+Backbone
+Top-1 Accuracy
+1%
+5%
+10%
+100%
+
+CMPL [67]
+R3D-50
+17.6†
+-
+58.4†
+-
+MVPL [18]
+R3D-50
+17.0†
+-
+58.2†
+-
+MVPL from [19]
+R3D-18
+9.8†
+-
+43.8†
+-
+ActorCutMix [68]
+TSM-R3D-18
+9.24†
+-
+-
+LfTG [19]
+R3D-18
+9.8†
+-
+43.8†
+-
+TCL + ActorCutMix [68]
+TSM-R3D-18
+9.02†
+31.45†
+-
+-
+TCL [69]
+TSM-R3D-18 [40]
+7.69†
+30.28†
+-
+-
+TCL w/ Fine tune [69]
+TSM-R3D-18 [40]
+8.45†
+31.5†
+-
+-
+TCL w/ Pretrain & Finetune [69]
+TSM-R3D-18 [40]
+11.56†
+31.91†
+-
+-
+
+Supervised
+I3D-R50 [38]
+13.73
+33.49
+44.37
+73.5‡
+
+Supervised
+I3D-NL-R50 [47]
+13.86
+34.18
+44.7
+74‡
+
+Supervised
+C2D-R50 [47]
+18.13
+35.1
+45.77
+71.61‡
+Supervised
+C2D-NL-R50 [47]
+19.79
+38.23
+46.93
+-
+Supervised
+R3D-50 from [64]
+16†
+-
+49.1†
+76.0†
+
+Supervised
+ViViT FE [14]
+24.91
+41.98
+48.84
+78.4†
+
+Supervised
+ViViT ST [14]
+23.99
+40.47
+46.49
+79.9†
+
+Supervised
+Uniformer Small [13]
+22.52
+47.71
+56.01
+80.8†
+
+Supervised
+MViTv2 Small [13]
+22.17
+47.59
+56.96
+81.0†
+
+Supervised
+Video Swin Small [12]
+32.3
+52.37
+60.66
+80.6†
+
+Table 6: Top 1% accuracy results on K400 for various low-labeled settings. Supervised indicates
+backbone was trained on just available labeled data. Swin Transformer using no video unlabeled data
+outperforms CNN based methods using labeled and unlabeled video data. Video Swin especially has
+signiﬁcant performance gains on K400. †Result from respectively cited work. ‡Result from [65].
+
+6
+Discussion
+
+Our results indicate that Video Transformers (VTs) are better learners in low-labeled video settings
+than CNNs. While generation 2 video transformers show the greatest sample efﬁciency, ViViT
+(natural extension of ViT to video) with greater modeling ﬂexibility also shows greater efﬁciency
+on extremely low labeled data splits. This seems counter-intuitive but upon closer inspection is
+
+reasonable given information redundancy in video frames. This temporal redundancy leads to
+spatially pretrained VTs ability to extract reasonable representations for a 3D spatiotemporal token
+and leverage self-attention to form dynamic feature weighting. Recent video representation learning
+through self-supervision work has also observed the effects of temporal redundancy, [70; 71] ﬁnd for
+masked prediction of autoencoding transformers extremely high masking ratios are optimal when
+compared with other modalities; 0.9-0.95 for video compared with 0.75 for image [71] and 0.8 for
+audio [72]. Additionally, as mentioned in Sec. 3.2, [63] note that current large scale video datasets
+are spatially dominant, SSv2 being less so and K400 being moreso. Our observations alongside these
+factors point to the now reasonable intuition that spatially training Video Transformers would make
+them good low-labeled learners. For instance current semi-supervised results in video are 17.6%
+Top-1 acc. on 1% split and 58.4% for 10% [67]; Swin transformer already surpasses this with no
+extra unlabeled data, simply ﬁne tuning on available labeled data (Tab. 6). CNNs, however catch up
+in sample efﬁciency with more data and are still superior when trained tabula rasa (Tab. 4). That being
+said transformers such as MViTv2 and Uniformer are still competitive absent spatial pretraining; a
+promising result for future work in semi-supervised video recognition.
+
+7
+Conclusion & Future Work
+
+Despite the intuition that transformers require substantial data to learn and compensate for CNNs’
+inductive bias, our extensive experiments show that transformers outperform CNNs in low labeled
+settings with only a fraction of labeled data. They even signiﬁcantly outperform, using labeled data
+alone, more sophisticated semi-supervised methods utilizing CNNs and large unlabeled datasets paired
+with the labeled data. Through rigorous experimentation, we explain this observation. Speciﬁcally,
+ablation studies on Video Swin Transformer pointed out to substantial impact of pretraining on
+performance.
+
+Future work includes verifying our ﬁndings on multiple other datasets. Furthermore, the analysis
+of VTs can be expanded to other vision transformer architectures to investigate whether all VTs
+outperform CNNs in low labeled data settings. With the observation that CNNs updated using
+learnings from vision transformers [73] also begs the question how updating CNN based architectures
+would fare in video recognition and speciﬁcally low-labeled and semi-supervised settings. Finally,
+ablation studies performed on Video Swin Transformer could be expanded to other VT architectures
+to verify that pretraining is crucial for those architectures as well.
+
+Acknowledgements. We thank Yen-Cheng Liu for discussion and comments on our work.
+
+References
+
+[1] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, “Bert: Pre-training of deep bidirectional transformers
+for language understanding,” arXiv preprint arXiv:1810.04805, 2018.
+
+[2] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin,
+“Attention is all you need,” Advances in neural information processing systems, vol. 30, 2017.
+
+[3] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Min-
+derer, G. Heigold, S. Gelly, et al., “An image is worth 16x16 words: Transformers for image recognition at
+scale,” arXiv preprint arXiv:2010.11929, 2020.
+
+[4] Z. Liu, Y. Lin, Y. Cao, H. Hu, Y. Wei, Z. Zhang, S. Lin, and B. Guo, “Swin transformer: Hierarchical
+vision transformer using shifted windows,” in Proceedings of the IEEE/CVF International Conference on
+Computer Vision, pp. 10012–10022, 2021.
+
+[5] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and S. Zagoruyko, “End-to-end object detection
+with transformers,” in European conference on computer vision, pp. 213–229, Springer, 2020.
+
+[6] D. Bahdanau, K. Cho, and Y. Bengio, “Neural machine translation by jointly learning to align and translate,”
+arXiv preprint arXiv:1409.0473, 2014.
+
+[7] W. Kay, J. Carreira, K. Simonyan, B. Zhang, C. Hillier, S. Vijayanarasimhan, F. Viola, T. Green, T. Back,
+P. Natsev, et al., “The kinetics human action video dataset,” arXiv preprint arXiv:1705.06950, 2017.
+
+[8] R. Goyal, S. Ebrahimi Kahou, V. Michalski, J. Materzynska, S. Westphal, H. Kim, V. Haenel, I. Fruend,
+P. Yianilos, M. Mueller-Freitag, et al., “The" something something" video database for learning and
+
+evaluating visual common sense,” in Proceedings of the IEEE international conference on computer vision,
+pp. 5842–5850, 2017.
+
+[9] S. Khan, M. Naseer, M. Hayat, S. W. Zamir, F. S. Khan, and M. Shah, “Transformers in vision: A survey,”
+ACM Computing Surveys (CSUR), 2021.
+
+[10] Y. Liu, E. Sangineto, W. Bi, N. Sebe, B. Lepri, and M. De Nadai, “Efﬁcient training of visual transformers
+with small-size datasets,” arXiv preprint arXiv:2106.03746, 2021.
+
+[11] A. El-Nouby, G. Izacard, H. Touvron, I. Laptev, H. Jegou, and E. Grave, “Are large-scale datasets necessary
+for self-supervised pre-training?,” arXiv preprint arXiv:2112.10740, 2021.
+
+[12] Z. Liu, J. Ning, Y. Cao, Y. Wei, Z. Zhang, S. Lin, and H. Hu, “Video swin transformer,” arXiv preprint
+arXiv:2106.13230, 2021.
+
+[13] K. Li, Y. Wang, P. Gao, G. Song, Y. Liu, H. Li, and Y. Qiao, “Uniformer: Uniﬁed transformer for efﬁcient
+spatiotemporal representation learning,” arXiv preprint arXiv:2201.04676, 2022.
+
+[14] A. Arnab, M. Dehghani, G. Heigold, C. Sun, M. Luˇci´c, and C. Schmid, “Vivit: A video vision transformer,”
+in International Conference on Computer Vision (ICCV), 2021.
+
+[15] Y. Li, C.-Y. Wu, H. Fan, K. Mangalam, B. Xiong, J. Malik, and C. Feichtenhofer, “Improved multiscale
+vision transformers for classiﬁcation and detection,” arXiv preprint arXiv:2112.01526, 2021.
+
+[16] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “Imagenet: A large-scale hierarchical image
+database,” in 2009 IEEE conference on computer vision and pattern recognition, pp. 248–255, Ieee, 2009.
+
+[17] A. Singh, O. Chakraborty, A. Varshney, R. Panda, R. Feris, K. Saenko, A. Das, I. Madras, and I. Kharagpur,
+“Semi-supervised action recognition with temporal contrastive learning,” arXiv: 2102.02751v2.
+
+[18] B. Xiong, H. Fan, K. Grauman, and C. Feichtenhofer, “Multiview pseudo-labeling for semi-supervised
+learning from video,” in Proceedings of the IEEE/CVF International Conference on Computer Vision,
+pp. 7209–7219, 2021.
+
+[19] J. Xiao, L. Jing, L. Zhang, J. He, Q. She, Z. Zhou, A. Yuille, and Y. Li, “Learning from temporal gradient
+for semi-supervised action recognition,” in Proceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition, pp. 3252–3262, 2022.
+
+[20] H. Terao, W. Noguchi, H. Iizuka, and M. Yamamoto, “Compressed video ensemble based pseudo-labeling
+for semi-supervised action recognition,” Machine Learning with Applications, p. 100336, 2022.
+
+[21] L. Jing, T. Parag, Z. Wu, Y. Tian, and H. Wang, “Videossl: Semi-supervised learning for video classiﬁcation,”
+in Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision, pp. 1110–1119,
+2021.
+
+[22] K. Li, Y. Wang, J. Zhang, P. Gao, G. Song, Y. Liu, H. Li, and Y. Qiao, “Uniformer: Unifying convolution
+and self-attention for visual recognition,” arXiv preprint arXiv:2201.09450, 2022.
+
+[23] G. Bertasius, H. Wang, and L. Torresani, “Is space-time attention all you need for video understanding,”
+arXiv preprint arXiv:2102.05095, vol. 2, no. 3, p. 4, 2021.
+
+[24] H. Fan, B. Xiong, K. Mangalam, Y. Li, Z. Yan, J. Malik, and C. Feichtenhofer, “Multiscale vision
+transformers,” in Proceedings of the IEEE/CVF International Conference on Computer Vision, pp. 6824–
+6835, 2021.
+
+[25] G. W. Taylor, R. Fergus, Y. LeCun, and C. Bregler, “Convolutional learning of spatio-temporal features,”
+in European conference on computer vision, pp. 140–153, Springer, 2010.
+
+[26] H.-J. Kim, J. S. Lee, and H.-S. Yang, “Human action recognition using a modiﬁed convolutional neural
+network,” in International Symposium on Neural Networks, pp. 715–723, Springer, 2007.
+
+[27] H. Jhuang, T. Serre, L. Wolf, and T. Poggio, “A biologically inspired system for action recognition,” in
+2007 IEEE 11th international conference on computer vision, pp. 1–8, Ieee, 2007.
+
+[28] A. Karpathy, G. Toderici, S. Shetty, T. Leung, R. Sukthankar, and L. Fei-Fei, “Large-scale video classiﬁca-
+tion with convolutional neural networks,” in Proceedings of the IEEE conference on Computer Vision and
+Pattern Recognition, pp. 1725–1732, 2014.
+
+[29] S. Ji, W. Xu, M. Yang, and K. Yu, “3d convolutional neural networks for human action recognition,” IEEE
+transactions on pattern analysis and machine intelligence, vol. 35, no. 1, pp. 221–231, 2012.
+
+[30] M. Baccouche, F. Mamalet, C. Wolf, C. Garcia, and A. Baskurt, “Sequential deep learning for human
+action recognition,” in International workshop on human behavior understanding, pp. 29–39, Springer,
+2011.
+
+[31] D. Tran, L. Bourdev, R. Fergus, L. Torresani, and M. Paluri, “Learning spatiotemporal features with
+3d convolutional networks,” in Proceedings of the IEEE international conference on computer vision,
+pp. 4489–4497, 2015.
+
+[32] K. Simonyan and A. Zisserman, “Two-stream convolutional networks for action recognition in videos,”
+Advances in neural information processing systems, vol. 27, 2014.
+
+[33] R. Christoph and F. A. Pinz, “Spatiotemporal residual networks for video action recognition,” Advances in
+neural information processing systems, pp. 3468–3476, 2016.
+
+[34] C. Feichtenhofer, A. Pinz, and R. P. Wildes, “Spatiotemporal multiplier networks for video action recogni-
+tion,” in Proceedings of the IEEE conference on computer vision and pattern recognition, pp. 4768–4777,
+2017.
+
+[35] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in Proceedings of the
+IEEE conference on computer vision and pattern recognition, pp. 770–778, 2016.
+
+[36] D. Tran, H. Wang, L. Torresani, J. Ray, Y. LeCun, and M. Paluri, “A closer look at spatiotemporal
+convolutions for action recognition,” in Proceedings of the IEEE conference on Computer Vision and
+Pattern Recognition, pp. 6450–6459, 2018.
+
+[37] D. Tran, H. Wang, L. Torresani, and M. Feiszli, “Video classiﬁcation with channel-separated convolutional
+networks,” in Proceedings of the IEEE/CVF International Conference on Computer Vision, pp. 5552–5561,
+2019.
+
+[38] J. Carreira and A. Zisserman, “Quo vadis, action recognition? a new model and the kinetics dataset,” in
+proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 6299–6308, 2017.
+
+[39] C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke, and A. Rabinovich,
+“Going deeper with convolutions,” in Proceedings of the IEEE conference on computer vision and pattern
+recognition, pp. 1–9, 2015.
+
+[40] J. Lin, C. Gan, and S. Han, “Tsm: Temporal shift module for efﬁcient video understanding,” in Proceedings
+of the IEEE/CVF International Conference on Computer Vision, pp. 7083–7093, 2019.
+
+[41] C. Feichtenhofer, H. Fan, J. Malik, and K. He, “Slowfast networks for video recognition,” in Proceedings
+of the IEEE/CVF international conference on computer vision, pp. 6202–6211, 2019.
+
+[42] C. Feichtenhofer, “X3d: Expanding architectures for efﬁcient video recognition,” in Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 203–213, 2020.
+
+[43] J. Yue-Hei Ng, M. Hausknecht, S. Vijayanarasimhan, O. Vinyals, R. Monga, and G. Toderici, “Beyond
+short snippets: Deep networks for video classiﬁcation,” in Proceedings of the IEEE conference on computer
+vision and pattern recognition, pp. 4694–4702, 2015.
+
+[44] J. Donahue, L. Anne Hendricks, S. Guadarrama, M. Rohrbach, S. Venugopalan, K. Saenko, and T. Darrell,
+“Long-term recurrent convolutional networks for visual recognition and description,” in Proceedings of the
+IEEE conference on computer vision and pattern recognition, pp. 2625–2634, 2015.
+
+[45] J. Weston, S. Chopra, and A. Bordes, “Memory networks,” arXiv preprint arXiv:1410.3916, 2014.
+
+[46] A. Graves, G. Wayne, and I. Danihelka, “Neural turing machines,” arXiv preprint arXiv:1410.5401, 2014.
+
+[47] X. Wang, R. Girshick, A. Gupta, and K. He, “Non-local neural networks,” in Proceedings of the IEEE
+conference on computer vision and pattern recognition, pp. 7794–7803, 2018.
+
+[48] M.-H. Guo, T.-X. Xu, J.-J. Liu, Z.-N. Liu, P.-T. Jiang, T.-J. Mu, S.-H. Zhang, R. R. Martin, M.-M. Cheng,
+and S.-M. Hu, “Attention mechanisms in computer vision: A survey,” Computational Visual Media,
+pp. 1–38, 2022.
+
+[49] Z. Li, K. Gavrilyuk, E. Gavves, M. Jain, and C. G. Snoek, “Videolstm convolves, attends and ﬂows for
+action recognition,” Computer Vision and Image Understanding, vol. 166, pp. 41–50, 2018.
+
+[50] S. Sharma, R. Kiros, and R. Salakhutdinov, “Action recognition using visual attention,” arXiv preprint
+arXiv:1511.04119, 2015.
+
+[51] X. Long, C. Gan, G. De Melo, J. Wu, X. Liu, and S. Wen, “Attention clusters: Purely attention based local
+feature integration for video classiﬁcation,” in Proceedings of the IEEE conference on computer vision and
+pattern recognition, pp. 7834–7843, 2018.
+
+[52] Y. Chen, Y. Kalantidis, J. Li, S. Yan, and J. Feng, “Aˆ 2-nets: Double attention networks,” Advances in
+neural information processing systems, vol. 31, 2018.
+
+[53] H. Touvron, M. Cord, M. Douze, F. Massa, A. Sablayrolles, and H. Jégou, “Training data-efﬁcient
+image transformers & distillation through attention,” in International Conference on Machine Learning,
+pp. 10347–10357, PMLR, 2021.
+
+[54] A. Bulat, J. M. Perez Rua, S. Sudhakaran, B. Martinez, and G. Tzimiropoulos, “Space-time mixing attention
+for video transformer,” Advances in Neural Information Processing Systems, vol. 34, pp. 19594–19607,
+2021.
+
+[55] D. Neimark, O. Bar, M. Zohar, and D. Asselmann, “Video transformer network,” in Proceedings of the
+IEEE/CVF International Conference on Computer Vision, pp. 3163–3172, 2021.
+
+[56] T. Chen, S. Kornblith, K. Swersky, M. Norouzi, and G. E. Hinton, “Big self-supervised models are strong
+semi-supervised learners,” Advances in neural information processing systems, vol. 33, pp. 22243–22255,
+2020.
+
+[57] K. Sohn, D. Berthelot, N. Carlini, Z. Zhang, H. Zhang, C. A. Raffel, E. D. Cubuk, A. Kurakin, and C.-L. Li,
+“Fixmatch: Simplifying semi-supervised learning with consistency and conﬁdence,” Advances in neural
+information processing systems, vol. 33, pp. 596–608, 2020.
+
+[58] A. Kumar and Y. S. Rawat, “End-to-end semi-supervised learning for video action detection,” in Pro-
+ceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 14700–14710,
+2022.
+
+[59] M. N. Rizve, K. Duarte, Y. S. Rawat, and M. Shah, “In defense of pseudo-labeling: An uncertainty-aware
+pseudo-label selection framework for semi-supervised learning,” arXiv preprint arXiv:2101.06329, 2021.
+
+[60] R. Sennrich, B. Haddow, and A. Birch, “Neural machine translation of rare words with subword units,”
+arXiv preprint arXiv:1508.07909, 2015.
+
+[61] P. Gage, “A new algorithm for data compression,” C Users Journal, vol. 12, no. 2, pp. 23–38, 1994.
+
+[62] J. Carreira and A. Zisserman, “Quo vadis, action recognition? a new model and the kinetics dataset,” in
+proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pp. 6299–6308, 2017.
+
+[63] C.-F. R. Chen, R. Panda, K. Ramakrishnan, R. Feris, J. Cohn, A. Oliva, and Q. Fan, “Deep analysis
+of cnn-based spatio-temporal representations for action recognition,” in Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pp. 6165–6175, 2021.
+
+[64] R. Qian, T. Meng, B. Gong, M.-H. Yang, H. Wang, S. Belongie, and Y. Cui, “Spatiotemporal contrastive
+video representation learning,” in Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pp. 6964–6974, 2021.
+
+[65] H. Fan, Y. Li, B. Xiong, W.-Y. Lo, and C. Feichtenhofer, “Pyslowfast.”
+facebookresearch/slowfast, 2020.
+
+[66] N. Park and S. Kim, “How do vision transformers work?,” arXiv preprint arXiv:2202.06709, 2022.
+
+[67] Y. Xu, F. Wei, X. Sun, C. Yang, Y. Shen, B. Dai, B. Zhou, and S. Lin, “Cross-model pseudo-labeling for
+semi-supervised action recognition,” in Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pp. 2959–2968, 2022.
+
+[68] Y. Zou, J. Choi, Q. Wang, and J.-B. Huang, “Learning representational invariances for data-efﬁcient action
+recognition,” arXiv preprint arXiv:2103.16565, 2021.
+
+[69] A. Singh, O. Chakraborty, A. Varshney, R. Panda, R. Feris, K. Saenko, A. Das, I. Madras, and I. Kharagpur,
+“Semi-supervised action recognition with temporal contrastive learning,” 2021.
+
+[70] Z. Tong, Y. Song, J. Wang, and L. Wang, “Videomae: Masked autoencoders are data-efﬁcient learners for
+self-supervised video pre-training,” arXiv preprint arXiv:2203.12602, 2022.
+
+[71] C. Feichtenhofer, H. Fan, Y. Li, and K. He, “Masked autoencoders as spatiotemporal learners,” arXiv
+preprint arXiv:2205.09113, 2022.
+
+[72] H. Xu, J. Li, A. Baevski, M. Auli, W. Galuba, F. Metze, C. Feichtenhofer, et al., “Masked autoencoders
+that listen,” arXiv preprint arXiv:2207.06405, 2022.
+
+[73] Z. Liu, H. Mao, C.-Y. Wu, C. Feichtenhofer, T. Darrell, and S. Xie, “A convnet for the 2020s,” in
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 11976–11986,
+2022.
+
+[74] M. Contributors, “Openmmlab’s next generation video understanding toolbox and benchmark.”
+//github.com/open-mmlab/mmaction2, 2020.
+
+[75] M. Dehghani, A. Gritsenko, A. Arnab, M. Minderer, and Y. Tay, “Scenic: A jax library for computer
+vision research and beyond,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pp. 21393–21398, 2022.
+
+A
+Appendix
+
+Architecture
+Top-1 Accuracy
+Top-5 Accuracy
+1%
+5%
+10%
+100%
+1%
+5%
+10%
+100%
+
+I3D-R50 [38]
+13.73(-3.79)
+33.49
+44.37(-4.73)
+73.5‡ (-2.5)
+29.39
+57
+68.59
+90.8‡
+
+I3D-NL-R50 [47]
+13.86 (-2.14)
+34.18 (-0.69)
+44.7 (-4.4)
+74‡ (-2)
+30.29
+57.48
+68.95
+91.1‡
+
+C2D-R50 [47]
+18.13 (-1.66)
+35.1 (-3.13)
+45.77 (-3.33)
+71.61‡ (-4.39)
+36.34
+58.91
+69.39
+87.8‡
+C2D-NL-R50 [47]
+19.79
+38.23
+46.93 ( (-2.71)
+-
+39.35
+61.96
+70.88
+-
+R3D-50 from [64]
+16† (-2.13)
+-
+49.1†
+76.0†
+-
+-
+-
+-
+SLOWFAST-R3D-50 [41]
+6.09 (-13.7)
+-
+36.07(-13.03)
+-
+15.86
+-
+59.7
+-
+ViViT FE [14]
+24.91 (+5.12)
+41.98 (+3.75)
+48.84 (-0.26)
+78.4† (+2.4)
+46.43
+65.55
+72.15
+-
+ViViT ST [14]
+23.99 (+4.2)
+40.47 (2.24)
+46.49 (-2.61)
+79.9† (+3.9)
+46.25
+64.45
+70.56
+-
+Uniformer Small [13]
+22.52 (+2.73)
+47.71 (+9.48)
+56.01 (+6.91)
+80.8† (+4.8)
+43.59
+71.06
+77.99
+94.7†
+
+MViTv2 Small [13]
+22.17 (+2.38)
+47.59 (+9.36)
+56.96 (+7.86)
+81.0 † (+5)
+43.17
+70.94
+79.57
+94.6†
+
+Video Swin Small [12]
+32.3 (+12.56)
+52.37 (+14.14)
+60.66 (+11.56)
+80.6† (+4.6)
+56.09
+75.64
+80.06
+94.5†
+
+Table A1: Top 1% & Top 5% accuracy results on K400 for various low-labeled settings for CNN-
+based (top half) vs Transformer-based (bottom half). Differences (for top-1) are computed against the
+highest performing CNN-based model for each split in bold. †Result from respectively cited work.
+‡Result from [65].
+
+Architecture
+Top-1 Accuracy
+Top-5 Accuracy
+1%
+5%
+10%
+100%
+1%
+5%
+10%
+100%
+I3D-R50 [38]
+8.47 (-1.59)
+24.3 (-2.5)
+32.92(-3.25)
+-
+24.19
+51.52
+61.81
+-
+I3D-NL-R50 [47]
+8.42(-1.64)
+24.85(-1.95)
+32.59(-3.58)
+-
+23.22
+50.92
+62.11
+-
+C2D-R50 [47]
+7.16 (-2.9)
+-
+20.16 (-16.01)
+-
+20.16
+-
+47.05
+-
+C2D-NL-R50 [47]
+7.31 (-2.75)
+-
+21.19 (-16.04)
+-
+20.62
+-
+49.3
+-
+SlowFast-R50 [41]
+10.06
+26.8
+36.17
+63†
+25.49
+53.88
+64.18
+88.5‡
+Video Swin Base [12]
+14.3 (+4.11)
+30.0 (+3.2)
+37.5(+1.33)
+65.67 (+2.67)
+36.24
+62.52
+71.22
+90.65
+Uniformer Small [13]
+12.77 (+2.9)
+36.14 (+9.34)
+44.81 (+8.64)
+63.5†(+0.5)
+31.97
+65.36
+74.5
+85.75
+
+Table A2: Top 1% accuracy on SSv2 for various low-labeled settings. CNN-based (top half) vs.
+Transformer-based (bottom half). Differences (for top-1) are computed against baseline CNN-based
+model in bold. †Result obtained from respectively cited work. ‡Result obtained from [65].
+
+A.1
+CNN Selection
+
+We selected CNNs across a variety of inductive biases (spatial vs spatiotemporal) that show relatively
+comparable performance at 100% but also would be reasonable in low-labeled settings. The architec-
+tures we selected range both 2D and 3D CNNs, some of which are also common architectures used
+in current semi-supervised video recognition work (Tab. 6). The motivation to show that in the rea-
+sonable best case CNN based architectures are outperformed by Vision Transformers in low-labeled
+settings. For instance SlowFast [41]is a good low-labeled candidate for SSv2 (Tab. A2 but not as much
+for K400 (Tab. A1). When SlowFast is boostrapped from ResNet [35], the fusion layers between the
+slow and fast path are still trained from scratch. As mentioned by [41] SlowFast generalizes when
+trained from scratch vs initialization from large scale spatial pretraining (IN1K), however in the low-
+labeled setting this additional pretraining matters. As such, SlowFast once trained on K400 is in better
+parameter space (fusion params & both pathways) making it a better candidate for downstream trans-
+fer for Low-labeled SSv2 settings. This was veriﬁed through experiments as shown in Tab. A1 & A2.
+Similarly the "type" of video dataset is also a factor, C2D with NL layers [47] is the best performing
+CNN on K400 low-labeled because the spatial pretraining combined with an attention-like mechanism
+is a strong prior for spatially dominant datasets such as K400. While SSv2 is still spatially dominant
+[63], it is less so compared with K400. Greater temporal modeling is required hence SlowFast and
+I3D outperforming the 2D counterparts. In addition the 2D architectures start off efﬁciently however
+do not have the capacity to make use of the full dataset and do not perform as well with full data.
+
+B
+Implementation/Training details
+
+For experiments we used the Video Swin ofﬁcial implementation from [12] through MMaction2
+[74], Uniformer ofﬁcial implementation from [13] through [65], ViViT [14] ofﬁcial implementation
+
+from Scenic [75], MViTv2 from implementation in [65].
+CNN experiments were also using
+implementations in [65]. For training and inference we used hyperparameters and settings as
+described in each work [13; 12; 15; 14].

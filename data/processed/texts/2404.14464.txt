@@ -1,0 +1,1280 @@
+Tree of Reviews: A Tree-based Dynamic Iterative Retrieval Framework for
+Multi-hop Question Answering
+
+Jiapeng Li1, Runze Liu2, Yabo Li1, Tong Zhou1, Mingming Li1, Xiang Chen1
+
+1Tencent Inc., Shenzhen, China
+2Harbin Institute of Technology, Harbin, China
+{montereyli, kerli, tongzhou, merakili,
+
+Abstract
+
+Multi-hop question answering is a knowledge-
+intensive complex problem.
+Large Lan-
+guage Models (LLMs) use their Chain of
+Thoughts (CoT) capability to reason com-
+plex problems step by step, and retrieval-
+augmentation can effectively alleviate factual
+errors caused by outdated and unknown knowl-
+edge in LLMs. Recent works have introduced
+retrieval-augmentation in the CoT reasoning to
+solve multi-hop question answering. However,
+these chain methods have the following prob-
+lems: 1) Retrieved irrelevant paragraphs may
+mislead the reasoning; 2) An error in the chain
+structure may lead to a cascade of errors.
+
+arXiv:2404.14464v1 [cs.CL] 22 Apr 2024
+
+Figure 1: The chain-like iterative retrieval process faces
+the issue of error accumulation. The example shows how
+irrelevant retrieval results affect subsequent retrievals
+and the generation of new queries, ultimately leading to
+incorrect answers.
+
+In this paper, we propose a dynamic retrieval
+framework called TREE OF REVIEWS (TOR),
+where the root node is the question, and the
+other nodes are paragraphs from retrieval, ex-
+tending different reasoning paths from the root
+node to other nodes. Our framework dynami-
+cally decides to initiate a new search, reject, or
+accept based on the paragraphs on the reason-
+ing paths. Compared to related work, we intro-
+duce a tree structure to handle each retrieved
+paragraph separately, alleviating the misleading
+effect of irrelevant paragraphs on the reasoning
+path; the diversity of reasoning path extension
+reduces the impact of a single reasoning error
+on the whole. We conducted experiments on
+three different multi-hop question answering
+datasets. The results show that compared to the
+baseline methods, TOR achieves state-of-the-
+art performance in both retrieval and response
+generation. In addition, we propose two tree-
+based search optimization strategies, pruning
+and effective expansion, to reduce time over-
+head and increase the diversity of path exten-
+sion. We will release our code.
+
+1
+Introduction
+
+To further enhance the search efficiency of ToR,
+we advocate for two tree-based search optimiza-
+tion strategies: pruning, which aims to diminish
+the frequency of unproductive search initiations,
+and effective expansion, designed to refine query
+generation for improved retrieval paragraphs.
+Experiments on three different multi-hop ques-
+tion answering datasets show that our proposed
+method achieves state-of-the-art performance in
+both retrieval and response generation.
+Our contributions include:
+
+• We propose a dynamic retrieval framework
+named TREE OF REVIEWS (TOR), which in-
+tegrates a tree structure into the iterative re-
+trieval process. This method mitigates the
+negative impact associated with the inherent
+vulnerabilities of chain-like retrieval methods.
+
+• We propose two tree-based search optimiza-
+tion strategies: pruning and effective expan-
+sion. These strategies demonstrate significant
+improvements in both retrieval quality and ef-
+ficiency. These efforts offer valuable insights
+for the optimization of iterative retrieval meth-
+ods.
+
+• Our method achieves state-of-the-art perfor-
+mance in both retrieval and response genera-
+tion on three different multi-hop question an-
+swering datasets. Extensive experiments have
+conclusively demonstrated the effectiveness
+of our method.
+
+2
+Related Work
+
+Supervised Multi-hop Question Answering
+
+However, the decomposition of the question and
+the construction of the tree lack the assistance of ex-
+ternal knowledge and information on the reasoning
+path, which can easily lead to incorrect decomposi-
+tion, possibly affecting the correctness of the final
+answer.
+In contrast, our work is the first to propose a
+retrieval framework that uses a tree-like structure
+to dynamically initiate requests based on external
+knowledge and information on the reasoning path.
+LLMs can decide dynamically whether to initi-
+ate further retrieval and what requests to generate
+based on this information. We have designed two
+search optimization strategies to reduce the time
+overhead of tree structure searching and enhance
+the diversity of initiating requests: pruning and
+effective expansion.
+
+like HotpotQA, they rely on expensive manual an-
+notation and specific training. However, in practi-
+cal application scenarios like New Bing and Per-
+Plexity.AI, the indexed document scope is broader,
+and the retrieval source is updated in real-time. In
+this case, the supervised models are likely to fail.
+
+Retrieval-Augmentation for Complex Problems
+
+The Retrieval-Augmented Generation (RAG) sys-
+tem typically retrieves additional knowledge from
+specific corpora, such as Wikipedia, to alleviate
+the hallucination problem of Large Language Mod-
+els (LLMs), thereby significantly enhancing the
+performance of LLMs in various tasks (Lewis
+et al., 2020; Guu et al., 2020; Ram et al., 2023).
+Early research on RAG typically employs a one-
+step retrieval approach, which is ineffective in ad-
+dressing composite problems. To tackle compos-
+ite problems, Self-Ask (Press et al., 2023) poses
+sub-questions before answering the main question,
+optimizing complex composite problems through
+multiple retrievals.IRCoT (Trivedi et al., 2023) trig-
+gers retrieval on each sentence of the CoT. ITER-
+RETGEN (Shao et al., 2023) connects the complete
+CoT reasoning steps generated in the previous turn
+with the original question for the next turn’s gen-
+eration query. However, these methods all adopt
+a chain-like structure for reasoning. If an error
+occurs at any step in the reasoning path, it could
+potentially cause the reasoning path to deviate.
+
+3
+Tree of Reviews Framework
+
+3.1
+Overall
+
+The task is to answer a multi-hop question Q based
+on a retrieval corpus D. As illustrated in Figure
+2, we introduce TREE OF REVIEWS(TOR), a tree-
+based dynamic retrieval framework. In this frame-
+work, the root node is the question Q, while each
+subsequent node is a paragraph with a paragraphs
+review block (Sec.3.2). These blocks dynamically
+judge whether to stop or continue the search based
+on all paragraphs along the path from the root node
+to the current node. If there are enough paragraphs
+to answer Q, the model will use them to produce
+evidence and add it to the evidence pool. Upon
+reviewing all paths, the reader generates the final
+response to Q based on the evidence in the evidence
+pool. We propose three evidence fusion strategies
+(Sec.3.3) to fully use information from diverse rea-
+soning paths. Additionally, we propose two tree-
+based search optimization methods (Sec.3.4): prun-
+ing and effective expansion. These methods aim
+to enhance the search efficiency of the TOR frame-
+work.
+
+Tree-like Reasoning for Complex Problems
+
+3.2
+Paragraphs Review
+
+Figure 2: The left side illustrates the overall TOR framework (introduced in Section 3.1). The upper right half
+illustrates Paragraphs Review a fundamental component of TOR (introduced in Section 3.2). The lower right half
+illustrates Evidence Fusion a method for more effectively utilizing retrieved information for reading (introduced in
+Section 3.3).
+
+3.3
+Evidence Fusion
+
+paragraph individually.
+The paragraphs review
+block selects an action based on the question Q and
+paragraphs along the path. The block is designed
+to execute the following steps:
+(i) Judging whether the paragraphs are relevant to
+the question Q. Relevance means that paragraphs
+contain partial information to answer the question.
+(ii) Judging whether the paragraphs have enough
+information, which means that paragraphs contain
+all information to answer the question
+(iii) If it is not relevant, then action selection is
+[Reject] then stop search; if it is relevant but
+not enough, action selection is [Search] then
+generate a new query and retrieval with it; if it
+is relevant and enough, then action selection is
+[Accept] then stop search. Once LLM accepts
+a reasoning path, it will be asked to answer the
+original question Q based on all the documents on
+this reasoning path. This answer is called a brief
+analysis. The accepted reasoning path combined
+with the brief analysis form a piece of evidence.
+
+The evidence pool contains some pieces of evi-
+dence. The QA reader will generate a response
+according to the evidence pool. We propose three
+simple methods for evidence fusion:
+Analysis-based Fusion: The reader generates a
+response only according to the brief analysis.
+Paragraph-Based Fusion: The reader generates a
+response only according to the paragraphs.
+Evidence-based fusion: The reader generates a
+response according to both of them.
+See Table 10 to 12 for details.
+
+3.4
+Tree-Based Search Optimization
+
+Method
+GPT-3.5-Turbo
+GPT-4-Turbo
+
+HotpotQA
+2WikiMQA
+MuSiQue
+HotpotQA
+2WikiMQA
+MuSiQue
+
+OneR
+44.3
+45.8
+23.2
+44.3
+45.8
+23.2
+ReAct
+44.6
+48.0
+25.2
+51.3
+46.1
+35.5
+Self-AsK
+44.0
+50.7
+25.9
+52.9
+59.5
+37.2
+ITER-RETGEN
+50.6
+51.1
+27.2
+60.5
+67.4
+47.0
+IRCoT
+46.0
+46.5
+25.2
+53.3
+53.9
+36.5
+
+CoR
+47.9
+47.6
+25.8
+61.0
+62.4
+39.4
+ToR
+53.1
+51.8
+29.5
+73.8
+79.4
+48.5
+
+Table 1: Paragraphs on multi-hop question answering datasets. We highlight the best results in bold and
+underline the best results among other methods.
+
+Table 6.
+
+quently prunes the paths expanded from irrelevant
+paragraphs. Repetitive pruning is conducted after
+retrieval, where it matches the paragraph ID of re-
+trieved paragraphs and received paragraphs in the
+evidence pool. If any retrieved paragraph is already
+in the evidence pool, it is pruned.
+Effective expansion aims to optimize the effec-
+tiveness and diversity of paragraphs review block
+initiating new queries. We adopt CoT Expansion
+and Missing Paragraph Completion Expansion
+(MPC). CoT expansion allows the model to think
+step by step, identify missing information in cur-
+rent paragraphs and generate a new query based on
+this missing information. MPC expansion enables
+the model to complete the missing information in
+paragraphs using its internal knowledge and to use
+the newly generated paragraph as a new query. See
+Table 7 and Table 9 for details.
+
+4.2
+Evaluate Setting
+
+We evaluated TOR from retrieval quality and gener-
+ation quality. For the retrieval metric, we followed
+Trivedi et al. (2023), allowing different retrieval
+systems to return up to 15 paragraphs and calculat-
+ing the recall of golden paragraphs; this is referred
+to as We used exact match (EM) and
+F1 score for the generation metric.
+
+4.3
+Baselines
+
+Given the disparity in retriever, reader, and test
+samples used by the baseline methods, a fair com-
+parison becomes challenging. Therefore, we fol-
+lowed Shao et al. (2023) used Contriver (Izacard
+et al., 2023) as our retriever. GPT-3.5-Turbo(gpt-
+3.5-turbo-0125) and GPT-4-Turbo(gpt-4-1106-
+preview) (Ouyang et al., 2022; OpenAI, 2023) were
+used as the base models to implement the follow-
+ing baseline methods. The format of prompts and
+few-shot settings are adopted as presented in their
+papers. We retrieved top-5 paragraphs for each
+query, and for baselines involving multi-turn itera-
+tions, we set the maximum number of turns to 3.
+Direct Prompting (Brown et al., 2020) prompts a
+Language Language Model (LLM) to generate the
+final answer directly.
+CoT prompting (Wei et al., 2022)prompts a Lan-
+guage Language Model (LLM) to generate the final
+answer step by step.
+One-step Retrieval with Direct/ CoT prompt-
+ing (OneR-Direct/ CoT) augments Direct/CoT
+
+4
+Experiments
+
+4.1
+Datasets
+
+Method
+GPT-3.5-Turbo
+GPT-4-Turbo
+
+HotpotQA
+2WikiMQA
+MuSiQue
+HotpotQA
+2WikiMQA
+MuSiQue
+
+EM
+F1
+EM
+F1
+EM
+F1
+EM
+F1
+EM
+F1
+EM
+F1
+
+Without Retrieval
+
+Direct
+28.2
+37.7
+27.6
+31.8
+9.6
+18.2
+40.6
+52.2
+38.4
+47.6
+25.9
+36.0
+CoT
+27.8
+38.8
+26.7
+33.6
+17.2
+25.1
+39.6
+53.3
+42.2
+51.8
+24.0
+36.8
+
+With Retrieval
+
+OneR-Direct
+25.0
+33.4
+20.6
+23.8
+5.0
+10.3
+40.2
+53.6
+32.6
+42.4
+26.2
+37.4
+OneR-CoT
+24.8
+32.1
+14.0
+18.7
+5.0
+11.2
+39.6
+52.3
+36.6
+47.0
+22.8
+34.9
+ReAct
+25.8
+37.2
+14.6
+24.3
+2.2
+7.7
+34.8
+47.5
+37.7
+48.2
+26.4
+38.0
+Self-AsK
+23.4
+32.6
+15.4
+22.3
+5.6
+12.5
+39.1
+51.3
+41.1
+52.6
+28.8
+40.6
+ITER-RETGEN
+25.8
+36.7
+16.6
+23.0
+9.4
+16.7
+46.2
+58.9
+39.8
+51.0
+31.4
+43.3
+IRCoT
+29.8
+38.9
+26.4
+30.4
+8.2
+15.0
+42.8
+53.9
+39.2
+49.3
+28.6
+40.1
+
+CoR
+30.6
+39.8
+25.2
+28.8
+9.2
+16.8
+41.7
+55.3
+43.6
+54.1
+26.6
+38.4
+ToR
+38.2
+50.4
+29.0
+37.0
+13.2
+22.1
+49.2
+63.1
+51.0
+62.9
+30.9
+43.6
+
+Table 2: Answer EM and F1 results on multi-hop question answering datasets. We highlight the best results in bold
+and underline the best results among other methods.
+
+4.4
+Implementation Details
+
+Prompting with paragraphs retrieved by the re-
+triever.
+ReAct/Self-Ask (Yao et al., 2023b; Press et al.,
+2023) iteratively execute the following steps : (i)
+Initiate retrieval using the follow-up question gen-
+erated by the LLM, returning relevant paragraphs,
+and (ii) Respond to the follow-up question, sub-
+sequently deciding whether to generate the next
+question or finalize the answer. The primary dis-
+tinction between ReAct and Self-Ask in our imple-
+mentation lies in the positioning of the retrieved
+paragraphs.
+ITER-RETGEN (Shao et al., 2023) iteratively ex-
+ecute the following steps for several turns:(i) Ini-
+tiate retrieval using the original question and re-
+sponse generated by the LLM, returning relevant
+paragraphs, and (ii) Answer the original question
+with the current turn retrieval paragraphs. Finally,
+take the last round’s response as an answer.
+IRCoT (Trivedi et al., 2023) iteratively execute the
+following steps: (i) Initiate retrieval using the CoT
+sentence generated by the LLM, returning relevant
+paragraphs, and (ii) Generate a new CoT sentence
+using historical information until a special trigger
+word is produced or the maximum number of turns
+is reached. Finally, use the historical retrieval para-
+graphs to answer the original question.
+
+We also employed Contriver, GPT-3.5-Turbo, and
+GPT-4-Turbo for our experiments. We adopted a
+greedy decoding strategy to ensure the stability of
+the output. We set the maximum length to 4096
+and added as much evidence from the pool without
+exceeding this limit. We randomly sampled sev-
+eral data from each dataset’s training set, manually
+annotated them for few-shot demonstrations, and
+adopted a 3-shot setting for all baselines and ours.
+In the main experiment, the depth of TOR is set
+to 3, with the number of nodes in each layer be-
+ing 5, 3, 3. We adopted the evidence-based fusion
+method, missing paragraph completion expansion
+strategy, and two kinds of pruning strategies.
+CoR: To compare the differences between the tree
+and chain structures, we designed an experiment
+using the same prompt as TOR but providing only
+a single reasoning path. The model chooses an
+action in each iteration and generates new queries
+based on all retrieved paragraphs. See Table 13 for
+details.
+
+4.5
+Main Result
+
+Method
+HotpotQA 2WikiMQA MuSiQue
+
+Analysis
+56.8
+52.0
+40.4
+Paragraph
+64.6
+62.3
+46.0
+Evidence
+65.5
+63.7
+46.2
+
+Table 3: Answer F1 with different evidence fusion strate-
+gies.
+
+conflicts between different pieces of evidence, the
+model needs to incorporate information from the
+retrieved paragraphs to better resolve the contra-
+dictions, while the information that analysis can
+provide is limited.
+
+Method
+HotpotQA
+2WikiMQA
+MuSiQue
+
+Recall
+F1
+Recall
+F1
+Recall
+F1
+
+Direct
+61.5
+57.8
+58.8
+53.6
+42.7
+39.0
+CoT
+66.2
+60.4
+62.8
+56.9
+43.0
+41.3
+MPC
+74.6
+65.5
+79.3
+63.7
+49.9
+46.2
+
+Table 4: Paragraphs and Answer F1 with dif-
+ferent effective expansion strategies. Direct represents
+the approach of not using effective expansion and gener-
+ating a new query directly. CoT represents the approach
+of using CoT Expansion. MPC represents the approach
+of using Missing Paragraph Completion Expansion.
+
+Method
+#API
+#Doc
+Rate
+#Evidence
+
+EM
+F1
+
+ToR
+16.9
+15.7
+92.9
+2.9
+79.3
+51.6
+63.7
+w/o repetitive pruning
+33.5
+18.3
+54.6
+3.7
+76.4
+51.4
+63.8
+w/o relevance pruning
+29.1
+24.6
+84.5
+3.3
+73.2
+48.9
+59.3
+w/o both
+65.0
+31.8
+48.9
+4.4
+72.9
+49.1
+59.4
+
+Table 5: Results of different pruning strategies on 2WikiMQA, #API represents the average number of GPT API
+calls. #Doc represents the average number of different paragraphs retrieved. Rate = #Doc/#API, which means the
+number of reviewed paragraphs per API call, where a higher value indicates more effective API calls (the higher,
+the better).#Evidence represents the average number of evidence in the evidence pool. Other metrics are introduced
+in Section 4.2. TOR use both repetitive pruning and relevance pruning. w/o repetitive pruning only uses relevance
+pruning, and w/o relevance pruning only uses repetitive pruning. w/o, both don’t use any pruning strategies.
+
+Depth
+width
+#API
+Rate
+#Doc
+#Evidence
+
+EM
+F1
+
+2
+5,3
+10.3
+10.0
+97.1
+1.8
+69.7
+44.3
+55.6
+3
+5,3,3
+16.9
+15.7
+92.9
+2.9
+79.3
+51.6
+63.7
+4
+5,3,3,3
+36.3
+27.6
+76.0
+4.7
+79.7
+51.8
+64.4
+3
+10,5,3
+41.3
+39.2
+94.9
+6.8
+75.4
+52.4
+66.0
+
+Table 6: Results for different tree depths and widths on 2WikiMQA.
+
+the depth of the tree to ensure search efficiency. 2)
+The effective call rate decreases with the deepening
+of the tree depth. Even though repetitive pruning
+reduces the repetitive calls of accepted paragraphs,
+it cannot avoid some unaccepted paragraphs be-
+ing reviewed multiple times. This phenomenon is
+amplified with the increase in tree depth. 3) By
+expanding the breadth of each tree layer, our frame-
+work can retrieve more paragraphs and obtain more
+evidence while ensuring an effective call rate. No-
+tably, its retrieval metrics decrease while its genera-
+tion metrics improve. We think that the evidence’s
+proportion of ground truth paragraphs decreases
+as the breadth increases, leading to fewer recalled
+ground truth paragraphs at a specific quantity. How-
+ever, the reader can add more evidence (more than
+15) for response generation, thus improving the
+generation metrics. 4) To balance performance and
+time cost, we ultimately chose a depth of 3 and
+widths of 5, 3, and 3.
+
+5
+Conclusion
+
+reducing ineffective path expansion. We believe
+that TOR can serve as a robust baseline model for
+future research in multi-hop question-answering
+tasks. Moreover, we hope our framework can be
+extended to more complex reasoning tasks.
+
+cally choose to terminate the tree search early when
+the LLM believes sufficient evidence has already
+been obtained.
+Moreover, akin to several other baseline methods
+with which we have drawn comparisons, our exper-
+iments employed the OpenAI LLM API. Owing
+to the deprecation of the text-davinci-002 API em-
+ployed by IRCoT and the text-davinci-003 API em-
+ployed by ITER-RETGEN, we could not employ
+identical models for a fair comparison. To contrast
+their approaches, we conducted experiments us-
+ing the gpt-4-1106-preview and gpt-3.5-turbo-0125
+APIs. Although we used the prompts reported in
+the baseline studies, the issues about prompt trans-
+ferability precluded a guarantee of fully replicating
+the effects of their methods. Recognizing that the
+APIs we have employed may also be deprecated at
+some point in the future, we intend to release all
+prompts and code to make our research easier to
+replicate for future study.
+Lastly, the performance of TOR on other com-
+plex reasoning tasks still requires further verifi-
+cation. We have only validated the effectiveness
+of the TOR framework on the multi-hop question-
+answering task. We believe that introducing a tree-
+like structure in complex reasoning tasks is a viable
+approach, and we hope that future work can lever-
+age this concept to achieve favorable results in a
+broader array of complex reasoning tasks.
+
+Limitations
+
+Ethical Considerations
+
+It is well known that Large Language Mod-
+els(LLMs) suffer from hallucination, privacy, secu-
+rity, and bias during their usage. Although TOR
+employs retrieval augmentation that can alleviate
+the hallucination problem to some extent, it still
+cannot fully address these issues. Moreover, our
+framework does not consider bias, security, and pri-
+vacy concerns. If our framework is to be deployed
+in practical application scenarios, certain restric-
+tions should be implemented to prevent generating
+harmful information.
+
+References
+
+augmented language models. Journal of Machine
+Learning Research, 24(251):1–43.
+
+Akari Asai, Kazuma Hashimoto, Hannaneh Hajishirzi,
+Richard Socher, and Caiming Xiong. 2020. Learn-
+ing to retrieve reasoning paths over wikipedia graph
+for question answering. In 8th International Confer-
+ence on Learning Representations, ICLR 2020, Addis
+Ababa, Ethiopia, April 26-30, 2020. OpenReview.net.
+
+Zhengbao Jiang, Frank Xu, Luyu Gao, Zhiqing Sun,
+Qian Liu, Jane Dwivedi-Yu, Yiming Yang, Jamie
+Callan, and Graham Neubig. 2023. Active retrieval
+augmented generation. In Proceedings of the 2023
+Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 7969–7992, Singapore. As-
+sociation for Computational Linguistics.
+
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, Sandhini Agarwal, Ariel Herbert-Voss,
+Gretchen Krueger, Tom Henighan, Rewon Child,
+Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens
+Winter, Chris Hesse, Mark Chen, Eric Sigler, Ma-
+teusz Litwin, Scott Gray, Benjamin Chess, Jack
+Clark, Christopher Berner, Sam McCandlish, Alec
+Radford, Ilya Sutskever, and Dario Amodei. 2020.
+Language models are few-shot learners.
+In Ad-
+vances in Neural Information Processing Systems,
+volume 33, pages 1877–1901. Curran Associates,
+Inc.
+
+Takeshi Kojima, Shixiang (Shane) Gu, Machel Reid, Yu-
+taka Matsuo, and Yusuke Iwasawa. 2022. Large lan-
+guage models are zero-shot reasoners. In Advances in
+Neural Information Processing Systems, volume 35,
+pages 22199–22213. Curran Associates, Inc.
+
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio
+Petroni, Vladimir Karpukhin, Naman Goyal, Hein-
+rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-
+täschel, Sebastian Riedel, and Douwe Kiela. 2020.
+Retrieval-augmented generation for knowledge-
+intensive nlp tasks. In Advances in Neural Infor-
+mation Processing Systems, volume 33, pages 9459–
+9474. Curran Associates, Inc.
+
+Shulin Cao, Jiajie Zhang, Jiaxin Shi, Xin Lv, Zijun Yao,
+Qi Tian, Lei Hou, and Juanzi Li. 2023. Probabilistic
+tree-of-thought reasoning for answering knowledge-
+intensive complex questions. In Findings of the As-
+sociation for Computational Linguistics: EMNLP
+2023, pages 12541–12560, Singapore. Association
+for Computational Linguistics.
+
+Joshua Maynez, Shashi Narayan, Bernd Bohnet, and
+Ryan McDonald. 2020. On faithfulness and factu-
+ality in abstractive summarization. In Proceedings
+of the 58th Annual Meeting of the Association for
+Computational Linguistics, pages 1906–1919, On-
+line. Association for Computational Linguistics.
+
+Rajarshi Das, Shehzaad Dhuliawala, Manzil Zaheer,
+and Andrew McCallum. 2019. Multi-step retriever-
+reader interaction for scalable open-domain question
+answering. In 7th International Conference on Learn-
+ing Representations, ICLR 2019, New Orleans, LA,
+USA, May 6-9, 2019. OpenReview.net.
+
+Reiichiro Nakano, Jacob Hilton, Suchir Balaji, Jeff Wu,
+Long Ouyang, Christina Kim, Christopher Hesse,
+Shantanu Jain, Vineet Kosaraju, William Saunders,
+Xu Jiang, Karl Cobbe, Tyna Eloundou, Gretchen
+Krueger, Kevin Button, Matthew Knight, Benjamin
+Chess, and John Schulman. 2021. Webgpt: Browser-
+assisted question-answering with human feedback.
+CoRR, abs/2112.09332.
+
+Yair Feldman and Ran El-Yaniv. 2019. Multi-hop para-
+graph retrieval for open-domain question answering.
+In Proceedings of the 57th Annual Meeting of the As-
+sociation for Computational Linguistics, pages 2296–
+2309, Florence, Italy. Association for Computational
+Linguistics.
+
+OpenAI. 2023. GPT-4 technical report.
+
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida,
+Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, John
+Schulman, Jacob Hilton, Fraser Kelton, Luke Miller,
+Maddie Simens, Amanda Askell, Peter Welinder,
+Paul F Christiano, Jan Leike, and Ryan Lowe. 2022.
+Training language models to follow instructions with
+human feedback. In Advances in Neural Information
+Processing Systems, volume 35, pages 27730–27744.
+Curran Associates, Inc.
+
+Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasupat,
+and Mingwei Chang. 2020. Retrieval augmented
+language model pre-training. In Proceedings of the
+37th International Conference on Machine Learning,
+volume 119 of Proceedings of Machine Learning
+Research, pages 3929–3938. PMLR.
+
+Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara,
+and Akiko Aizawa. 2020.
+Constructing a multi-
+hop QA dataset for comprehensive evaluation of
+reasoning steps. In Proceedings of the 28th Inter-
+national Conference on Computational Linguistics,
+pages 6609–6625, Barcelona, Spain (Online). Inter-
+national Committee on Computational Linguistics.
+
+Ofir Press, Muru Zhang, Sewon Min, Ludwig Schmidt,
+Noah Smith, and Mike Lewis. 2023. Measuring and
+narrowing the compositionality gap in language mod-
+els. In Findings of the Association for Computational
+Linguistics: EMNLP 2023, pages 5687–5711, Singa-
+pore. Association for Computational Linguistics.
+
+Empirical Methods in Natural Language Processing
+and the 9th International Joint Conference on Natu-
+ral Language Processing (EMNLP-IJCNLP), pages
+2590–2602, Hong Kong, China. Association for Com-
+putational Linguistics.
+
+problem solving with large language models. CoRR,
+abs/2305.10601.
+
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak
+Shafran, Karthik R Narasimhan, and Yuan Cao.
+2023b. React: Synergizing reasoning and acting
+in language models. In The Eleventh International
+Conference on Learning Representations.
+
+Ori Ram, Yoav Levine, Itay Dalmedigos, Dor Muhlgay,
+Amnon Shashua, Kevin Leyton-Brown, and Yoav
+Shoham. 2023. In-context retrieval-augmented lan-
+guage models. Transactions of the Association for
+Computational Linguistics, 11:1316–1331.
+
+Wenhao Yu, Dan Iter, Shuohang Wang, Yichong Xu,
+Mingxuan Ju, Soumya Sanyal, Chenguang Zhu,
+Michael Zeng, and Meng Jiang. 2023.
+Generate
+rather than retrieve: Large language models are
+strong context generators. In The Eleventh Inter-
+national Conference on Learning Representations,
+ICLR 2023, Kigali, Rwanda, May 1-5, 2023. Open-
+Review.net.
+
+Zhihong Shao, Yeyun Gong, Yelong Shen, Minlie
+Huang, Nan Duan, and Weizhu Chen. 2023. En-
+hancing retrieval-augmented large language models
+with iterative retrieval-generation synergy. In Find-
+ings of the Association for Computational Linguis-
+tics: EMNLP 2023, pages 9248–9274, Singapore.
+Association for Computational Linguistics.
+
+Jiajie Zhang, Shulin Cao, Tingjian Zhang, Xin Lv,
+Juanzi Li, Lei Hou, Jiaxin Shi, and Qi Tian. 2023.
+Reasoning over hierarchical question decomposition
+tree for explainable question answering. In Proceed-
+ings of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 14556–14570, Toronto, Canada. Association
+for Computational Linguistics.
+
+Weijia Shi, Sewon Min, Michihiro Yasunaga, Minjoon
+Seo, Rich James, Mike Lewis, Luke Zettlemoyer, and
+Wen-tau Yih. 2023. REPLUG: retrieval-augmented
+black-box language models. CoRR, abs/2301.12652.
+
+Zhiqing Sun, Xuezhi Wang, Yi Tay, Yiming Yang, and
+Denny Zhou. 2023. Recitation-augmented language
+models. In The Eleventh International Conference
+on Learning Representations, ICLR 2023, Kigali,
+Rwanda, May 1-5, 2023. OpenReview.net.
+
+Fengbin Zhu, Wenqiang Lei, Chao Wang, Jianming
+Zheng, Soujanya Poria, and Tat-Seng Chua. 2021.
+Retrieving and reading:
+A comprehensive sur-
+vey on open-domain question answering.
+CoRR,
+abs/2101.00774.
+
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot,
+and Ashish Sabharwal. 2022.
+MuSiQue: Multi-
+hop questions via single-hop question composition.
+Transactions of the Association for Computational
+Linguistics, 10:539–554.
+
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot,
+and Ashish Sabharwal. 2023. Interleaving retrieval
+with chain-of-thought reasoning for knowledge-
+intensive multi-step questions. In Proceedings of
+the 61st Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers),
+pages 10014–10037, Toronto, Canada. Association
+for Computational Linguistics.
+
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, brian ichter, Fei Xia, Ed Chi, Quoc V Le,
+and Denny Zhou. 2022. Chain-of-thought prompt-
+ing elicits reasoning in large language models. In
+Advances in Neural Information Processing Systems,
+volume 35, pages 24824–24837. Curran Associates,
+Inc.
+
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio,
+William Cohen, Ruslan Salakhutdinov, and Christo-
+pher D. Manning. 2018. HotpotQA: A dataset for
+diverse, explainable multi-hop question answering.
+In Proceedings of the 2018 Conference on Empiri-
+cal Methods in Natural Language Processing, pages
+2369–2380, Brussels, Belgium. Association for Com-
+putational Linguistics.
+
+A
+Few-Shot Prompts
+
+This section presents all the few-shot prompts used
+in our experiments.
+
+A.1
+ToR
+
+Our ToR framework involves the following
+prompts: Paragraphs Review (with CoT expansion)
+prompt in Table 7; Paragraphs Review (without
+effective expansion) prompt in Table 8; Missing
+Paragraph Completion expansion prompt in Table
+9; three evidence fusion prompts in Table 11, 10,
+12 and CoR prompt in Table 13.
+
+Instruction
+I will give you a query and few of documents. Your ultimate task is to judge if the documents support
+answering the question. However, you need to think step by step. Follow these steps to answer question.
+The most important thing you must aware, these documents are a whole. So in later steps, if you are asked
+to judge something, please judge with all the documents.
+Step 1
+You need to judge if the documents are relevant to the question. Please pay attention that this is a multi-hop
+QA task, so if these document contain any useful information which can help you get closer to the final
+answer, you have to output [RELEVANT], only if those documents don’t contain any useful information
+you have to output [IRRELEVANT].
+Output:
+- Thought: why you think these documents are relevant to question or not.
+- Judgment: Please pay attention that this is a multi-hop QA task, so if these document contain any useful
+information which can help you get closer to the final answer, you have to output [RELEVANT], only if
+those documents don’t contain any useful information you have to output [IRRELEVANT]. [RELEVANT]
+if the documents are relevant to the question, otherwise [IRRELEVANT].
+Output Format:
+- Thought: A few words for judgment.
+- Judgment: [RELEVANT] or [IRRELEVANT]
+Step 2
+You need to judge if the documents contain enough information to answer the question. Please pay
+attention that this is a multi-hop QA task, so please double-check that you have all the information you
+need to answer the question. Whenever you find that you miss any information to answer the question you
+need to output [UNSUPPORTED]. Only if you get all the information supported to answer the question,
+you have to output [SUPPORTED].
+Output: - Thought: If you are confident that you have all the information to answer the question, briefly
+write the reasoning path. Otherwise, list what kind of information is important to answer this question.
+- Judgment: [SUPPORTED] if contain enough information, otherwise [UNSUPPORTED].
+Output Format: - Thought: A few words for judgment.
+- Judgment: [SUPPORTED] or [UNSUPPORTED],
+Step 3
+If you output [SUPPORTED] in step2 ,you need to answer the question with these documents, otherwise
+you need to think what kind of extra information you need to answer the question and output new query.
+Output:
+- Thought: if you can answer the question according to step2. If you can’t, think what extra information
+you need.
+- Output: [ANSWER] if you can answer the question, otherwise [QUERY]
+Output Format:
+- Thought: A few words for thought.
+- Output: A special token ([ANSWER] or [QUERY]) follow with your answer or new query.
+
+Prompt Format
+Instruction:{INST}
+Demonstration:{DEMO}
+Question:{Q}
+Documents: {D}
+
+Table 7: Paragraphs Review (with CoT expansion) prompt. {INST} will be replaced by Instruction, {DEMO} will
+be replaced by 3-shot demonstrations, {Q} will be replaced by question and {D} will be replaced by the paragraphs
+on the reasoning path.
+
+Instruction Format
+I will give you a query and few of documents. Your ultimate task is to judge if the documents support
+answering the question. However, you need to think step by step. Follow these steps to answer question.
+The most important thing you must aware, these documents are a whole. So in later steps, if you are asked
+to judge something, please judge with all the documents.
+Step 1
+You need to judge if the documents are relevant to the question. Please pay attention that this is a multi-hop
+QA task, so if these document contain any useful information which can help you get closer to the final
+answer, you have to output [RELEVANT], only if those documents don’t contain any useful information
+you have to output [IRRELEVANT].
+Output:
+- Judgment: Please pay attention that this is a multi-hop QA task, so if these document contain any useful
+information which can help you get closer to the final answer, you have to output [RELEVANT], only if
+those documents don’t contain any useful information you have to output [IRRELEVANT]. [RELEVANT]
+if the documents are relevant to the question, otherwise [IRRELEVANT].
+Output Format:
+- Judgment: [RELEVANT] or [IRRELEVANT]
+Step 2
+You need to judge if the documents contain enough information to answer the question. Please pay
+attention that this is a multi-hop QA task, so please double-check that you have all the information you
+need to answer the question. Whenever you find that you miss any information to answer the question you
+need to output [UNSUPPORTED]. Only if you get all the information supported to answer the question,
+you have to output [SUPPORTED].
+Output: - Judgment: [SUPPORTED] if contain enough information, otherwise [UNSUPPORTED].
+Output Format: - Judgment: [SUPPORTED] or [UNSUPPORTED],
+Step 3
+If you output [SUPPORTED] in step2 ,you need to answer the question with these documents, otherwise
+you need to think what kind of extra information you need to answer the question and output new query.
+Output:
+- Output: [ANSWER] if you can answer the question, otherwise [QUERY]
+Output Format:
+- Output: A special token ([ANSWER] or [QUERY]) follow with your answer or new query.
+
+Prompt Format
+Instruction:{INST}
+Demonstration:{DEMO}
+Question:{Q}
+Documents: {D}
+
+Table 8: Paragraphs Review (without effective expansion) prompt.{INST} will be replaced by Instruction, {DEMO}
+will be replaced by 3-shot demonstrations, {Q} will be replaced by question and {D} will be replaced by the
+paragraphs on the reasoning path.
+
+Instruction
+I will give you a question and few of references, your ultimate task is answer the question according to
+these references. However these references lack of some important information to answer the question.
+So you should follow these two steps to answer the question.
+Step 1
+Complete the reference information In this step you need to generate the missing information based on
+your knowledge so that you can answer the question correctly.
+Output:
+- Thought: To be effective generate missing information, you must analyze what information is currently
+missing, based on the question and references.
+- Information: A special token ([INFO]) follow with the missing information you want to supply.
+Step 2
+Answer generation You need to answer the question based on references I gave you and the information
+you supplied by yourself.
+Output:
+- Answer:A special token ([ANSWER]) follow with the answer to my question.
+
+Prompt Format
+Instruction:{INST}
+Demonstration:{DEMO}
+Question:{Q}
+References: {R}
+
+Table 9: Missing Paragraph Completion expansion prompt.{INST} will be replaced by Instruction, {DEMO} will
+be replaced by 3-shot demonstrations, {Q} will be replaced by question and {R} will be replaced by the paragraphs
+on the reasoning path.
+
+Instruction
+Your task is to answer my questions in a few words based on the relevant documents I have provided .If
+documents not provide enough information to answer the question, answer it by yourself. Your response
+can contain several sentences, but The last sentence must include "The answer is xxx.
+
+Prompt Format
+Instruct:{INST}
+Demonstration:{DEMO}
+Documents:{D}
+Question:{Q}
+
+Table 10: Paragraph-based Fusion prompt.{INST} will be replaced by Instruction, {DEMO} will be replaced
+by 3-shot demonstrations, {D} will be replaced by the paragraphs in evidence pool and {Q} will be replaced by
+question.
+
+Instruction
+Your task is to answer my questions based on some assertions that I provide related to the problem. There
+may be some conflicts among these assertions, so use all the assertions and your own knowledge to make
+a judgment. Your response can contain several sentences, but The last sentence must include "The answer
+is xxx.
+
+Prompt Format
+Instruct:{INST}
+Demonstration:{DEMO}
+Assertions:{A}
+Question:{Q}
+
+Table 11: Analysis-based Fusion prompt.{INST} will be replaced by Instruction, {DEMO} will be replaced by
+3-shot demonstrations, {A} will be replaced by the short analysis in evidence pool and {Q} will be replaced by
+question.
+
+Instruction
+Your task is to answer my questions based on a set of evidence that I provide. Each piece of evidence
+includes an assertion related to the question and several reference documents supporting the assertion.
+There may be some conflicts among the assertions in the evidence, so use all the evidence, supporting
+reference documents, and your own knowledge to make a judgment. Your response can contain several
+sentences, but The last sentence must include "The answer is xxx.
+
+Evidence Format
+Assertions:{A}
+Documents:{D}
+
+Prompt Format
+Instruct:{INST}
+Demonstration:{DEMO}
+Evidence:{E}
+Question:{Q}
+
+Table 12: Evidence-based Fusion prompt. The evidence in the evidence pool will be organized according to the
+format shown in the Evidence Format.{INST} will be replaced by Instruction, {DEMO} will be replaced by 3-shot
+demonstrations, {E} will be replaced by evidence, and {Q} will be replaced by question.
+
+Instruction
+I will give you a query and few of documents. Your ultimate task is to judge if these documents support
+answering the question. However, you need to think step by step. Follow these steps to answer question.
+Step 1
+You need to judge if the documents are relevant to the question. Please pay attention that this is a multi-hop
+QA task, so if these document contain any useful information which can help you get closer to the final
+answer, you have to output [RELEVANT], only if those documents don’t contain any useful information
+you have to output [IRRELEVANT].
+Output:
+- Thought: why you think these documents are relevant to question or not.
+- Judgment: Please pay attention that this is a multi-hop QA task, so if these document contain any useful
+information which can help you get closer to the final answer, you have to output [RELEVANT], only if
+those documents don’t contain any useful information you have to output [IRRELEVANT]. [RELEVANT]
+if the documents are relevant to the question, otherwise [IRRELEVANT].
+Output Format:
+- Thought: A few words for judgment.
+- Judgment: [RELEVANT] or [IRRELEVANT]
+Step 2
+You need to judge if the documents contain enough information to answer the question. Please pay
+attention that this is a multi-hop QA task, so please double-check that you have all the information you
+need to answer the question. Whenever you find that you miss any information to answer the question you
+need to output [UNSUPPORTED]. Only if you get all the information supported to answer the question,
+you have to output [SUPPORTED].
+Output: - Thought: If you are confident that you have all the information to answer the question, briefly
+write the reasoning path. Otherwise, list what kind of information is important to answer this question.
+- Judgment: [SUPPORTED] if contain enough information, otherwise [UNSUPPORTED].
+Output Format: - Thought: A few words for judgment.
+- Judgment: [SUPPORTED] or [UNSUPPORTED],
+Step 3
+If you output [SUPPORTED] in step2 ,you need to answer the question with these documents, otherwise
+you need to think what kind of extra information you need to answer the question and output new query.
+Output:
+- Thought: if you can answer the question according to step2. If you can’t, think what extra information
+you need.
+- Output: [ANSWER] if you can answer the question, otherwise [QUERY]
+Output Format:
+- Thought: A few words for thought.
+- Output: A special token ([ANSWER] or [QUERY]) follow with your answer or new query.
+
+Prompt Format
+Instruction:{INST}
+Demonstration:{DEMO}
+Question:{Q}
+Documents: {D}
+
+Table 13: CoR prompt. Attention that {D} will be replaced by all the retrieved paragraphs.

@@ -1,0 +1,2307 @@
+Tongya Zheng, Zunlei Feng, Tianli Zhang, Yunzhi Hao, Mingli Song*, Xingen Wang, Xinyu Wang, Ji Zhao,
+Chun Chen
+
+Abstract—Researchers of temporal networks (e.g., social net-
+works and transaction networks) have been interested in mining
+dynamic patterns of nodes from their diverse interactions. In-
+spired by recently powerful graph mining methods like skip-gram
+models and Graph Neural Networks (GNNs), existing approaches
+focus on generating temporal node embeddings sequentially with
+nodes’ sequential interactions. However, the sequential modeling
+of previous approaches cannot handle the transition structure
+between nodes’ neighbors with limited memorization capacity.
+Detailedly, an effective method for the transition structures is re-
+quired to both model nodes’ personalized patterns adaptively and
+capture node dynamics accordingly. In this paper, we propose a
+method, namely TransItion Propagation Graph Neural Networks
+(TIP-GNN), to tackle the challenges of encoding nodes’ transition
+structures. The proposed TIP-GNN focuses on the bilevel graph
+structure in temporal networks: besides the explicit interaction
+graph, a node’s sequential interactions can also be constructed as
+a transition graph. Based on the bilevel graph, TIP-GNN further
+encodes transition structures by multi-step transition propaga-
+tion and distills information from neighborhoods by a bilevel
+graph convolution. Experimental results over various temporal
+networks reveal the efﬁciency of our TIP-GNN, with at most 7.2%
+improvements of accuracy on temporal link prediction. Extensive
+ablation studies further verify the effectiveness and limitations
+of the transition propagation module. Our code is available at
+
+𝑡2
+
+Me
+Leader
+Subordinate
+
+S1
+
+𝑡3
+
+𝑡1
+
+L1
+
+arXiv:2304.07501v1 [cs.IR] 15 Apr 2023
+
+𝑡6
+L1
+
+L1
+
+𝑡4
+
+S2
+
+S1
+L1
+L1
+
+S2
+
+𝑡1
+𝑡2
+𝑡3
+𝑡4
+𝑡5
+𝑡6
+
+𝑡5
+
+(a) Sequential Graph Convolution
+(b) Bilevel Graph Convolution
+
+Fig. 1: A toy email network where an employee ﬁnishes two
+receive-forward-reply loops with a leader and two subordinates
+from t1 to t6. (a) The sequential graph convolution performs
+graph convolution sequentially over historical interactions.
+(b) The proposed bilevel graph convolution focuses on the
+transition structures (black arrows) between neighbors and
+distills the transition information with a hierarchical attention
+mechanism (highlighted orange arrows).
+
+Index Terms—Graph Embedding, Graph Neural Networks,
+Social Networks, Temporal Networks, Link Prediction.
+
+I. INTRODUCTION
+T
+EMPORAL networks are widespread over real-life sce-
+narios: users create, like, and dislike posts in social
+networks, and employees send, forward, and reply to emails
+in email networks [1], [2], [3], [4]. Nodes in these temporal
+networks exhibit their personalized dynamic patterns when
+keeping interacting with other nodes. For both researchers
+and industrial practitioners, it is beneﬁcial to capture node
+
+• Besides the explicit interaction graph of temporal net-
+works, we propose a novel transition graph between
+nodes’ neighbors, revealing the latent dependencies be-
+tween nodes’ neighbors explicitly beyond previous se-
+quential modeling.
+
+• To distill transition structures from neighbors, we propose
+the TIP-GNN, consisting of a transition propagation
+module and a bilevel graph convolution module, which
+generates temporal node embeddings adaptively and dy-
+namically with various interactions.
+
+• Experimental results demonstrate the robustness and efﬁ-
+ciency of our proposed TIP-GNN. Further, we discuss the
+effectiveness and limitations of the transition structure in
+temporal networks with a series of ablation studies.
+
+II. RELATED WORK
+
+A. Static Graph Embedding
+
+Learning low-dimensional embeddings has shown great
+success in many graph mining applications such as risk moni-
+toring [14], link prediction [15], and item recommendation [1]
+since decades ago [16], [17], [18], [1], [15]. Researchers
+are recently inspired to develop deep graph learning meth-
+ods [19], [20], [21] with the breakthroughs of deep learn-
+ing methods in computer vision [22] and natural language
+processing [23]. The deep graph learning methods mainly
+consist of two categories: skip-gram models [20] and graph
+neural networks [19]. DeepWalk [24] is the ﬁrst skip-gram
+model to model the random walks on graphs as sampled node
+sequences. Node2Vec [25] further extends DeepWalk with
+two additional hyper-parameters controlling the preferences
+of random walks. Meanwhile, LINE [26] explores the high-
+order similarity of the graph topology between nodes. On the
+other hand, graph neural networks [27] have made attempts to
+deﬁne the convolution operation in the non-euclidean space.
+GCN [28] simpliﬁes existing GNNs and applies successfully
+in semi-supervised node classiﬁcation. GAT [29] further intro-
+duced a self-attention mechanism to compute the weights of
+neighbors adaptively and achieves substantial improvements in
+node classiﬁcation. Nonetheless, static graph embedding meth-
+ods are suitable for invariant relationships between entities in
+real life while being insufﬁcient for temporal networks.
+
+B. Temporal Network Embedding
+
+(a) Sequence Translation
+(b) Transition Propagation
+
+0𝑡ℎ𝑠𝑡𝑒𝑝
+
+1𝑠𝑡𝑠𝑡𝑒𝑝
+
+2𝑛𝑑𝑠𝑡𝑒𝑝
+
+(𝒖, 𝒕)
+
+Symbol
+Meaning
+V, E
+the vertex set and edge set of a graph
+G
+G = (V, E), the notation of a graph
+u
+a node in a graph, u ∈V
+t
+a timestamp, t ∈R+
+
+𝒗𝟏
+
+𝒗𝟏
+
+𝒗𝟏
+
+𝒗𝟏
+
+𝒗𝟐
+
+𝒗𝟑
+𝒗𝟐
+
+𝒗𝟑
+𝒗𝟐
+
+𝒗𝟑
+𝒗𝟐
+
+𝒗1 𝒗2 𝒗3
+
+𝒗1 𝒗2 𝒗3
+𝒗1 𝒗2 𝒗3
+
+𝒗𝟑
+
+hl
+u,t
+u’s embedding at l-th TIP-GNN layer
+hk
+u
+u’s embedding at k-th propagation step
+Su,t
+the interaction sequence of node u before t
+Nu,t
+the node set of neighbors in Su,t
+si
+an interaction si = (u, vi, ti) in Su,t
+ei
+the edge feature of the interaction si
+Au,t
+the adjacency matrix of node u’s transition graph at t
+Bu,t
+the incidence matrix between Nu,t and Su,t, indicating
+whether a node v is associated with an interaction si
+HS
+the stacked feature matrix of the interaction set Su,t
+Hl
+Nu,t
+node embeddings of Nu,t at l-th TIP-GNN layer
+v
+u’s neighbor in the set Nu,t
+zk
+v
+node embedding of u’s neighbor v at k-th propagation step
+Zk
+Nu,t
+node embeddings of Nu,t at k-th propagation step
+
+𝒗𝟏
+
+𝑇𝑟𝑎𝑛𝑠𝑖𝑡𝑖𝑜𝑛
+
+𝑃𝑜𝑜𝑙𝑖𝑛𝑔
+𝒖
+
+𝒖
+𝒖
+
+𝜶𝟎
+
+𝜶𝟏
+𝜶𝟐
+
+(c) Bilevel Graph
+
+𝒖
+
+Convolution
+
+Fig. 2: An illustration instance of the one-layer TIP-GNN
+model. (a) Given a query node u and timestamp t, the sequence
+translation module translates node u’s interactions Su,t before
+t into a directed transition graph Au,t, whose initialized node
+embeddings Z0
+Nu,t are formed according to Eq. 4. (b) The
+transition propagation module extracts dynamic patterns from
+the transition graph by propagating node embeddings through
+multiple steps according to Eq. 6. (c) The bilevel graph
+convolution module distills useful information for node u by a
+hierarchical attention mechanism: ﬁrstly, it performs a multi-
+head attention pooling at each propagation step according to
+Eq. 7; secondly, it aggregates u’s node embeddings at different
+steps by another attention function according to Eq. 9.
+
+the one hand, a discrete-time temporal network refers to a se-
+quence of graph snapshots, where edges in different snapshots
+may change accordingly. However, this kind of graph cannot
+model edges at the ﬁnest granularity (e.g., at a time scale of
+seconds) [32]. On the other hand, continuous-time graph meth-
+ods generate the node embeddings dynamically, along with
+the upcoming new interactions. HTNE [7] and DyRep [12]
+follow a recurrent paradigm to update node embeddings with
+historical neighbors. Additionally, TigeCMN [30] adopts an
+external memory network to encode the network dynamics.
+Meanwhile, TGAT [8] and APAN [6] achieve inductive learn-
+ing abilities by using graph neural networks. In comparison,
+our TIP-GNN proposes a novel transition structure instead of
+a sequential structure used by previous approaches.
+
+D. Comparisons between TIP-GNN and Previous Works
+
+TGAT [8] and GC-SAN [36] are the two most related
+works to our proposed TIP-GNN. Firstly, TGAT and TIP-
+GNN are both based on graph neural networks [28], [39],
+and the attention mechanism [13]. However, as depicted in
+Fig. 1, TGAT uses sequential graph convolution and can hardly
+capture the dynamic patterns in the transition graph. Secondly,
+GC-SAN and TIP-GNN are both based on the context graph
+and the attention mechanism [13]. GC-SAN, designed for
+sequential recommendation, utilizes the item co-occurrence
+matrix to recommend similar items for users. In contrast to
+TIP-GNN, GC-SAN cannot mine the high-order relationship
+in the interaction graph, and is not adapted for dynamic
+patterns as our multi-step transition propagation. Speciﬁcally,
+TIP-GNN focuses on nodes’ temporal transition graphs and
+produces temporal node embeddings based on personalized
+transition graphs.
+
+C. Recommender System
+
+III. METHOD
+
+Φ(∆t) = concat(cos(ω1∆t), · · · , cos(ωdt∆t)),
+(3)
+
+where ∆t = t −ti is the timespan between the prediction
+timestamp and the edge timestamp, ω1 is a trainable parameter
+of the frequency of the cosine function, and dt is the dimension
+of the output vector. The edge features of the interaction si is
+thus deﬁned by ˜ei = concat(ei, Φ(t−ti)), and the edge matrix
+of the interaction set Su,t is stacking interactions’ features,
+deﬁned by HS = [· · · , ˜ei, · · · ]⊺.
+
+A. Sequence Translation
+
+1) Transition Graph: Since proximity structures can be
+encoded by a graph with an adjacency matrix [28], we
+can also encode transition structures with a transition graph.
+Different from a static network, a temporal network denoted
+by G = (V, E) keeps expanding with time moving forward,
+where V represents nodes, and E represents edges. Given
+a node u and a timestamp t, our problem is learning the
+temporal node embedding hu,t, which captures node dynamics
+precisely from its historical interactions Su,t. We construct the
+transition graph as a transition matrix Au,t ∈|Nu,t| × |Nu,t|
+from these interactions, where Nu,t = {vi|(u, vi, ti) ∈Su,t}
+is the neighbor set of node u’s interactions.
+Su,t = {· · · , si, sj, · · · } denotes the interaction set ordered
+by timestamps, where si and sj are two consecutive interac-
+tions of the node u. Au,t denotes the transition matrix between
+node u’s neighbors deﬁned by
+
+Let Hl
+V be the embeddings of all nodes V in the l-th TIP-
+GNN layer, and then we extract the neighborhood embeddings
+Hl
+Nu,t ∈|Nu,t| × d from the last layer (node features at the
+0-th layer), where d is the embedding dimension. Finally, the
+initialized node embeddings at each layer are calculated by
+adding the node embeddings and edge features deﬁned by
+
+Z0
+N = W × ReLU(WnHl
+N + WeBu,tHS) + b,
+(4)
+
+where W, Wn, We, b are transformation parameters, edges
+features HS are aggregated through the incidence matrix
+Bu,t, Hl
+N is short for Hl
+Nu,t, and Z0
+N represents the node
+embeddings at the 0-th propagation step, as shown in Fig. 2.
+
+B. Transition propagation
+
+As shown in Fig. 2, the graph propagation module is
+designed for encoding dynamic patterns from the transition
+graph. Inspired by PageRank [16] and recent graph isomor-
+phism representation works [40], nodes’ dynamic patterns in
+this paper refer to nodes’ complex transitions among nodes’
+historical neighbors and can be encoded by graph neural
+networks through multiple propagation steps. Concretely, the
+transition propagation rule of a single transition graph is
+deﬁned by
+
+(
+1,
+if si = (u, vi, ti), sj = (u, vj, tj)
+0,
+otherwise,
+(1)
+where the function id(·) gives the node index in the neighbor
+set Nu,t. For instance, Figure 2 shows v1 appears at two inter-
+actions and id(·) gives the same node index v1. The transition
+graph Au,t includes only chronologically ascending transition
+links and excludes bi-directional links because inverse links
+may obscure the causal relations in the chronological order.
+Moreover, the above deﬁnition assumes that Su,t has at least
+two interactions and makes nodes with sparse interactions less
+representative in the transition graph. The self-loop is thus
+added to the transition graph to help both numerical stabil-
+ity [28] and interaction sparsity, deﬁned as ˜Au,t = I + Au,t.
+2) Feature Initialization: To prepare for transition propa-
+gation, besides existing node embeddings, we also transform
+edge features carried by these interactions into node features
+by an incidence matrix Bu,t ∈|Nu,t| × |Su,t|, which connects
+each interaction si with each neighborhood node vi. The
+incidence matrix Bu,t is deﬁned by
+
+Au,t[id(vi), id(vj)] =
+
+˜Zk+1
+N
+= ˜Au,tMLP(Zk
+N ),
+(5)
+
+where k denotes the propagation step, Z0
+N is deﬁned in Eq. 4,
+˜Au,t is the transition matrix with self-loop, and MLP is a
+multilayer perceptron. The multilayer perceptron is proposed
+to enhance the representation capacity of models by its nonlin-
+ear transformation. With k propagation steps, Zk
+N can encode
+k-hop subgraphs of the transition graph around neighbors.
+Further, a damping factor α is introduced to preserve the
+uniqueness of node embeddings due to the over-smoothing
+of graph neural networks, deﬁned by
+
+Zk+1
+N
+= αZk
+N + (1 −α) ˜Zk+1
+N
+.
+(6)
+
+The damping factor [41] can also be seen as a residual
+connection between the previous step and the current step,
+which reduces the learning difﬁculty of models.
+
+(
+1,
+if si = (u, vi, ti)
+0,
+otherwise,
+(2)
+
+Bu,t[id(vi), i] =
+
+where id(vi) and i are indices of nodes and edges, respectively.
+The incidence matrix Bu,t could sum up the edge features
+of neighbor’s interactions in order to highlight the numerical
+impacts of individual neighbors.
+
+C. Bilevel Graph Convolution
+
+α(k,l+1)
+uv
+= softmax
+v∈Nu,t
+{(W l+1
+Q
+hl
+u,t)(W l+1
+K zk
+v)⊺},
+
+v∈Nu,t
+α(k,l+1)
+uv
+W l+1
+V
+zk
+v,
+(7)
+
+X
+
+h(k,l+1)
+u
+=
+
+where hl
+u,t is extracted from Hl
+V (node feature in the ﬁrst
+TIP-GNN layer), W l+1
+Q
+and W l+1
+K
+transform node embeddings
+into the same space, and W l+1
+V
+provides additional transfor-
+mation nonlinearity. The ﬁrst equation computes the attention
+scores between node u and its neighborhood embeddings,
+and the second equation sums up transformed neighborhood
+embeddings according to their impacts on the target node
+u. Moreover, the multi-head attention [13] is introduced to
+enhance the model capacity of graph representation, which
+computes h(k,l+1)
+u
+in Eq. 7 with different parameter matrices
+several times parallelly.
+2) Attention Fusion: The attention fusion module is the
+second level of the attention mechanism, aiming at fusing node
+embedding h(k,l+1)
+u
+at different propagation steps into a uniﬁed
+representation. Instead of the similarity-based attention used in
+Eq. 7, a projection-based attention is employed here to produce
+weights for different node embeddings, deﬁned by
+
+ω(k,l+1)
+u
+= q⊺· sigmoid(W (k,l+1)h(k,l+1)
+u
++ b(k,l+1)),
+(8)
+
+where W (k,l+1) and b(k,l+1) are speciﬁed transformation pa-
+rameters for each step, q is a shared projection vector across
+different steps, and ω(k,l+1)
+u
+is an unnormalized scalar weight
+of each step. The ﬁnal node embedding hl+1
+u,t at l+1 TIP-GNN
+layer is computed by
+
+αk
+u=
+exp(ωk
+u)
+P
+
+k′ exp(ωk′
+u ),
+
+(9)
+
+hl+1
+u,t =
+X
+
+k
+αk
+uh(k,l+1)
+u
+,
+
+where αk
+u is the normalized weight of each step, and hl+1
+u,t
+sums up the weighted node embeddings at different steps.
+
+D. Model Optimization
+1) Loss Function: It is an effective pretext task for generat-
+ing temporal node embeddings to predict whether a temporal
+interaction will happen between node pairs in the given
+timestamp [6], [8]. The probability ˆpt
+uv of the interaction’s
+existence between node u and node v at t is thus deﬁned as
+
+IV. EXPERIMENT
+
+We conduct elaborate experiments on various temporal
+networks to evaluate the efﬁciency and robustness of TIP-
+GNN, especially on the effectiveness of the transition prop-
+agation module. We aim to answer the following key research
+questions:
+
+ˆpt
+uv = sigmoid(W × ReLU(WuhL
+u,t + WvhL
+v,t) + b), (10)
+
+where W, Wu, Wv are transformation matrices, hL
+u,t and hL
+v,t
+denote node embeddings at the L-th TIP-GNN layer, and L is
+the last TIP-GNN layer. The cross-entropy loss is adopted to
+classify the existence of the edge, which is deﬁned as follows,
+
+• RQ1: How does TIP-GNN perform compared with other
+state-of-the-art temporal network methods?
+
+• RQ2: What are the effects of our speciﬁc transition
+propagation module on task performance?
+
+arg min
+θ
+−
+X
+
+(u,v,t)∈E
+{log(ˆpt
+uv)+c·Ej∼Pn(u)log(1−ˆpt
+uj)}, (11)
+
+2
+. The repetition of interactions describes that a node
+interacts with the same neighbor the last time. The time unit
+of the timespan is one day.
+
+Temporal Graph
+|V |
+|E|
+Density
+Repetition
+Timespan
+
+Temporal Link Prediction
+
+2) Inductive Temporal Link Prediction and Temporal Node
+Classiﬁcation: Temporal networks for inductive temporal link
+prediction and temporal node classiﬁcation are two bipar-
+tite graphs consisting of user behaviors among Wikipedia
+pages and subreddits. Wikipedia consists of 8,227 users and
+1,000 most edited pages, while Reddit contains 10,000 ac-
+tive users and 1,000 active subreddits. The edge features in
+both Wikipedia and Reddit are text features of interactions,
+by converting Wikipedia pages and Reddit posts into 172-
+dimensional vectors under the linguistic inquiry and word
+count (LIWC) categories [44]. Detailedly, the interaction of
+Wikipedia is that a user-edited a page, while the interaction
+of Reddit is that a user created a post in the subreddit.
+
+ia-workplace-contacts
+92
+9.8K
+2.34
+77.1%
+11.43
+ia-contacts-hypertext2009
+113
+20.8K
+3.28
+59.0%
+2.46
+ia-contact
+274
+28.2K
+0.75
+6.9%
+3.97
+fb-forum
+899
+33.7K
+0.08
+20.8%
+164.49
+soc-sign-bitcoin
+5.8K
+35.5K
+0.002
+0.0%
+1903.27
+ia-radoslaw-email
+167
+82.9K
+5.98
+18.8%
+271.19
+ia-movielens-user2tags-10m
+17K
+95.5K
+0.0007
+19.9%
+1108.97
+ia-primary-school-proximity
+242
+125.7K
+4.31
+38.3%
+1.35
+ia-slashdot-reply-dir
+51K
+140.7K
+0.0001
+4.2%
+977.36
+
+Inductive Temporal Link Prediction & Temporal Node Classiﬁcation
+
+Wikipedia
+9.2K
+157.4K
+0.0036
+79.1%
+29.77
+Reddit
+10.9K
+672.4K
+0.011
+61.4%
+31.00
+
+A. Datasets and Tasks
+
+Inductive temporal link prediction validates the inductive
+capability of TIP-GNN on new nodes in the testing set by
+hiding 10% of nodes from the training set following the
+task settings of TGAT [8] and TGN [43]. Temporal node
+classiﬁcation refers to classifying a user’s temporal state,
+whether the user is banned from editing a Wikipedia page
+or posting in the subreddit. Also, we split the datasets into
+the training, validation, and testing sets with ratios 70:15:15
+chronologically. The labels of the additional two datasets are
+extremely imbalanced: Wikipedia has 217 positive labels with
+157,474 interactions (=0.14%), while Reddit has 366 true
+labels among 672,447 interactions (=0.05%).
+3) Evaluation Metrics: For temporal link prediction, we
+compute the classiﬁcation accuracy and the area under the
+ROC curve (AUC-ROC) when obtaining the prediction prob-
+abilities of edge existence. For temporal link prediction in
+transductive and inductive settings, we adopt the Average
+Precision (AP) following TGAT [8] and TGN [43].
+For
+temporal node classiﬁcation, we use the AUC-ROC due to
+the highly imbalanced labels.
+
+B. Experiment Setting
+
+1) Baseline Methods: Most baseline methods generate tem-
+poral node embeddings with the pretext task of temporal link
+prediction. We employ a logistic classiﬁer for temporal link
+prediction if methods cannot predict temporal links directly.
+These methods can be categorized as follows:
+
+• Static graph methods. Node2Vec [25] and SAGE [39]
+are two classic and effective algorithms for skip-gram
+models and graph neural networks, respectively.
+
+• Discrete-time network methods. TNODE [9] builds a
+recurrent model upon node embeddings in each time
+step, which is a state-of-the-art method on discrete-time
+networks.
+
+ia-workplace
+ia-hypertext
+ia-contact
+
+Accuracy
+AUC
+Accuracy
+AUC
+Accuracy
+AUC
+
+Node2Vec [25]
+0.649 ± 0.033
+0.688 ± 0.019
+0.642 ± 0.047
+0.678 ± 0.029
+0.760 ± 0.028
+0.801 ± 0.012
+SAGE [39]
+0.746 ± 0.008
+0.857 ± 0.008
+0.709 ± 0.009
+0.830 ± 0.006
+0.818 ± 0.004
+0.856 ± 0.003
+CTDNE [32]
+0.625 ± 0.014
+0.673 ± 0.010
+0.546 ± 0.069
+0.572 ± 0.036
+0.821 ± 0.006
+0.851 ± 0.004
+HTNE [7]
+0.621 ± 0.015
+0.661 ± 0.015
+0.517 ± 0.044
+0.540 ± 0.021
+0.806 ± 0.010
+0.831 ± 0.010
+TNODE [9]
+0.801 ± 0.009
+0.883 ± 0.006
+0.623 ± 0.071
+0.683 ± 0.019
+0.815 ± 0.008
+0.852 ± 0.002
+JODIE [5]
+0.538 ± 0.011
+0.600 ± 0.054
+0.610 ± 0.035
+0.667 ± 0.067
+0.812 ± 0.005
+0.850 ± 0.005
+APAN [6]
+0.695 ± 0.016
+0.763 ± 0.035
+0.725 ± 0.007
+0.807 ± 0.009
+0.832 ± 0.003
+0.884 ± 0.002
+TGAT [8]
+0.878 ± 0.001
+0.959 ± 0.001
+0.894 ± 0.001
+0.959 ± 0.001
+0.883 ± 0.001
+0.921 ± 0.001
+TGN [43]
+0.883 ± 0.004
+0.960 ± 0.001
+0.885 ± 0.001
+0.953 ± 0.001
+0.891 ± 0.001
+0.927 ± 0.001
+TIP-GNN
+0.885 ± 0.010
+0.961 ± 0.007
+0.889 ± 0.009
+0.958 ± 0.005
+0.887 ± 0.003
+0.922 ± 0.003
+
+Improvements
+0.2%
+0.1%
+-0.5%
+-0.1%
+-0.4%
+-0.5%
+
+fb-forum
+soc-bitcoin
+ia-radoslaw
+
+Accuracy
+AUC
+Accuracy
+AUC
+Accuracy
+AUC
+
+Node2Vec [25]
+0.744 ± 0.009
+0.823 ± 0.008
+0.708 ± 0.014
+0.774 ± 0.012
+0.708 ± 0.011
+0.773 ± 0.010
+SAGE [39]
+0.636 ± 0.006
+0.724 ± 0.010
+0.651 ± 0.008
+0.734 ± 0.009
+0.804 ± 0.006
+0.894 ± 0.005
+CTDNE [32]
+0.745 ± 0.007
+0.817 ± 0.005
+0.778 ± 0.004
+0.836 ± 0.003
+0.723 ± 0.005
+0.795 ± 0.004
+HTNE [7]
+0.668 ± 0.004
+0.715 ± 0.005
+0.611 ± 0.009
+0.639 ± 0.005
+0.679 ± 0.005
+0.744 ± 0.007
+TNODE [9]
+0.716 ± 0.004
+0.795 ± 0.007
+0.724 ± 0.007
+0.793 ± 0.008
+0.775 ± 0.003
+0.863 ± 0.001
+JODIE [5]
+0.632 ± 0.034
+0.751 ± 0.045
+0.814 ± 0.056
+0.880 ± 0.019
+0.713 ± 0.012
+0.784 ± 0.022
+APAN [6]
+0.776 ± 0.016
+0.858 ± 0.018
+0.775 ± 0.027
+0.854 ± 0.028
+0.717 ± 0.018
+0.794 ± 0.011
+TGAT [8]
+0.794 ± 0.001
+0.877 ± 0.001
+0.823 ± 0.001
+0.896 ± 0.001
+0.841 ± 0.001
+0.919 ± 0.001
+TGN [43]
+0.783 ± 0.025
+0.889 ± 0.016
+0.762 ± 0.005
+0.838 ± 0.004
+0.792 ± 0.012
+0.885 ± 0.008
+TIP-GNN
+0.824 ± 0.008∗
+0.911 ± 0.006∗
+0.831 ± 0.009
+0.912 ± 0.006∗
+0.857 ± 0.007∗
+0.929 ± 0.005∗
+
+Improvements
+3.8%
+2.5%
+1.0%
+1.8%
+1.9%
+1.1%
+
+ia-movielens
+ia-primary
+ia-slashdot
+
+Accuracy
+AUC
+Accuracy
+AUC
+Accuracy
+AUC
+
+Node2Vec [25]
+0.696 ± 0.003
+0.756 ± 0.003
+0.586 ± 0.009
+0.622 ± 0.008
+0.723 ± 0.003
+0.800 ± 0.003
+SAGE [39]
+0.710 ± 0.012
+0.800 ± 0.004
+0.856 ± 0.003
+0.929 ± 0.001
+0.644 ± 0.017
+0.782 ± 0.005
+CTDNE [32]
+0.728 ± 0.004
+0.796 ± 0.006
+0.593 ± 0.013
+0.637 ± 0.004
+0.782 ± 0.002
+0.851 ± 0.002
+HTNE [7]
+0.694 ± 0.005
+0.736 ± 0.003
+0.559 ± 0.008
+0.613 ± 0.004
+0.660 ± 0.003
+0.691 ± 0.002
+TNODE [9]
+0.713 ± 0.012
+0.793 ± 0.013
+0.891 ± 0.003
+0.936 ± 0.001
+0.731 ± 0.016
+0.804 ± 0.008
+JODIE [5]
+0.775 ± 0.004
+0.862 ± 0.006
+0.560 ± 0.009
+0.588 ± 0.012
+−
+−
+APAN [6]
+0.750 ± 0.031
+0.816 ± 0.033
+0.830 ± 0.048
+0.911 ± 0.019
+0.815 ± 0.006
+0.895 ± 0.003
+TGAT [8]
+0.820 ± 0.001
+0.884 ± 0.001
+0.921 ± 0.001
+0.951 ± 0.001
+0.676 ± 0.001
+0.805 ± 0.001
+TGN [43]
+0.841 ± 0.004
+0.921 ± 0.004
+0.912 ± 0.021
+0.961 ± 0.011
+0.789 ± 0.047
+0.896 ± 0.005
+TIP-GNN
+0.847 ± 0.004
+0.922 ± 0.002
+0.939 ± 0.003∗
+0.978 ± 0.001∗
+0.874 ± 0.005∗
+0.938 ± 0.004∗
+
+Improvements
+0.7%
+0.1%
+2.0%
+1.8%
+7.2%
+4.7%
+
+TABLE IV: Average Precision for temporal link prediction in
+transductive and inductive settings.
+
+For each method, we report the average testing performance
+and standard deviation over ﬁve runs of different hyper-
+parameters. For static graph methods, we use grid search
+of the random walk parameters p, q of Node2Vec [25] over
+{0.25, 0.5, 1, 2, 4}, and implement an inductive SAGE [39]
+with uniformly sampling 100 neighbors from historical inter-
+actions. For discrete-time graph methods, we run TNODE over
+three different graph snapshot divisions, namely {8, 32, 128}.
+For CTDNE [32], the number of the walk is set at 10, the walk
+length is set at 80, and the context window size is set at 10. The
+history length of HTNE [7] is searched over {10, 20, 30}. The
+hyper-parameter settings of JODIE [5], TGAT [8], APAN [6]
+and TGN [43] are listed in Appendix B.
+
+Wikipedia
+Reddit
+
+Trnasductive
+Inductive
+Transductive
+Inductive
+
+Node2Vec
+0.915 ± 0.003
+†
+0.846 ± 0.005
+†
+SAGE
+0.936 ± 0.003
+0.911 ± 0.003
+0.977 ± 0.002
+0.963 ± 0.002
+CTDNE
+0.922 ± 0.005
+†
+0.914 ± 0.003
+†
+JODIE
+0.946 ± 0.005
+0.931 ± 0.004
+0.971 ± 0.003
+0.944 ± 0.011
+APAN
+0.981 ± 0.002
+†
+0.992 ± 0.002
+†
+TGAT
+0.953 ± 0.001
+0.940 ± 0.003
+0.981 ± 0.002
+0.966 ± 0.002
+TGN
+0.985 ± 0.001
+0.978 ± 0.001
+0.987 ± 0.001
+0.976 ± 0.001
+TIP-GNN
+0.986 ± 0.001
+0.982 ± 0.001
+0.988 ± 0.001
+0.977 ± 0.001
+
+works. However, they are not ﬂexible for generating tem-
+poral node embeddings at a given timestamp. JODIE [5],
+TGAT [8], APAN [6] and TGN [43] are four state-of-the-
+art temporal network methods.
+
+• TGN [43] is a lightweight and powerful temporal network
+method built upon the recurrent mechanism and graph
+neural networks. Table III shows that TGN achieves com-
+parable AUC scores with TIP-GNN on several datasets.
+However, TGN underperforms TIP-GNN on fb-forum and
+soc-bitcoin, which may require the information of high-
+order transition structures.
+
+Methods
+Wikipedia
+Reddit
+
+Node2Vec
+0.812 ± 0.018
+0.618 ± 0.050
+SAGE
+0.824 ± 0.007
+0.612 ± 0.006
+CTDNE
+0.759 ± 0.005
+0.594 ± 0.006
+HTNE
+0.742 ± 0.011
+0.612 ± 0.009
+JODIE
+0.832 ± 0.005
+0.599 ± 0.021
+APAN
+0.899 ± 0.003*
+0.653 ± 0.004
+TGAT
+0.837 ± 0.007
+0.656 ± 0.007
+TGN
+0.878 ± 0.002
+0.671 ± 0.009
+TIP-GNN
+0.880 ± 0.002
+0.697 ± 0.010*
+
+• Our proposed TIP-GNN performs on par with or outper-
+forms state-of-the-art methods on all datasets. Concretely,
+TIP-GNN and TGAT [8] obtain top-2 performance on
+the ﬁrst three networks, indicating that existing methods
+can well model small networks. As for large networks,
+TIP-GNN demonstrates consistent and signiﬁcant im-
+provements, as shown in Table III. Further, TIP-GNN
+shows stable performance on experimental datasets, com-
+pared with the performance degradation of JODIE [5],
+APAN [6], and TGAT [8] on several networks. Overall,
+the improvements of TIP-GNN validate the importance
+of transition structures between neighbors.
+2) Inductive Temporal Link Prediction: Table IV reports the
+average AP scores of different methods, where most results are
+inherited from APAN [6] and TGN [43]. Overall, APAN, TGN,
+and TIP-GNN obtain close AP scores on Wikipedia and Reddit,
+which indicate that predicting temporal links is somewhat easy
+for those two datasets. Table II also shows the high repetition
+ratios of those two datasets that our model could achieve high
+prediction precision by simply predicting the last neighbor.
+
+the bilevel graph convolution is searched over {1, 2, 3, 4}. The
+early-stopping strategy is adopted until the validation AUC
+score does not improve for three epochs.
+3) Settings of Temporal Node Classiﬁcation: Continuous-
+time graph methods, including JODIE [5], APAN [6],
+TGAT [8], TGN [43], and our TIP-GNN, predict users’
+states using temporal node embeddings. For other methods,
+we concatenate the node embeddings of the user and the
+corresponding Wikipedia page or subreddit as input features.
+We use the three-layer MLP [8] as a classiﬁer, whose hidden
+dimensions are {80,10,1} respectively. In addition, the MLP
+classiﬁer is trained with the Adam optimizer, the Glorot
+initialization, and the early-stopping strategy with ten epochs.
+Due to the data imbalance, the positive labels in each batch
+are oversampled for better performance.
+
+3) Temporal Node Classiﬁcation: Table V reports the aver-
+age AUC scores and standard deviations of methods over ﬁve
+runs except for TNODE [9] because the original node classiﬁer
+of TNODE presents poor performance. The temporal node
+classiﬁcation task on Wikipedia and Reddit is challenging to
+all methods due to their highly imbalanced label ratios. Specif-
+ically, static graph methods (Node2Vec [25] and SAGE [39])
+outperform CTDNE and HTNE on both datasets, revealing
+that whether users are banned from editing Wikipedia pages or
+posting in the subreddits are strongly related to the target pages
+or subreddits. Also, the limited memorization capacity of
+CTDNE and HTNE may cause poor performance on temporal
+node classiﬁcation. As for continuous-time network methods
+that can generalize to unseen nodes, JODIE [5], APAN [6],
+TGAT [8], TGN [43], and our TIP-GNN all demonstrate much
+better performance than other methods. Speciﬁcally, APAN [6]
+performs best on Wikipedia and TGN [43] achieves the second-
+best on Reddit, indicating the dataset preferences of models.
+On Reddit, TIP-GNN performs signiﬁcantly better than other
+methods, which may be attributed to the increased density of
+Reddit than Wikipedia.
+
+C. RQ1: Overall Performance
+1) Temporal Link Prediction: Table III reports the average
+performance of baseline methods over ﬁve runs on temporal
+link prediction. The discussions of their performance are
+organized as follows:
+
+• Node2Vec [25] and SAGE [39] are two robust baselines
+on temporal networks, although they are designed for
+static networks. Speciﬁally, SAGE [39] presents outstand-
+ing performance than CTDNE [32], HTNE [7] on the ﬁrst
+three small and dense networks.
+
+• CTDNE [32], HTNE [7], and TNODE [9] are three
+temporal network methods. Detailedly, CTDNE performs
+best on large and sparse networks, while its mechanism
+is not good for small and dense networks. TNODE beats
+HTNE on most datasets and outperforms CTDNE on
+small and dense networks especially.
+
+• JODIE, which is initially designed for temporal item rec-
+ommendation in temporal networks, demonstrates a per-
+formance decline on small and dense netowrks, namely
+ia-workplace, ia-hypertext, fb-forum, ia-radoslaw, and ia-
+primary. Moreover, its high computational complexity
+causes the failed experiments of ia-slashdot with 51,000
+nodes on our P6000 GPU with a 24GB memory.
+
+D. RQ2: Ablation Study
+
+0.925
+ia-workplace
+ia-hypertext
+ia-contact
+fb-forum
+soc-bitcoin
+ia-radoslaw
+ia-movielens
+ia-primary
+ia-slashdot
+
+0.925
+
+0.925
+
+0.900
+
+0.900
+
+0.900
+
+Accuracy
+
+0.875
+
+0.875
+
+0.875
+
+0.850
+
+0.850
+
+0.850
+
+0.825
+
+0.825
+
+0.825
+
+0
+1
+2
+3
+4
+5
+(a) Number of propagation steps
+
+0
+1
+2
+3
+4
+5
+(b) Number of MLP layers
+
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+(c) The damping factor alpha
+
+Fig. 3: Ablation studies on the transition propagation module of TIP-GNN.
+
+Attention weights
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+0.0
+
+0.0
+
+0.0
+
+0
+1
+2
+3
+(a) ia-workplace
+
+0
+1
+2
+3
+(b) ia-hypertext
+
+0
+1
+2
+3
+(c) ia-contact
+
+Attention weights
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+0.0
+
+0.0
+
+0.0
+
+0
+1
+2
+3
+(d) fb-forum
+
+0
+1
+2
+3
+(e) soc-bitcoin
+
+0
+1
+2
+3
+(f) ia-radoslaw
+
+Attention weights
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+0.2
+
+0.2
+
+0.0
+
+0.0
+
+0.0
+
+0
+1
+2
+3
+(g) ia-movielens
+Propagation step
+
+0
+1
+2
+3
+(h) ia-primary
+Propagation step
+
+0
+1
+2
+3
+(i) ia-slashdot
+Propagation step
+
+Fig. 4: Attention weights at each propagation step of TIP-GNN.
+
+and the damping factor α for personalized embedding. In
+default settings, the number of propagation steps is 2, MLP
+layers are 2, and the damping factor α is 0. As shown in Fig. 3,
+the effects of these designs are summarized as follows:
+
+contrary, Fig. 3(b) shows that the performance is almost
+irrelevant to the MLP layers and even suffers from a
+deep MLP. Signiﬁcantly, the 0-layer MLP, which prop-
+agates embeddings without any parametrized projection,
+achieves comparable performance to the best performance
+on most datasets. This ﬁnding could be attributed to
+(1) the additional nonlinearity of the bilevel graph con-
+volution module and (2) the uselessness of nonlinear
+transformation during graph convolution [46], [47].
+
+• The propagation at different steps aims at represent-
+ing dynamic patterns at different granularities. Fig. 3(a)
+shows the obvious improvements of accuracy with the
+increase of propagation steps. However, the performance
+on most datasets achieves its peak at three propagation
+steps. It may be caused by aggregated noise from dis-
+tant neighborhoods and the well-known over-smoothing
+problem of GNNs [28].
+
+0.95
+
+0.95
+
+0.95
+
+0.90
+
+0.90
+
+0.90
+
+Accuracy
+
+0.85
+
+0.85
+
+0.85
+
+10
+20
+30
+
+0.0
+0.1
+0.2
+
+150
+200
+250
+
+0.80
+
+0.80
+
+0.80
+
+0.75
+
+0.75
+
+0.75
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+Dataset index
+(a) Number of sampled interactions
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+Dataset index
+(b) Dropout ratios
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+Dataset index
+(c) Batch sizes
+
+Fig. 5: Parameter sensitivity of TIP-GNN.
+
+0.885
+
+0.885
+
+0.885
+
+0.880
+
+0.880
+
+0.880
+
+Accuracy
+
+0.875
+
+0.875
+
+0.875
+
+0.870
+
+0.870
+
+0.870
+
+Layer
+
+Layer
+
+Layer
+
+1
+2
+
+1
+2
+
+1
+2
+
+0.865
+
+0.865
+
+0.865
+
+1
+2
+3
+4
+(a) ia-workplace
+
+1
+2
+3
+4
+(b) ia-hypertext
+
+1
+2
+3
+4
+(c) ia-contact
+
+0.86
+
+0.86
+
+0.86
+
+0.84
+
+0.84
+
+0.84
+
+0.82
+
+0.82
+
+0.82
+
+Accuracy
+
+0.80
+
+0.80
+
+0.80
+
+0.78
+
+0.78
+
+0.78
+
+Layer
+
+Layer
+
+Layer
+
+1
+2
+
+1
+2
+
+1
+2
+
+0.76
+
+0.76
+
+0.76
+
+0.74
+
+0.74
+
+0.74
+
+1
+2
+3
+4
+(d) fb-forum
+
+1
+2
+3
+4
+(e) soc-bitcoin
+
+1
+2
+3
+4
+(f) ia-radoslaw
+
+0.94
+
+0.94
+
+0.94
+
+0.92
+
+0.92
+
+0.92
+
+0.90
+
+0.90
+
+0.90
+
+Accuracy
+
+0.88
+
+0.88
+
+0.88
+
+0.86
+
+0.86
+
+0.86
+
+Layer
+
+Layer
+
+Layer
+
+1
+2
+
+1
+2
+
+1
+2
+
+0.84
+
+0.84
+
+0.84
+
+0.82
+
+0.82
+
+0.82
+
+1
+2
+3
+4
+(g) ia-movielens
+Number of attention heads
+
+1
+2
+3
+4
+(h) ia-primary
+Number of attention heads
+
+1
+2
+3
+4
+(i) ia-slashdot
+Number of attention heads
+
+Fig. 6: Effects of the number of TIP-GNN layers and attention heads.
+
+beneﬁt signiﬁcantly from the damping factor, while other
+networks perform stably regardless of their sparsity and
+repetition ratios. In general, a small damping factor could
+boost the performance, but an optimal damping factor
+depends on the network properties.
+
+of each propagation step deﬁned by Eq. 9 in the last TIP-GNN
+layer. Findings from Fig. 4 can be concluded as follows:
+
+• The 0-th step, which has not yet involved any transition
+propagation, usually obtains the most signiﬁcant weights
+on most datasets compared with other propagation steps.
+Speciﬁcally, attention weights of the 0-th step are larger
+than 0.6 average on the ﬁrst three networks, indicating
+that transition propagation may only boost the perfor-
+mance marginally for simple networks.
+
+• Lastly, attention weights of different temporal networks
+present various distributions of propagation steps. For
+example, soc-bitcoin and ia-slashdot are both large and
+sparse networks. However, soc-bitcoin prefers short-range
+transitions, while ia-slashdot prefers long-range transi-
+tions. Nevertheless, our proposed attention fusion module
+could learn preferences adaptively across different prop-
+agation steps.
+
+• It is a de facto standard to train neural network models
+with mini-batches. Similar to the effects of the dropout
+technique, Fig. 5(c) shows the robustness of our TIP-
+GNN on most networks under different batch sizes.
+Speciﬁcally, the network ia-slashdot beneﬁts from a
+larger batch size, which may be attributed to its large-
+scale nodes and sparsity of interactions.
+
+E. RQ3: Parameter Sensitivity
+
+For quantitative comparison, the following experiments are
+conducted with ﬁxed parameters of the transition propagation
+module that the number of propagation steps is 2, the number
+of MLP layers is 2, and the damping factor α is 0.
+1) Model Architecture: The parameters of model architec-
+ture refer to the TIP-GNN layers and the attention heads of
+the transition pooling module. The training parameters are also
+ﬁxed for simplicity that the number of sampled interactions is
+20, the dropout ratio is 0.1, and the batch size is 200. We plot
+the grid search results of the number of TIP-GNN layers over
+{1, 2} and the number of attention heads over {1, 2, 3, 4} in
+Fig. 6, which can be summarized as follows:
+
+V. CONCLUSION
+
+In this paper, we propose a novel TIP-GNN based on graph
+neural networks to model the bilevel graph structure in tempo-
+ral networks, which highlights nodes’ personalized transition
+patterns among neighbors. The transition propagation module
+encodes nodes’ dynamic patterns with personalized propaga-
+tion rules; then, the bilevel graph convolution module ex-
+tracts useful neighborhood embeddings with a bilevel attention
+mechanism. Experimental results demonstrate the superiority
+of encoding dynamic patterns in temporal networks that our
+TIP-GNN outperforms existing approaches consistently and
+signiﬁcantly on experimental datasets. Extensive experiments
+further reveal the adaptivity of the multistep propagation
+of TIP-GNN for various temporal networks, as well as the
+robustness of TIP-GNN.
+As for future works, on the one hand, we will explore the
+representation limitation of GNNs to overcome the perfor-
+mance decline in Fig 3(a). Our ablation studies on propagation
+steps shown in Fig. 3(a) demonstrate that TIP-GNN will
+achieve peak performance when enlarging the number of prop-
+agation steps properly. Following works towards mitigating the
+over-smoothing problem of GNNs [50], [41], we additionally
+design controllable modules with the zero-layer MLP and the
+attention mechanism for different propagation steps. However,
+the bilevel attention mechanism cannot suppress additional
+noise induced by a larger propagation step. In the future,
+we will investigate the over-smoothing problem from the
+perspective of temporal networks and propose an enhanced
+GNN.
+On the other hand, we will explore the interpretability of
+our proposed transition graphs following previous works [51],
+[52]. IGMC [51] reveals the common patterns of enclosing
+subgraphs between users and items, while KGIN [52] captures
+user intents with an attentive mechanism over Knowledge
+graph relations. In the future, we will investigate how to an-
+notate user interactions with auxiliary information like public
+Knowledge Graphs.
+
+• A deeper TIP-GNN layer perceives a wider neighborhood
+in networks. Fig. 6 demonstrates the superiority of a
+deeper layer on all networks, owing to the beneﬁts
+of collaborative ﬁltering [48], [47] and neighborhood
+smoothing [28], [46].
+
+• A larger number of attention heads enlarges the model
+capacity [29], [13]. The results in Fig. 6 can be divided
+into two kinds: networks with low-repetition ratios in Ta-
+ble II beneﬁt from more attention heads, while networks
+with high-repetition ratios (such as ia-radoslaw and ia-
+primary) suffer from it on the contrary. It indicates that a
+complex model may degrade the performance of simple
+networks.
+
+2) Hyper-parameters: The compared hyper-parameters pre-
+sented here include the number of neighbors, the dropout ra-
+tios, and the batch sizes. The parameters of model architectures
+are ﬁxed that the number of TIP-GNN layers is 2, and the
+number of attention heads is 2. The ﬁrst three networks present
+stable performance with different hyper-parameters. Thus, the
+following discussions only care about the last six networks:
+
+VI. ACKNOWLEDGMENT
+
+REFERENCES
+
+Zunlei Feng is an assistant research fellow in
+College of Software Technology, Zhejiang Univer-
+sity. He received his Ph.D degree in Computer
+Science and Technology from College of Computer
+Science, Zhejiang University, and B. Eng. Degree
+from Soochow University. His research interests
+mainly include computer vision, image information
+processing, representation learning, medical image
+analysis. He has authored and co-authored many
+scientiﬁc articles at top venues including IJCV,
+NeurIPS, AAAI, TVCG, ACM TOMM, and ECCV.
+He has served with international conferences including AAAI and PKDD, and
+international journals including IEEE Transactions on Circuits and Systems for
+Video Technology, Information Sciences, Neurocomputing, Journal of Visual
+Communication and Image Representation and Neural Processing Letters.
+
+Tianli Zhang is currently pursuing the M.D degree
+with the College of Software Technology, Zhejiang
+University. His research interests include graph min-
+ing.
+
+Yunzhi Hao is currently pursuing the Ph.D degree
+with the College of Computer Science, Zhejiang
+University. Her research interests include graph in-
+ference and network embedding.
+
+Mingli Song received the Ph.D degree in computer
+science from Zhejiang University, China, in 2006.
+He is currently a Professor with the Microsoft Visual
+Perception Lab- oratory, Zhejiang University. His
+research interests include face modeling and facial
+expression analysis. He received the Microsoft Re-
+search Fellowship in 2004.
+
+Ji Zhao received the Ph.D. degree in computer sci-
+ence from Zhejiang University, China. His research
+interests include data mining, ﬁnancial informatiza-
+tion and ﬁntech. He is a review expert of Shanghai
+government procurement, the head of information
+Technology risk Team of Shanghai Banking Net-
+work Industry Association, and has successively
+served for Shanghai Pudong Development Bank
+Shanghai Branch.
+
+Chun Chen is currently a Professor with the Col-
+lege of Computer Science, Zhejiang University. His
+research interests include computer vision, computer
+graphics, and embedded technology.
+
+A. Inductive experiments for datasets without features
+
+For temporal networks without node or edge features, we
+ﬁrstly obtain classical node-level features based on the graph
+topology using NetworkX 1, which are sixty dimensions in
+total. The temporal network with multiple edges between the
+same node pair is transformed into a weighted simple graph
+before computing node features. The node features include
+ten dimensions of node centrality metrics and the ﬁrst ﬁfty
+dimensions of eigenvectors of the laplacian matrix, listed as
+follows:
+
+• degree centrality, closeness centrality, betweenness cen-
+trality, load centrality, PageRank centrality, clustering
+coefﬁcient, number of triangles, hub centrality, authority
+centrality, and laplacian spectrum;
+
+• and the ﬁrst ﬁfty dimensions of eigenvectors of the
+laplacian matrix.
+New nodes in the validation and testing set also obtain their
+node features in this way.
+
+TABLE VI: Hyper-parameters of baseline methods.
+
+Method
+Parameter
+
+JODIE [5]
+Epoch ∈{1, · · · , 50}
+
+For a fair comparison, we have tested the hyper-parameters
+of comparison methods according to their ablation studies
+and searched the same training hyper-parameters as the pro-
+posed TIP-GNN, as shown in Table VI. The experimental
+results are summarized in Table VII. Firstly, the performance
+change of TIP-GNN (-3.8%∼6.3%) is much more stable than
+existing methods based on different node features, namely
+SAGE (-13.5%∼26.0%), JODIE (-8.2%∼35.4%), TGAT (-
+19.9%∼10.6%), and TGN (-10.1%∼9.8%). Secondly, TIP-
+GNN could achieve better performance than existing methods
+consistently on seven datasets both in the transductive setting
+and the inductive setting. Although TIP-GNN underperforms
+TGN [43] on ia-contact, TIP-GNN also achieves the second-
+best. Thirdly, it is noteworthy that sparse networks like soc-
+bitcoin, ia-movielens, and ia-slashdot mostly beneﬁt from new
+features, and other dense networks mostly suffer from new
+features. This may be caused by that nodes in sparse networks
+are not trained sufﬁciently and are improved by new features,
+while nodes in dense networks usually perform repeated
+interactions with the same neighbor, which are ignored by
+new features.
+
+Layer ∈{1, 2}
+Number of attention heads ∈{1, 2, 3, 4}
+Sampler ∈{uniform, temporal}
+Time encoding ∈{harmonic, position, empty}
+Number of sampled neighbors ∈{10, 20, 30}
+Dropout ratio ∈{0.0, 0.1, 0.2}
+Batch size ∈{150, 200, 250}
+
+TGAT [8]
+
+Layer ∈{1, 2}
+Number of attention heads ∈{1, 2, 3, 4}
+Sampler ∈{uniform, temporal}
+Number of sampled neighbors ∈{10, 20, 30}
+Dropout ratio ∈{0.0, 0.1, 0.2}
+Batch size ∈{150, 200, 250}
+
+APAN [6]
+
+Layer ∈{1, 2}
+Aggregator ∈{last, mean}
+Number of attention heads ∈{1, 2, 3, 4}
+Embedding ∈{attention, sum, identity, time}
+Sampler ∈{uniform, temporal}
+Number of sampled neighbors ∈{10, 20, 30}
+Dropout ratio ∈{0.0, 0.1, 0.2}
+Batch size ∈{150, 200, 250}
+
+TGN [43]
+
+B. Hyper-parameters of baseline methods
+
+The hyper-parameter settings of JODIE [5], TGAT [8],
+APAN [6] and TGN [43] are listed in Table VI.
+
+TABLE VII: AUC scores of transductive and inductive temporal link prediction. Bold font indicates the best performance. The
+inductive learning methods (denoted by *) based on new features are compared against their performance based on one-hot
+features to verify their robustness with different node features. ↑refers to the performance improvement, and ↓refers to the
+performance decline. The symbol −is used for failed experiments.
+
+ia-workplace
+ia-hypertext
+ia-contact
+
+Transductive
+Inductive
+Transductive
+Inductive
+Transductive
+Inductive
+
+SAGE
+0.857 ± 0.008
+−
+0.830 ± 0.006
+−
+0.856 ± 0.003
+−
+SAGE*
+0.810 ± 0.011↓
+0.816 ± 0.058
+0.745 ± 0.033↓
+0.685 ± 0.032
+0.902 ± 0.006↑
+0.496 ± 0.035
+Change
+-5.4%
+-10.2%
+5.4%
+
+JODIE
+0.600 ± 0.054
+−
+0.667 ± 0.067
+−
+0.850 ± 0.005
+−
+JODIE*
+0.618 ± 0.012↑
+0.812 ± 0.082
+0.778 ± 0.012↑
+0.664 ± 0.026
+0.920 ± 0.004↑
+0.612 ± 0.117
+Change
+3.0%
+16.7%
+8.2%
+
+TGAT
+0.959 ± 0.001
+−
+0.959 ± 0.001
+−
+0.921 ± 0.001
+−
+TGAT*
+0.852 ± 0.105↓
+0.653 ± 0.000
+0.806 ± 0.132↓
+0.701 ± 0.114
+0.907 ± 0.009↓
+0.487 ± 0.004
+Change
+-0.8%
+-16.0%
+-1.5%
+
+TGN
+0.960 ± 0.001
+−
+0.952 ± 0.001
+−
+0.927 ± 0.001
+−
+TGN*
+0.950 ± 0.010↓
+0.852 ± 0.031
+0.908 ± 0.015↓
+0.829 ± 0.030
+0.928 ± 0.003↑
+0.724 ± 0.034
+Change
+-1.0%
+-4.6%
+0.1%
+
+TIP-GNN
+0.961 ± 0.007
+−
+0.958 ± 0.005
+−
+0.922 ± 0.003
+−
+TIP-GNN*
+0.963 ± 0.002↑
+0.857 ± 0.020
+0.956 ± 0.002↓
+0.867 ± 0.013
+0.947 ± 0.001↑
+0.645 ± 0.027
+Change
+0.2%
+-0.2%
+2.7%
+
+fb-forum
+soc-bitcoin
+ia-radoslaw
+
+Transductive
+Inductive
+Transductive
+Inductive
+Transductive
+Inductive
+
+SAGE
+0.724 ± 0.010
+−
+0.734 ± 0.009
+−
+0.894 ± 0.005
+−
+SAGE*
+0.791 ± 0.006↑
+0.800 ± 0.007
+0.925 ± 0.010↑
+0.732 ± 0.009
+0.789 ± 0.016↓
+0.500 ± 0.500
+Change
+9.3%
+26.0%
+-11.7%
+
+JODIE
+0.751 ± 0.045
+−
+0.880 ± 0.019
+−
+0.784 ± 0.022
+−
+JODIE*
+0.685 ± 0.050↓
+0.665 ± 0.073
+0.859 ± 0.042↓
+0.767 ± 0.156
+0.770 ± 0.038↓
+0.800 ± 0.447
+Change
+-8.7%
+-2.4%
+-1.8%
+
+TGAT
+0.877 ± 0.001
+−
+0.896 ± 0.001
+−
+0.919 ± 0.001
+−
+TGAT*
+0.796 ± 0.021↓
+0.782 ± 0.001
+0.930 ± 0.000↑
+0.801 ± 0.018
+0.779 ± 0.005↓
+1.000 ± 0.000
+Change
+-9.2%
+3.8%
+-15.2%
+
+TGN
+0.889 ± 0.016
+−
+0.838 ± 0.004
+−
+0.885 ± 0.008
+−
+TGN*
+0.833 ± 0.022↓
+0.814 ± 0.025
+0.920 ± 0.009↑
+0.791 ± 0.024
+0.816 ± 0.002↓
+0.400 ± 0.516
+Change
+-6.3%
+9.8%
+-7.8%
+
+TIP-GNN
+0.911 ± 0.006
+−
+0.912 ± 0.006
+−
+0.929 ± 0.005
+−
+TIP-GNN*
+0.876 ± 0.002↓
+0.858 ± 0.003
+0.969 ± 0.001↑
+0.921 ± 0.003
+0.927 ± 0.002↓
+1.000 ± 0.000
+Change
+-3.8%
+6.3%
+-0.2%
+
+ia-movielens
+ia-primary
+ia-slashdot
+
+Transductive
+Inductive
+Transductive
+Inductive
+Transductive
+Inductive
+
+SAGE
+0.800 ± 0.004
+−
+0.929 ± 0.001
+−
+0.782 ± 0.005
+−
+SAGE*
+0.905 ± 0.008↑
+0.809 ± 0.038
+0.803 ± 0.014↓
+−
+0.832 ± 0.009↑
+0.649 ± 0.012
+Change
+13.1%
+-13.5%
+6.4%
+
+JODIE
+0.862 ± 0.006
+−
+0.588 ± 0.012
+−
+−
+−
+JODIE*
+0.830 ± 0.016↓
+0.787 ± 0.063
+0.796 ± 0.040↑
+−
+−
+−
+Change
+-3.7%
+35.4%
+
+TGAT
+0.884 ± 0.001
+−
+0.951 ± 0.001
+−
+0.805 ± 0.001
+−
+TGAT*
+0.913 ± 0.002↑
+0.855 ± 0.002
+0.762 ± 0.001↓
+−
+0.890 ± 0.001↑
+0.752 ± 0.001
+Change
+3.2%
+-19.9%
+10.6%
+
+TGN
+0.921 ± 0.001
+−
+0.961 ± 0.011
+−
+0.896 ± 0.005
+−
+TGN*
+0.927 ± 0.005↑
+0.895 ± 0.009
+0.864 ± 0.013↓
+−
+0.919 ± 0.006↑
+0.860 ± 0.068
+Change
+6.5%
+-10.1%
+2.6%
+
+TIP-GNN
+0.922 ± 0.002
+−
+0.978 ± 0.001
+−
+0.938 ± 0.004
+−
+TIP-GNN*
+0.967 ± 0.001↑
+0.937 ± 0.014
+0.977 ± 0.001↓
+−
+0.939 ± 0.001↑
+0.886 ± 0.001
+Change
+4.9%
+-0.1%
+0.1%

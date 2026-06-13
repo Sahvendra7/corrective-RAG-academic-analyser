@@ -1,0 +1,3957 @@
+Low-Rank Contextual Reinforcement Learning from
+Heterogeneous Human Feedback
+
+Seong Jin Lee∗
+Will Wei Sun†
+Yufeng Liu‡
+
+arXiv:2412.19436v2 [stat.ML] 4 Mar 2026
+
+Abstract
+
+Reinforcement learning from human feedback (RLHF) has become a cornerstone
+
+for aligning large language models with human preferences. However, the heterogene-
+
+ity of human feedback, driven by diverse individual contexts and preferences, poses
+
+significant challenges for reward learning.
+To address this, we propose a Low-rank
+
+Contextual RLHF (LoCo-RLHF) framework that integrates contextual information to
+
+better model heterogeneous feedback while maintaining computational efficiency. Our
+
+approach builds on a contextual preference model, leveraging the intrinsic low-rank
+
+structure of the interaction between user contexts and query-answer pairs to mitigate
+
+the high dimensionality of feature representations. Furthermore, we address the chal-
+
+lenge of distributional shifts in feedback through our Pessimism in Reduced Subspace
+
+(PRS) policy, inspired by pessimistic offline reinforcement learning techniques.
+We
+
+theoretically demonstrate that our policy achieves a tighter sub-optimality gap com-
+
+pared to existing methods. Extensive experiments, ranging from synthetic simulations
+
+to an analysis of the real-world PersonalLLM benchmark, validate the effectiveness of
+
+LoCo-RLHF and demonstrate its superior performance in personalized settings.
+
+Keywords— Distribution Shift, Large Language Models, Low-rankness, Offline Reinforcement
+
+Learning
+
+∗Ph.D. student, Department of Statistics and Operations Research, University of North Carolina, Chapel
+Hill. Email:
+†Associate Professor, Daniels School of Business, Purdue University. Email:
+‡Professor, Department of Statistics and Operations Research, Department of Genetics, Department of
+Biostatistics, The University of North Carolina at Chapel Hill. Email:
+
+1
+
+1
+Introduction
+
+Reinforcement Learning (RL) is a popular framework where an agent learns to optimize a policy
+
+that maximizes the expected rewards, reflecting the success of completing a task. In standard RL,
+
+the reward function plays a critical role in guiding the agent’s behavior. When a reward function
+
+is well-defined, RL can effectively solve problems (Mnih et al., 2015, 2016; Silver et al., 2016).
+
+However, in many real-world applications, designing or observing an appropriate reward function
+
+can be a significant challenge. For instance, consider the problem of designing a reward model
+
+for a self-driving car. One might construct a heuristic reward structure, assigning a +1 reward
+
+for every mile traveled to encourage forward movement and a −10 penalty for traffic violations
+
+to promote safety. While this approach might seem straightforward, it can lead to unintended
+
+consequences. The car may prioritize speed over adherence to traffic regulations, misaligning with
+
+human safety preferences. Conversely, excessive penalties for traffic violations could result in the
+
+car avoiding movement altogether, merely to minimize penalties, disregarding its primary objective
+
+of safe driving. Such scenarios illustrate how traditional RL, dependent on fixed reward structures,
+
+often fails to capture the nuanced, human-aligned goals that are critical in complex environments
+
+such as autonomous driving (Sallab et al., 2017; Kiran et al., 2021).
+
+Reinforcement Learning from Human Feedback (RLHF) overcomes this issue by incorporating
+
+human input into the learning process (Christiano et al., 2017; Ziegler et al., 2019; Bai et al., 2022).
+
+Unlike standard RL, where agents learn from predefined reward functions, RLHF uses human
+
+feedback to train a reward model that reflects human preferences for state-action pairs. RLHF is
+
+often referred to as preference-based reinforcement learning (Zhan et al., 2023) because it enables
+
+agents to learn from non-numerical feedback, which is more natural in many real-world settings.
+
+For example, when evaluating responses to a question, humans typically find it easier to compare
+
+answers and determine which is better, rather than assigning precise numerical scores. To capture
+
+these preferences, models like the Bradley-Terry-Luce (BTL) model (Bradley and Terry, 1952) are
+
+2
+
+employed. The BTL model assumes that internal preferences influence action choices, with the
+
+probability of selecting one action over another being proportional to its preference. Explicitly, the
+
+probability of choosing action a1 over a0 is given by:
+
+P(a1 > a0) =
+exp(r(s, a1))
+exp(r(s, a1)) + exp(r(s, a0)),
+
+where r(s, a) represents the preference of action a in state s. By learning these preferences, RLHF
+
+uses them as rewards to train policies that maximize the learned reward, aligning agent behavior
+
+more closely with human preferences. This is especially valuable in complex domains like LLMs,
+
+where traditional reward functions are difficult to design. After training a supervised model on
+
+large-scale text data, RLHF fine-tunes the model using human-derived reward signals to better
+
+align it with human preferences.
+This approach has been crucial in advancing large language
+
+models (LLMs) such as InstructGPT, ChatGPT and Llama (Ouyang et al., 2022; Achiam et al.,
+
+2023; Touvron et al., 2023).
+
+Despite its successes, the existing RLHF framework faces notable challenges (Casper et al.,
+
+2023). As the reward model is a function of the query-answer pair, it assumes that all individuals
+
+share a single preference function. In practice, however, individuals exhibit diverse characteristics,
+
+leading to heterogenous preferences (Zhong et al., 2024; Park et al., 2024). The heterogeneity in
+
+human preferences can lead to three types of challenges. The first challenge is the personalization
+
+problem. For instance, consider a model tasked with answering the question, “What is a star?”.
+
+The model could offer a detailed scientific explanation, such as “A star is a massive, luminous
+
+sphere of plasma held together by its own gravity,” or a simpler response like “A star is a giant
+
+glowing ball in the sky, like the Sun.” While a scientifically inclined user might favor the former,
+
+a five-year-old child is more likely to prefer the latter for its simplicity and interpretability (See
+
+Figure 1). This example illustrates the benefits of development of personalized models that adapt
+
+to user contexts, highlighting the potential of contextual RLHF to address these diverse needs.
+
+The second challenge is the distribution shift between the offline training data and the target
+
+3
+
+Figure 1: Illustration of personalization in RLHF.
+
+deployment distribution. For example, consider a scenario where offline feedback data are predom-
+
+inantly collected from college students, but the model is intended for deployment among preschool
+
+children as illustrated in Figure 2. As the model is trained on the offline dataset via empirical
+
+risk minimization, the estimated homogeneous model will lead to optimize its performance on the
+
+college students, which could perform poorly with children. In such cases, accounting for user-
+
+specific features becomes essential to effectively bridge the gap between the training and target
+
+distributions, ensuring the model performs well even on different populations.
+
+The last challenge is the high dimensionality of contexts in RLHF problems.
+In LLMs,
+
+reward models are typically trained using features extracted from the final layer of a pre-trained
+
+supervised model. For instance, GPT-3 (175B) (Brown, 2020) has 12,288 units in its last layer,
+
+while InstructGPT, which employs a 6B reward model (RM), has 4,096 units in its last layer
+
+(Ouyang et al., 2022). Additionally, Ouyang et al. (2022) includes contextual information about
+
+labelers (human experts), such as demographic attributes (e.g., age, gender, ethnicity, nationality,
+
+education level) and survey-based details. Including both user contexts and state-action features in
+
+the model leads to a rapidly expanding parameter space, driven by the high-dimensional interaction
+
+terms. This growth poses substantial computational challenges for efficient parameter estimation.
+
+4
+
+Figure 2: Illustration of distribution shift in RLHF.
+
+In this paper, we introduce a Low-rank Contextual RLHF (LoCo-RLHF) framework to address
+
+these challenges. Advances in digital platforms have enabled the collection of rich and diverse user
+
+data, which can be leveraged to develop individualized preference models. Instead of modeling
+
+user preferences as a homogeneous function of state-action pairs r(s, a) for state s and action a, we
+
+consider heterogeneous preference r(x, s, a), where x represents individual context. Specifically, the
+
+homogeneous feedback model considers r(s, a) = θ⊤ϕ(s, a) for the pre-trained embedded feature
+
+ϕ(s, a) ∈Rdϕ and some unknown vector parameter θ. To allow heterogeneity induced from individ-
+
+ual contexts, we adopt the bilinear form r(x, s, a) = x⊤Θ∗ϕ(s, a), where x ∈Rdx and Θ∗∈Rdx×dϕ is
+
+a unknown matrix parameter. This formulation captures heterogeneity in preference by accounting
+
+for individual contexts. To address the high dimensionality, we leverage the low-rank structure of
+
+the parameter matrix. Low-rank approximations have been successfully applied in various domains,
+
+including contextual bandits (Jun et al., 2019; Kang et al., 2022) and LLMs (Li et al., 2018; Agha-
+
+janyan et al., 2020; Hu et al., 2021; Ding et al., 2023; Dettmers et al., 2024; Sidahmed et al., 2024).
+
+In this approach, high-dimensional features are projected into a low-dimensional latent space. For
+
+example, in the context of a query about a star, state-action features might include an embedding
+
+representing the complexity of the explanation, while user context features (e.g., age, education
+
+5
+
+level) could capture preferences for simpler or more detailed responses. The interaction between
+
+these features and contexts is then modeled using a reduced set of latent factors. Motivated from
+
+this, we impose a low-rank structure on the matrix parameter Θ as shown in Figure 3 and hence
+
+substantially reduce the computation complexity from dxdϕ to (dx+dϕ)r, where r is the rank of the
+
+matrix. Details of the contextual preference model is given in Section 2.1. By imposing a low-rank
+
+structure, we effectively reduce the dimensionality of the parameter space, preserving the essential
+
+interactions while minimizing estimation errors and computational costs.
+
+Figure 3: Illustration of the Low-rank Contextual Preference Model.
+
+We then design a Pessimism on Reduced Space (PRS) algorithm to solve this LoCo-RLHF prob-
+
+lem. The PRS algorithm has the following three key components: estimating the low-rank subspace,
+
+constructing confidence bounds and pessimistic values, and deriving the pessimistic policy.
+
+1. Estimating the low-rank subspace. In the first stage, we leverage the low-rank structure
+
+of the parameter matrix to estimate a low-dimensional subspace using a rank-constrained
+
+maximum likelihood estimator. Since this optimization problem is inherently non-convex, we
+
+employ factored gradient descent (also known as alternating gradient descent) via the Burer-
+
+Monteiro formulation (Burer and Monteiro, 2003; Zheng and Lafferty, 2016). Once the matrix
+
+is estimated, we perform singular value decomposition (SVD) to extract orthogonal matrices
+
+6
+
+that define the subspace. These matrices allow us to embed features and contexts into a
+
+reduced-dimensional space, thereby reducing the problem’s overall complexity.
+
+2. Constructing confidence bounds. With the reduced subspace established, the next step
+
+involves projecting the original problem into the low-dimensional space and constructing
+
+confidence bounds within this representation.
+Subspace estimation inherently introduces
+
+uncertainty when projecting to the reduced rank. To address this, we develop a novel ana-
+
+lytical framework that incorporates the uncertainty quantification into the confidence bound
+
+construction, ensuring robustness in subsequent stages.
+
+3. Deriving the pessimistic policy. Finally, we adopt a pessimistic approach, widely used
+
+in offline RL literature (Jin et al., 2021; Fu et al., 2022; Zhu et al., 2023; Shi et al., 2024),
+
+to account for uncertainties in reward estimation.
+By optimizing the pessimistic reward,
+
+constructed to account for worst-case scenarios, we derive a robust policy that balances
+
+exploration and exploitation, even in the presence of distribution shift.
+
+In theory, we provide theoretical guarantees for our algorithm by deriving upper bounds on the
+
+sub-optimality gap. The sub-optimality gap is defined as the difference between the optimal reward,
+
+achieved with complete knowledge of the true parameters, and the reward of the policy derived by
+
+our algorithm. Specifically, we establish that the sub-optimality gap of our PRS policy is bounded
+
+as O
+q
+
+n
+
+with probability at least 1 −δ (Theorem 2). In low-rank settings where
+
+(dx+dϕ)·r+log(1/δ)
+
+r ≪min{dx, dϕ}, our bound represents a significant improvement over the O
+q
+
+n
+
+
+dxdϕ+log(1/δ)
+
+bound achieved by existing methods (Zhu et al., 2023). Furthermore, in the special case of our
+
+LoCo-RLHF framework where human feedback follows a pre-defined group structure, the derived
+
+bound aligns with the results of Zhong et al. (2024), demonstrating the tightness of our analysis.
+
+The sub-optimality gap analysis of our policy presents several challenges.
+First the rank-
+
+constrained maximum likelihood estimation problem is inherently non-convex, which precludes the
+
+direct application of classical results from convex optimization literature. Moreover, the offline
+
+7
+
+dataset comprises binary pairwise responses from human experts, rather than direct quantitative
+
+data. This characteristic complicates the derivation of the estimation bounds, as it requires handling
+
+the discrete nature of the data. During the uncertainty quantification step, both the estimation
+
+error of the subspace and the likelihood estimation contribute to the overall uncertainty of the
+
+parameter estimate in the reduced space. Lastly, the approximation of the preference function
+
+in the reduced space is similarly influenced by the subspace estimation error, which propagates
+
+through the analysis and affects the policy’s value. To address these challenges, we develop novel
+
+tools that incorporate subspace estimation error into the construction of estimation bounds and
+
+the approximation of the preference function.
+
+Finally, we present extensive numerical experiments with varying rank, dimensionality, and
+
+offline data distributions to evaluate the proposed PRS policy, comparing it with the greedy policy
+
+and the pessimistic policy derived from the unconstrained MLE of Zhu et al. (2023). Furthermore,
+
+we conduct a systematic investigation into rank selection and perform sensitivity analyses on the
+
+confidence bound parameter and data split selection, with detailed results and discussions included
+
+in the Appendix. In addition to simulations, we apply our method to the PersonalLLM benchmark,
+
+a large-scale real-world dataset for preference-based RLHF with heterogeneous reward models. On
+
+both synthetic and real data, the PRS policy consistently achieves smaller sub-optimality gaps
+
+than existing methods, with particularly strong gains in low-rank and high-dimensional regimes.
+
+Moreover, experiments with artificially augmented noisy features demonstrate that PRS remains
+
+stable while baseline methods deteriorate, highlighting the robustness of our approach in realistic
+
+preference-learning settings.
+
+1.1
+Related Work
+
+Our work is closely related to, yet distinct from, recent studies on RLHF with heterogeneous
+
+experts and low-rank LLMs.
+
+• RLHF with Heterogeneous Experts: The incorporation of human feedback into the RL
+
+8
+
+framework, introduced by Christiano et al. (2017), has gained significant attention in recent
+
+years. Recent studies, such as Ouyang et al. (2022) and Bai et al. (2022), highlight that
+
+experts may disagree on optimal responses, and biases in offline datasets can disadvantage
+
+underrepresented groups (Prabhakaran et al., 2021; Feffer et al., 2023; Kirk et al., 2023).
+
+To address the heterogeneity of human preferences, various approaches have been proposed.
+
+One common method is to impose a group structure on individuals and train separate reward
+
+models for each group, as seen in Park et al. (2024), and Ramesh et al. (2024). These models
+
+are then aggregated using techniques such as social welfare functions, Pareto-optimal solu-
+
+tions (Boldi et al., 2024), or robust optimization (Chakraborty et al., 2024). Another line of
+
+research focuses on personalized models tailored to individual preferences (Jang et al., 2023;
+
+Kirk et al., 2023; Poddar et al., 2024). However, most of these approaches lack theoretical
+
+guarantees for their performance. The most closely related work is Zhong et al. (2024), which
+
+proposes a multi-party RLHF framework that models and aggregates preferences across mul-
+
+tiple individuals. While their method addresses heterogeneity through a pre-defined grouping
+
+structure, it requires a predetermined clustering of individual preferences and does not fully
+
+account for individual-specific contextual information. In contrast, our work extends this
+
+research by introducing a low-rank contextual preference model that incorporates expert
+
+characteristics and learns the latent low-rank representation of the reward model.
+
+• Low-rank LLMs: To improve LLM performance, many models leverage high-dimensional
+
+parameter spaces (Ouyang et al., 2022; Bai et al., 2022). As dimensionality increases, low-
+
+rank approximations have been proposed for fine-tuning (Hu et al., 2021; Ding et al., 2023;
+
+Dettmers et al., 2024), supported by evidence of intrinsic low-dimensional structures within
+
+high-dimensional spaces (Aghajanyan et al., 2020; Sidahmed et al., 2024). These models
+
+primarily focus on low-rank adoption during pre-training or fine-tuning. In contrast, our
+
+work addresses the heterogeneity of human feedback in the reward learning step of RLHF.
+
+Additionally, drawing from statistical theory on high-dimensional problems (Wainwright,
+
+9
+
+2019), we provide a rigorous theoretical analysis. While low-rank structures have been studied
+
+in bandit and RL problems (Jun et al., 2019; Kang et al., 2022; Cai et al., 2023; Stojanovic
+
+et al., 2024; Duan et al., 2024), their application in RLHF remains underexplored.
+
+• Uncertainty Quantification and Statistical Inference: Our reward modeling approach
+
+is also connected to the literature on uncertainty quantification for low-rank structures and
+
+ranking. Foundational works by Chen et al. (2019) and Chen et al. (2021) established frame-
+
+works for inference and UQ in noisy matrix completion and robust PCA. Furthermore, our
+
+contextual BTL model aligns with recent studies on covariate-assisted ranking and MLE-
+
+based UQ, which also consider potential model misspecifications (Fan et al., 2024b,a). While
+
+these existing works primarily focus on asymptotic confidence sets and statistical inference,
+
+our work provides a non-asymptotic analysis. This is essential for the offline RL setting,
+
+where finite-sample guarantees are required to establish the sub-optimality gap of the result-
+
+ing policy.
+
+In summary, our work presents the first provable low-rank contextual RLHF framework that
+
+tackles personalization, distribution shift, and high-dimensionality in heterogeneous human prefer-
+
+ences.
+
+1.2
+Notations
+
+We introduce the notations used throughout the paper. Let [n] denote the set {1, 2, . . . , n}. The
+
+Frobenius norm of a matrix is denoted by ∥· ∥F , and the matrix-induced norm ∥v∥W =
+√
+
+v⊤Wv
+
+is denoted by ∥· ∥W . The ball induced by the Frobenius norm, centered at Θ0 with radius r is
+
+denoted by B(Θ0, r) := {Θ : ∥Θ −Θ0∥F ≤r}. For a vector v, (v)i represents its i-th component.
+
+We write Σ1 ≻Σ2 if Σ1 −Σ2 is positive definite. Denote Kronecker product of two matrices as ⊗.
+
+10
+
+2
+Problem Formulation
+
+In this section, we formally define the LoCo-RLHF problem within the framework of pairwise
+
+comparison feedback. Specifically, we (i) introduce the contextual preference model, which captures
+
+the heterogeneous preferences of individuals, and (ii) demonstrate how the contextual reward model
+
+addresses both the personalization and distribution shift challenges.
+
+2.1
+Contextual Preference Model
+
+To address the heterogeneity in human preferences regarding queries and their corresponding
+
+answers, we introduce the contextual preference model. Let S denote the state (query) space,
+
+A the action (answer) space, and X the context space. For t ∈[N], a human expert with context
+
+xt ∈X is presented with a state st ∈S and two actions, at0, at1 ∈A. The expert selects the
+
+preferred action, where yt = 1 indicates a preference for at1 over at0, and yt = 0 indicates a
+
+preference for at0. The offline dataset comprises a collection of (i) contexts, (ii) states, (iii) action
+
+pairs, and (iv) expert preferences, represented as (xt, st, at0, at1, yt) : t ∈[N] for each individual t.
+
+The Bradley-Terry-Luce (BTL) model (Bradley and Terry, 1952) has been widely used to
+
+capture how preferences influence the choices of experts. Let r0 and r1 denote the preferences
+
+associated with actions a0 and a1, respectively. The BTL model assumes that the probability of
+
+selecting an action is proportional to the exponential of its preference. Specifically, the probabilities
+
+are given by:
+
+P(y = 1) =
+exp(r1)
+exp(r0) + exp(r1)
+and
+P(y = 0) =
+exp(r0)
+exp(r0) + exp(r1).
+
+The homogeneous preference model (Ouyang et al., 2022; Achiam et al., 2023; Touvron et al.,
+
+2023) assumes that the probability of choosing an action depends solely on the query and the
+
+available actions, making it identical across individuals. To account for heterogeneity, we introduce
+
+a contextual preference model, which reflects individual-specific preferences. Specifically, we
+
+11
+
+model the reward function using a bilinear form:
+
+rΘ∗(x, s, a) = x⊤Θ∗ϕ(s, a),
+(1)
+
+where x ∈X represents the individual’s context, Θ∗∈Rdx×dϕ is a parameter matrix, and ϕ(s, a)
+
+is the feature embedding for the query-action pair. Under this model, the probability of selecting
+
+action a1 over a0, given query s and context x, is:
+
+P(y = 1|x, s, a1, a0) =
+exp(x⊤Θ∗ϕ(s, a1))
+exp(x⊤Θ∗ϕ(s, a0)) + exp(x⊤Θ∗ϕ(s, a1)).
+
+This formulation introduces variability in the choice probabilities by incorporating the context x,
+
+thereby capturing the heterogeneity among individuals.
+
+The high dimensionality of context and feature embeddings poses significant computational
+
+challenges, as estimating the matrix parameter scales with the product of their dimensions. Inspired
+
+by the successful application of low-rank approximations in reinforcement learning (Jun et al., 2019;
+
+Hu et al., 2021), we impose a low-rank structure on the parameter matrix. Let r be the rank of the
+
+parameter matrix Θ∗, and let Θ∗= U∗D∗(V ∗)⊤represent its singular value decomposition (SVD)
+
+of Θ∗, where U∗and V ∗are square matrices, and D∗∈Rdx×dϕ with {di : i ∈[r]} as its r non-zero
+
+diagonal entries. The reward function rΘ∗(x, s, a) can then be expressed as:
+
+rΘ∗(x, s, a) = x⊤· U∗D∗(V ∗)⊤· ϕ(s, a),
+
+which simplifies to:
+
+r
+X
+
+i=1
+di
+
+(U∗)⊤x
+
+
+
+(V ∗)⊤ϕ(s, a)
+
+
+rΘ∗(x, s, a) =
+
+i .
+
+i
+
+This formulation demonstrates that U∗and V ∗project the original features into a low-dimensional
+
+subspace, significantly reducing computational complexity, as illustrated in Figure 3.
+
+Remark 1 (Model Assumptions in RLHF). Our setting aligns with standard preference-based
+
+reward modeling in RLHF, where feedback is collected via pairwise comparisons and rewards are
+
+learned over high-dimensional representations produced by pre-trained models (Ouyang et al., 2022;
+
+12
+
+Zhu et al., 2023; Zhong et al., 2024). Contextual information, when available, can be incorporated
+
+to account for systematic heterogeneity across users or tasks, as is common in large-scale human
+
+feedback datasets (Kirk et al., 2023). The low-rank structure assumed in this work is motivated
+
+by empirical findings in RLHF and preference learning, which suggest that variation in human
+
+preferences is often governed by a small number of latent factors despite the high dimensionality of
+
+learned representations (Hu et al., 2021; Park et al., 2024; Bose et al., 2025; Fan et al., 2025).
+
+Remark 2 (Flexibility of the bilinear model). The bilinear reward model generalizes various exist-
+
+ing reward models. First, when dx = 1 with X = {1} ∈R, the model reduces to rθ(s, a) = θ⊤ϕ(s, a),
+
+corresponding to the reward model for homogeneous individuals (Zhu et al., 2023). Second, the
+
+Boltzmann-model (Jeon et al., 2020; Barnett et al., 2023) models the reward as βr(s, a), where
+
+β is a rationality parameter.
+If the reward r(s, a) is linear with respect to ϕ(s, a), such that
+
+r(s, a) = θ⊤
+1 ϕ(s, a), and β is a linear function of context x i.e., β(x) = x⊤θ2, then the reward
+
+function becomes: r(x, s, a) = β(x)r(s, a) = x⊤θ2θ⊤
+1 ϕ(s, a), which is the special case of formulation
+
+(1) with Θ∗= θ2θ⊤
+1 being a rank-1 matrix. Finally, to model the diversity of human preferences,
+
+Zhong et al. (2024) considers M types of individuals each with reward given as rm = (θ∗
+m)⊤ϕ(s, a),
+
+where θ∗
+m ∈Rd and ϕ : S × A →Rd is a known feature mapping. This setup is also a special case
+
+of formulation (1), where M = dx, d = dϕ, Θ∗= (θ∗
+1, θ∗
+2, . . . , θ∗
+M)⊤, and x = em for individual of
+
+type m, where em is the m-th standard unit vector in RM.
+
+2.2
+Value of Policy
+
+Next, we show how the contextual preference model effectively tackles personalization and
+
+distribution shift challenges. Let ρ be the joint distribution of context x and state s in the evaluation
+
+set. In the personalization problem, the individual feature x is available for the policy, enabling
+
+the policy to adapt its responses based on the context of each individual. Formally, the policy is
+
+defined as π : X × S 7→A, allowing it to provide tailored answers for different contexts. The value
+
+13
+
+of the policy is then defined as:
+
+J(π) := E(x,s)∼ρrΘ∗(x, s, π(x, s)).
+
+In the personalization problem, the objective is to determine an individualized policy π(x, s)
+
+that provides personalized responses for each individual with context x, even when the the same
+
+query s is presented. The goal is to maximize the value of the policy.
+
+The second case is the distribution shift problem. Unlike the personalization problem, the
+
+features of individuals are unavailable during evaluation in this second case. In this case, the policy
+
+is defined as a function of s alone, i.e., π(s). The corresponding value is given by
+
+J(π) := E(x,s)∼ρrΘ∗(x, s, π(s)).
+
+In the distribution shift problem, the objective is to find a global policy π(s) that provides a
+
+unified response for all individuals, maximizing the expected value of the policy. It is important
+
+to note that the evaluation distribution ρ may differ from the offline training distribution. If the
+
+contextual preference model is not considered, a homogeneous reward model would optimize the
+
+policy to maximize value based on the offline data distribution, potentially leading to suboptimal
+
+performance in the evaluation environment.
+
+For brevity, we use the notation rθ(x, s, π) to represent rθ(x, s, π(x, s)) in the personalization
+
+problem and rθ(x, s, π(s)) in the distribution shift problem.
+The sub-optimality of a policy is
+
+defined as
+
+SubOpt(π) := J(π∗) −J(π),
+
+where π∗= arg maxπ J(π) denotes the optimal policy. The objective is to determine a policy that
+
+minimizes the sub-optimality by leveraging the offline dataset.
+
+Remark 3 (Connection with Zhong et al. (2024)). When X represents the set of standard unit
+
+vectors in RM and x ∼ρx with ρx being the uniform distribution, the formulation aligns with the
+
+14
+
+framework proposed by Zhong et al. (2024) under the Utilitarian welfare objective. However, while
+
+their approach assumes that the query and answers (si, ai0, ai1) are generated from the same dis-
+
+tribution for all individuals, our framework accommodates scenarios where different state-action
+
+pairs are presented to each human expert.
+Additionally, our framework can be extended to ac-
+
+commodate alternative objective functions. Specifically, the value function can be generalized as:
+
+J(π) := E(x,s)∼ρl(rΘ∗(x, s, π(s)) −r0), where l is a specified transformation, and r0 represents the
+
+minimum value of the reward function. For example, when l is the logarithmic function, this for-
+
+mulation corresponds to the Nash welfare objective. The theoretical results remain valid with slight
+
+modifications, provided that l is a Lipschitz continuous function.
+
+3
+Algorithm
+
+In this section, we propose the Pessimism in Reduced Subspace (PRS) policy to address
+
+the LoCo-RLHF problem. Before introducing the details, we first outline the three main steps in
+
+the PRS algorithm.
+
+1. Estimation of the Low-rank Subspace: We begin by solving the rank-constrained max-
+
+imum likelihood estimation problem to obtain the low-rank estimate ˆΘ.
+Using the SVD
+
+ˆΘ = ˆU ˆD( ˆV )⊤, we obtain an estimate of the low-rank subspaces, where ˆU and ˆV represent
+
+the linear transformation into the low-rank subspace.
+
+2. Reduction to the Low-rank Subspace: Next, we apply the rotation-truncation-vectorization
+
+(RTV) process to the parameter Θ, individual contexts and embedded features with respect
+
+to the estimated subspaces ˆU and ˆV .
+This transformation reduces dimensionality of the
+
+parameter space from dxdϕ to (dx +dϕ)r−r2, while introducing minimal error from subspace
+
+estimation. Using the reduced space, we compute the MLE ˆθrtv of the approximate likelihood
+
+function, which is used to efficiently estimate the true preference function.
+
+3. Pessimism in the Reduced Space: Finally we construct the confidence set ΘB(ˆθrtv)
+
+15
+
+around the estimate ˆθrtv by quantifying the uncertainty in the estimation process. Using this
+
+confidence set, we define the pessimistic value function:
+
+ˆJ(π) :=
+min
+θ∈ΘB(ˆθrtv)
+E(x,s)∼ρrθrtv(x, s, π),
+
+which represents the pessimistic estimate of the reward under a given policy. The pessimistic
+
+policy ˆπ is then defined by solving ˆπ = arg max ˆJ(π).
+
+3.1
+Estimation of the Low-rank Subspace
+
+We begin by splitting the dataset into two partitions: the first N0 observations are used to
+
+estimate the low-rank subspace, while the remaining N −N0 observations are used to estimate the
+
+parameter and quantify the uncertainty in the reduced space. Given the dataset {(xt, st, at0, at1, yt :
+
+t ∈[N0]}, the contextual preference model in the BTL model (1) implies that the negative log-
+
+likelihood is given by:
+
+N0
+X
+
+L(Θ) = 1
+
+
+log
+
+1 + exp(−x⊤
+t Θ(ϕ(st, at1) −ϕ(st, at0)))
+
++ (1 −yt)x⊤
+t Θ(ϕ(st, at1) −ϕ(st, at0))
+
+.
+
+N0
+
+t=1
+
+(2)
+
+Based on it, the rank-constrained optimization problem can be formulated as
+
+min
+Θ∈Rdx×dϕ,rank(Θ)≤r
+L(Θ),
+
+which can be solved using the Burer-Monteiro formulation (Burer and Monteiro, 2003). This
+
+approach factorizes Θ = UV ⊤, where U ∈Rdx×r and V ∈Rdϕ×r. To ensure identifiability, we
+
+introduce a regularization term following Zheng and Lafferty (2016). The resulting optimization
+
+problem is formulated as:
+
+
+˜L(U, V ) := L(UV ⊤) + 1
+
+
+.
+
+8∥U⊤U −V ⊤V ∥2
+F
+
+min
+U∈Rdx×r,V ∈Rdϕ×r
+
+To solve this non-convex optimization problem, we employ the alternating Factored Gradient
+
+16
+
+Descent (FGD) method. FGD performs gradient descent on each component iteratively:
+
+U ←U −η · ∇U ˜L(U, V ),
+V ←V −η · ∇V ˜L(U, V ),
+
+where η denotes the learning rate, and ∇U, ∇V are the gradients with respect to U and V , re-
+
+spectively. By alternately updating each component, the estimated parameter converges to the
+
+true parameter, provided that certain conditions on the initial estimate and the learning rate are
+
+satisfied (Zheng and Lafferty, 2016; Zhang et al., 2023). The full details of the FGD procedure are
+
+outlined in Algorithm 1.
+
+Algorithm 1 FGD - Factored Gradient Descent
+Input: Gradients of the loss function ∇U L and ∇V L, initial estimate Θ0 and step size η.
+Initialization: SVD Θ0 = U0D0V ⊤
+0 and initialize U (0) = U0D1/2
+0
+and V (0) = V0D1/2
+0 .
+1: for k = 1, . . ., do
+2:
+Update U (k+1) = U (k) −η∇UL|U=U(k),V =V (k);
+
+3:
+Update V (k+1) = V (k) −η∇V L|U=U(k+1),V =V (k);
+4:
+Repeat until objective function converges.
+5: end for
+return ˆΘ = U (k)(V (k))⊤.
+
+In our experiments, we compute the initial estimate Θ0 using the unconstrained maximum
+
+likelihood estimator. Convex optimization algorithms, such as L-BFGS (Liu and Nocedal, 1989),
+
+or gradient-based methods can be applied to obtain this initial parameter estimate.
+
+3.2
+Reduction to the Low-rank Subspace
+
+RL algorithms leverage uncertainty quantification to improve performance, such as the “opti-
+
+mism in the face of uncertainty” approach for online RL (Abbasi-Yadkori et al., 2011) and pes-
+
+simistic policies for offline RL (Jin et al., 2021; Rashidinejad et al., 2021). Existing uncertainty
+
+quantification methods are primarily designed for vector parameters, making them less suited to
+
+our high-dimensional matrix parameter space Rdx×dϕ. The large number of components in this
+
+space as well as the low-rank structure of the matrix parameter create significant challenges for
+
+effective uncertainty quantification. To address this challenge, we propose the “rotation-truncation-
+
+17
+
+vectorization” (RTV) method. This mapping explicitly exploits the low-rank structure of Θ∗to
+
+reduce the effective dimension from dxdϕ to r(dx + dϕ). The construction proceeds in three steps:
+
+aligning the matrix via rotation, discarding negligible components via truncation and flattening the
+
+result for inference.
+
+Let ˆΘ = ˆU ˆD ˆV ⊤be the SVD of the estimate obtained from Algorithm 1. Intuitively, if the
+
+estimated subspaces ˆU and ˆV are accurate, rotating the true parameter Θ∗in the direction of ˆU
+
+and ˆV should yield a close approximation of the rank r diagonal matrix. For a detailed explanation,
+
+let (U∗
+1 , U∗
+2 ), (V ∗
+1 , V ∗
+2 ), ( ˆU1, ˆU2) and ( ˆV1, ˆV2) be partitions of U∗, V ∗, ˆU and ˆV , where (·)1 represent
+
+the first r columns and (·)2 denotes the remaining columns of the matrix. Let Θ∗
+r be the rotation
+
+of Θ∗with respect to the estimated subspace given by Θ∗
+r := ˆU⊤Θ∗ˆV . We partition Θ∗
+r into four
+
+sub-blocks based on the rank r:
+
+
+
+
+
+
+
+(Θ∗
+r)11
+(Θ∗
+r)12
+
+Θ∗
+r =
+
+
+.
+
+(Θ∗
+r)21
+(Θ∗
+r)22
+
+Figure 4: Illustration of rotation-truncation-vectorization.
+
+Then we employ the “subtraction method” commonly used in the low-rank matrix bandit
+
+literature (Kveton et al., 2017; Jun et al., 2019; Kang et al., 2022), to reduce the dimension. As
+
+illustrated in Figure 4, when ˆU, ˆV are close to the true subspaces, the block (Θ∗
+r)22 is expected to
+
+be negligible as it is the product of two estimation error terms ˆU⊤
+2 U1 and ˆV ⊤
+2 V1. By truncating
+
+18
+
+this block, we retain only the essential parameters:
+
+θ∗
+rtv := (vec((Θ∗
+r)11)⊤, vec((Θ∗
+r)12)⊤, vec((Θ∗
+r)21)⊤)⊤∈R(dx+dϕ)r−r2.
+(3)
+
+This reduced vector θ∗
+rtv ∈R(dx+dϕ)r−r2 serves as the basis for efficient uncertainty quantifica-
+
+tion. Now the contextual preference model can be reformulated as:
+
+rΘ∗(x, s, a) = x⊤Θ∗ϕ(s, a) = ( ˆU⊤x)⊤(Θ∗
+r)( ˆV ⊤ϕ(s, a)) = ⟨( ˆU⊤x)( ˆV ⊤ϕ(s, a))⊤, Θ∗
+r⟩.
+
+Here, ( ˆU⊤x)( ˆV ⊤ϕ(s, a))⊤= ˆU⊤(xϕ(s, a)⊤) ˆV is the rotation of xϕ(s, a)⊤with respect to ˆU
+
+and ˆV . Let Z = xϕ(s, a)⊤and zrtv denote the rotation-truncation-vectorization of Z. Then, the
+
+contextual reward function can be expressed as:
+
+rΘ∗(x, s, a) = ⟨Z, Θ∗⟩= ⟨zrtv, θ∗
+rtv⟩+ ⟨(Zr)22, (Θ∗
+r)22⟩≈⟨zrtv, θ∗
+rtv⟩,
+
+where the approximation holds as (Θ∗
+r)22 ≈0. This reformulation allows us to focus on estimating
+
+the low-dimensional parameter θ∗
+rtv ∈Rk, where k = (dx + dϕ)r −r2 rather than the full matrix
+
+Θ∗∈Rdx×dϕ.
+This significantly reduces the computational complexity while maintaining the
+
+model’s accuracy.
+
+After reducing the problem to a low-dimensional subspace, we re-estimate the parameter in this
+
+reduced space. For the remaining N −N0 observations, define Zt = xt(ϕ(st, at1) −ϕ(st, at0))⊤and
+
+let zt,rtv ∈Rk be the rotation-truncation-vectorization of Zt for t > N0. The approximate negative
+
+log-likelihood function in the reduced space is defined as:
+
+N
+X
+
+Lrtv(θrtv) =
+1
+N −N0
+
+
+log
+
+1 + exp(−z⊤
+t,rtvθrtv))
+
++ (1 −yt)z⊤
+t,rtvθrtv)
+
+,
+(4)
+
+t=N0+1
+
+where θrtv ∈Rk. As the approximate likelihood function is convex with respect to θrtv, convex
+
+optimization methods can be applied to obtain the estimate ˆθrtv.
+
+19
+
+3.3
+Pessimism in the Reduced Low-rank Space
+
+Finally, we apply the pessimistic approach, which is widely used in offline reinforcement learn-
+
+ing (Li et al., 2022; Zhu et al., 2023). Instead of the greedy approach that maximizes the esti-
+
+mated reward function based on the estimated parameter, the pessimistic approach maximizes the
+
+pessimistic reward. This reward is defined by penalizing the estimated reward based on the
+
+uncertainty quantification of the parameter. Intuitively, actions are penalized if the uncertainty in
+
+the estimated reward is high. This approach mitigates the risk of selecting suboptimal actions that
+
+may result from inaccurate estimates due to the distribution of the offline dataset.
+
+To quantify uncertainty, we define the empirical second moment in the reduced space: W =
+
+1
+n0
+Pn0
+t=1 zt,rtvz⊤
+t,rtv. Using this, we construct the confidence set {θrtv : ∥θrtv −ˆθrtv∥W ≤C} where
+
+∥· ∥W represents the Mahalanobis norm weighted by W, and C is the confidence threshold.
+
+To define the pessimistic reward based on this confidence set, we introduce the approximate
+
+reward function with respect to θrtv:
+
+rθrtv(x, s, a) = zrtv(x, s, a)⊤θrtv,
+
+where zrtv(x, s, a) is the rotation-truncation-vectorization of xϕ(s, a)⊤. The pessimistic value func-
+
+tion is then defined as:
+
+ˆJ(π) :=
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, π).
+
+The complete PRS algorithm is summarized in Algorithm 2.
+
+In case where the policy can be parametrized as πθ, finding the pessimistic policy can be solved
+
+via gradient based methods.
+
+20
+
+Algorithm 2 Pessimism in Reduced Space (PRS) Algorithm
+
+Input: Dataset {(xi, si, ai0, ai1, yi : i ∈[N]}, rank of parameter matrix r, learning rate η,
+initial parameter estimate Θ0 for Algorithm 1 and subspace exploration length N0.
+1: Obtain the rank-constrained MLE ˆΘ = ˆU ˆD ˆV ⊤by applying Algorithm 1 to the first N0
+observations;
+2: Rotate-truncate-vectorize the remaining N −N0 observations and find the maximizer of
+(4);
+3: Construct confidence set ΘB = {θrtv : ∥θrtv −ˆθrtv∥W ≤C};
+4: Construct the pessimistic value function ˆJ(π) = minθrtv∈ΘB E(x,s)∼ρ rθrtv(x, s, π);
+
+5: Calculate ˆπ = arg maxπ ˆJ(π).
+return The pessimistic policy ˆπ.
+
+4
+Theory
+
+In this section, we first present the assumptions required to establish the rate of the sub-
+
+optimality gap. We then derive the estimation error for the low-rank subspace estimation and
+
+provide an upper bound on the sub-optimality gap for the PRS algorithm.
+
+4.1
+Assumptions
+
+We begin by introducing the boundedness condition and the positive definite second moment
+
+condition of the features and the parameter.
+
+Assumption 1 (Boundedness). The expert feature xt is bounded by Bx, i.e., ∥xt∥2 ≤Bx. For any
+
+query s ∈S and answer a ∈A, the feature embedding ϕ is bounded, i.e., ∥ϕ(s, a)∥2 ≤Bϕ. For the
+
+matrix parameter Θ∗, ∥Θ∥F ≤Bθ for all Θ ∈B(Θ∗, 1).
+
+Assumption 2 (Positive Definite Second Moment). Suppose the context-state-actions (xt, st, at1, at2) ∼
+
+P for the data distribution P. Let zt = (ϕ(st, at1) −ϕ(st, at0)) ⊗xt. Then EP ztz⊤
+t = Σ ≻0.
+
+The boundedness assumption is common in contextual reinforcement learning problems (Li
+
+et al., 2017; Zhan et al., 2023). The invertibility of the second moment of the feature is required
+
+to guarantee that the parameter is identifiable. Suppose EP xtx⊤
+t = Σx ≻0 and EP (ϕ(st, at1) −
+
+21
+
+ϕ(st, at0))(ϕ(st, at1) −ϕ(st, at0))⊤= Σϕ ≻0, with xt ⊥(st, at0, at1).
+Then Σ = Σϕ ⊗Σx and
+
+therefore Σ ≻0. In other words, if the features from the state-action pairs and contexts both
+
+have positive definite second moment and are independent, Assumption 2 is satisfied. When xt is
+
+uniformly distributed over standard unit vectors of RM, it becomes equivalent with the problem in
+
+Zhong et al. (2024), which assumes each query-answer pair is given to each of the M user types.
+
+Remark 4 (Interpretation of Theoretical Assumptions in RLHF). The boundedness assumption
+
+(Assumption 1) is standard in preference-based RLHF (Zhu et al., 2023; Zhong et al., 2024). Un-
+
+der the BTL model, preference probabilities depend exponentially on reward differences. If feature
+
+magnitudes or reward values are allowed to grow without control, moderate differences already lead
+
+to near-deterministic comparisons. In such regimes, observed feedback carries vanishing informa-
+
+tion, making offline estimation statistically infeasible. In practice, boundedness can be enforced
+
+through normalization or clipping of learned representations. Moreover, the positive definiteness
+
+assumption (Assumption 2) on the second-moment matrix ensures identifiability of the reward pa-
+
+rameters under preference feedback and is also standard in preference learning and RLHF (Zhong
+
+et al., 2024). This condition rules out degenerate or redundant feature directions and guarantees
+
+that each parameter dimension is identifiable from the observed comparisons.
+
+4.2
+Main Results
+
+We first present the estimation bound of the low-rank estimator.
+
+Theorem 1 (Informal Estimation Bound). Suppose Assumptions 1 and 2 hold. Let r denote the
+
+rank of Θ∗, with σ1 ≥σ2 ≥· · · σr > 0 as its singular values. Assume we have an initial estimate
+
+Θ0 ∈Rdx×dϕ such that ∥Θ0 −Θ∗∥F ≤c2√σr for some constant c2. Then for the low-rank estimator
+
+ˆΘ achieved from Algorithm 1 with learning rate η = c1/σ1, we have the estimation bound:
+
+s
+
+σ1r log( dx+dϕ
+
+δ
+)
+σrN0
+
+∥ˆΘ −Θ∗∥F ≤C1 ·
+
+with probability at least 1 −δ for some constant C1 > 0.
+
+22
+
+Remark 5 (Initial Estimate Θ0). We assume the availability of an initial estimate Θ0 that is
+
+reasonably close to Θ∗. This assumption is standard in low-rank matrix estimation problems (Jain
+
+et al., 2013; Chi et al., 2019; Xia and Yuan, 2021) and is commonly referred to as the “basin of
+
+attraction” condition, ensuring that the algorithm converges to the desired target. This assumption
+
+holds in various scenarios. For instance, when the sample size is sufficiently large, the unconstrained
+
+maximum likelihood estimator can serve as a warm start for Algorithm 1, providing an initial
+
+estimate close to Θ∗.
+
+The estimation error bound is proportional to √r, whereas without the low-rank assumption,
+
+it would scale with
+p
+
+min{dx, dϕ}. This highlights the critical role of the low-rank assumption
+
+in reducing estimation error.
+This rate aligns with bounds in the low-rank matrix estimation
+
+literature, particularly under the assumption of bounded ℓ2-norms for the context x and feature
+
+embedding ϕ(s, a). Specifically, if the max-norm of the parameter matrix is bounded, the ℓ2-norm
+
+bound scales with dx and dϕ, consistent with results in Negahban and Wainwright (2011), Xia
+
+and Yuan (2021), and Zhu et al. (2022). Building on this result, we derive the following corollary
+
+concerning the error induced by the rotation-truncation-vectorization process.
+
+Corollary 1 (Error induced by Rotation-Truncation-Vectorization). Suppose ∥ˆΘ −Θ∗∥F ≤B for
+
+some B > 0. Then,
+
+∥(Θ∗
+r)22∥F ≤C2 · σ1
+
+σ2r
+· B2
+(5)
+
+for some constant C2 > 0.
+
+The details of the proof are provided in Appendices S.6.2 and S.6.3. Using these results, we
+
+establish the confidence bounds for the estimator ˆθrtv in the reduced space.
+
+Lemma 1 (Confidence Bound on θrtv). Suppose Assumptions 1 and 2 hold. Further assume that
+
+∥(Θ∗
+r)22∥F ≤S⊥for some S⊥. Let ˆθrtv be the minimizer of the approximate negative log-likelihood
+
+23
+
+function (4). Then,
+
+
+
+
+
+s
+
+C3 · (dx + dϕ)r + log(1/δ)
+
+∥ˆθrtv −θ∗
+rtv∥W ≤1
+
+N −N0
++ 1
+
+2BxBϕ · S⊥·
+q
+
+(dx + dϕ)r
+
+
+
+
+
+γ
+
+with probability at least 1 −δ.
+
+Finally, we derive an upper bound on the sub-optimality gap for the proposed policy.
+
+Theorem 2 (Upper Bound of Sub-optimality). Suppose Assumptions 1 - 2 hold with n0 = Ω(n)
+
+and n1 = n −n0 = Ω(n). Then,
+
+!
+
+r
+
+(dx + dϕ) · r + log(1/δ)
+
+J(π∗) −J(ˆπ) = O
+
+C∗·
+
+N
+
+with probability at least 1 −δ, where C∗=
+
+
+E(x,s)∼ρzrtv(x, s, π∗)
+
+
+W −1.
+
+In low-rank case where r ≪min{dx, dϕ}, our bound represents a significant improvement over
+
+O
+
+C∗·
+q
+
+n
+
+achieved by existing methods (Zhu et al., 2023). Moreover, the setting in
+
+dxdϕ+log(1/δ)
+
+Zhong et al. (2024) is a special case of our framework when the true clustering structure of human
+
+feedback is known with M = dx and d = dϕ. They derived a sub-optimality rate of
+
+r2/n + (dr2 log d + r log(M/δ))/(Mn) · ˜C∗,
+
+M
+p
+
+where ˜C∗= maxm ∥(Σ−1/2
+m
+Es∼ρ ϕ(s, π∗(s))∥2.
+Assume r ≪M ≪d, and ignoring logarithmic
+
+factors, their rate simplifies to M ·
+q
+
+(M+d)r2+r log( M
+
+δ )
+Mn
+· ˜C∗. Noting that their value function is
+
+defined as the sum over M types for the utilitarian welfare function, and we can verify that our
+
+rate of ˜C∗·
+q
+
+(M+d)r+log( 1
+
+δ )
+n
+matches this bound in this special case.
+
+Remark 6 (Discussion on Concentratability Coefficient). The concentratability coefficient C∗is
+
+invariant under rotation and decreases as covariates are removed. Since the rotation in the bilinear
+
+form remains a rotation after vectorization, the rotation-truncation-vectorization (RTV) process
+
+reduces the concentratability coefficient. When the matrix is full-rank, RTV simplifies to a pure
+
+rotation, ensuring consistency in the concentratability coefficient. Furthermore, this aligns with
+
+24
+
+the concentratability coefficient defined in Zhu et al. (2023) when x = 1, i.e., in the absence of
+
+contextual information. The theoretical details are provided in Appendix S.6.1.
+
+The analysis of our algorithm presents several challenges. First, the rank-constrained maximum
+
+likelihood estimation problem is inherently non-convex, which precludes the direct application of
+
+classical results from the convex optimization literature. Moreover, the offline dataset comprises
+
+binary responses from human experts, rather than quantitative data. This characteristic compli-
+
+cates the derivation of the estimation bounds, as it requires handling the discrete nature of the
+
+data. During the uncertainty quantification step, both the estimation error of the subspace and
+
+the likelihood estimation contribute to the overall uncertainty of the parameter estimate in the re-
+
+duced space. Lastly, the approximation of the preference function in the reduced space is similarly
+
+influenced by the subspace estimation error, which propagates through the analysis and affects the
+
+policy’s value. To address these challenges, we develop novel tools that incorporate subspace esti-
+
+mation error into the construction of estimation bounds and the approximation of the preference
+
+function. These tools provide insights into how the subspace estimation error impacts the value of
+
+the policy, ensuring a rigorous analysis of our algorithm.
+
+5
+Numerical Studies
+
+5.1
+Simulation Studies
+
+In this section, we compare the sub-optimality gap of the proposed policy with several bench-
+
+marks in the simulations. We set X = Rdx and S = Rds, and generate individual user contexts xt
+
+and states st independently from Unif([−1, 1]). The action space is A = {0, 1, . . . , da −1}.
+
+To generate the state-action feature representation ϕ(s, a), we first generate a matrix M ∈
+
+Rds×ds by sampling each entry independently from Unif([−1, 1]) and normalizing it to satisfy
+
+25
+
+∥M∥F = 1. The feature mapping ϕ : S × A →Rdϕ, where dϕ = da + ds −1, is defined as
+
+
+
+
+
+
+(0⊤
+da−1, 0.1 Ms⊤),
+a = 0,
+
+ϕ(s, a) =
+
+(e⊤
+a , 0.1 Ms⊤),
+a ≥1,
+
+
+
+
+
+where 0da−1 ∈Rda−1 is the zero vector and ea ∈Rda−1 is the a-th standard basis vector. This
+
+construction applies one-hot encoding to the categorical action variable and concatenates it with a
+
+scaled state-dependent feature.
+
+The reward parameter matrix Θ ∈Rdx×dϕ is constructed to have rank r.
+For each k ∈
+
+1, . . . , da −1, define
+
+k,
+1
+k + 1, . . . ,
+1
+k + r −1, 0, . . . , 0
+⊤
+∈Rdx,
+
+wk =
+1
+
+so that only the first r components are non-zero, and let vk = wk/∥wk∥2. We then set Θ:,k = 2 · vk,
+
+for k = 1, . . . , da −1, with all remaining columns corresponding to state features set to zero. The
+
+scaling factor 2 controls the signal strength. By construction, Θ has rank r, inducing a smoothly
+
+varying low-rank structure across actions.
+
+To model heterogeneous coverage in offline preference data, we introduce an imbalanced distri-
+
+bution over action pairs controlled by a parameter q. Specifically, for a fraction 1/q of the samples,
+
+action pairs are drawn uniformly from {(0, a1) ∈A × A : a1 ̸= 0}, while for the remaining fraction
+
+1 −1/q, the action pair is fixed as (0, 1). As q increases, the majority of comparisons involve only
+
+actions 0 and 1, resulting in increasingly imbalanced feedback
+
+We generate parameters, contexts, and features to simulate human feedback and assess the
+
+policy on a new set of contexts x and states s. For comparison, we use two baseline policies.
+
+• MLE-Greedy: This policy uses the MLE obtained from the unconstrained maximum like-
+
+lihood problem. Since the negative log-likelihood function is convex, the estimator can be
+
+26
+
+efficiently computed. Using the MLE ˆΘ = arg maxΘ L(Θ) with L defined in (2), the policy
+
+evaluates the estimated value of each action and selects the greedy action:
+
+ˆπgreedy(x, s) = arg max
+a∈A
+rˆΘ(x, s, a).
+
+• MLE-Pessimistic: Similar to MLE-Greedy, this policy uses the MLE ˆΘ but incorporates
+
+the pessimistic approach from Zhu et al. (2023). To adapt the bilinear formulation of the
+
+reward to the linear framework used in Zhu et al. (2023), the feature vector is modified to
+
+zt = ϕ(st, at) ⊗xt ∈Rdxdϕ, representing the vectorization of the outer product. This feature
+
+vector is used to quantify the confidence bound. Given the pessimistic value function ˆJ(π) =
+
+minΘ∈CB(ˆΘ) E(x,s)∼ρrΘ(x, s, a) with CB(ˆΘ) being the confidence bound on the vectorized
+
+feature, this policy maximizes the pessimistic value function:
+
+ˆπpess = arg max
+π
+ˆJ(π).
+
+We evaluate our proposed PRS policy alongside the MLE-Greedy and MLE-Pessimistic policies
+
+as baselines. For details of implementing the policy optimization problem ˆπ = arg max ˆJ(π), we
+
+refer to Appendix S.5. For PRS and MLE-Pessimistic, we use the approximate solution defined in
+
+(S2) of the Appendix. Each simulation is repeated 20 times, and the sub-optimality gap is reported
+
+for N ∈{1000, 2000, 3000, 5000, 10000} under various scenarios.
+
+We first study the impact of offline data imbalance on policy performance.
+We set ds =
+
+20, da = 10, dx = 20 with rank r = 3, resulting in Θ ∈R20×29. As shown in Figure5, as the im-
+
+balance parameter q increases, all methods exhibit larger sub-optimality gaps. Among the policies,
+
+MLE-Greedy consistently performs the worst, while the proposed PRS policy achieves the best per-
+
+formance across all settings. Moreover, the gap between the methods widens as the data imbalance
+
+increases, highlighting the robustness of the PRS policy to variations in offline data distribution.
+
+Next we evaluate the effect of the low-rank assumption on policy performance. Similar to the
+
+first experiment, we use ds = 20, da = 10, dx = 20, but here we fix imbalance parameter q = 3 and
+
+27
+
+Figure 5: Sub optimality gap of our proposed PRS policy compared with MLE-
+Greedy and MLE-Pessimistic when the imbalance differs in datasets.
+
+vary the ranks r ∈{1, 3, 5}. As shown in Figure 6, across all ranks, the proposed PRS method
+
+consistently outperforms the MLE-Greedy and MLE-Pessimistic policies. The sub-optimality gap
+
+is nearly zero when r = 1, indicating excellent performance under strong low-rank assumptions.
+
+As the rank increases, the performance gap narrows, indicating diminishing gains as the reward
+
+structure becomes less compressible.
+
+Figure 6: Sub optimality gap of our proposed PRS policy compared with MLE-
+Greedy and MLE-Pessimistic when the true rank differs.
+
+28
+
+5.2
+PersonalLLM Dataset
+
+We next evaluate our method on the PersonalLLM dataset (Zollo et al., 2024), a publicly re-
+
+leased benchmark designed to study personalization in large language models. The dataset consists
+
+of prompts covering a wide range of topics and intents (9,402 for training and 1,000 for testing), each
+
+paired with responses generated by 8 different large language models, including GPT-4o, Claude 3,
+
+Llama 3, and Gemini Pro 1.5. Each response is further evaluated by 10 different reward models,
+
+yielding heterogeneous preference signals, as illustrated in Figure 7.
+
+Figure 7: Illustration of the PersonalLLM dataset. For each prompt, multiple re-
+sponses generated by different LLMs are evaluated by a collection of reward models.
+
+Following the experimental procedure of Bose et al. (2025), we generate user contexts from
+
+a uniform distribution.
+For each prompt-response pair, we collect the scores produced by the
+
+10 reward models and standardize them to have mean 0 and unit variance. These standardized
+
+scores are used as the feature representation ϕ(s, a), where s denotes the prompt and a denotes
+
+the candidate response. We then construct a low-rank reward parameter matrix using the same
+
+procedure as in the simulations.
+
+We compare the proposed PRS policy with the MLE-Greedy and MLE-Pessimistic baselines.
+
+29
+
+In the training data, for each prompt, we randomly sample a pair of responses from the 8 candidate
+
+LLM outputs and generate a binary preference label according to the BTL model. We then evaluate
+
+the sub-optimality gap of each policy relative to the optimal decision rule on the test dataset. As
+
+shown in Figure 8, the proposed PRS policy achieves consistently lower sub-optimality gaps than the
+
+baseline methods for different ranks, illustrating the benefit of incorporating low-rank contextual
+
+structure in preference-based RLHF problems.
+
+Figure 8: Sub-optimality gap of the proposed PRS policy compared with MLE-
+Greedy and MLE-Pessimistic with varying ranks on the PersonalLLM dataset.
+
+To further assess robustness, we evaluate performance under the presence of irrelevant noisy
+
+features. Specifically, we augment ϕ(s, a) by concatenating additional noise dimensions, thereby
+
+increasing the ambient feature dimension without changing the underlying preference structure. As
+
+shown in Figure 9, the proposed PRS policy maintains stable performance, whereas the baseline
+
+methods deteriorate as the feature dimension increases.
+
+References
+
+Abbasi-Yadkori, Y., P´al, D., and Szepesv´ari, C. (2011). Improved algorithms for linear stochastic
+
+bandits. Advances in neural information processing systems, 24.
+
+Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Al-
+
+tenschmidt, J., Altman, S., Anadkat, S., et al. (2023). Gpt-4 technical report. arXiv preprint
+
+arXiv:2303.08774.
+
+30
+
+Figure 9: Sub-optimality gap on the PersonalLLM dataset with augmented noisy
+features.
+
+Aghajanyan, A., Zettlemoyer, L., and Gupta, S. (2020).
+Intrinsic dimensionality explains the
+
+effectiveness of language model fine-tuning. arXiv preprint arXiv:2012.13255.
+
+Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli,
+
+D., Henighan, T., et al. (2022). Training a helpful and harmless assistant with reinforcement
+
+learning from human feedback. arXiv preprint arXiv:2204.05862.
+
+Barnett, P., Freedman, R., Svegliato, J., and Russell, S. (2023).
+Active reward learning from
+
+multiple teachers. arXiv preprint arXiv:2303.00894.
+
+Bian, Z., Shi, C., Qi, Z., and Wang, L. (2024). Off-policy evaluation in doubly inhomogeneous
+
+environments. Journal of the American Statistical Association, pages 1–27.
+
+Boldi, R., Ding, L., Spector, L., and Niekum, S. (2024). Pareto-optimal learning from preferences
+
+with hidden context. arXiv preprint arXiv:2406.15599.
+
+Bose, A., Xiong, Z., Chi, Y., Du, S. S., Xiao, L., and Fazel, M. (2025). Lore: Personalizing llms
+
+via low-rank reward modeling. arXiv preprint arXiv:2504.14439.
+
+Bradley, R. A. and Terry, M. E. (1952). Rank analysis of incomplete block designs: I. the method
+
+of paired comparisons. Biometrika, 39(3/4):324–345.
+
+Brown, T. B. (2020). Language models are few-shot learners. arXiv preprint arXiv:2005.14165.
+
+Burer, S. and Monteiro, R. D. (2003). A nonlinear programming algorithm for solving semidefinite
+
+programs via low-rank factorization. Mathematical Programming, 95(2):329–357.
+
+31
+
+Cai, J., Chen, R., Wainwright, M. J., and Zhao, L. (2023). Doubly high-dimensional contextual
+
+bandits: An interpretable model for joint assortment-pricing. arXiv preprint arXiv:2309.08634.
+
+Casper, S., Davies, X., Shi, C., Gilbert, T. K., Scheurer, J., Rando, J., Freedman, R., Korbak, T.,
+
+Lindner, D., Freire, P., et al. (2023). Open problems and fundamental limitations of reinforcement
+
+learning from human feedback. arXiv preprint arXiv:2307.15217.
+
+Chakraborty, S., Qiu, J., Yuan, H., Koppel, A., Huang, F., Manocha, D., Bedi, A. S., and Wang,
+
+M. (2024). Maxmin-rlhf: Towards equitable alignment of large language models with diverse
+
+human preferences. arXiv preprint arXiv:2402.08925.
+
+Chen, Y., Fan, J., Ma, C., and Yan, Y. (2019). Inference and uncertainty quantification for noisy
+
+matrix completion. Proceedings of the National Academy of Sciences, 116(46):22931–22937.
+
+Chen, Y., Fan, J., Ma, C., and Yan, Y. (2021). Bridging convex and nonconvex optimization in
+
+robust pca: Noise, outliers, and missing data. Annals of statistics, 49(5):2948.
+
+Chi, Y., Lu, Y. M., and Chen, Y. (2019). Nonconvex optimization meets low-rank matrix factor-
+
+ization: An overview. IEEE Transactions on Signal Processing, 67(20):5239–5269.
+
+Christiano, P. F., Leike, J., Brown, T., Martic, M., Legg, S., and Amodei, D. (2017). Deep rein-
+
+forcement learning from human preferences. Advances in neural information processing systems,
+
+30.
+
+Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. (2024). Qlora: Efficient finetuning
+
+of quantized llms. Advances in Neural Information Processing Systems, 36.
+
+Ding, N., Qin, Y., Yang, G., Wei, F., Yang, Z., Su, Y., Hu, S., Chen, Y., Chan, C.-M., Chen, W.,
+
+et al. (2023). Parameter-efficient fine-tuning of large-scale pre-trained language models. Nature
+
+Machine Intelligence, 5(3):220–235.
+
+Duan, C., Li, J., and Xia, D. (2024). Online policy learning and inference by matrix completion.
+
+arXiv preprint arXiv:2404.17398.
+
+Fan, J., Hou, J., and Yu, M. (2024a). Covariate assisted entity ranking with sparse intrinsic scores.
+
+arXiv preprint arXiv:2407.08814.
+
+Fan, J., Hou, J., and Yu, M. (2024b). Uncertainty quantification of mle for entity ranking with
+
+covariates. Journal of Machine Learning Research, 25(358):1–83.
+
+32
+
+Fan, J., Kwon, H., and Zhu, X. (2025). Uncertainty quantification for ranking with heterogeneous
+
+preferences. arXiv preprint arXiv:2509.01847.
+
+Fan, Y. and Tang, C. Y. (2013). Tuning parameter selection in high dimensional penalized likeli-
+
+hood. Journal of the Royal Statistical Society Series B: Statistical Methodology, 75(3):531–552.
+
+Feffer, M., Heidari, H., and Lipton, Z. C. (2023). Moral machine or tyranny of the majority? In
+
+Proceedings of the AAAI Conference on Artificial Intelligence, volume 37, pages 5974–5982.
+
+Fu, Z., Qi, Z., Wang, Z., Yang, Z., Xu, Y., and Kosorok, M. R. (2022). Offline reinforcement
+
+learning with instrumental variables in confounded markov decision processes. arXiv preprint
+
+arXiv:2209.08666.
+
+Hsu, D., Kakade, S. M., and Zhang, T. (2012). A tail inequality for quadratic forms of subgaussian
+
+random vectors. Electronic Communications in Probability, 17.
+
+Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. (2021).
+
+Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685.
+
+Jain, P., Netrapalli, P., and Sanghavi, S. (2013). Low-rank matrix completion using alternating
+
+minimization. In Proceedings of the forty-fifth annual ACM symposium on Theory of Computing,
+
+pages 665–674.
+
+Jang, J., Kim, S., Lin, B. Y., Wang, Y., Hessel, J., Zettlemoyer, L., Hajishirzi, H., Choi, Y., and
+
+Ammanabrolu, P. (2023). Personalized soups: Personalized large language model alignment via
+
+post-hoc parameter merging. arXiv preprint arXiv:2310.11564.
+
+Jeon, H. J., Milli, S., and Dragan, A. (2020). Reward-rational (implicit) choice: A unifying formal-
+
+ism for reward learning. Advances in Neural Information Processing Systems, 33:4415–4426.
+
+Jin, Y., Yang, Z., and Wang, Z. (2021). Is pessimism provably efficient for offline rl? In International
+
+Conference on Machine Learning, pages 5084–5096. PMLR.
+
+Jun, K.-S., Willett, R., Wright, S., and Nowak, R. (2019). Bilinear bandits with low-rank structure.
+
+In International Conference on Machine Learning, pages 3163–3172. PMLR.
+
+Kang, Y., Hsieh, C.-J., and Lee, T. C. M. (2022). Efficient frameworks for generalized low-rank
+
+matrix bandit problems. Advances in Neural Information Processing Systems, 35:19971–19983.
+
+33
+
+Kiran, B. R., Sobh, I., Talpaert, V., Mannion, P., Al Sallab, A. A., Yogamani, S., and P´erez, P.
+
+(2021). Deep reinforcement learning for autonomous driving: A survey. IEEE Transactions on
+
+Intelligent Transportation Systems, 23(6):4909–4926.
+
+Kirk, H. R., Vidgen, B., R¨ottger, P., and Hale, S. A. (2023). Personalisation within bounds: A risk
+
+taxonomy and policy framework for the alignment of large language models with personalised
+
+feedback. arXiv preprint arXiv:2303.05453.
+
+Konishi, S. and Kitagawa, G. (1996).
+Generalised information criteria in model selection.
+
+Biometrika, 83(4):875–890.
+
+Kveton, B., Szepesv´ari, C., Rao, A., Wen, Z., Abbasi-Yadkori, Y., and Muthukrishnan, S. (2017).
+
+Stochastic low-rank bandits. arXiv preprint arXiv:1712.04644.
+
+Lee, S. J., Sun, W. W., and Liu, Y. (2025).
+Low-rank online dynamic assortment with dual
+
+contextual information. Journal of the American Statistical Association, (just-accepted):1–22.
+
+Li, C., Farkhoor, H., Liu, R., and Yosinski, J. (2018). Measuring the intrinsic dimension of objective
+
+landscapes. arXiv preprint arXiv:1804.08838.
+
+Li, G., Ma, C., and Srebro, N. (2022). Pessimism for offline linear contextual bandits using ℓp
+
+confidence sets. Advances in Neural Information Processing Systems, 35:20974–20987.
+
+Li, L., Lu, Y., and Zhou, D. (2017). Provably optimal algorithms for generalized linear contextual
+
+bandits. In International Conference on Machine Learning, pages 2071–2080. PMLR.
+
+Liu, D. C. and Nocedal, J. (1989). On the limited memory BFGS method for large scale optimiza-
+
+tion. Mathematical Programming, 45(1):503–528.
+
+Liu, P., Shi, C., and Sun, W. W. (2024). Dual active learning for reinforcement learning from
+
+human feedback. arXiv preprint arXiv:2410.02504.
+
+Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap, T., Harley, T., Silver, D., and Kavukcuoglu,
+
+K. (2016). Asynchronous methods for deep reinforcement learning. In Balcan, M. F. and Wein-
+
+berger, K. Q., editors, Proceedings of The 33rd International Conference on Machine Learning,
+
+volume 48 of Proceedings of Machine Learning Research, pages 1928–1937, New York, New York,
+
+USA. PMLR.
+
+34
+
+Mnih, V., Kavukcuoglu, K., Silver, D., Rusu, A. A., Veness, J., Bellemare, M. G., Graves, A.,
+
+Riedmiller, M., Fidjeland, A. K., Ostrovski, G., et al. (2015). Human-level control through deep
+
+reinforcement learning. nature, 518(7540):529–533.
+
+Negahban, S. and Wainwright, M. J. (2011). Estimation of (near) low-rank matrices with noise
+
+and high-dimensional scaling. Annals of statistics, 39(2):1069–1097.
+
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., Zhang, C., Agarwal,
+
+S., Slama, K., Ray, A., et al. (2022). Training language models to follow instructions with human
+
+feedback, 2022. URL org/abs/2203.02155, 13:1.
+
+Park, C., Liu, M., Kong, D., Zhang, K., and Ozdaglar, A. (2024). Rlhf from heterogeneous feedback
+
+via personalization and preference aggregation.
+
+Poddar, S., Wan, Y., Ivison, H., Gupta, A., and Jaques, N. (2024).
+Personalizing reinforce-
+
+ment learning from human feedback with variational preference learning.
+arXiv preprint
+
+arXiv:2408.10075.
+
+Prabhakaran, V., Davani, A. M., and Diaz, M. (2021). On releasing annotator-level labels and
+
+information in datasets. arXiv preprint arXiv:2110.05699.
+
+Ramesh, S. S., Hu, Y., Chaimalas, I., Mehta, V., Sessa, P. G., Ammar, H. B., and Bo-
+
+gunovic, I. (2024). Group robust preference optimization in reward-free rlhf. arXiv preprint
+
+arXiv:2405.20304.
+
+Rashidinejad, P., Zhu, B., Ma, C., Jiao, J., and Russell, S. (2021). Bridging offline reinforcement
+
+learning and imitation learning: A tale of pessimism. Advances in Neural Information Processing
+
+Systems, 34:11702–11716.
+
+Sallab, A. E., Abdou, M., Perot, E., and Yogamani, S. (2017). Deep reinforcement learning frame-
+
+work for autonomous driving. arXiv preprint arXiv:1704.02532.
+
+Shi, C., Zhu, J., Shen, Y., Luo, S., Zhu, H., and Song, R. (2024). Off-policy confidence inter-
+
+val estimation with confounded markov decision process. Journal of the American Statistical
+
+Association, 119(545):273–284.
+
+Sidahmed, H., Phatale, S., Hutcheson, A., Lin, Z., Chen, Z., Yu, Z., Jin, J., Komarytsia, R.,
+
+Ahlheim, C., Zhu, Y., et al. (2024). Perl: Parameter efficient reinforcement learning from human
+
+feedback. arXiv preprint arXiv:2403.10704.
+
+35
+
+Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre, L., Van Den Driessche, G., Schrittwieser,
+
+J., Antonoglou, I., Panneershelvam, V., Lanctot, M., et al. (2016). Mastering the game of go
+
+with deep neural networks and tree search. nature, 529(7587):484–489.
+
+Stojanovic, S., Jedra, Y., and Proutiere, A. (2024). Model-free low-rank reinforcement learning via
+
+leveraged entry-wise matrix estimation. arXiv preprint arXiv:2410.23434.
+
+Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S.,
+
+Bhargava, P., Bhosale, S., et al. (2023). Llama 2: Open foundation and fine-tuned chat models.
+
+arXiv preprint arXiv:2307.09288.
+
+Tropp, J. A. (2012).
+User-friendly tail bounds for sums of random matrices.
+Foundations of
+
+Computational Mathematics, 12:389–434.
+
+Wainwright, M. J. (2019). High-dimensional statistics: A non-asymptotic viewpoint, volume 48.
+
+Cambridge university press.
+
+Wang, L., Zhang, X., and Gu, Q. (2017). A unified computational and statistical framework for
+
+nonconvex low-rank matrix estimation. In Artificial Intelligence and Statistics, pages 981–990.
+
+PMLR.
+
+Xia, D. and Yuan, M. (2021). Statistical inferences of linear forms for noisy matrix completion.
+
+Journal of the Royal Statistical Society Series B: Statistical Methodology, 83(1):58–77.
+
+Zhan, W., Uehara, M., Kallus, N., Lee, J. D., and Sun, W. (2023). Provable offline reinforcement
+
+learning with human feedback. In ICML 2023 Workshop The Many Facets of Preference-Based
+
+Learning.
+
+Zhang, J., Sun, W. W., and Li, L. (2023). Generalized connectivity matrix response regression with
+
+applications in brain connectivity studies. Journal of Computational and Graphical Statistics,
+
+32(1):252–262.
+
+Zheng, Q. and Lafferty, J. (2016). Convergence analysis for rectangular matrix completion using
+
+burer-monteiro factorization and gradient descent. arXiv preprint arXiv:1605.07051.
+
+Zhong, H., Deng, Z., Su, W. J., Wu, Z. S., and Zhang, L. (2024). Provable multi-party reinforcement
+
+learning with diverse human feedback. arXiv preprint arXiv:2403.05006.
+
+36
+
+Zhu, B., Jordan, M., and Jiao, J. (2023). Principled reinforcement learning with human feedback
+
+from pairwise or k-wise comparisons. In International Conference on Machine Learning, pages
+
+43037–43067. PMLR.
+
+Zhu, Z., Li, X., Wang, M., and Zhang, A. (2022). Learning markov models via low-rank optimiza-
+
+tion. Operations Research, 70(4):2384–2398.
+
+Ziegler, D. M., Stiennon, N., Wu, J., Brown, T. B., Radford, A., Amodei, D., Christiano, P.,
+
+and Irving, G. (2019). Fine-tuning language models from human preferences. arXiv preprint
+
+arXiv:1909.08593.
+
+Zollo, T. P., Siah, A. W. T., Ye, N., Li, A., and Namkoong, H. (2024). Personalllm: Tailoring llms
+
+to individual preferences. arXiv preprint arXiv:2409.20296.
+
+37
+
+Supplementary Materials
+
+“Low-Rank Contextual Reinforcement Learning from
+Heterogeneous Human Feedback”
+
+This supplement provides additional empirical results, implementation details, additional dis-
+
+cussions, and all technical proofs. In particular, Section S.1 studies the rank estimation of the
+
+proposed low-rank model. Section S.2 presents sensitivity analyses, including robustness to data
+
+splitting and to the choice of the pessimism hyperparameter in the confidence bound. Section S.3
+
+reports runtime results, and Section S.4 discusses several promising future research directions. Sec-
+
+tion S.5 details the implementation of pessimistic policy optimization. Finally, Section S.6 collects
+
+the technical proofs of all supporting lemmas and theorems.
+
+S.1
+Rank Estimation
+
+In this section, we study the empirical performance of rank selection for the proposed low-rank
+
+model. Following standard practice, we adopt a generalized information criterion (GIC) (Konishi
+
+and Kitagawa, 1996; Fan and Tang, 2013) to select the rank by balancing goodness of fit and model
+
+complexity. Specifically, for each candidate rank r, we compute the penalized objective defined as:
+
+GIC(r) = Ln(ˆΘr) + an · r(dx + dϕ −r),
+
+where Ln denotes the negative log-likelihood, ˆΘr is the rank-r constrained minimizer of Ln and
+
+an is the penalty parameter. Following Lee et al. (2025), we set an = C · log n/n with C = 0.1 to
+
+ensure consistency of rank selection. We estimate the rank estimation accuracy under the setting
+
+of our simulation studies in Section 5.1, with ds = 20, da = 10, dx = 20 with rank r = 3 and
+
+imbalanced action distribution with parameter 3 and a diagonal matrix with diagonal entries 2.
+
+1
+
+Figure 10 reports the accuracy of the estimated rank as a function of the sample size N. The results
+
+show that the proposed procedure reliably recovers the true rank as the sample size increases.
+
+Figure 10: Accuracy of rank estimation using GIC.
+
+S.2
+Sensitivity Analysis
+
+We conduct additional sensitivity analyses to assess the robustness of the proposed method to
+
+data splitting and to the choice of the pessimism parameter C2.
+
+S.2.1
+Data Split
+
+We examine the sensitivity of the proposed PRS policy to different random splits of the offline
+
+dataset into training and evaluation sets. We use N/N0 ∈{0.2, 0.5, 0.8} and a “No Split” setting
+
+where the entire dataset is used both for subspace estimation and uncertainty quantification in the
+
+reduced space. Similar to our simulation studies in Section 5.1, we use ds = 20, da = 10, dx = 20
+
+with rank r = 3 and imbalance parameter 3.
+
+As shown in Figure 11, the performance of the algorithm is robust to the choice of the data split
+
+ratio provided that N0 = Ω(N). While our theoretical analysis requires N0 and N to be of the same
+
+2
+
+order, empirical results indicate that performance is strongest in the no-split setting. Motivated by
+
+this observation, we adopt the no-split configuration in all subsequent numerical experiments.
+
+Figure 11: Sub-optimality of proposed method under different data splits.
+
+S.2.2
+Confidence Bound Hyperparameter
+
+We further conduct a sensitivity analysis on hyperparameters of the confidence bound. The
+
+confidence threshold C is our PRS algorithm is derived from Lemma 1. For practical implemen-
+
+tation, we use the formula C = C2 ·
+q
+
+(dx+dϕ)r
+
+N−N0 , where C2 is a hyperparameter. We analyze the
+
+sub-optimality of our proposed method over C2 ∈{1, 5, 10} as shown in Figure 12. When C2 is
+
+too small, the resulting confidence region is overly narrow and the algorithm derives limited benefit
+
+from pessimism; when C2 is too large, excessive pessimism leads to conservative decisions and de-
+
+graded performance. Based on this empirical trade-off, we set C2 = 5 in all numerical experiments.
+
+Importantly, the choice of C2 affects only the finite-sample behavior of the algorithm and does not
+
+alter the theoretical guarantees, which hold up to universal constant factors.
+
+3
+
+Figure 12: Sub-optimality of proposed method under different confidence bound
+parameter C2.
+
+S.3
+Runtime Analysis
+
+In this section, we report the total runtime of the experiment pipeline in our simulation studies
+
+for representative feature dimensions(dx, dϕ), with the sample size fixed at N = 10, 000 and rank
+
+r = 3. The reported runtime includes data preprocessing, model initialization, and execution of all
+
+compared methods. As summarized in Table 1, the overall runtime increases smoothly with the
+
+feature dimensions and exhibits an approximately linear dependence on both dx and dϕ. These
+
+results indicate that the proposed approach remains computationally feasible and scales favorably
+
+to moderately high-dimensional settings.
+
+dx
+dϕ
+Time (s)
+30
+30
+≈51.9
+30
+50
+≈83.6
+50
+50
+≈152.7
+100
+30
+≈179.0
+100
+50
+≈251.3
+
+Table 1: Average runtime across varying feature dimensions dx and dϕ.
+
+4
+
+S.4
+Future Directions
+
+In this section, we highlight several potential directions for future research. In this work, we
+
+evaluate the value of a policy using the expectation of the preference function over a given distri-
+
+bution. This approach can be extended to optimize more complex social welfare functions, such as
+
+the Nash welfare function or the Leximin welfare function (Zhong et al., 2024). Another promising
+
+direction is the selection of experts and queries, commonly referred to as active learning (Liu et al.,
+
+2024). Furthermore, investigating robustness under model misspecification, potentially building on
+
+recent frameworks for covariate-assisted ranking (Fan et al., 2024b,a), represents an important step
+
+toward ensuring reliability in complex feedback environments. Beyond addressing the heterogeneity
+
+of contexts, it is crucial to consider non-stationary environments, where the underlying distribu-
+
+tions change over time (Bian et al., 2024). These directions offer exciting opportunities to enhance
+
+the robustness and applicability of algorithms in reinforcement learning with human feedback.
+
+S.5
+Implementation of Policy Optimization
+
+In this section, we provide details on how to perform the policy optimization on the pessimistic
+
+value function. Note that the pessimistic value function can be simplified:
+
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, a) =
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρθ⊤
+rtvzrtv(x, s, a)
+
+= ˆθ⊤
+rtv
+
+E(x,s)∼ρzrtv(x, s, a)
+
+−
+min
+∥∆∥W ≤C ∆⊤
+E(x,s)∼ρzrtv(x, s, a)
+
+
+≥ˆθ⊤
+rtv
+
+E(x,s)∼ρzrtv(x, s, a)
+
+−
+min
+∥∆∥W ≤C ∥∆∥W ·
+
+
+E(x,s)∼ρzrtv(x, s, a)
+
+∥W −1
+
+≥ˆθ⊤
+rtv
+
+E(x,s)∼ρzrtv(x, s, a)
+
+−C ·
+
+
+E(x,s)∼ρzrtv(x, s, a)
+
+
+W −1 .
+
+5
+
+Therefore the pessimistic policy will be
+
+
+ˆθ⊤
+rtv
+
+E(x,s)∼ρzrtv(x, s, π)
+
+−C ·
+
+
+E(x,s)∼ρzrtv(x, s, π)
+
+
+W −1
+
+.
+
+ˆπ = arg max
+π
+
+We can approximate the pessimistic policy by optimizing the relaxed pessimistic reward:
+
+
+ˆθ⊤
+rtv
+
+E(x,s)∼ρzrtv(x, s, π)
+
+−C · E(x,s)∼ρ [∥zrtv(x, s, π)∥W −1]
+
+.
+(S1)
+
+˜π = arg max
+π
+
+Note that the pessimistic term is larger by Jensen’s inequality as we now take the expectation of
+
+the norm, instead of the norm of the expectation. Then the approximate policy becomes equivalent
+
+to optimizing per (x, s) pair:
+
+
+ˆθ⊤
+rtvzrtv(x, s, a) −C · ∥zrtv(x, s, a)∥W −1
+
+(S2)
+
+˜π(x, s) = arg max
+a∈A
+
+or in the distribution shift framework optimizing with respect to the conditional distribution x|s:
+
+
+Ex∼ρ|s
+h
+ˆθ⊤
+rtvzrtv(x, s, a) −C · ∥zrtv(x, s, a)∥W −1
+i
+.
+
+˜π(s) = arg max
+a∈A
+
+This is similar to the pessimistic value iteration (PEVI) proposed by Jin et al. (2021).
+
+If we use the relaxed reward (S1) for optimizing the policy, as discussed in Li et al. (2022), the
+
+sub-optimality gap bound will also be loosened to the expectation of the norm, instead of norm of the
+
+expectation. In other words, the concentratability coefficient C∗will be E(x,s)∼ρ ∥zrtv(x, s, π∗)∥W −1
+
+which will provide a loose upper bound.
+
+S.6
+Technical Proofs
+
+In this supplement, we provide detailed proofs of the theoretical analysis.
+
+S.6.1 Derivation of the Properties of the Concentratability Coefficient.
+
+6
+
+S.6.2 Estimation Bound for the Low-Rank Optimization: Proof of Theorem 1.
+
+S.6.3 Estimation Bound for the Rotation-Truncation-Vectorization.
+
+S.6.4 Confidence Bound of the reduced parameter: Proof of Lemma 1.
+
+S.6.1
+Properties of the Concentratability Coefficient
+
+In this section, we derive the theoretical properties of the concentratability coefficient under
+
+rotation and truncation. Suppose yt = U⊤xt for orthonormal matrix U. Let Σx = P xtx⊤
+t and
+
+Σy = P yty⊤
+t . Then,
+
+Σy =
+X
+U⊤xtx⊤
+t U = U⊤ΣxU
+
+and therefore, Σy = U⊤Σ−1
+x U. Therefore, for y = U⊤x, y⊤Σ−1
+y y = x⊤UU⊤Σ−1
+x UU⊤x = x⊤Σ−1
+x x
+
+and hence, the concentratability coefficient is constant over rotation.
+
+The concentratability coefficient decreases as we remove covariates. Let x⊤= (x⊤
+1 , x⊤
+2 ). Also
+
+denote
+
+
+
+
+
+
+
+Σ11
+Σ12
+
+Σ =
+X
+xx⊤=
+
+
+.
+
+Σ21
+Σ22
+
+Note that
+
+
+
+
+
+
+
+Σ−1
+11·2
+−Σ−1
+11·2Σ12Σ−1
+22
+
+Σ−1 =
+
+
+,
+
+−Σ−1
+22 Σ21Σ−1
+11·2
+Σ−1
+22 + Σ−1
+22 Σ21Σ−1
+11·2Σ12Σ−1
+22
+
+where Σ11·2 = Σ11 −Σ12Σ−1
+22 Σ21. Therefore we can verify that
+
+x⊤Σ−1x = x⊤
+2 Σ−1
+22 x2 + (x1 −Σ12Σ−1
+22 x2)⊤Σ−1
+11·2(x1 −Σ12Σ−1
+22 x2)
+
+≥x⊤
+2 Σ−1
+22 x2.
+
+7
+
+Moreover note that
+
+vec(U ⊤x(V ⊤ϕ)⊤) = (V ⊤ϕ) ⊗(U⊤x)
+
+= (V ⊤⊗U⊤)(ϕ ⊗x)
+
+= (V ⊗U)⊤(ϕ ⊗x),
+
+where V ⊗U will also be an orthonormal matrix. This indicates rotation on both sides in our
+
+propose RTV will not change the value of the concentratability coefficient.
+
+S.6.2
+Proof of Estimation Bound
+
+In this section, we provide the proof of Theorem 3, which is the formal statement of Theorem
+
+1. First, we establish a one-step bound of Algorithm 1 (Lemma 2). Then we verify the conditions
+
+required for the one-step bound such as the restricted strong convexity (RSC) condition and the
+
+bound on the gradient (Lemma 3, 4).
+Finally we extend the one-step result to the converged
+
+estimator to complete the proof. First we state the formal estimation bound.
+
+Theorem 3 (Formal Estimation Bound). Suppose Assumptions 1 and 2 holds. Then we have the
+
+estimation bound:
+
+s
+
+(3γλmin(V ) + 32 + 16γ) · σ1r log( dx+dϕ
+
+δ
+)
+2σrn
+
+∥ˆΘ −Θ∗∥F ≤12BxBϕ
+
+γλmin(V )
+
+with probability at least 1 −δ, where V =
+1
+n0
+Pn0
+t=1 ztz⊤
+t =
+1
+n0
+Pn0
+t=1(ϕtϕ⊤
+t ) ⊗(xtx⊤
+t ).
+
+We begin the proof by re-stating the results on convergence of factored gradient descent algo-
+
+rithm on general loss functions from Zhang et al. (2023). Since the result on Zhang et al. (2023)
+
+is a general result for where the loss is a joint function of a low-rank matrix and a sparse tensor,
+
+we state the simplified result without the assumptions on the tensor portion. First we define the
+
+minimal Frobenius norm under rotation.
+
+8
+
+Definition 1. For Z1, Z2 ∈Rd×r, d(Z1, Z2) is defined as the minimal Frobenius norm between Z1
+
+and Z2 under rotation i.e.,
+
+d(Z1, Z2) = min
+R∈Qr ∥Z1 −Z2R∥F ,
+
+where Qr is the space of r-dimensional rotation matrices, i.e., Qr = {R ∈Rr×r : R⊤R = RR⊤=
+
+Ir}.
+
+Next we use the following Lemma to illustrate the one-step rate decrease in terms of the new
+
+metric.
+
+Lemma 2 (Lemma 1 from (Zhang et al., 2023)). Suppose ℓsatisfies the restricted strong convexity
+
+and restricted smoothness i.e., for any matrices Θ1, Θ2 ∈B(Θ∗, 1) with rank at most r,
+
+µ
+
+2 ∥Θ2 −Θ1∥2
+F ≤ℓ(Θ2) −ℓ(Θ1) −⟨∇ℓ(Θ1), Θ2 −Θ1⟩≤L
+
+2 ∥Θ2 −Θ1∥2
+F .
+
+Let σ1, . . . , σr denote the singular values of Θ∗. Let c1, c2 be a constant such that c1 ≤min{1/32, µ/(192L2)},
+
+min{µ, 2}/(6L + 4) and consider the step size δ = c1/σ1. Let Z∗= [U∗; V ∗], and Z(t) =
+
+c2 ≤
+p
+
+[U(t), V (t). If d(Z(t), Z∗) ≤c2
+√σ∗r, then Algorithm 1 satisfies
+
+d2(Z(t+1), Z∗) ≤ρd2(Z(t), Z∗) −δµ
+
+4 ∥Θ(t) −Θ∗∥2
+F + C1∥∇ℓ(Θ∗)∥2
+2,
+
+where ρ = 1 −δµσr/16, C1 = 48rδ2σ1 + 2δ(8r/µ + r/L).
+
+Next step is checking the assumptions of Lemma 2. Note that
+
+|θ⊤zt| ≤∥θ∥2 · ∥zt∥2
+
+= ∥Θ∥F · ∥Zt∥F
+
+= ∥Θ∥F · ∥ϕ(st, at1) −ϕ(st, at2)∥2 · ∥xt∥2
+
+≤2BθBϕBx
+
+9
+
+and therefore
+
+1
+4V ⪰∇2
+θ L(θ) ⪰γV,
+
+where γ = (2 + exp(−2BθBϕBx) + exp(2BθBϕBx))−1 and
+
+n
+X
+
+V = 1
+
+t=1
+ztz⊤
+t
+
+n
+
+n
+X
+
+= 1
+
+
+(ϕ(st, at1) −ϕ(st, at0))(ϕ(st, at1) −ϕ(st, at0))⊤
+⊗(xtx⊤
+t )
+
+.
+
+n
+
+t=1
+
+Then we have the following result on the restricted strong convexity and smoothness of the loss
+
+function:
+
+Lemma 3 (Restricted Strong Convexity and Smoothness).
+
+γλmin(V )∥Y −X∥2
+F ≤Ln(Y ) −Ln(X) −⟨∇Ln(X), Y −X⟩≤1
+
+4λmax(V )∥Y −X∥2
+F ,
+
+where γ :=
+exp(2BθBϕBx)
+(1+exp(2BθBϕBx))2 is a constant and equivalently X, Y ∈BF (Θ∗, 1).
+
+Next to utilize the result of Lemma 2, we need a bound on the last term of the inequality, the
+
+gradient of the loss function evaluated in the true parameter.
+
+Lemma 4 (Bounded Gradient).
+
+s
+
+log(dx+dϕ
+
+n
+X
+
+1
+n
+
+≤2BxBϕ
+
+
+1(yt = 0) −
+exp(−θ⊤zt)
+1 + exp(−θ⊤zt)
+
+δ
+)
+n
+= ϵ(n, δ)
+
+
+Zt
+
+t=1
+
+with probability at least 1 −δ.
+
+Plugging in the results of Lemma 3 and 4 to Lemma 2 and since λmax(V ) ≥λmin(V )., we have
+
+the following result on the converged estimator ˆΘ:
+
+10
+
+Corollary 2 (Formal Estimation Bound). If ∥Θ0−Θ∗∥≤c2√σr where c2 ≤
+p
+
+min{µ, 2} · (6L + 4),
+
+then:
+
+∥ˆΘ −Θ∗∥2
+F ≤288σ1(3γλmin(V ) + 32 + 16γ) · r log(dx+dϕ
+
+δ
+)
+4σrγ2λ2
+min(V )
+B2
+xB2
+ϕ
+
+or equivalently
+
+s
+
+(3γλmin(V ) + 32 + 16γ) · σ1r log( dx+dϕ
+
+δ
+)
+2σrn
+.
+
+∥ˆΘ −Θ∗∥F ≤12BxBϕ
+
+γλmin(V )
+
+S.6.2.1
+Proof of Lemma 3
+
+For proof of Lemma 3, we use Taylor expansion and bounds on the second moment of the loss
+
+function. From the definition of the loss function, We can easily check that
+
+n
+X
+
+exp(−θ⊤zt)
+(1 + exp(−θ⊤zt))2 ztz⊤
+t .
+
+∇2L(θ) = 1
+
+n
+
+t=1
+
+Further note that from the Taylor expansion, we have:
+
+L(Y ) −L(X) −⟨∇L(X), Y −X⟩= (y −x)⊤∇2L(¯¯θ)(y −x),
+(S3)
+
+where x = vec(X), y = vec(Y ), ¯θ = cx + (1 −c)y for some c ∈(0, 1). Now assume x, y, ∈B(θ∗, 1),
+
+and assume ∥θ∥2 ≤Bθ for all θ ∈B(θ∗, 1). Then, ∥¯θ∥2 ≤Bθ, so |(¯θ)⊤zt| ≤2BθBϕBx. Then, we
+
+can easily check that
+
+γ :=
+exp(2BθBϕBx)
+(1 + exp(2BθBϕBx))2 ≤
+exp(−(¯θ)⊤zt)
+(1 + exp(−(¯θ)⊤zt))2 ≤1
+
+4.
+
+Therefore,
+
+γV ⪯∇2
+θL(¯θ) ⪯1
+
+4V.
+
+11
+
+Combined with (S3), we have
+
+γλmin(V )∥Y −X∥2
+F ≤L(Y ) −L(X) −⟨∇L(X), Y −X⟩≤1
+
+4λmax(V )∥Y −X∥2
+F ,
+
+which completes the proof.
+
+S.6.2.2
+Proof of Lemma 4
+
+We use the following Bernstein inequality for rectangular matrices from (Tropp, 2012):
+
+Lemma 5 ((Bernstein Inequality for Rectangular Matrices, Theorem 1.6 of (Tropp, 2012)). Suppose
+
+Mk ∈Rd1×d2 are independent random matrices. Suppose E Mk = 0 and ∥Mk∥2 ≤R almost surely.
+
+Define
+
+(
+
+,
+
+)
+
+σ2 := max
+
+X
+
+X
+
+k
+E(MkM⊤
+k )
+
+k
+E(M⊤
+k Mk)
+
+.
+
+Then for all t ≥0,
+
+(
+
+≥t
+
+)
+
+≤(d1 + d2) · exp
+
+−t2/2
+σ2 + Rt/3
+
+
+.
+
+X
+
+P
+
+k
+Mk
+
+For brevity, let us denote pt =
+1
+1+exp(−θ⊤zt) and ϵt = yt −pt. We can easily check that E ϵt = 0.
+
+Denote ϕt = ϕ(st, at1) −ϕ(st, at0) and plug in Mt = ϵtZt to apply Lemma 5.
+
+Now to verify R in the conditions of Lemma 5, note that |ϵt| ≤1 and ∥Zt∥2 = ∥xt(ϕ(st, at1) −
+
+ϕ(st, at2))∥2 ≤2BxBϕ. Therefore we can say R = 2BxBϕ.
+
+Next we verify σ2. Note that:
+
+" n
+X
+
+n
+X
+
+#
+
+t=1
+E MtM⊤
+t = E
+
+t=1
+ϵ2
+t · xtϕ⊤
+t ϕtx⊤
+t
+
+n
+X
+
+t=1
+E ϵ2
+t ∥ϕt∥2
+2 · xtx⊤
+t
+
+=
+
+n
+X
+
+t=1
+pt(1 −pt) · ∥ϕt∥2
+2 · xtx⊤
+t ,
+
+=
+
+12
+
+since E ϵ2
+it = Var(ϵit) = Var(yit) = (E yit)(1−E yit). Also note that ∥xx⊤v∥= |x⊤v|·∥x∥≤∥x∥2·∥v∥,
+
+so ∥xx⊤∥2 = ∥x∥2. Therefore,
+
+n
+X
+
+n
+X
+
+t=1
+E
+h
+MtM⊤
+t
+i
+
+
+
+
+2
+=
+
+2
+
+t=1
+pt(1 −pt)∥ϕt∥2
+2 · xtx⊤
+t
+
+n
+X
+
+≤1
+
+t=1
+∥ϕt∥2
+2 · ∥xtx⊤
+t ∥2
+
+4
+
+n
+X
+
+= 1
+
+t=1
+∥ϕt∥2
+2 · ∥xt∥2
+2
+
+4
+
+≤nB2
+xB2
+ϕ
+
+and similarly we have:
+
+n
+X
+
+2
+≤nB2
+xB2
+ϕ.
+
+t=1
+E Z⊤
+t Zt
+
+Now applying the Lemma 5 with R = 2BxBϕ and σ2 = nB2
+xB2
+ϕ we have:
+
+n
+X
+
+1
+n
+
+2
+≥t
+
+!
+
+≤(dx + dϕ) exp
+
+−
+3nt2
+
+
+.
+
+P
+
+t=1
+Zt
+
+BxBϕ(6BxBϕ + 4t)
+
+9 η, and select t = 2BxBϕ
+q
+
+Let η = log dx+dϕ
+
+η
+n. Then we
+
+δ
+for some δ ∈(0, 1). Assuming n ≥16
+
+have 4t ≤6BxBϕ. Therefore we have
+
+n
+X
+
+1
+n
+
+2
+≥t
+
+!
+
+≤(dx + dϕ) exp
+
+−
+3nt2
+
+
+
+P
+
+t=1
+Zt
+
+BxBϕ(6BxBϕ + 4t)
+
+!
+
+−
+12B2
+xB2
+ϕη
+
+≤(dx + dϕ) exp
+
+12B2xB2
+ϕ
+
+≤(dx + dϕ) exp(−η) = δ.
+
+Therefore,
+
+
+
+
+
+1
+n
+
+s
+
+log(dx+dϕ
+
+n
+X
+
+2
+≤2BxBϕ
+
+δ
+)
+n
+= ϵ(n, δ),
+
+t=1
+(yt −pt)ϕtx⊤
+t
+
+13
+
+with probability at least 1 −δ. This completes the proof of Lemma 4.
+
+S.6.2.3
+Proof of Corollary 2
+
+Before moving on to the main proof of Corollary 2, we first state the modified result from (Wang
+
+et al., 2017) and Lemma 2.
+
+Proposition 1. For i = 1, 2,, let Ui ∈Rd1×r, Vi ∈Rd2×r and Xi = UiV ⊤
+i . Now denote
+
+
+
+
+
+
+
+
+
+
+
+U1
+
+
+
+U2
+
+Z1 =
+
+
+,
+Z2 =
+
+
+.
+
+V1
+
+V2
+
+Then,
+
+∥X1 −X2∥2
+F ≤2(∥Z2∥2 + d(Z1, Z2))2d2(Z1, Z2).
+
+Proof. Note that for two positive definite matrices A, B with eigenvalue decomposition A = PΛP ⊤
+
+and B = QDQ⊤,
+
+tr(AB) = tr(PΛP ⊤QDQ⊤)
+
+= tr(Q⊤PΛP ⊤QD)
+(∵tr(AB) = tr(BA))
+
+≤tr(Q⊤PΛP ⊤Q) · ∥D∥2
+
+= tr(Λ) · ∥D∥2
+
+= tr(A) · ∥B∥2.
+
+This implies:
+
+∥AB∥2
+F = tr(ABB⊤A⊤)
+
+= tr(BB⊤A⊤A)
+
+≤tr(BB⊤)∥A⊤A∥2
+
+14
+
+= ∥B∥2
+F ∥A∥2
+2
+
+and therefore ∥AB∥F ≤∥B∥F ∥A∥2. Now consider R ∈Qr. Note that:
+
+∥U1(V1 −V2R)⊤∥2
+F = tr(U1(V1 −V2R)⊤(V1 −V2R)U⊤
+1 )
+
+= tr((V1 −V2R)⊤(V1 −V2R)U⊤
+1 U1)
+
+≤∥U⊤
+1 U1∥2 · tr((V1 −V2R)⊤(V1 −V2R))
+
+= ∥U1∥2
+2∥V1 −V2R∥2
+F .
+
+Similarly we have ∥(U1 −U2R)R⊤V ⊤
+2 ∥2
+F ≤∥V2∥2
+2∥U1 −U2R∥2
+F . Now note that for arbitrary vector
+
+v,
+
+∥Ziv∥2
+2 = ∥Uiv∥2
+2 + ∥Viv∥2
+2 ≥∥Uiv∥2
+2.
+
+So we have ∥Zi∥2 ≥∥Ui∥2 and similarly ∥Zi∥2 ≥∥Vi∥2. Now note that:
+
+∥Z1∥2 ≤∥Z1 −Z2R∥2 + ∥Z2R∥2
+
+= ∥Z1 −Z2R∥2 + ∥Z2∥2
+(∵R ∈Qr)
+
+≤∥Z1 −Z2R∥F + ∥Z2∥2.
+(∵∥A∥2 ≤∥A∥F )
+
+And this holds for arbitrary R ∈Qr. Therefore,
+
+∥Z1∥2 ≤∥Z2∥2 + d(Z1, Z2).
+(S4)
+
+Therefore we have:
+
+∥X1 −X2∥2
+F = ∥U1V ⊤
+1 −U2V ⊤
+2 ∥2
+F
+
+15
+
+= ∥U1V ⊤
+1 −U1R⊤V ⊤
+2 + U1R⊤V ⊤
+2 −U2RR⊤V ⊤
+2 ∥2
+F
+
+≤(∥U1(V1 −V2R)⊤∥F + ∥(U1 −U2R)R⊤V ⊤
+2 ∥F )2
+
+≤2(∥U1(V1 −V2R)⊤∥2
+F + ∥(U1 −U2R)R⊤V ⊤
+2 ∥2
+F )
+(∵(a + b)2 ≤2(a2 + b2))
+
+≤2(∥V2∥2
+2∥U1 −U2R∥2
+F + ∥U1∥2
+2∥V1 −V2R∥2
+F )
+(∵∥AB∥2
+F ≤∥A∥F ∥B∥2)
+
+≤2(∥Z2∥2
+2∥U1 −U2R∥2
+F + ∥Z1∥2
+2∥V1 −V2R∥2
+F )
+
+≤2(∥Z2∥2 + d(Z1, Z2))2(∥U1 −U2R∥2
+F + ∥V1 −V2R∥2
+F )
+(∵(S4)
+
+= 2(∥Z2∥2 + d(Z1, Z2))2∥Z1 −Z2R∥2
+F .
+
+Since this holds for arbitrary R ∈Qr, The statement holds.
+
+Now we can finally prove Corollary 2.
+
+Proof. Assume d(Z(0), Z∗) ≤κ1 and C1ϵ(n, δ) ≤(1 −ρ)κ1. Then by induction and using Lemma
+
+2, we can check that d(Z(t), Z∗) ≤κ1 for every t ≥0. Also we have:
+
+d2(Z(t), Z∗) ≤ρtd2(Z(0), Z∗) + C1(1 −ρt)
+
+1 −ρ
+ϵ2(n, δ)
+
+≤ρtκ2
+1 +
+C1
+1 −ρϵ2(n, δ).
+
+Note that for unit vector v ∈Rr with ∥v∥2 = 1,
+
+2
+
+
+
+
+
+
+
+U∗v
+
+∥Z∗v∥2
+2 =
+
+
+
+
+V ∗v
+
+2
+
+= ∥U∗v∥2
+2 + ∥V ∗v∥2
+2
+
+≤∥U∗∥2
+2 + ∥V ∗∥2
+2
+
+= 2∥Θ∗∥2.
+
+16
+
+2∥Θ∗∥2 = √2σ1. Using Proposition 1, we have:
+
+Therefore ∥Z∗∥2 ≤
+p
+
+∥Θ(t) −Θ∗∥2
+F ≤2(
+√
+
+2σ1 + d(Z(t), Z∗))2d2(Z(t), Z∗)
+
+≤(4σ1 + 2d2(Z(t), Z∗))d2(Z(t), Z∗).
+(∵(a + b)2 ≤2(a2 + b2))
+
+As t →∞, we have:
+
+∥ˆΘ −Θ∗∥2
+F ≤
+
+4σ1 + 2C1
+
+1 −ρϵ2(n, δ)
+
+·
+C1
+1 −ρϵ2(n, δ).
+
+Now assume ϵ2(n, δ) ≤5(1−ρ)σ1
+
+2C1
+. Then we have:
+
+∥ˆΘ −Θ∗∥2
+F ≤9σ1C1
+
+1 −ρ ϵ2(n, δ).
+
+Now note that C1 = r(48δ2σ1 + 2δ(8/µ + 1/L)). So we have:
+
+
+48δ2σ1 + 2δ
+8
+
+
+rϵ2(n, δ).
+
+∥ˆΘ −Θ∗∥2
+F ≤9σ1
+
+µ + 1
+
+1 −ρ
+
+L
+
+Plugging in the values of δ = c1/σ1 and ρ = 1 −δµσr/16 we have:
+
+
+24c1 + 8
+
+
+rϵ2(n, δ).
+
+∥ˆΘ −Θ∗∥2
+F ≤9σ1 · 32
+
+µ + 1
+
+µσr
+
+L
+
+Now note that the constants are defined as:
+
+µ = γλmin(V )
+
+L = 1
+
+4λmax(V )
+
+s
+
+log(dx+dϕ
+
+δ
+)
+n
+BxBϕ
+
+ϵ(n, δ) =
+
+17
+
+c1 ≤min
+1
+
+
+≤1
+
+32,
+µ
+192L2
+
+32.
+
+Plugging in the values we achieve:
+
+
+r · log(dx+dϕ
+
+δ
+)
+n
+B2
+xB2
+ϕ
+
+σr
+·
+n
+γλmin(V ) ·
+
+24c1 +
+8
+γλmin(V ) +
+4
+λmax(V )
+
+∥ˆΘ −Θ∗∥2
+F ≤288σ1
+
+r log( dx+dϕ
+
+δ
+)
+λmin(V )
+B2
+xB2
+ϕ.
+
+σr · γ ·
+3
+
+= 288σ1
+
+4 +
+8
+γλmin(V ) +
+4
+λmax(V )
+
+Plugging in λmax(V ) ≥λmin(V ) completes the proof.
+
+S.6.3
+Estimation Error from Rotation-Truncation-Vectorization
+
+Here we show the estimation bound of “rotation-truncation” with respect to the estimated
+
+subspace. Consider the following Lemma from Jun et al. (2019).
+
+Lemma 6 (Wedin’s sinΘ theorem, Appendix B of (Jun et al., 2019)). Let ˆΘ = [ ˆU, ˆU⊥] ˆD[ ˆV , ˆV⊥]⊤
+
+and Θ∗= U∗D∗V ∗be the SVD of ˆΘ and Θ∗. Then,
+
+∥ˆU⊤
+⊥U∗∥F ∥ˆV ⊤
+⊥V ∗∥F ≤∥ˆΘ −Θ∗∥2
+F
+σ∗2
+r
+,
+
+where σ∗
+k is the k-th(smallest) eigenvalue of Θ∗.
+
+Now let Θ∗
+r = ˆUΘ∗ˆV ⊤be the rotated true parameter with respect to the estimated subspace
+
+ˆU, ˆV . Let (Θ∗
+r)22 denote the lower right (dx −r) × (dϕ −r) sub-matrix of Θ∗
+r. Then we have
+
+∥(Θ∗
+r)22∥F ≤∥ˆU⊥U∥F ∥ˆV⊥V ∥F · ∥D∗∥2 ≤σ∗
+1
+σ∗2
+r
+∥ˆΘ −Θ∗∥2
+F .
+
+18
+
+Combining this with our estimation bound from Theorem 1, we have
+
+∥(Θ∗
+r)22∥F ≤C2 · σ2
+1r log( dx+dϕ
+
+δ
+)
+σ3rn0
+=: S⊥.
+(S5)
+
+With this result, we can derive the estimation bound of ˆθrtv with respect to the semi-norm
+
+∥· ∥W , which is used to define the confidence set of Algorithm 2.
+
+S.6.4
+Proof of Lemma 1
+
+Consider the function
+
+n
+X
+
+!
+
+1
+1 + exp(−z⊤
+t,rtvθrtv) −
+1
+1 + exp(−⟨Zt, Θ∗⟩)
+
+zt,rtv.
+
+J(θrtv) =
+
+t=1
+
+Further consider the likelihood function on the reduced space:
+
+n
+X
+
+Lrtv(θrtv) = 1
+
+
+log
+
+1 + exp(−z⊤
+t,rtvθrtv))
+
++ (1 −yt)z⊤
+t,rtvθrtv)
+
+
+n
+
+t=1
+
+Note that the gradient will be:
+
+n
+X
+
+1
+1 + exp(−z⊤
+t,rtvθrtv) −yt
+
+!
+
+∇Lrtv(θrtv) = 1
+
+zt,rtv.
+
+n
+
+t=1
+
+So for the minimizer ˆθrtv of Lrtv, we have ∇Lrtv(ˆθrtv) = 0. Therefore, J(ˆθrtv) = Pn
+t=1 ϵtzt,rtv
+
+where ϵt = yt −E yt. Let V ∈Rn be a vector with ϵt as its components, and let X ∈Rn×k be a
+
+matrix with zt,rtv as its rows. Then, J(ˆθrtv) = X⊤V .
+
+Therefore,
+
+∥J(ˆθrtv)∥W −1 = V ⊤(XW −1X⊤)V =: V ⊤MV
+
+19
+
+and we can easily check that tr(M) ≤nk, tr(M2) ≤n2k and ∥M∥≤n. Using Berstein’s inequality
+
+for sub-Gaussian random variables in quadratic form (Hsu et al., 2012), we have
+
+∥J(ˆθrtv)∥2
+W −1 = V ⊤MV ≤C1 · n · (k + log(1/δ)).
+
+Now note that
+
+n
+X
+
+t=1
+(Φ(z⊤
+t,rtvθ∗
+rtv) −Φ(⟨Zt, Θ∗⟩))zt,rtv,
+
+J(θ∗
+rtv) =
+
+where Φ(x) = 1/(1 + e−x). Also note that |Φ′(x)| = e−x/(1 + e−x)2 ≤1
+
+4. Therefore,
+
+Φ(z⊤
+t,rtvθ∗
+rtv) −Φ(⟨Zt, Θ∗⟩) ≤1
+
+4|z⊤
+t,rtvθ∗
+rtv −⟨Zt, Θ∗⟩|
+
+≤1
+
+4|⟨(Zt,r)22, (Θ∗
+r)22⟩|
+
+≤1
+
+4∥Zt∥F · ∥(Θ∗
+r)22∥F
+
+≤1
+
+2BxBϕ · S⊥
+
+and
+
+v
+u
+u
+t
+
+!⊤
+W −1
+n
+X
+
+n
+X
+
+!
+
+∥J(θ∗
+rtv)∥W −1 ≤1
+
+2BxBϕ · S⊥·
+
+t=1
+|zt,rtv|
+
+t=1
+|zt,rtv|
+
+2BxBϕ · S⊥· n
+√
+
+≤1
+
+k
+
+as
+
+
+
+!⊤
+
+!⊤
+·
+
+!−1 X
+
+!−1 X
+
+X
+
+1
+n
+
+!
+
+1
+n
+
+! X
+
+X
+
+X
+
+i
+ziz⊤
+i
+
+i
+ziz⊤
+i
+
+i
+zi
+
+i
+zi
+
+= tr
+
+i
+zi
+
+i
+zi
+
+
+
+
+
+
+
+!
+
+!−1
+· n ·
+
+1
+n
+
+X
+
+X
+
+i
+ziz⊤
+i
+
+i
+ziz⊤
+i
+
+≤tr
+
+
+
+
+
+= n2k.
+
+20
+
+Also note that
+
+Lrtv(ˆθrtv) −Lrtv(θ∗
+rtv) −⟨∇Lrtv(θ∗
+rtv), ˆθrtv −θ∗
+rtv⟩
+
+=(ˆθrtv −θ∗
+rtv)⊤∇2Lrtv(¯θrtv)(ˆθrtv −θ∗
+rtv)
+
+n
+X
+
+≥(ˆθrtv −θ∗
+rtv)⊤· γ
+
+t=1
+zt,rtvz⊤
+t,rtv(ˆθrtv −θ∗
+rtv)
+
+n ·
+
+=γ · ∥ˆθrtv −θ∗
+rtv∥2
+W ,
+
+where W = X⊤X. Also note that Lrtv(ˆθrtv) ≤Lrtv(θ∗
+rtv). Therefore,
+
+γ · ∥ˆθrtv −θ∗
+rtv∥2
+W ≤|⟨∇Lrtv(θ∗
+rtv), ˆθrtv −θ∗
+rtv⟩| ≤∥∇Lrtv(θ∗
+rtv)∥W −1 · ∥ˆθrtv −θ∗
+rtv∥W
+
+and
+
+∥ˆθrtv −θ∗
+rtv∥W ≤1
+
+γ ∥∇Lrtv(θ∗
+rtv)∥W −1
+
+= 1
+
+nγ ∥J(ˆθrtv) −J(θ∗
+rtv)∥W −1
+
+≤1
+
+
+∥J(ˆθrtv)∥W −1 + ∥J(θ∗
+rtv)∥W −1
+
+
+nγ
+
+r
+
+!
+
+2BxBϕ · S⊥·
+√
+
+≤1
+
+C1 · k + log(1/δ)
+
+n
++ 1
+
+k
+
+γ
+
+which completes the proof.
+
+S.6.5
+Proof of Theorem 2
+
+The key idea of the proof of Theorem 2 is decomposing the sub-optimality gap into three parts.
+
+For brevity, let us denote rθ(x, s, π(x, s)) as rθ(x, s, π). Now define the pessimistic value function
+
+21
+
+ˆJ as:
+
+ˆJ(π) :=
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, π).
+
+Then the proposed pessimistic policy ˆπ is given as: ˆπ := arg maxπ ˆJ(π). Let us first consider the
+
+individualized policy where each policy is given in the form of π(x, s). Note that the sub optimality
+
+gap can be decomposed as sum of three differences:
+
+J(π∗) −J((ˆπ) = J(π∗) −ˆJ(π∗) + ˆJ(π∗) −ˆJ(ˆπ) + ˆJ(ˆπ) −J(ˆπ).
+
+By the definition of ˆπ, the second difference satisfies ˆJ(π∗) −ˆJ(ˆπ) ≤0. Further note that for
+
+arbitrary x, s, a,
+
+rΘ∗(x, s, a) −rθ∗
+rtv(x, s, a)
+≤S⊥· ∥zrtv∥≤BxBϕS⊥.
+
+Then conditioned on ∥θ∗
+rtv −ˆθrtv∥W ≤C, the third difference satisfies:
+
+ˆJ(ˆπ) −J(ˆπ) =
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, ˆπ) −E(x,s)∼ρrΘ∗(x, s, ˆπ)
+
+≤BxBϕS⊥+
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, ˆπ) −E(x,s)∼ρrθ∗
+rtv(x, s, ˆπ)
+
+≤BxBϕS⊥.
+
+As for the first difference:
+
+J(π∗) −ˆJ(π∗) = E(x,s)∼ρrΘ∗(x, s, π∗) −
+min
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρrθrtv(x, s, π∗)
+
+≤BxBϕS⊥+
+max
+∥θrtv−ˆθrtv∥W ≤C
+E(x,s)∼ρ
+
+rθ∗
+rtv(x, s, π∗) −rθrtv(x, s, π∗)
+
+
+
+(θ∗
+rtv −θrtv)⊤E(x,s)∼ρzrtv(x, s, π∗)
+
+
+= BxBϕS⊥+
+max
+∥θrtv−ˆθrtv∥W ≤C
+
+22
+
+≤BxBϕS⊥+
+max
+∥θrtv−ˆθrtv∥W ≤C
+∥θ∗
+rtv −ˆθrtv∥W ·
+
+
+E(x,s)∼ρzrtv(x, s, π∗)
+
+
+W −1
+
+≤BxBϕS⊥+ 2C ·
+
+
+E(x,s)∼ρzrtv(x, s, π∗)
+
+
+W −1 .
+
+Combining these results, we have the bound
+
+J(π∗) −J(ˆπ) ≤2BxBϕS⊥+ 2C ·
+
+
+E(x,s)∼ρzrtv(x, s, π∗)
+
+
+W −1
+
+with probability at least 1−δ. Denote C∗=
+
+
+E(x,s)∼ρzrtv(x, s, π∗)
+
+
+W −1. Plugging in the confidence
+
+bound on C from Lemma 1, we have
+
+
+
+
+
+s
+
+2BxBϕ · S⊥·
+√
+
+J(π∗) −J(ˆπ) ≤2BxBϕS⊥+ 2C∗
+
+C3 · k + log(1/δ)
+
+N1
++ 1
+
+.
+
+k
+
+
+
+γ
+
+Note that we have a bound on S⊥given as:
+
+S⊥= C2 · σ2
+1r log( dx+dϕ
+
+δ
+)
+σ3rN0
+
+from (5). Plugging in n0 = Ω(√n) gives us the optimality gap rate
+
+
+
+
+
+s
+
+(dx + dϕ) · r + log(1/δ)
+
+J(π∗) −J(ˆπ) = O
+
+C∗·
+
+.
+
+N −N0
+
+Now assuming N1 = N −N0 = Ω(N) (For example, N0 = N/2), we have the optimal rate in
+
+Theorem 2.
+
+23

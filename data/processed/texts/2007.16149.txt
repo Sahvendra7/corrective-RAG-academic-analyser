@@ -1,0 +1,616 @@
+HMCNAS: NEURAL ARCHITECTURE SEARCH USING
+HIDDEN MARKOV CHAINS AND BAYESIAN OPTIMIZA-
+TION
+
+Vasco Lopes, Lus A. Alexandre
+NOVA LINCS
+Universidade da Beira Interior, Portugal
+
+arXiv:2007.16149v1 [cs.LG] 31 Jul 2020
+
+ABSTRACT
+
+Neural Architecture Search has achieved state-of-the-art performance in a variety
+of tasks, out-performing human-designed networks. However, many assumptions,
+that require human deﬁnition, related with the problems being solved or the mod-
+els generated are still needed: ﬁnal model architectures, number of layers to be
+sampled, forced operations, small search spaces, which ultimately contributes to
+having models with higher performances at the cost of inducing bias into the sys-
+tem. In this paper, we propose HMCNAS, which is composed of two novel com-
+ponents: i) a method that leverages information about human-designed models to
+autonomously generate a complex search space, and ii) an Evolutionary Algorithm
+with Bayesian Optimization that is capable of generating competitive CNNs from
+scratch, without relying on human-deﬁned parameters or small search spaces. The
+experimental results show that the proposed approach results in competitive archi-
+tectures obtained in a very short time. HMCNAS provides a step towards gener-
+alizing NAS, by providing a way to create competitive models, without requiring
+any human knowledge about the speciﬁc task.
+
+1
+INTRODUCTION
+
+The ever-growing success of Machine Learning (ML) applications created a demand for ML sys-
+tems that can be used off-the-shelf without care for its inner components. This success is mostly
+attributed to Deep Learning algorithms, especially Neural Networks, which obtained state-of-the-
+art results in a variety of problems and have been used extensively with great success (LeCun et al.,
+2015; Schmidhuber, 2015). Deep learning architectures removed the need for extensive hand-crafted
+feature extraction and pre-processing steps (Goodfellow et al., 2016). However, applying a ML al-
+gorithm to a problem without being explicitly tailor-made for that speciﬁc problem, usually results
+in non-optimal performances, wherein some cases, the models will even yield poor performances.
+Moreover, designing tailor-made ML algorithms and high performant models can be a difﬁcult task,
+as there are many design choices that are not independent of each another. This is especially true
+when talking about Deep Neural Networks, which have parameters associated with the training pro-
+cedure, the architecture, optimization rules, layers combination and even how to mitigate problems
+such as overﬁtting and vanishing or exploding gradient (Pascanu et al., 2012; Srivastava et al., 2014),
+requiring years of expertize and increasingly demand for architecture engineering. Thus, the need
+for automating the design of Neural Networks become logical (Hutter et al., 2019).
+
+chitectures to achieve better results; 3) the size, and regularly, the ﬁnal architecture of the generated
+networks is speciﬁed by the users; and 4) the inference time of the generated methods is usually
+poor, due to the fact that generated methods grow both in breadth and depth.
+
+To mitigate the problems mentioned above, in this work, we propose a NAS method that performs
+a macro-architecture search, without explicitly deﬁning any outer-skeleton or initial architecture.
+Moreover, the proposed method can autonomously generate a search space, and at the same time,
+leverage information about human-designed networks, which were the result of years of expertize,
+practice and many trial-and-error experiments. To generate the search space, we use all the CNNs
+implemented in PyTorch, which tremendously increases the operations pool (search space) when
+compared to other NAS methods. Then, we generate a Hidden Markov Chain for each model and
+assign a Fitness to it, by evaluating the method using the validation set.
+
+The search strategy uses Bayesian Optimization to generate networks, which are partially trained
+and then evaluated in the validation set, which sets their Fitness score.Evolutionary Strategies are
+also used to allow the system to evolve for several generations, based on the architectures generated
+in the previous generation. In the end, the best model (highest ranking ﬁtness) is trained from scratch
+until convergence. The proposed method is capable of generating competitive networks in only a
+few GPU hours.
+
+The main contributions of this work are:
+
+• A novel NAS method, that designs complete architectures from scratch, without requir-
+ing human-deﬁned parameters, restricting the number of layers, or speciﬁcally forcing an
+architecture shape or structure;
+
+• A simple, yet effective Search Strategy coupled with Bayesian Optimization, that with only
+a few GPU hours can create, from scratch, competitive CNNs;
+
+• A novel way of autonomously designing search spaces, by leveraging information about
+prior networks to create Hidden Markov Chains that contain information about layer tran-
+sition and layer components.
+
+The remainder of this work is structured as follows: Section 2, presents a background an related
+work study. Section 3 presents, in detail, the proposed method. Section 4 explains the experiments
+conducted and the setup. Section 5 provides a conclusion.
+
+2
+BACKGROUND AND RELATED WORK
+
+NAS is a ﬁeld of research that focuses on developing algorithms for automating the design of Neural
+Networks, which are widely used in the ﬁeld of ML. NAS methods are composed of several compo-
+nents: i) the search space, which deﬁnes the pool of possible operations and ultimately, the type(s)
+of networks that can be designed; ii) the search strategy, that deﬁnes the approach that is used to
+explore the search space and generate architectures; and iii) the performance estimation strategy,
+which is responsible for evaluating the performance of the generated architectures. The architecture
+search can be done by performing either a micro or a macro-search. In micro-search, methods focus
+on creating cells or blocks that are replicated multiple times to comply with an outer-skeleton archi-
+tecture, deﬁned by humans, whereas, in macro-search, NAS methods try to evolve entire network
+architectures.
+
+NAS was initially formulated as a Reinforcement Learning (RL) problem, where a controller was
+trained over-time to sample more efﬁcient architectures (Zoph & Le, 2017). Although this was a
+novel and signiﬁcant contribution, it required more than 60 years of computation to solve a particular
+task. In (Zoph et al., 2018), a cell-based search in a search space of 13 operations was performed to
+ﬁnd reduction cells (reduce input size), and normal cells (perform operations). These cells were then
+stacked to form entire networks. The authors also found that the ﬁnal architecture designed using
+CIFAR-10 (Krizhevsky et al., 2009), could be successfully transferred to ImageNet (Deng et al.,
+2009) by stacking more cells, achieving state-of-the-art results in both datasets. The downsize was
+that this method took over 2000 days of computation to achieve good results.
+
+performs NAS by sampling blocks of operations instead of cells, which can then be replicated to
+form networks. More recently, ENAS (Pham et al., 2018), using a controller to discover architectures
+by searching for an optimal subgraph within a large computational graph, showed that it was possible
+to use RL, requiring only a few computational days. DARTS, a gradient-based method, showed
+that by performing a continuous relaxation of the parameters, they could be optimized using a bi-
+level gradient optimization in a few GPU days (Liu et al., 2019b). This work was then improved
+using regularization mechanisms (Zela et al., 2020) and served as the basis for many others (Xie
+et al., 2018; Chen et al., 2019a; Cai et al., 2018b; Xu et al., 2020). Evolutionary-based NAS takes
+inspiration from biologic systems and is a promising NAS line of research, as it includes methods
+for evolving state-of-the-art architectures (Real et al., 2019), to hierarchically represent architectures
+and allow easier search (Liu et al., 2018).
+
+More in-line with our work, are methods that perform macro-search, such as ENAS (Pham et al.,
+2018), which is an efﬁcient approach to macro-search NAS. However, ENAS contains some draw-
+backs. First, the number of layers for the ﬁnal architecture needs to be speciﬁed. Finally, the search
+space is composed of 6 operations: {3 ∗3, 5 ∗5} convolutions, {3 ∗3, 5 ∗5} depthwise-separable
+convolutions and max pooling and average pooling with a kernel size of 3 ∗3, at the same time
+forcing residual blocks, by sampling 2 previous layers to serve as input to the next one, not allowing
+for true search and introducing bias. On the other hand, NAS (Zoph & Le, 2017), while capable
+of generating architectures from scratch, uses a controller that is explicitly parameterized to sample
+architectures with no less than 6 layers, and to increase that size by 2 every 1600 samples, while
+taking 22400 GPU days to sample an efﬁcient architecture for CIFAR-10. LEMONADE (Elsken
+et al., 2019a), designs architectures by performing three network morphism operations - insert con-
+volution, insert skip connection, and increase the number of ﬁlters, requiring an initial architecture,
+where these operations are then performed.
+
+In this paper, we propose HMCNAS, a method capable of generating a CNN from scratch, in a
+complex, arbitrarily large, search space, that is automatically created without human-intervention or
+compounded operations (complex operations that are the result of combining two or more opera-
+tions), and that does not require any parameterization regarding the number number of layers nor its
+architecture.
+
+3
+PROPOSED METHOD
+
+The proposed method is composed of several parts: i) a novel search space mechanism, which
+is capable of autonomously creating new search spaces, and in our case, uses information about
+human-designed networks, since those networks are the result of years of expertise, trial and error,
+and are known to perform well; and ii) a novel NAS mechanism, that performs Bayesian optimiza-
+tion with evolutionary strategies. In the next sections, we detail the novel approaches proposed in
+this work: the novel strategy to create search spaces and the new way of representing networks to
+allow the generation of new architectures using Bayesian optimization.
+
+3.1
+SEARCH SPACE
+
+In this work, the search space is composed of the operations contained in human-generated networks
+that are known to do well. From these, we extract information regarding the layer transition prob-
+abilities and create a Hidden Markov chain for each network, where vertices represent Layers and
+edges represent the probability of going from one layer to the next. A node also contains proba-
+bilities for different layer components. The Hidden Markov chains represent the initial population
+(the search space), forcing the search space to be the possible operations and components that were
+used in those networks. This means that, in contrast to the most common search spaces that use just
+a few operations, our method has a search space which is inherited from other methods - requiring
+no deﬁnition or human intervention. Moreover, it does not require the speciﬁcation of the number
+of layers that the networks should have, and is extremely ﬂexible, as new networks with different
+operations can be added with ease.
+
+(a) DenseNet-161
+(b) ResNet-152
+(c) ShufﬂeNet v2
+(d) VGG16
+
+Figure 1: Example of generated Hidden Markov-Chains for human-designed models.
+
+serman, 2015), ResNet {18, 34, 50, 101, 252} (He et al., 2016), ResNext {50, 101} (Xie et al.,
+2017), DenseNet {121, 161, 169, 201} (Huang et al., 2017), MNASNet {0 5, 0 75, 1 0, 1 3} (Tan
+et al., 2019), MobileNet v2 (Sandler et al., 2018), ShufﬂeNet v2 {0 5, 1 0, 1 5, 2 0} (Ma et al.,
+2018), SqueezeNet {1 0, 1 1} (Iandola et al., 2016), and Wide ResNet {50, 101} (Zagoruyko &
+Komodakis, 2016), thus totaling 34 models, which results in a search space of 19 different opera-
+tions. Examples of generated Markov-Chains of PyTorch models are shown in Figure 1.
+
+Each of the models that comprise the search space were trained for 1 epoch and then had their
+performance evaluated using the validation set, from which the validation accuracy was extracted to
+be used as ﬁtness in the upcoming processes. For our experiments, we did this using the CIFAR-
+10 dataset, in two different setups: using the entire dataset, and a partial dataset, that comprises a
+stratiﬁed 10% of the entire dataset. The ﬁtness of each model and the time taken to create both
+search spaces can be seen in Table 1.
+
+3.2
+DESIGNING CONVOLUTIONAL NEURAL NETWORKS
+
+After the initial population has been created, as opposed to most common strategies, which are
+based on reinforcement learning, gradient descent or evolutionary strategies, the proposed method,
+uses Bayesian Optimization and an Evolutionary Algorithm to perform the search. In this, a new
+generation is created by: 1) performing Elitism, where the 15% best individuals from the previous
+generation are copied without modiﬁcations, and 2) generating new individuals using Bayesian Op-
+timization, where layers are sampled from the individuals of the previous generation based on their
+ﬁtness. A model is sampled using the roulette wheel algorithm, where models that do not contain the
+current layer are removed from the pool of selections. After selecting a model, the next layer and the
+inner components are sampled from all the possible transitions, taken into account the probability of
+state transition from the parent model. Then, partial training is performed, and the validation accu-
+racy is obtained, which serves as Fitness score. In the end, State Transition Hidden Markov-Chains
+are generated for all the new individuals and the generation is incremented by one.
+
+As opposed to other methods that force residual blocks by having every layer input coming from two
+other layers, we included residual blocks as a design choice. When a convolutional layer is sampled
+from the search space, there is a small percentage of it being replaced with a residual block, similar
+to the Bottleneck in ResNet (Zagoruyko & Komodakis, 2016).
+
+Table 1: Accuracy of each method that composes the search space, both using entire and partial
+CIFAR-10 dataset. The last row represents the time, in GPU days, taken to create the entire search
+space using a GeForce 1080Ti graphics card.
+
+Model
+CIFAR-10
+Accuracy (%)
+
+Model
+CIFAR-10
+Accuracy (%)
+
+Partial
+Entire
+
+Partial
+Entire
+
+AlexNet
+49.60
+82.92
+DenseNet121
+81.10
+93.51
+DenseNet161
+87.50
+95.22
+DenseNet169
+86.20
+94.15
+DenseNet201
+85.30
+95.35
+GoogLeNet
+82.70
+92.94
+MNASNet0 5
+3.20
+12.38
+MNASNet0 75
+9.80
+16.19
+MNASNet1 0
+3.20
+80.89
+MNASNet1 3
+9.20
+9.56
+MobileNet v2
+79.30
+90.98
+ResNet18
+82.00
+92.77
+ResNet34
+79.80
+93.90
+ResNet50
+87.20
+94.18
+ResNet101
+89.50
+95.13
+ResNet152
+88.30
+95.77
+ResNeXt50 32x4d
+88.10
+95.15
+ResNeXt101 32x8d
+92.20
+96.56
+
+ShufﬂeNet v2 x0 5
+68.60
+86.21
+ShufﬂeNet v2 x1 0
+78.80
+91.00
+ShufﬂeNet v2 x1 5
+23.30
+46.53
+ShufﬂeNet v2 x2 0
+24.50
+48.07
+SqueezeNet1 0
+25.10
+75.34
+SqueezeNet1 1
+29.90
+74.49
+VGG11
+64.20
+87.93
+VGG11 bn
+73.40
+92.05
+VGG13
+55.60
+87.22
+VGG13 bn
+71.90
+90.96
+VGG16
+39.40
+97.13
+VGG16 bn
+75.60
+93.18
+VGG19
+33.00
+87.25
+VGG19 bn
+78.70
+93.34
+Wide ResNet50 2
+86.60
+94.62
+Wide ResNet101 2
+86.50
+94.67
+
+∆t (days)
+0.016
+0.143
+
+4
+EXPERIMENTS
+
+4.1
+EXPERIMENTAL SETUP
+
+To evaluate the proposed method, we used the following parameters: the number of generations,
+n was 50, the number of individuals nI per generation was 25. Elitism was set to 15%, meaning
+that the 15% individuals with highest ﬁtness from generation i is passed to generation i + 1 without
+any changes or further training in the next generation. The number of epochs to perform the partial
+train while searching for architectures was 1, and the number of epochs to train the best model after
+completing all the generations was 100, using Stochastic Gradient Descent (Bottou et al., 2018).
+
+To conduct the experiments, we used a computer with an NVidia GeForce GTX 1080 Ti, 16Gb of
+ram, SSD disk and an AMD Ryzen 7 2700 processor.
+
+4.2
+RESULTS
+
+Table 2: Classiﬁcation errors of different methods on CIFAR-10. The ﬁrst block presents state-
+of-the-art human-designed networks. The second block presents approaches that design the entire
+networks. Acronyms used: RL - Reinforcement Learning, OS - One Shot, EA - Evolutionary Algo-
+rithm, GB - Gradient Boost, BO - Bayesian Optimization, R - Random.
+
+Architecture
+Test Error
+(%)
+Search Cost
+(GPU Days)
+Params
+(M)
+Search
+Method
+
+DenseNet-BC (Huang et al., 2017)
+3.46
+-
+25.6
+manual
+
+Budgeted Super Nets (Veniat & Denoyer, 2018)
+9.21
+-
+-
+-
+ConvFabrics (Saxena & Verbeek, 2016)
+7.43
+-
+21.2
+-
+Macro NAS + Q-Learning (Baker et al., 2016)
+6.92
+80-100
+11.2
+RL
+Net Transformation (Cai et al., 2018a)
+5.7
+10
+19.7
+RL
+SMASH (Brock et al., 2017)
+4.03
+1.5
+16.0
+OS
+NAS (Zoph & Le, 2017)
+4.47
+22400
+7.1
+RL
+NAS + more ﬁlters (Zoph & Le, 2017)
+3.65
+22400
+37.4
+RL
+ENAS (Pham et al., 2018)
+3.87
+0.32
+38.0
+RL
+LEMONADE I (Elsken et al., 2019a)
+3.37
+56
+8.9
+EA
+RandGrow (Hu et al., 2018)
+2.93
+6
+3.1
+R
+Petridish (Hu et al., 2019)
+2.83
+5
+2.2
+GB
+HMCNAS
+9.41
+0.23
+5.1
+EA+BO
+
+5
+CONCLUSIONS
+
+In this work, we propose a novel approach to the problem of neural architecture search for designing
+entire architectures from scratch. Our method is capable of automatically designing search spaces,
+and leverages human knowledge by using information about some of the best Human-designed net-
+works, which were the result of years of experience and trial and error. By using such information,
+we can create state transition Hidden Markov-chains of each one of the networks and use that to
+generate new architectures.
+
+By using a Bayesian selection, the method is extremely fast and even though it gives more impor-
+tance to the best networks of the previous generation, it allows for controlled novelty search by also
+selecting components from networks with smaller ﬁtnesses. The proposed method not only removes
+the need to specify the possible operations, but also the number of nodes (layers) to be sampled,
+and information about initial architectures or ﬁnal skeletons. HMCNAS provides a step towards
+generalizing NAS, by providing a way to create competitive models, without requiring any human
+knowledge about the speciﬁc task.
+
+REFERENCES
+
+Bowen Baker, Otkrist Gupta, Nikhil Naik, and Ramesh Raskar. Designing neural network architec-
+tures using reinforcement learning. arXiv preprint arXiv:1611.02167, 2016.
+
+Bowen Baker, Otkrist Gupta, Nikhil Naik, and Ramesh Raskar. Designing Neural Network Archi-
+tectures using Reinforcement Learning. In 5th International Conference on Learning Represen-
+tations, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track Proceedings, 2017.
+
+L´eon Bottou, Frank E Curtis, and Jorge Nocedal. Optimization methods for large-scale machine
+learning. Siam Review, 60(2):223–311, 2018.
+
+Andrew Brock, Theodore Lim, James M Ritchie, and Nick Weston. Smash: one-shot model archi-
+tecture search through hypernetworks. arXiv preprint arXiv:1708.05344, 2017.
+
+Han Cai, Ligeng Zhu, and Song Han. Proxylessnas: Direct neural architecture search on target task
+and hardware. arXiv preprint arXiv:1812.00332, 2018b.
+
+Xin Chen, Lingxi Xie, Jun Wu, and Qi Tian. Progressive differentiable architecture search: Bridging
+the depth gap between search and evaluation. In Proceedings of the IEEE International Confer-
+ence on Computer Vision, pp. 1294–1303, 2019a.
+
+Yukang Chen, Tong Yang, Xiangyu Zhang, Gaofeng Meng, Chunhong Pan, and Jian Sun. Det-
+nas: Neural architecture search on object detection. arXiv preprint arXiv:1903.10979, 1(2):4–1,
+2019b.
+
+Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li Fei-Fei. Imagenet: A large-scale hi-
+erarchical image database. In 2009 IEEE conference on computer vision and pattern recognition,
+pp. 248–255. Ieee, 2009.
+
+Thomas Elsken, Jan Hendrik Metzen, and Frank Hutter. Efﬁcient multi-objective neural architec-
+ture search via lamarckian evolution. In International Conference on Learning Representations,
+2019a. URL
+
+Thomas Elsken, Jan Hendrik Metzen, and Frank Hutter.
+Neural architecture search: A survey.
+Journal of Machine Learning Research, 20(55):1–21, 2019b.
+
+Chen Gao, Yunpeng Chen, Si Liu, Zhenxiong Tan, and Shuicheng Yan. Adversarialnas: Adversarial
+neural architecture search for gans. In Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, pp. 5680–5689, 2020.
+
+Xinyu Gong, Shiyu Chang, Yifan Jiang, and Zhangyang Wang. Autogan: Neural architecture search
+for generative adversarial networks. In Proceedings of the IEEE International Conference on
+Computer Vision, pp. 3224–3234, 2019.
+
+Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep learning. MIT press, 2016.
+
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recog-
+nition. In Proceedings of the IEEE conference on computer vision and pattern recognition, pp.
+770–778, 2016.
+
+Hanzhang Hu, John Langford, Rich Caruana, Eric Horvitz, and Debadeepta Dey. Macro neural
+architecture search revisited. In 2nd Workshop on Meta-Learning at NeurIPS, 2018.
+
+Hanzhang Hu, John Langford, Rich Caruana, Saurajit Mukherjee, Eric J Horvitz, and Debadeepta
+Dey. Efﬁcient forward architecture search. In Advances in Neural Information Processing Sys-
+tems, pp. 10122–10131, 2019.
+
+Gao Huang, Zhuang Liu, Laurens Van Der Maaten, and Kilian Q Weinberger. Densely connected
+convolutional networks. In Proceedings of the IEEE conference on computer vision and pattern
+recognition, pp. 4700–4708, 2017.
+
+Frank Hutter, Lars Kotthoff, and Joaquin Vanschoren. Automated Machine Learning. Springer,
+2019.
+
+Forrest N Iandola, Song Han, Matthew W Moskewicz, Khalid Ashraf, William J Dally, and Kurt
+Keutzer. Squeezenet: Alexnet-level accuracy with 50x fewer parameters and¡ 0.5 mb model size.
+arXiv preprint arXiv:1602.07360, 2016.
+
+Alex Krizhevsky. One weird trick for parallelizing convolutional neural networks. arXiv preprint
+arXiv:1404.5997, 2014.
+
+Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple layers of features from tiny images.
+Technical report, Citeseer, 2009.
+
+Chenxi Liu, Liang-Chieh Chen, Florian Schroff, Hartwig Adam, Wei Hua, Alan L Yuille, and Li Fei-
+Fei. Auto-deeplab: Hierarchical neural architecture search for semantic image segmentation.
+In Proceedings of the IEEE conference on computer vision and pattern recognition, pp. 82–92,
+2019a.
+
+Hanxiao Liu, Karen Simonyan, Oriol Vinyals, Chrisantha Fernando, and Koray Kavukcuoglu. Hier-
+archical Representations for Efﬁcient Architecture Search. In International Conference on Learn-
+ing Representations, 2018.
+
+Hanxiao Liu, Karen Simonyan, and Yiming Yang. DARTS: Differentiable architecture search. In
+International Conference on Learning Representations, 2019b.
+
+Ningning Ma, Xiangyu Zhang, Hai-Tao Zheng, and Jian Sun. Shufﬂenet v2: Practical guidelines for
+efﬁcient cnn architecture design. In Proceedings of the European conference on computer vision
+(ECCV), pp. 116–131, 2018.
+
+Razvan Pascanu, Tomas Mikolov, and Yoshua Bengio. Understanding the exploding gradient prob-
+lem. CoRR, abs/1211.5063, 2:417, 2012.
+
+Hieu Pham, Melody Guan, Barret Zoph, Quoc Le, and Jeff Dean. Efﬁcient neural architecture
+search via parameters sharing. In Proceedings of the 35th International Conference on Machine
+Learning, volume 80 of Proceedings of Machine Learning Research, pp. 4095–4104. PMLR,
+10–15 Jul 2018.
+
+Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V Le. Regularized Evolution for Image
+Classiﬁer Architecture Search. In Proceedings of the AAAI conference on Artiﬁcial Intelligence,
+volume 33, pp. 4780–4789, 2019.
+
+Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, and Liang-Chieh Chen. Mo-
+bilenetv2: Inverted residuals and linear bottlenecks. In Proceedings of the IEEE conference on
+computer vision and pattern recognition, pp. 4510–4520, 2018.
+
+Shreyas Saxena and Jakob Verbeek. Convolutional neural fabrics. In Advances in Neural Informa-
+tion Processing Systems, pp. 4053–4061, 2016.
+
+J¨urgen Schmidhuber. Deep Learning in Neural Networks: An Overview. Neural networks, 61:
+85–117, 2015.
+
+Karen Simonyan and Andrew Zisserman. Very deep convolutional networks for large-scale image
+recognition. In International Conference on Learning Representations, 2015.
+
+Nitish Srivastava, Geoffrey Hinton, Alex Krizhevsky, Ilya Sutskever, and Ruslan Salakhutdinov.
+Dropout: a simple way to prevent neural networks from overﬁtting. The journal of machine
+learning research, 15(1):1929–1958, 2014.
+
+Christian Szegedy, Wei Liu, Yangqing Jia, Pierre Sermanet, Scott Reed, Dragomir Anguelov, Du-
+mitru Erhan, Vincent Vanhoucke, and Andrew Rabinovich. Going deeper with convolutions. In
+Proceedings of the IEEE conference on computer vision and pattern recognition, pp. 1–9, 2015.
+
+Christian Szegedy, Vincent Vanhoucke, Sergey Ioffe, Jon Shlens, and Zbigniew Wojna. Rethink-
+ing the inception architecture for computer vision. In Proceedings of the IEEE conference on
+computer vision and pattern recognition, pp. 2818–2826, 2016.
+
+Mingxing Tan, Bo Chen, Ruoming Pang, Vijay Vasudevan, Mark Sandler, Andrew Howard, and
+Quoc V Le. Mnasnet: Platform-aware neural architecture search for mobile. In Proceedings of
+the IEEE Conference on Computer Vision and Pattern Recognition, pp. 2820–2828, 2019.
+
+Tom Veniat and Ludovic Denoyer. Learning time/memory-efﬁcient deep architectures with bud-
+geted super networks. In Proceedings of the IEEE Conference on Computer Vision and Pattern
+Recognition, pp. 3492–3500, 2018.
+
+Sirui Xie, Hehui Zheng, Chunxiao Liu, and Liang Lin. Snas: stochastic neural architecture search.
+arXiv preprint arXiv:1812.09926, 2018.
+
+Yuhui Xu, Lingxi Xie, Xiaopeng Zhang, Xin Chen, Guo-Jun Qi, Qi Tian, and Hongkai Xiong.
+Pc-darts: Partial channel connections for memory-efﬁcient architecture search. In International
+Conference on Learning Representations, 2020.
+
+Sergey Zagoruyko and Nikos Komodakis. Wide residual networks. Procedings of the British Ma-
+chine Vision Conference 2016, 2016. doi: 10.5244/c.30.87. URL
+5244/C.30.87.
+
+Arber Zela, Thomas Elsken, Tonmoy Saikia, Yassine Marrakchi, Thomas Brox, and Frank Hutter.
+Understanding and Robustifying Differentiable Architecture Search. In International Conference
+on Learning Representations, 2020.
+
+Zhao Zhong, Junjie Yan, Wei Wu, Jing Shao, and Cheng-Lin Liu. Practical Block-Wise Neural Net-
+work Architecture Generation. In IEEE Conference on Computer Vision and Pattern Recognition,
+CVPR 2018, 2018.
+
+Barret Zoph and Quoc V. Le. Neural architecture search with reinforcement learning. In Interna-
+tional Conference on Learning Representations 2017 (ICLR), 2017.
+
+Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V. Le. Learning transferable architectures
+for scalable image recognition. 2018 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, Jun 2018. doi: 10.1109/cvpr.2018.00907. URL
+1109/CVPR.2018.00907.

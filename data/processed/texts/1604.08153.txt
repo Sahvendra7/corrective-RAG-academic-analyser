@@ -1,0 +1,718 @@
+Classifying Options for Deep Reinforcement Learning
+
+Kai Arulkumaran1, Nat Dilokthanakul2, Murray Shanahan2, and Anil Anthony Bharath1
+
+1 Department of Bioengineering
+2 Department of Computing
+Imperial College London, London SW7 2BP, UK
+
+arXiv:1604.08153v3 [cs.LG] 19 Jun 2017
+
+Abstract
+
+policy. The ability to use options gives the agent many ad-
+vantages, such as temporally-extended exploration, allowing
+planning across a range of time scales and the ability to trans-
+fer knowledge to different tasks.
+Another approach, MAXQ [Dietterich, 2000], decomposes
+a task into a hierarchy of subtasks. This decomposition allows
+MAXQ agents to improve performance towards achieving the
+main objective by recursively solving smaller problems ﬁrst.
+Both the options and MAXQ frameworks are constructed so
+that prior domain knowledge can be implemented naturally.
+Both approaches can be viewed as constructing a main policy
+from smaller sub-policies with implemented prior knowledge
+on either the structural constraints or the behaviour of the sub-
+policies themselves.
+We consider the class of problems where the task can be
+broken down into reward-independent subtasks by a human
+expert. The task decomposition is done such that the sub-
+tasks share the same state space, but can be explicitly parti-
+tioned (for different options). If the action space can similarly
+be partitioned, then this knowledge can also be incorporated
+to bound the actions available to each option policy. With
+this domain knowledge we decompose the DQN into a com-
+position of smaller representations, derived from prior work
+on hierarchical reinforcement learning. Although there is ev-
+idence that the DQN can implicitly learn options [Zahavy et
+al., 2016], we investigate whether there is any beneﬁt to con-
+structing options explicitly.
+
+In this paper we combine one method for hi-
+erarchical reinforcement learning—the options
+framework—with
+deep
+Q-networks
+(DQNs)
+through the use of different “option heads” on the
+policy network, and a supervisory network for
+choosing between the different options. We utilise
+our setup to investigate the effects of architectural
+constraints in subtasks with positive and negative
+transfer, across a range of network capacities. We
+empirically show that our augmented DQN has
+lower sample complexity when simultaneously
+learning subtasks with negative transfer, without
+degrading performance when learning subtasks
+with positive transfer.
+
+1
+Introduction
+Recent advances in reinforcement learning have focused on
+using deep neural networks to represent the state-action value
+function (Q-function) [Mnih et al., 2015] or a policy func-
+tion [Levine et al., 2015]. The successes of such methods
+are largely attributed to the representational power of deep
+networks. It is tempting to create an ultimate end-to-end so-
+lution to general problems with these kinds of powerful mod-
+els. However, these general methods require large amount of
+samples in order to learn effective policies.
+In order to reduce sample complexity, one can use domain
+knowledge to construct an algorithm that is biased towards
+promising solutions. The deep Q-network (DQN) [Mnih et
+al., 2015] is an end-to-end reinforcement learning algorithm
+that has achieved great success on a variety of video games
+[Bellemare et al., 2013]. In this work, we explore the possi-
+bility of imposing some structural priors onto the DQN as a
+way of adding domain knowledge, whilst trying to limit the
+reduction in generality of the DQN.
+In classical reinforcement learning literature, there is a
+large amount of research focusing on temporal abstraction
+of problems, which is known under the umbrella of hierar-
+chical reinforcement learning. The options framework [Sut-
+ton et al., 1999] augments the set of admissible actions with
+temporally-extended actions that are called options. In this
+context, an option is a closed-loop controller that can exe-
+cute either primitive actions or other options according to its
+
+1.1
+Related Work
+
+Our “option heads” are inspired by Osband et al. [2016].
+Their policy network is similar to ours, but without the ad-
+ditional supervisory network.
+Their network’s “bootstrap
+heads” are used with different motivations. They train each
+of the heads, with different initialisations, on the same task.
+This allows the network to represent a distribution over Q-
+functions.
+Exploration is done “deeply” by sampling one
+head and using its policy for the whole episode, while the
+experiences are shared across the heads. Our motivation for
+using option heads, however, is for allowing the use of tem-
+porally abstracted actions akin to the options framework, or
+more concretely, as a way to decompose the policy into a
+combination of simpler sub-policies. This motivates the use
+of a supervisory network, which is discussed in Subsection
+3.2.
+
+2
+Background
+
+Consider a reinforcement learning problem, where we want
+to ﬁnd an agent’s policy π which maximises the expected dis-
+counted reward, E[R] = E [P
+
+t γtrt]. The discount parame-
+ter, γ ∈[0, 1], controls the importance of immediate rewards
+relative to more distant rewards in the future. The reward rt
+is a scalar value emitted from a state st ∈S. The policy se-
+lects and performs an action at ∈A in response to the state
+st, which then transitions to st+1. The transition of states is
+modelled as a Markov decision process (MDP) where each
+state is a sufﬁcient statistic of the entire history, so that the
+transition at time t need only depend on st−1 and the action
+at−1. See [Sutton and Barto, 1998] for a full introduction.
+The Q-learning algorithm [Watkins, 1989] solves the re-
+inforcement learning problem by approximating the optimal
+state-action value or Q-function, Q∗(st, at), which is deﬁned
+as the expected discounted reward starting from state st and
+taking initial action at, and henceforth following the optimal
+policy π∗:
+Q∗(st, at) = E[Rt|st, at, π∗]
+
+The Q-function must satisfy the Bellman equation,
+
+Q∗(st, at) = Est+1[rt + γ max
+at+1 Q∗(st+1, at+1)].
+
+We can approximate the Q-function with a function approx-
+imator Q(s, a; θ), with parameters θ. Learning is done by
+adjusting the parameters in such a way to reduce the inconsis-
+tency between the left and the right hand sides of the Bellman
+equation. The optimal policy can be derived by simply choos-
+ing the action that maximises Q∗(s, a) at each time step.
+
+2.1
+Deep Q-networks
+
+The DQN [Mnih et al., 2015] is a convolutional neural net-
+work that represents the Q-function Q(s, a; θ) with parame-
+ters θ. The (online) network is trained by minimising a se-
+quence of loss functions at iteration i:
+
+Li(θi) = Es,a,r,s′[(yi −Q(s, a; θi))2]
+
+yi = r + γ max
+a′ Q(s′, a′; θ−)
+(1)
+
+The parameters θ−are associated with a separate target
+network, which is updated with θi every τ steps. The target
+network increases the stability of the learning. The param-
+eters θi are updated with mini-batch stochastic gradient de-
+scent following the gradient of the loss function.
+Another key to the successful training of DQNs is the use
+of experience replay [Lin, 1992]. Updating the parameters,
+θi, with stochastic gradient descent on the squared loss func-
+tion implies an i.i.d. assumption which is not valid in an
+online reinforcement learning problem. Experience replay
+stores samples of past transitions in a pool. While training,
+samples are drawn uniformly from this pool. This helps break
+the temporal correlation between samples and also allows up-
+dates to reuse samples several times.
+
+yi = r + γQ(s′, argmax
+a′
+Q(s′, a′; θi); θ−).
+
+2.3
+The Options Framework
+The orginal deﬁnition of options [Sutton et al., 1999] consists
+of three components: a policy, π, a termination condition, β,
+and an initiation set, I. We illustrate the role of these compo-
+nents by following the interpretation by Daniel et al. [2012].
+Consider a stochastic policy, π(at|st), or a distribution
+over actions, at, given state, st, at time step t. We add an aux-
+iliary variable, ot ∈O, such that at is dependent on ot, and,
+ot is dependent on st and ot−1. This variable ot controls the
+selection of action at through their conditional dependence,
+π(at|st, ot), and can be interpreted as the policy of a Markov
+option ot. The termination condition, β, can be thought of as
+a speciﬁc constraint of the conditional form, imposed on the
+transition of the option as follows:
+
+π(ot|ot−1, st) ∝β(st, ot−1)π(ot|st)
++ δot,ot−1(1 −β(st, ot−1)),
+
+Figure 1: Comparison of DQN architectures. a) Standard
+DQN. b) DQN with 2 option heads.
+
+where δot,ot−1 is 1 when ot = ot−1 and 0 otherwise. The
+initiation set speciﬁes the domain of st available to π(ot|st).
+We consider a fully observable MDP where st is assumed
+to be a sufﬁcient statistic for all the history before t, including
+ot−1. Therefore, we can model ot to be conditionally inde-
+pedent of ot−1 given st. We deﬁne our “supervisory policy”
+as π(ot|st). Both the termination condition and the initiation
+set are absorbed into the supervisory policy. The full policy
+is then decomposed into:
+
+setting, the set of games are so different that the states are un-
+likely to have many features in common [Rusu et al., 2015],
+but we would assume that in a hierarchical reinforcement
+learning setting with subtasks this problem does not occur.
+In addition to our augmented policy network, Qo(s, a) :
+O × S × A →R, where o indexes over option heads, we
+also introduce a supervisory network, O(s) : S →O, which
+learns a mapping from a state to an option; this allows each
+option head to focus on a subset of the state space. With our
+networks, our full policy can be written as a deterministic
+mapping, π(s) : S →A,
+
+π(at|st) =
+X
+
+ot
+π(ot|st)π(at|ot, st).
+
+This form of policy can be seen as a combination of option
+policies, weighted by the supervisory policy. We will show
+in the next section how we decompose the DQN into separate
+option policies, alongside a supervisory policy.
+
+π(s) = argmax
+a
+QO(s)(s, a)
+
+3.1
+Option Heads
+
+3
+Deep Q-networks with Option Heads
+
+The option heads consist of fully connected layers which
+branch out from the topmost shared convolution layer. The
+ﬁnal layer of each head outputs the Q-value for each dis-
+crete action available, and hence can be limited using do-
+main knowledge of the task at hand and the desired options.
+While training, an oracle is used to choose which option head
+should be evaluated at each time step t. The action at is
+picked with the ϵ-greedy strategy on the ot head, where ϵ is
+shared between all heads. The experience samples are tuples
+of (st, at, st+1, rt), and are stored in separate experience re-
+play buffers for each head. During evaluation the oracle is
+replaced with the decisions of the supervisory network.
+
+We augment the standard DQN with several distinct sets
+of outputs; concretely we use the same architecture as the
+bootstrapped DQN [Osband et al., 2016] or the MCDQN
+[Parisotto et al., 2015]. As with the MCDQN, we use domain
+knowledge to choose the number of heads a priori, and use
+this same knowledge to train each option head separately. A
+comparison between a standard DQN and a DQN with option
+heads that we use is pictured in Figure 1. As noted in [Rusu
+et al., 2015], even this augmentation can fail in a multitask
+setting with different policies interfering at the lower levels
+of the network, which highlights the need for further study.
+Along with other work on the DQN, we assume that the
+convolutional layers learn a general representation of the state
+space, whilst the fully connected layers at the top of the net-
+work encode most of the actual policy. In the multitask Atari
+
+3.2
+Supervisory Network
+
+The supervisory network is an arbitrary neural network clas-
+siﬁer which represents the supervisory policy. The input layer
+
+Figure 2: 8 frames of Catch. The ﬁrst row shows the white
+ball subtask, and the second row shows the grey ball subtask.
+
+receives the entire state. The hidden layers can be constructed
+using domain knowledge, e.g. convolutional layers for visual
+domains. The output layer is a softmax layer which outputs
+the distribution over options, ot, given the state, st, and can be
+trained with the standard cross-entropy loss function. During
+training the targets are given from an oracle.
+
+4
+Experiments
+
+For our experiments we reimplemented the game of “Catch”
+[Mnih et al., 2014], where the task is to control a paddle at
+the bottom of the screen to catch falling balls (see Figure 2).
+The input is a greyscale 24x24 pixel grid, and the action space
+consists of 3 discrete actions: move left, move right and a no-
+op. As in [Mnih et al., 2015], the DQN receives a stack of the
+current plus previous 3 frames. During each episode a 1 pixel
+ball falls randomly from the top of the screen, and the agent’s
+2-pixel-wide paddle must move horizontally to catch it. In
+the original a reward of +1 is given for catching a white ball;
+we add an additional grey ball to introduce subtasks into the
+environment. This simple environment allows us to meaning-
+fully evaluate the effects of the architecture on subtasks with
+positive and negative transfer. For the positive transfer case
+the subtasks are the same—catching either ball results in a
+reward of +1. In the negative transfer case the grey ball still
+gives a reward of +1, but catching the white ball results in a
+reward of -1. In this subtask the optimal agent must learn to
+catch the grey balls and avoid the perceptually-similar white
+balls; suboptimal solutions would include avoiding or catch-
+ing both types of balls. In both setups the type of ball used is
+switched every episode.
+Our baseline is the standard DQN. In order to provide a fair
+comparison, we impose one condition on the architecture of
+our policy network, and one condition on its training. For the
+ﬁrst condition we divide the number of neurons in the hid-
+den layer of each option head by the number of option heads,
+thereby keeping the number of parameters the same. For the
+second condition we alternate heads when performing the Q-
+learning update, keeping the number of training samples the
+same. We also construct a “half DQN”, which contains half
+the parameters of the standard DQN in the fully connected
+hidden layer; this uses the standard architecture, not the op-
+tion heads. This tests whether the sample complexity of our
+DQN with option heads is either the result of having fewer
+parameters to tune in each head, or the result of our imposed
+structural constraint. More details on the model architectures
+and training hyperparameters are given in the Appendix.
+
+5
+Discussion
+
+We show that with a simple architectural adjustment, it is pos-
+sible to successfully impose prior domain knowledge about
+subtasks into the DQN algorithm. We demonstrate this idea
+in a game of catch, where the task of catching or avoiding
+falling balls depending on their colour can be decomposed
+intuitively into the subtask of catching grey balls and another
+subtask of avoiding white balls—subtasks that incur negative
+transfer. We show that learning the subtasks separately on dif-
+ferent option heads allows the DQN to learn with lower sam-
+ple complexity. The shared convolutional layers learn gener-
+ally useful features, whilst the heads learn to specialise. In
+comparison, the standard DQN presumably suffers from sub-
+task interference with only a single Q-function. Additionally,
+the structural constraint does not hinder performance when
+learning subtasks with positive transfer.
+Our results are contrary to those reported with the MCDQN
+trained on eight Atari games simultaneously, which was out-
+performed by a standard DQN [Parisotto et al., 2015]. Ac-
+cording to Parisotto et al. [2015], the standard DQN and
+MCDQN tend to focus on performing well on a subset of
+games at the expense of the others. We posit that this “strat-
+egy” works well for the DQN, whilst the explicitly con-
+
+1.0
+
+0.8
+
+0.8
+
+0.8
+
+Positive Transfer
+
+0.6
+
+Average Scores
+
+0.6
+
+0.6
+
+0.4
+
+0.4
+
+0.4
+
+0.2
+
+Half DQN
+Standard DQN
+Option Heads
+
+0.2
+
+0.2
+
+0.0
+
+0.0
+
+0.0
+
+0.2
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+0.5
+
+0.5
+
+0.5
+
+0.4
+
+0.4
+
+0.4
+
+Negative Transfer
+
+0.3
+
+0.3
+
+0.3
+
+Average Scores
+
+0.2
+
+0.2
+
+0.2
+
+0.1
+
+0.1
+
+0.1
+
+Half DQN
+Standard DQN
+Option Heads
+
+0.0
+
+0.0
+
+0.0
+
+0.1
+
+0.1
+
+0.1
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+0
+20
+40
+60
+80
+100
+Epoch
+
+Figure 3: The average score per episode of the standard DQN, half DQN and DQN with 2 option heads. The average and
+standard deviation are calculated over 15 runs (with different random seeds), with the score for each run being averaged over
+250 episodes. Each epoch corresponds to 10000 training steps. The number of neurons corresponds to the number of neurons in
+the fully connected hidden layer of the standard DQN. In the positive transfer setting the most important factor is capacity, not
+the architecture. As capacity increases the difference in performance between the networks diminishes. In the negative transfer
+setting the effect of capacity is strong when capacity is very low, but otherwise the DQN with option heads demonstrates a
+superior sample complexity over the baselines. Best viewed in colour.
+
+References
+
+structed controller heads on the MCDQN receive more con-
+sistent training signals, which may cause parameter gradients
+that interfere with each other in the shared convolutional lay-
+ers [Caruana, 2012; Rusu et al., 2015]. This is less of a con-
+cern in the hierarchical reinforcement learning setting as we
+assume a more coherent state space across all subtasks.
+In the regime of subtasks rather than multiple tasks, the
+DQN with option heads is not as generalisable as goal-based
+approaches [Schaul et al., 2015; Kulkarni et al., 2016]. How-
+ever, these methods currently require a hand-crafted represen-
+tation of the goals as input for their networks—a sensible ap-
+proach only when the goal representation can be reasonably
+appended to the state space. In contrast, our oracle mapping
+from states to options can be used when constructing rep-
+resentations of goals as inputs is not a straightforward task.
+This suggests future work in removing the oracle by focus-
+ing on option discovery, where the agent must learn options
+without the use of a supervisory signal.
+
+[Bellemare et al., 2013] Marc G Bellemare, Yavar Naddaf,
+Joel Veness, and Michael Bowling. The Arcade Learning
+Environment: An Evaluation Platform for General Agents.
+Journal of Artiﬁcial Intelligence Research, 47:253–279,
+2013.
+
+[Caruana, 2012] Rich Caruana. A dozen tricks with multi-
+task learning. In Neural Networks: Tricks of the Trade,
+pages 163–189. Springer, 2012.
+
+[Daniel et al., 2012] Christian Daniel, Gerhard Neumann,
+and Jan R Peters.
+Hierarchical relative entropy policy
+search. In International Conference on Artiﬁcial Intelli-
+gence and Statistics, pages 273–281, 2012.
+
+[Dietterich, 2000] Thomas G Dietterich. Hierarchical rein-
+forcement learning with the MAXQ value function de-
+composition. Journal of Artiﬁcial Intelligence Research,
+13:227–303, 2000.
+
+Acknowledgements
+
+[Hinton et al., 2015] Geoffrey Hinton, Oriol Vinyals, and
+Jeff Dean. Distilling the knowledge in a neural network.
+arXiv preprint arXiv:1503.02531, 2015.
+
+The authors gratefully acknowledge a gift of equipment from
+NVIDIA Corporation and the support of the EPSRC CDT in
+Neurotechnology.
+
+Appendix
+
+[Levine et al., 2015] Sergey Levine, Chelsea Finn, Trevor
+Darrell, and Pieter Abbeel. End-to-end training of deep
+visuomotor policies.
+arXiv preprint arXiv:1504.00702,
+2015.
+
+A
+Model
+We use a smaller DQN than the one speciﬁed in [Mnih et
+al., 2015]. The baseline (standard) DQN architecture that we
+used in our experiments, with a capacity of “32 neurons”, is
+as follows:
+
+[Lin, 1992] Long-Ji Lin.
+Self-improving reactive agents
+based on reinforcement learning, planning and teaching.
+Machine learning, 8(3-4):293–321, 1992.
+
+Layer
+Speciﬁcation
+1
+32 5x5 spatial convolution, 2x2 stride, 1x1 zero-padding, ReLU
+2
+32 5x5 spatial convolution, 2x2 stride, ReLU
+3
+32 fully connected, ReLU
+4
+3 fully connected
+As our version of Catch can be divided into 2 distinct sub-
+tasks, our policy network therefore has 2 option heads. Each
+option head has 16 neurons each in the penultimate fully con-
+nected layers—half that of the baseline DQN. The half DQN
+therefore also has 16 neurons in the penultimate fully con-
+nected layer. The same formula is employed when testing
+with a capacity of 16 and 64 neurons.
+Unlike [Osband et al., 2016], we do not normalise the gra-
+dients coming through each option head, as the errors are only
+backpropagated through one head at a time.
+
+[Mnih et al., 2014] Volodymyr Mnih, Nicolas Heess, Alex
+Graves, et al. Recurrent models of visual attention. In Ad-
+vances in Neural Information Processing Systems, pages
+2204–2212, 2014.
+
+[Mnih et al., 2015] Volodymyr Mnih, Koray Kavukcuoglu,
+David Silver, Andrei A Rusu, Joel Veness, Marc G Belle-
+mare, Alex Graves, Martin Riedmiller, Andreas K Fidje-
+land, Georg Ostrovski, et al. Human-level control through
+deep reinforcement learning. Nature, 518(7540):529–533,
+2015.
+
+[Osband et al., 2016] Ian Osband, Charles Blundell, Alexan-
+der Pritzel, and Benjamin Van Roy.
+Deep Exploration
+via Bootstrapped DQN. arXiv preprint arXiv:1602.04621,
+2016.
+
+B
+Hyperparameters
+Hyperparameters were originally manually tuned for the
+model with the original version of Catch [Mnih et al., 2014]
+(only white balls giving a reward of +1). We then performed
+a hyperparameter search over learning rates ∈{0.000125,
+0.00025, 0.0005}, target network update frequencies ∈{4,
+32, 128}, and ﬁnal values of ϵ ∈{0.01, 0.05}. The learning
+rate with the best performance for all models was 0.00025,
+except for the standard DQN and half DQN in the negative
+transfer setting, where 0.000125 was better. This is an inter-
+esting ﬁnding—with negative transfer the standard architec-
+ture requires a lower learning rate, whilst with option heads a
+higher learning rate can still be used. The following hyperpa-
+rameters were used for all models, where only hyperparame-
+ters that differ from those used in [Van Hasselt et al., 2015]
+for the tuned double DQN are given:
+
+[Parisotto et al., 2015] Emilio Parisotto, Jimmy Lei Ba, and
+Ruslan Salakhutdinov.
+Actor-Mimic:
+Deep Multitask
+and Transfer Reinforcement Learning.
+arXiv preprint
+arXiv:1511.06342, 2015.
+
+[Rusu et al., 2015] Andrei A Rusu, Sergio Gomez Col-
+menarejo, Caglar Gulcehre, Guillaume Desjardins, James
+Kirkpatrick, Razvan Pascanu, Volodymyr Mnih, Koray
+Kavukcuoglu, and Raia Hadsell. Policy Distillation. arXiv
+preprint arXiv:1511.06295, 2015.
+
+[Schaul et al., 2015] Tom Schaul, Daniel Horgan, Karol
+Gregor, and David Silver.
+Universal Value Function
+Approximators.
+In Proceedings of the 32nd Interna-
+tional Conference on Machine Learning (ICML-15), pages
+1312–1320, 2015.
+
+[Sutton and Barto, 1998] Richard S Sutton and Andrew G
+Barto.
+Reinforcement learning: An introduction.
+MIT
+press, 1998.
+
+Hyperparameters
+Value
+Description
+Replay
+memory size
+10000
+Size of each experience replay memory buffer.
+
+[Sutton et al., 1999] Richard S Sutton, Doina Precup, and
+Satinder Singh.
+Between MDPs and semi-MDPs:
+A
+framework for temporal abstraction in reinforcement
+learning. Artiﬁcial intelligence, 112(1):181–211, 1999.
+
+Target network
+update frequency
+4
+Frequency (in number of steps) with which
+the target network parameters are updated
+with the policy network parameters.
+Optimiser
+Adam
+Stochastic gradient descent optimiser.
+Final exploration
+frame
+10000
+Number of steps over which ϵ is linearly an-
+nealed.
+Replay start
+size
+10000
+Number of steps of random exploration before
+ϵ is annealed.
+Gradient
+clipping
+10
+Max absolute value of the L2 norm of the gra-
+dients.
+Validation
+frequency
+10000
+Number of steps after which evaluation is run.
+
+[Van Hasselt et al., 2015] Hado Van Hasselt, Arthur Guez,
+and David Silver. Deep reinforcement learning with dou-
+ble Q-learning. arXiv preprint arXiv:1509.06461, 2015.
+
+[Watkins, 1989] Christopher John Cornish Hellaby Watkins.
+Learning from delayed rewards. PhD thesis, University of
+Cambridge England, 1989.
+
+Validation
+steps
+6000
+Number of steps to use during evaluation.
+Corresponds to 250 episodes of Catch.

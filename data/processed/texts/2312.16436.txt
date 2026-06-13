@@ -1,0 +1,1617 @@
+Jingwei Cai†, Zuotong Wu‡§, Sen Peng‡§, Yuchen Wei†, Zhanhong Tan†, Guiming Shi†,
+Mingyu Gao†¶∗and Kaisheng Ma†∗
+
+Tsinghua University†, Xi’an Jiaotong University‡, IIISCT§, Shanghai AI Laboratory¶
+
+Corresponding Author∗
+
+with 36 dies [46], have emerged. However, this technology
+introduces new challenges for architectural design and DNN
+mapping for large-scale chiplet accelerators, which are out-
+lined below:
+For architecture design, the main challenge is determining
+the optimal chiplet granularity. While chiplet technology im-
+proves area limits and yield, it introduces higher packaging
+expenses and D2D interconnection costs. D2D interconnec-
+tions are more energy and area-intensive, but provide lower
+bandwidth than on-chip lines. All the above adverse effects
+are collectively referred to as Chiplet Costs. Consequently,
+A trade-off arises between using more smaller chiplets for
+better yield and fewer larger chiplets for lower Chiplet Costs.
+Balancing this trade-off remains an unsolved challenge.
+For DNN mapping, the main challenges stem from the larger
+scale enabled by chiplet technology, and the costly D2D links.
+For the first challenge, maintaining high utilization and energy
+efficiency becomes increasingly difficult with the growing
+scale of accelerators. LP mapping, in which multiple layers
+are spatially mapped onto the accelerator, is widely employed
+by large-scale accelerators in both academia [15], [45], [46],
+[57] and industry [21], [52], [55] to relieve the challenge.
+The core of LP mapping is spatial mapping (SPM), which
+determines which part of which layer is allocated to which
+core, and significantly impacts the performance and energy
+efficiency of large-scale accelerators. Despite the importance
+of LP SPM, most current strategies are still heuristic [15], [21],
+[46], [55], [57]. The problems and optimization space of LP
+SPM have not been clearly defined, exhaustively explored, or
+fully understood. This limitation constrains the ability to fully
+leverage optimization opportunities in LP mapping, which
+becomes increasingly important as the scale of accelerators
+and the structural complexity of DNNs increase. The second
+challenge lies in that D2D links tend to consume more energy
+and provide lower bandwidth than on-chip lines. Therefore,
+devising spatial mapping strategies that can automatically
+reduce D2D communications is vital for enhancing chiplet
+accelerator performance and efficiency, and fully harnessing
+the benefits provided by chiplet technology. However, there
+is a noticeable absence of such approaches in the existing
+literature.
+The above analysis reveals that the employment of chiplet
+technology introduces intricate trade-offs and challenges.
+
+Abstract—Chiplet technology enables the integration of an
+increasing number of transistors on a single accelerator with
+higher yield in the post-Moore era, addressing the immense
+computational demands arising from rapid AI advancements.
+However, it also introduces more expensive packaging costs and
+costly Die-to-Die (D2D) interfaces, which require more area,
+consume higher power, and offer lower bandwidth than on-
+chip interconnects. Maximizing the benefits and minimizing the
+drawbacks of chiplet technology is crucial for developing large-
+scale DNN chiplet accelerators, which poses challenges to both
+architecture and mapping. Despite its importance in the post-
+Moore era, methods to address these challenges remain scarce.
+To bridge the gap, we first propose a layer-centric encoding
+method to encode Layer-Pipeline (LP) spatial mapping for large-
+scale DNN inference accelerators and depict the optimization
+space of it. Based on it, we analyze the unexplored optimization
+opportunities within this space, which play a more crucial role
+in chiplet scenarios. Based on the encoding method and a highly
+configurable and universal hardware template, we propose an
+architecture and mapping co-exploration framework, Gemini, to
+explore the design and mapping space of large-scale DNN chiplet
+accelerators while taking monetary cost (MC), performance, and
+energy efficiency into account. Compared to the state-of-the-art
+(SOTA) Simba architecture with SOTA Tangram LP Mapping,
+Gemini’s co-optimized architecture and mapping achieve, on
+average, 1.98× performance improvement and 1.41× energy
+efficiency improvement simultaneously across various DNNs and
+batch sizes, with only a 14.3% increase in monetary cost.
+Moreover, we leverage Gemini to uncover intriguing insights
+into the methods for utilizing chiplet technology in architecture
+design and mapping DNN workloads under chiplet scenarios.
+The Gemini framework is open-sourced at
+Scheduling-Project/GEMINI-HPCA2024.
+
+arXiv:2312.16436v1 [cs.AR] 27 Dec 2023
+
+I. INTRODUCTION
+
+As Deep Neural Networks (DNNs) tackle increasingly com-
+plex problems, their size and complexity grow rapidly, result-
+ing in increased computing and storage demands [9], [10],
+[51], [56], [63]. While applying more advanced technology
+and enlarging single chip sizes have led to the develop-
+ment of many large-scale monolithic accelerators with tens
+of billions of transistors [23], [24], [28], [55], the end of
+Moore’s Law [35] and limited photomask size pose significant
+challenges to further transistor integration.
+Chiplet technology, using advanced packaging to combine
+small functional dies, offers a promising solution to overcome
+these limitations and enable continuous transistor integration.
+Chiplet-based DNN inference accelerators, such as Simba
+
+to a very wide spectrum of computational power requirements
+across diverse scenarios. (4) We study the property of spatial
+mapping, and find that rather than allocating chiplets for each
+layer in a gathered manner, gathering clusters with heavy data
+transfer together is more important and beneficial.
+(4) Compared to the SOTA Simba architecture with Tan-
+gram SPM, Gemini’s co-optimized architecture and mapping,
+on average, achieve 1.98× performance and 1.41× energy
+efficiency simultaneously across various DNNs and batch
+sizes, with only 14.3% increase in MC.
+
+II. BACKGROUND AND MOTIVATION
+
+A. Trade-offs Introduced by Chiplet
+
+Chiplet technology is fundamentally an advanced packaging
+solution. It integrates multiple dies (chiplets) onto a substrate,
+which could be an organic substrate [4], [36] or a silicon
+interposer [19], [59]. This integration is achieved through
+high-density interconnections, allowing the dies to function
+collectively as a single chip. This technology offers numerous
+benefits, but it also incurs additional costs. In this section, we
+discuss the trade-offs of employing chiplet technology.
+As shown in Fig. 1, the advantages of introducing chiplets
+are fourfold. Firstly, it increases the overall yield of a chip.
+By partitioning a large-scale monolithic chip into smaller
+chiplets, the overall yield of the chip can be significantly
+improved. For example, at the 7nm technology node, the yield
+of an 800 mm2 chip and a 200 mm2 chip are approximately
+18% and 75%, respectively [13]. Second, it extends the
+area limit of a chip, as advanced substrates (e.g., organic
+substrates [68] or interposers [19]) have a larger area limit
+than monolithic chips (858mm2 [19] of a reticle). Third, it en-
+ables heterogeneous integration. Unlike logic circuits, analog
+circuit IPs do not significantly benefit from the performance
+and density improvements brought about by technological
+advancements [4], [16], [37], [53]. Therefore, manufacturing
+logic circuits with advanced technologies while producing
+various IO-functional analog IPs with more outdated processes
+can save on the expensive manufacturing and design and IP-
+related costs associated with advanced technologies [4], [16],
+[36], [37]. Fourth, the ability to repurpose a single chiplet
+
+Trade-offs Introduced by Chiplet
+
+Higher Yield
+
+Larger Scale
+
+Advantages
+
+Heterogeneous Integration
+
+Reuse for Multiple Chips
+
+(a) 2-Chiplet Chip
+
+Worse Performance
+
+Worse Power
+
+Disadvantages
+
+D2D Area Costs
+
+Higher Packaging Costs
+
+accelerators [14], [18], [20], [26], [29], [30], [33], [41],
+[58], [62].However, with the increase in accelerator scale, LS
+mapping demonstrates limited scalability [3], [15], [46], [66],
+whereas LP mapping exhibits a higher potential. For instance,
+Simba employs a naive LP mapping for some blocks of layers
+in ResNet-50, achieving approximately a 1.7× throughput
+improvement over its original LS approach.
+
+for developing multiple computational chips, each differing
+in scale or targeted application, is a significant advantage
+of chiplet technology. This approach can substantially reduce
+the enormous Non-Recurring Engineering (NRE) costs and
+the time traditionally associated with developing different
+chips for each scale and scenario. A notable success story
+in this regard is AMD’s Zen series CPUs [4], [36]. While the
+advantages of chiplet technology are not the main focus of our
+research, given our primary emphasis on the architecture of an
+accelerator designed for a specific scenario, we do include a
+brief case study on this topic in Sec. VII-B for comprehensive
+understanding.
+Fig.1 also depicts the fourfold disadvantages of chiplets,
+all resulting from D2D interfaces. First, they increase energy
+consumption, as D2D links consume several to dozens of times
+more energy than the less than 0.1 pJ/bit data transfer cost
+with on-chip lines [5], [43], [47], [48]. Second, limited inter-
+chiplet communication bandwidth may decrease performance.
+Compared to sufficient on-chip interconnect resources, inter-
+connects between chiplets have limited bandwidth due to the
+limited number of IO pins available around each chiplet. Third,
+D2D interfaces require more area, as they need a specific
+analog PHY and controller, unlike on-chip lines, which occupy
+almost no silicon area. Fourth, the need for massive intercon-
+nections between chiplets increases packaging substrate costs,
+as advanced packaging scenarios require organic substrates
+with dozens of layers or silicon interposers, compared to the
+basic fan-out substrates sufficient for monolithic chips.
+All the trade-offs above influence three facets of a chip:
+energy consumption, performance, and MC. It’s particularly
+important to emphasize that in the chiplet era, solely consider-
+ing the silicon chip area is inadequate for evaluating a chip’s
+MC. Factors such as yield and packaging costs also need to be
+taken into account. Consequently, designing an efficient DNN
+chiplet accelerator requires carefully balancing among these
+trade-offs. However, existing works fall short in considering all
+these trade-offs simultaneously. Some works [13], [50] focus
+on studying the MC of chiplet-based chips, but do not consider
+their architectural details and the corresponding influence on
+performance and energy consumption. NN-baton [53] focuses
+on optimizing energy consumption and performance for small-
+scale DNN chiplet accelerators but does not consider the trade-
+offs on MC. Furthermore, NN-baton’s ring-based template and
+layer-sequential mapping strategies limit its applicability to
+small-scale accelerators and restrict its scalability.
+The significant potential and intricate trade-offs of applying
+chiplet technology to DNN inference accelerators, alongside
+the current research void, inspire us to create a framework that
+co-explores architecture and mapping for these accelerators.
+
+DNNs can be viewed as a Directed Acyclic Graph (DAG),
+where each layer is a node. In LP mapping, a graph (or
+subgraph) can be mapped onto a core array simultaneously,
+where different core groups compute different layers. The on-
+chip interconnect is responsible for transmitting the feature
+maps of layers that share dependencies. SPM determines
+which core specifically computes which part of which layers.
+As shown in Fig. 3, the top-left corner shows a DNN DAG
+containing two layers. In LS mapping, all six cores are used
+to compute each layer one by one, whereas in LP mapping,
+some of the six cores are used to compute the first layer, and
+the remaining cores are used for the second layer. The feature
+maps between the two layers can be transferred via the on-chip
+network without the need to access DRAM.
+
+While LP mapping presents significant potential, it is less
+extensively researched than LS mapping. Most existing studies
+employ techniques such as fine-grained pipelining [3], [15]
+and temporal merging of some layers or workloads [7],
+[66] to reduce the imbalance across different pipeline stages
+and mitigate filling and draining overheads in LP. However,
+with regard to the SPM part, these studies do not offer
+specific optimizations and directly adopt heuristic stripe-based
+SPM strategies, which assign each layer to a consecutive
+and rectangle-shaped group of cores. The problem and its
+corresponding optimization space for LP SPM have not been
+clearly defined, let alone thoroughly explored or understood.
+It is worth noting that as most existing works also have an
+SPM optimization stage, the optimization method proposed in
+this work can easily integrate with existing methodologies.
+Another significant challenge posed to SPM is mitigating
+the adverse effects on energy consumption and performance
+introduced by chiplet technology (Fig. 1). Fundamentally,
+these negative influences stem from the integration of high-
+energy-cost and lower-bandwidth D2D links into the chip.
+Consequently, this challenge primarily revolves around reduc-
+ing D2D communication automatically for various workloads,
+an aspect that is not considered and optimized by existing
+heuristic LP SPM strategies [7], [15], [66].
+
+III. SCALABLE HARDWARE TEMPLATE
+
+B. Mapping Challenges
+
+within IO chiplets, allowing for arbitrary core-to-core, core-to-
+DRAM, and DRAM-to-core communication. For inter-chiplet
+communication, the D2D transmission (TX) within a chiplet
+independently encodes the data and forwards it to the corre-
+sponding D2D reception (RX) in another chiplet. The D2D RX
+decodes the data and proceeds with NoC transmission. This
+inter-chiplet communication is fully automatic and transparent
+to both the source and the destination.
+This heterogeneous architecture allows for arbitrary num-
+bers of IO and computing chiplets, ensuring the scalability of
+the entire template. Otherwise, if we equip each computing
+chiplet with IO-related PHY and controller would occupy the
+chip’s edge area and IO pins, which could affect the routing
+of D2D links and, consequently, the system’s scalability.
+Our hardware template and the corresponding hardware
+model in Gemini Framework (see Sec. V) are not limited to
+supporting only mesh topology. They can be easily modified
+to support various topologies (demonstrated in Sec. VI-B).
+However, in order to ensure the signal integrity of the D2D
+links, there are limitations on the interconnect distance and
+cross-linking, which restricts certain topologies like torus and
+butterfly. Therefore, it is preferable to maintain a point-to-point
+parallel interconnect, as shown in Fig. 2. Considering these
+factors and the fact that most existing tiled accelerators [21],
+[46], [52], [64] currently adopt mesh interconnect networks,
+we default to using the mesh topology in this paper.
+Computing Chiplet Architecture: Each Computing Chiplet
+contains an arbitrary number of computing cores intercon-
+nected by a mesh NoC. To enhance the scalability of this
+template, D2D interfaces are placed around the Chiplet, whose
+number is equal to the number of computing cores on each
+side. This arrangement enables the Computing Chiplet to
+
+form a larger-scale mesh with other Chiplets. In the example
+illustrated in Fig. 2(a), there are four cores on each side, so
+we place four D2Ds on each side of the Computing Chiplet.
+
+The computing cores are the key components responsible
+for performing calculations in the entire accelerator, and their
+architecture is shown in Fig. 2(b). The communication unit
+comprises DMA and router, facilitating communication with
+other cores and DRAM. The control unit is primarily re-
+sponsible for managing computation tasks based on statically-
+compiled instructions and task progress information, as well as
+managing the reception and transmission of data or messages
+to and from external cores or DRAMs. The global buffer
+(GLB) of each core is globally visible in the entire accelerator.
+Every core can read data from or write data to the GLBs of
+other cores, provided the data is valid, or the address can be
+written to. The PE array and the vector unit are responsible for
+computing the General Matrix Multiply (GEMM)/Convolution
+(Conv) and vector/scalar operators, respectively. Each time,
+the PE array reads a workload tile’s weight and input feature
+maps (ifmaps) from the GLB. The resulting ofmaps/partial
+sum (psum) can be directly written back to the GLB or post-
+processed within the vector unit (such as Batch Normalization
+and ReLU operations). Simultaneously, the vector unit can be
+independently invoked to compute vector/scalar operators.
+
+IO Chiplet Architecture: The IO Chiplet is equipped with an
+array of IO functionalities, enabling interactions with DRAM,
+host systems, or other input sources (e.g., cameras). All input
+data from host systems or alternative input sources are first
+loaded into DRAM, and then can be loaded and processed
+by computing cores. The DRAM controller is also connected
+to multiple routers within the entire mesh NoC to match the
+bandwidth of the DRAM and the network, ensuring the full
+utilization of DRAM bandwidth.
+
+Configurable Parameters: Our template features excellent
+configurability, offering a range of adjustable architectural
+parameters. These parameters include NoC bandwidth, D2D
+bandwidth, total DRAM bandwidth, the total number of cores
+in the X-direction (e.g., 8 in Fig. 2), the total number of cores
+in the Y-direction (e.g., 8 in Fig. 2), the number of chiplet di-
+visions in the X-direction (XCut)(e.g., 2 in Fig. 2), the number
+of chiplet divisions in the Y-direction (YCut)(e.g., 2 in Fig. 2),
+the number of MACs in the PE array within a single core,
+and the size of the GLB per core. It is worth mentioning that
+the microarchitecture of the PE array and its corresponding
+dataflow have been extensively studied in existing works [8],
+[18], [25], [29], [53], [58], [65]. Therefore, in this work, the
+PE array adopts the classic NVDLA architecture [39], [58] and
+corresponding dataflow to maintain a fair comparison with the
+baseline, Simba. Of course, NVDLA can also be replaced by
+other microarchitectures with different dataflows, which are
+supported by our template.
+
+ifmaps
+
+Core
+
+Control
+
+Unit
+
+weights
+
+Computing Chiplet
+
+PE
+Array
+
+D2D Interface
+
+Communi-
+cation Unit
+
+Global
+
+IO Chiplet
+
+ofmaps
+
+Buffer
+
+Controller
+
+DMA
+
+DRAM PHY
+
+ofmaps
+NoC
+Router
+
+ifmaps
+
+params
+
+Other IO PHY
+
+Vector Unit
+
+DRAM
+
+ofmaps
+
+(b) Computing Core
+
+Weight
+Ifmap
+Ofmap
+
+Weight
+Ifmap
+Ofmap
+
+Layer 1 Ofmap
+
+DRAM 1
+
+DRAM 2
+
+1-1
+1-0
+2-0
+
+1
+2
+3
+
+DRAM 1
+
+DRAM 2
+
+K
+
+L1
+L2
+Input
+
+Output
+
+workload 1-0: ID(0,0,0,0)
+
+workload 1-1: ID(0,0,0,1)
+
+4
+5
+6
+
+1-3
+1-2
+2-1
+
+H W
+
+DRAM 1
+
+LP Mapping
+
+CG1(2, 1, 5, 4)
+
+B
+
+Space
+
+Weight
+Ifmap
+Ofmap
+
+Weight
+Ifmap
+Ofmap
+
+A DNN DAG containing
+
+FD1(1, 1, -1)
+
+2 Convs. (LG={L1,L2})
+
+1-1
+
+1-3
+
+Part1(1, 1, 2, 2)
+
+Ifmap Dataflow
+Weight Dataflow
+Ofmap Dataflow
+
+A point
+
+workload 1-2: ID(0,0,1,0)
+
+workload 1-3: ID(0,0,1,1)
+
+1-2
+
+1-0
+
+MAPPING
+
+LMS (MS1, MS2)
+
+Layer 2 Ofmap
+
+MS1
+Part1(1, 1, 2, 2)
+CG1(2, 1, 5, 4)
+FD1(1, 1, -1)
+
+2-1
+
+2-0
+
+DRAM 1
+
+DRAM 2
+
+1-1
+1-0
+2-0
+
+Weight
+Ifmap
+Ofmap
+Weight
+Ifmap
+Ofmap
+
+1
+2
+3
+
+DRAM 1
+
+DRAM 2
+
+1
+2
+3
+
+DRAM 1
+
+DRAM 2
+
+DRAM 2
+
+4
+5
+6
+
+MS2
+Part2(1, 1, 2, 1)
+CG2(3, 6)
+FD2(-1, 2, 2)
+
+4
+5
+6
+
+1-3
+1-2
+2-1
+
+CG2(3, 6)
+workload 2-0: ID(0,0,0,0) workload 2-1: ID(0,0,1,0)
+
+Parsed Mapping
+
+6 cores with 2 DRAMs.
+
+Part2(1, 1, 2, 1)
+
+FD2(-1, 2, 2)
+
+Scheme
+
+Parti(Hi , Wi , Bi , Ki)
+Core Group (CGi)
+Correspondence Rule
+
+FDi(Ifi, WGTi, OFi)
+
+Fig. 3. Parsing an Encoded LMS in the LP SPM Optimization Space into an Actual SPM Scheme
+
+IV. LP SPATIAL MAPPING ENCODING
+
+A. Encoding Format and Parsing Methods
+
+In this section, we introduce a layer-centric encoding method
+for describing LP SPM schemes. At a high-level, the encoded
+LP SPM scheme encapsulates two key aspects of information:
+(1) the allocation and partition of each layer to specific cores
+for computation, and (2) the data sources and destinations
+for the workload on each core. This encoding method ex-
+hibits great generality and can adapt seamlessly to diverse
+NoC topologies and core microarchitectures (demonstrated
+in Sec. VI-B2). Subsequently, we provide a comprehensive
+description of our encoding format and the corresponding
+parsing method.
+
+DRAM to store or fetch data. In cases where the value is
+greater than 0, it represents the ID of the DRAM. Meanwhile,
+0 represents a special case - interleaving, where we evenly
+distribute data across all DRAMs to fully and evenly utilize
+the available bandwidth. For example, as depicted in Fig. 3,
+due to layer1 having the input of the whole DNN and weights,
+IF1 and WGT1 should be non-negative. FD1 of layer1 in
+the example is (1,1,-1), indicating that the ifmaps and weights
+of layer1 originate from the DRAM 1.
+If both layers sharing dependency are in the same layer
+group, the ofmaps of the previous layer and the ifmaps of the
+subsequent layer need not be explicitly manipulated because
+the destination of each part of the previous layer and the
+source of each part of the subsequent layer can be directly
+inferred based on the partition schemes and CGs of these
+layers. Moreover, for the layers without weights, their WGTi
+value would be -1. For example, in Fig. 3, based on Part1,
+CG1, Part2, and CG2, the data communication dependency
+between cores of layer1 and layer2 can be deduced directly.
+Thus, OF1 and IF2 are -1.
+
+Secondly, the number and position of cores can vary in each
+CG attribute. The number of cores affects the computation
+time of each layer, which in turn influences the overall pipeline
+computation time, as the slowest stage can stall the pipeline.
+Core positions can significantly impact the data transmission
+volume and congestion levels of the NoC.
+Third, different FD attributes affect the bandwidth uti-
+lization and access patterns of different DRAMs, and NoC
+communication. As shown in Fig. 3, the ifmaps and weights
+of layer1 are read from DRAM1, while the weight and
+ofmaps of layer2 are read from and written into DRAM2,
+respectively. In this case, the bandwidth demand and access
+patterns for each DRAM are not balanced, but the total NoC
+hops are relatively few. If all positive values in FD1 and
+FD2 change to 0 (interleaved), DRAM bandwidth usage will
+become more balanced. However, the total NoC hops increase
+since some data will interact with more remote DRAM.
+
+V. GEMINI FRAMEWORK
+
+A. Gemini Overview
+
+B. Space Calculation
+
+As shown in Fig. 3, each LMS is a point in the opti-
+mization space defined by our encoding method. The op-
+timization space of mapping N layers onto an accelerator
+with a core group containing M cores and D DRAMs
+is considerably large and extremely complex to calculate.
+Therefore, we conservatively approximate its lower bound
+
+size at m!
+N−1
+P
+
+N
+i
+M−N−1
+N−i−1
+
+4N−i schemes, where
+x
+y
+
+is the
+
+i=0
+
+binomial coefficient, which equals
+x!
+y!(x−y)!. As a comparison,
+the upper bound of optimization space of the SOTA heuristic
+Tangram is N · part(M), where PartM represents the total
+number of possible factorizations for a given integer M. We
+can observe that the optimization space defined by our encod-
+ing method is significantly larger than the optimization space
+of the Tangram heuristic. The detailed calculation procedure
+and tables of the optimization space under different M and N
+for our method and Tangram can be found at this link [2].
+
+C. Unveil Hidden Optimization Opportunities
+
+LP SPM Exploration Engine
+
+INPUT
+Arch Params
+
+Framework
+
+DNN
+Models
+
+Graph Level
+Partition Engine
+
+Candidates
+
+Settings
+
+Encoded Scheme
+
+Best Graph
+Partition Scheme
+
+Partitioned
+
+Model Parser
+
+LP SPM
+Analyzer
+
+Workload
+
+Iterator
+
+Extract DNN
+
+SA
+Controller
+
+Features
+
+Intra-core
+Exploration
+
+Partition
+
+MC Evaluator
+Mapping Engine
+
+LP Mapping
+
+Engine
+
+Energy,
+
+Core Group
+
+Monetary
+
+Graph Partition
+
+Generator
+
+Exploration
+
+Delay,
+Scheme
+
+Cost
+
+Engine
+
+Flow of Data
+
+Records
+
+Optimal
+Scheme
+
+Best
+Scheme
+
+Gemini
+Framework
+Instruction Gen.
+
+Analysis
+
+Graph Partition
+Scheme Candidate
+
+Cost
+Cost
+
+Analyzed
+
+Tiling,
+Loop Order
+
+Cost
+
+Scheme
+
+Evaluator
+
+OUTPUT
+Best Arch
+Energy&Delay
+
+Report
+MC
+Instructions
+
+NoC & D2D Traffic
+DRAM Access
+Intra-core Analysis
+
+Fig. 4. Gemini Framework. The red arrow illustrates the Simulated Annealing (SA) iteration loop.
+
+B. Mapping Engine
+
+assessment. If the overall cost is lower, the change is accepted;
+otherwise, it is accepted with a probability which decreases as
+the number of iterations increases.
+
+experimental to guarantee a fair comparison.
+
+C. Monetary Cost Evaluator
+
+MC Evaluator can assess the production cost of different
+architecture candidates, which mainly includes chiplet silicon
+cost, DRAM cost, and packaging cost.
+The
+evaluation
+of
+the
+silicon
+area
+for
+all
+chiplets
+(Areatot = Pn
+i=1 AreaDiei) serves as a fundamental cor-
+nerstone within the MC Evaluator. The chip silicon cost and
+packaging cost are directly influenced by this area evaluation,
+as shown in the following paragraphs. Each chiplet’s area is
+determined by the summation of the areas of its constituent
+modules. In this work, the area of analog IPs, such as PCIe
+PHY, DDR PHY, and D2D PHY, is obtained directly from
+the corresponding datasheets. For the logic modules, their area
+estimation is based on the Verilog code and evaluation process
+employed during the development of our chip.
+The silicon cost of a die (chiplet) is AreaDiei/Y ielddiei ·
+Csilicon, where Y ieldDiei = Y ield
+AreaDiei/AreaDieunit
+unit
+[13].
+Y ieldunit represents the yield per unit area (AreaDieunit),
+where Y ieldunit under 12nm in this paper is assumed to be
+0.9, and AreaDieunit is set to 40 mm2.
+The DRAM cost is ⌈DRAMbw/Unitbw⌉· CDRAMDie,
+where Unitbw and CDRAMDie represent the bandwidth pro-
+vided by each DRAM die and the MC of each DRAM die,
+respectively. The Unitbw and CDRAMDie used in this work
+(GDDR6) are 32GB/s and $3.5 [12].
+The packaging cost equals (Areatot ·fscale)/Y ieldpackage ·
+Cpackage. Because the substrate requires a larger area than
+the total area of all chiplets to accommodate IO fanout and
+interconnect wiring functions, there is an empirical scaling
+factor fscale to calculate the substrate area based on total
+silicon area [13]. Cpackage represents the monetary cost per
+unit area of the substrate. The Cpackage for different substrates
+varies. For instance, in the case of an organic substrate, without
+adopting chiplet technology, a standard fan-out substrate is
+relatively inexpensive (0.005$/mm2). However, when chiplet
+technology is employed, the price increases due to the need
+to support high-density interconnects. Cpackage varies across
+different area ranges. Larger substrate areas require more
+intricate manufacturing processes, resulting in higher Cpackage.
+
+D. Future Work Grounded on Gemini
+
+of DSE as MC · E · D (as introduced in Sec. V-A). The
+default workload is set as Transformer [56] since it is prevalent
+and widely used in various scenarios such as image [11] and
+language processing [6], [10], [40].
+2) DSE Time: The DSE time increases with the increase in
+target computing power. For example, the DSE for 72 TOPs
+and 512 TOPs use 80 threads and 100 threads, respectively,
+and run for 2280s and 23907s on an Intel Xeon Platinum 8260
+server.
+3) Workloads: To fully demonstrate the advantages of our
+architecture and mapping co-exploration, we conduct the com-
+parison with the baseline over a wide range of DNNs, includ-
+ing ResNet-50 (RN-50) [17], ResNeXt (RNX) [63], Inception-
+ResNet (IRes) [51], PNasNet (PNas) [32], and Transformer
+(TF) [56]. ResNet-50 and ResNeXt are selected due to their
+use of classic residual structures, which are prevalent in many
+DNNs. Inception-ResNet-v1 and PNASNet represent DNNs
+with more intricate dependencies. Due to the reasons men-
+tioned above, we mainly use Transformer as a representative
+to showcase various observations and insights, in addition to
+overall comparisons.
+4) Baseline: The baseline here principally comprises two
+components: baseline architecture and baseline mapping. For
+the architecture baseline, we adopt Simba [46] and optimize
+it accordingly. Since the Simba accelerator is a test chip
+lacking DRAM, the configuration of its on-chip buffer is also
+impacted. Consequently, we initially equip it with I/O Dies
+and furnish a total DRAM bandwidth of 2 GB/s per TOPs.
+Concurrently, the on-chip buffer configuration is determined
+according to the Simba-series paper [58], which explores the
+architecture of an NVDLA-style core. In particular, the GBUF
+is allocated 1024 KB per core. The remaining configurations
+align with the specifications in the original Simba paper [46].
+In experiments, the baseline architecture is abbreviated as S-
+Arch, while the architecture explored by our Gemini frame-
+work is denoted as G-Arch. Additionally, to demonstrate the
+universality of Gemini, we conduct an exploration with a hard-
+ware template modified to adopt a folded torus NoC topology.
+We compare the explored architecture and mapping scheme
+with an accelerator that employs the Tenstorrent Grayskull
+architecture parameters [55] (T-Arch) and utilizes Tangram
+mapping. This comparison serves to validate the effectiveness
+of the Gemini (Sec. VI-B2).
+Although Simba has its own layer-sequential mapping [46],
+this mapping performs poorly on such a high-computing-
+power chip [15], [66]. Therefore, we choose the SOTA Tan-
+gram LP mapping strategy as the baseline mapping strategy
+(abbr., T-Map). The mapping scheme explored by Gemini
+framework is abbreviated as G-Map.
+
+these different optimization dimensions On the architectural
+front, the heterogeneity of chiplet presents another compelling
+area for research. Questions around scheduling LP mapping
+on heterogeneous chiplets and, reciprocally, exploring archi-
+tectural designs for heterogeneous accelerators in the context
+of LP mapping are of particular interest.
+
+VI. EVALUATION
+
+A. Experiment Setup
+
+1) DSE Configurations: In this work, we conduct DSE on
+DNN accelerators with 72 TOPs, 128 TOPs, and 512 TOPs to
+show Gemini advantages and gain a deeper understanding of
+the design space for DNN chiplet accelerators and the use of
+chiplet technology. We choose 72 TOPs instead of 64 TOPs to
+enable comparison with the SOTA Simba architecture with 72
+TOPs [46]. Table I presents the DSE parameters. By keeping
+the total computing power constant, we determine the number
+of cores based on the MAC/Core configurations. To maintain
+the core array’s length and width as close as possible, we
+arrange the cores accordingly. For instance, with 36 cores,
+we configure them in a 6×6 arrangement, while for 18 cores,
+we adopt a 6×3 configuration. The values of XCut and YCut
+must be a factor of the corresponding number of cores on
+edge; otherwise, the candidate is deemed invalid.
+We choose TSMC 12nm as the default process, which is
+also widely used by many commercial accelerators [23], [31],
+[38]. We choose organic substrate as the default packaging
+substrate, as it is used in many successful commercial [4],
+[36], [37] and academic designs [46]. The default operating
+frequency is set to 1GHz. For D2D, we use GRS [43], [46]
+as default in experiments to guarantee a fair comparison with
+Simba.
+
+For the sake of brevity, the explored architectural parameters
+are presented as (Chiplet Number, Core Number, DRAMBW ,
+NoCBW , D2DBW , GBUF/Core, MAC/Core).
+
+The DSE adopts a batch size of 64, targeting a throughput-
+driven scenario, as defined by the MLPerf benchmark [44].
+Although the exploration process solely utilizes these two
+DNN models with a batch size of 64, we also evaluate addi-
+tional DNNs with batch size 1 (latency-centric scenarios) on
+the explored architecture, demonstrating its broad applicability
+to other scenarios. We set the default optimization objective
+
+TABLE I
+DSE PARAMETERS. THE PARAMETERS MARKED IN italics AND BOLD ARE
+EXCLUSIVELY USED BY DSE FOR 72TOPS AND 128/512 TOPS
+ACCELERATORS, RESPECTIVELY.
+
+XCut
+1, 2, 3, 6 (1, 2, 4, 8)
+YCut
+1, 2, 3, 6 (1, 2, 4, 8)
+DRAMBW
+0.5, 1, 2 GB/s per TOPs
+
+Accelerator
+Config.
+
+B. Overall Comparison
+
+NoCBW
+8, 16 ,32, 64, 128 GB/s
+D2DBW
+NoC/4, NoC/2, NoC
+
+Network
+Config.
+
+128TOPs
+512TOPs
+
+Delay
+Network Energy
+Intra-tile Energy
+DRAM Energy
+
+Normalized Energy
+
+Normalized Delay
+
+Batch Size = 64
+Batch Size = 1
+
+1
+
+0
+0.2
+0.4
+0.6
+0.8
+1
+
+0
+0.2
+0.4
+0.6
+0.8
+
+TF
+
+RN-50
+
+RNX
+PNas
+IRes
+
+Normalized Energy
+
+Normalized Delay
+
+1
+
+0
+0.2
+0.4
+0.6
+0.8
+1
+
+(a) Chiplet Number
+
+0
+0.2
+0.4
+0.6
+0.8
+
+RN-50
+
+RNX
+TF
+PNas
+IRes
+
+Fig. 5.
+Overall Comparisons among G-Arch, G-Map, S-Arch, and T-Map.
+energy consumption and delay in each comparison are normalized to overall
+baseline S-Arch+T-Map
+
+(b) Core Number
+
+Fig. 6. EDP and MC of the Architecture Candidates in the Design Space for
+128 and 512 TOPs Accelerators. Different colors represent various categories
+of architectural parameters. To provide a clearer depiction of trends, only
+the top 50% of each category is plotted. The EDP and MC of each point
+are normalized to the counterpart of the best arch under MC · E · D.
+We use triangles pointing in different directions to represent the globally
+optimal architectures under different optimization objectives. The workload is
+Transformer.
+
+a 14.3% additional MC, demonstrating the value of Gemini
+co-exploration. Moreover, by merely employing G-Map on the
+S-Arch, a significant reduction delay and energy consumption
+can be achieved compared to T-Map. The optimization brought
+up by Gemini mapping demonstrates that exploring the vast
+space defined by our encoding method can indeed achieve
+a better balance of the trade-offs introduced in Sec. IV-C.
+The explored G-Arch is (2, 36, 144GB/s, 32GB/s, 16GB/s,
+2MB, 1024). Compared to S-Arch, the number of Chiplets
+in G-Arch is significantly reduced, while the bandwidths of
+NoC and D2D are increased, and the GBUF capacity is
+doubled. The reduction in the number of Chiplets leads to a
+significant decrease in the proportion of D2D links across all
+links, resulting in a substantial reduction in network energy.
+With improved interconnect bandwidth and on-chip storage
+resources, performance and energy efficiency improvements
+are natural. However, the interesting point is that these re-
+source improvements only result in a 14.3% increase in
+MC. This is mainly because, under S-Arch, there are too
+many Chiplets, and an excessive amount of chip area is used
+for D2D interfaces (nearly 40%). In G-Arch, this area is
+converted into interconnect bandwidth and on-chip storage
+resources. However, it is worth noting that Simba serves as
+an academic test chip. As a pioneering work in introducing
+Chiplets into DNN accelerators, Simba has already showcased
+many features of Chiplet-based inference accelerators. Given
+that Simba is an academic demo with limited chiplet area
+and scale (6 mm2 [68]), its suboptimal chiplet granularity is
+understandable. Further insights regarding the optimal choice
+of chiplet granularity will be discussed in Section VII-A1.
+
+480 GB/s, 64GB/s, 32GB/s, 2MB, 2048). Compare with T-
+Arch with T-Map, G-Arch with G-Map achieves 1.74× perfor-
+mance and 1.13× energy efficiency, and reduces 40.1% MC,
+which demonstrates the effects and universality of Gemini.
+
+VII. DISCUSSION
+
+A. Design Space Exploration
+
+1) Chiplet Granularity: As illustrated in Fig. 6(a), the
+optimal number of chiplets for 128 TOPs and 512 TOPs,
+under the four different objectives, ranges from 1 to 4 and
+2 to 4, respectively. Moreover, it is evident from both DSEs
+that an excessively fine-grained chiplet granularity negatively
+impacts MC, energy consumption, and performance. Combin-
+ing it with the analysis in comparing G-Arch and S-Arch
+in Sec. VI-B, we can achieve an insight: Partitioning DNN
+accelerators into chiplets with moderate granularity can
+effectively strike a balance among MC, energy consumption,
+and performance. Conversely, an excessively fine-grained
+approach to chiplet partitioning can have a negative impact
+on all three metrics—performance, energy consumption, and
+MC—simultaneously.
+
+2) Core Granularity: In addition to the granularity of
+chiplets, the granularity of cores is also an important topic
+in many-core architectures. Particularly in the context of LP
+mapping, the trade-offs associated with varying core granular-
+ities have yet to be explored. This section aims to address this
+gap in the literature.
+
+B. Reuse A Single Chiplet for Multiple Accelerators
+
+is necessary to increase network bandwidth or buffer capacity
+per core. The more cores there are, the more these resources
+multiply, leading to greater area overhead. However, from the
+perspective of EDP, it initially decreases with an increase in
+the number of cores, then rises again later. For example, in
+the 128 TOPs scenario, the EDP for the yellow and green
+points is better than that for the red and blue points. This
+intriguing phenomenon warrants further analysis to understand
+the underlying trade-offs.
+
+One significant advantage of utilizing chiplets in the industry
+lies in their reusability across accelerators of varying scales.
+This approach has already been successfully employed in
+CPUs [4], [36], [37]. Despite its promise, this potential benefit
+has yet to be explored within the realm of DNN inference
+accelerators. This section aims to bridge this gap using Gemini
+Framework.
+
+Figure 8 reveals that the performance of accelerators con-
+structed with Simba chiplets is poor for both 128 TOPs and
+512 TOPs configurations, with the latter faring even worse.
+This example illustrates the failure of a “one-size-fits-all” ap-
+proach, highlighting the impracticality of designing a small-
+scale chiplet to cover an extensively wide range of scenarios.
+Additionally, although using chiplets from the best 128 TOPs
+accelerator in the 512 TOPs accelerator yields better results
+than Simba, the overall performance is still unsatisfactory, and
+vice versa. This example, in conjunction with the Simba case,
+collectively illustrates that directly repurposing chiplets from
+one computing platform to build another is ill-advised and
+frequently results in less-than-ideal outcomes.
+
+A main advantage of LP Mapping is to reduce DRAM
+accesses, which is a key factor contributing to improvements
+in both energy consumption and performance. Under LP Map-
+ping, an increased number of cores facilitates longer pipelines,
+allowing for the simultaneous processing of more layers. This,
+in turn, enables more dependency data to be transferred and
+processed on-chip, thereby reducing costly DRAM accesses.
+However, not all dependencies have the same amount of
+data. Layers involving links with larger data volumes will
+be prioritized for simultaneous processing. Therefore, the
+reduction in DRAM access due to the increase in the number
+of layers processed simultaneously diminishes at a slower
+rate. Moreover, as the pipeline depth increases, so does the
+utilization loss due to the filling and draining phases [15],
+[66]. In summary, a longer pipeline is not necessarily better.
+The diminishing benefits from extending the pipeline and the
+escalating costs eventually reach a point of equilibrium, which
+represents the optimal pipeline length. As evidence, in Fig. 7,
+the number of cores for the optimal solutions under the four
+different objectives, from left to right, are 16, 8, 32, and
+32. Correspondingly, the average number of layers processed
+simultaneously for each are 5.4, 4.1, 10.2, and 8.1. As shown
+in Fig. 7 Left, though DRAM access continuously decreases
+as the number of cores increases from 8 to 32, the rate of
+reduction is much faster when transitioning from 8 cores to 16
+cores (48.0%) compared to the transition from 16 to 32 cores
+(average 19.4%). Moreover, the average number of layers
+processed simultaneously by the optimal 64-core architecture
+(the best among all 64-core configurations under the target of
+MC · E · D) is 9 layers, which does not continue to increase
+with the number of cores, indicating the striking of the balance.
+
+To fully harness the potential of “Chiplet Reuse for Multiple
+Accelerators”, we have enhanced Gemini to enable DSE
+for multiple computational power levels concurrently. In this
+approach, Gemini strategically organizes the chiplets of each
+architecture candidate with the lowest computational power
+into accelerators designed for higher computational power
+requirements. Subsequently, the product of MC · E · D for
+all accelerators is calculated, and the architecture yielding the
+minimum product is chosen as the optimal solution (Joint
+Optimal in Fig. 8).
+
+By comparing the Joint Optimal with the individual Opti-
+mal, we find that although the Joint Optimal still has a certain
+gap (with MC · E · D being on average 34% higher), this gap
+
+1
+
+Chiplet
+
+of Best
+
+8
+
+of Best
+128 TOPs Accelerator
+
+Chiplets
+
+Simba
+
+Optimal
+Joint Optimal
+
+512 TOPs Accelerator
+
+2.86×
+2.59×
+8.40×
+
+2
+
+Normalized Value
+
+1.5
+
+1
+
+0.5
+
+Energy
+Energy
+Delay
+Delay
+MC
+MC
+MC·E·D
+MC·E·D
+
+128 TOPs
+512 TOPs
+
+DRAM
+Silicon Cost
+Substrate
+NoC
+Intra-tile
+DRAM
+
+D2D
+
+Normalized Energy
+
+1.2
+
+2
+
+Monetary Cost
+
+Normalized Delay
+
+1.5
+
+1.5
+
+0.8
+
+1
+
+1
+
+0.4
+
+0.5
+
+0.5
+
+0
+
+0
+
+0
+
+is much smaller than those of the previous two approaches.
+This modest overhead is acceptable when considering that
+chiplet reuse can significantly reduce NRE costs, including
+one-time expenses such as design, verification, IP acquisition,
+and tape-out. The benefits of this approach become increas-
+ingly significant in advanced process nodes or fragmented
+markets since NRE costs tend to grow non-linearly with
+process advancement, while the fragmented market—with its
+smaller volumes for each market—makes it challenging to
+amortize expensive NRE costs effectively. Thus, it concludes
+that with the proper design considerations—facilitated by the
+support of Gemini—the idea of employing a single chiplet
+for multiple accelerators can be effectively applied to DNN
+inference accelerators.
+
+By automatically exploring the vast optimization space we
+have defined, Gemini mapping can discover solutions that are
+difficult to design manually. In detail, as shown in Gemini
+scheme in Fig. 9, we can see that the red and orange links have
+completely disappeared. This is mainly due to two factors:
+(1) the total hop count decreases by 34.2%, with a 74%
+reduction in hop count on the intermediate D2D links; and
+(2) Gemini can utilize the originally relatively idle links (blue)
+more effectively, which is reflected in the decreased number of
+blue links in the figure. As a result, the overall network traffic
+is more evenly distributed, significantly improving network
+performance and overall performance.
+From the actual example in Fig. 9 and other similar in-
+stances that are not shown, we can derive an insight: the
+widely used clustered core allocation strategy [7], [15], [46],
+[55], [57], [66], where a layer is assigned to consecutive
+and rectangle-like core group, may not always be a good
+choice. This is because the dependencies between certain
+layers may have particularly high data transfer requirements,
+and clustering cores for each layer together cannot disperse
+this transfer demand, leading to network congestion.
+
+C. Learn From an Actual SPM Example
+
+In this section, we demonstrate the advantages of Gemini
+mapping through a practical example (Fig. 9) and analyze how
+to allocate computing resources to each layer in a multi-core
+chiplet accelerator.
+As can be observed in Fig.9 bottom left, the data volume
+from layer1 to layer2 and from layer2 to layer3 is signifi-
+cantly higher than that of other dependencies. The links with
+the most data (reddest) in the Tangram SPM scheme are also
+caused by these two dependencies. For instance, since the data
+calculated in layer2 needs to be sent to layer3, under XY-
+routing, the data calculated by the left cores of layer2 is first
+sent to the right and then downwards, as illustrated in the
+upper part of the mesh in Fig.9. The accumulation of ofmaps
+data computed by multiple cores of layer2 leads to a large
+amount of communication data on the upper on-chip links.
+Thus the links are red. During the downward transmission
+process, each core of layer3 consumes a portion of the ofmaps
+data calculated by layer2, causing the actual data volume
+to decrease gradually. This is reflected by the colour of the
+downward links becoming lighter (except for the D2D links).
+However, due to the smaller bandwidth of the D2D links
+compared to the on-chip links, the bandwidth pressure on the
+D2D links is higher.
+
+VIII. CONCLUSION
+
+In this work, we introduce Gemini, a mapping and architec-
+ture co-exploration framework for large-scale DNN chiplet
+accelerators, which considers MC, performance, and energy
+efficiency. For mapping, Gemini employs a novel encoding
+method to define LP spatial mapping schemes and the corre-
+sponding parsing method. This approach enables us to identify
+the optimization space of LP SPM and unearth hidden opti-
+mization opportunities. Additionally, we devise a specially-
+tailored SA algorithm to efficiently navigate this space. Re-
+garding architecture, we provide a highly configurable hard-
+ware template and precise evaluators for performance, energy,
+and MC. Our experiments demonstrate that Gemini’s explored
+architecture and mapping scheme significantly outperform the
+SOTA Simba architecture with Tangram mapping, with only
+a slight increase in monetary cost. We also present insightful
+observations about the use of chiplet technology in architecture
+design and DNN workload mapping within chiplet contexts.
+
+ACKNOWLEDGMENT
+
+This research was partially supported by National Key R&D
+Program of China (2022YFB2804103), Tsinghua University
+Dushi Program, and Tsinghua University Talent Program,
+National Natural Science Foundation of China (62072262).
+
+4.4E+05
+
+2.5E+06
+
+1.5E+07
+
+7.7E+07
+
+256
+
+3
+
+2048
+
+2
+
+2048
+
+REFERENCES
+
+1
+
+256
+
+Tangram
+Gemini
+
+[66] S.
+Zheng,
+X.
+Zhang,
+L.
+Liu,
+S.
+Wei,
+and
+S.
+Yin,
+“Atomic
+dataflow
+based
+graph-level
+workload
+orchestration
+for
+scalable
+DNN accelerators,” in IEEE International Symposium on High-
+Performance Computer Architecture, HPCA 2022, Seoul, South Korea,
+April 2-6, 2022.
+IEEE, 2022, pp. 475–489. [Online]. Available:
+
+[67] S. Zheng, X. Zhang, D. Ou, S. Tang, L. Liu, S. Wei, and S. Yin, “Ef-
+ficient scheduling of irregular network structures on cnn accelerators,”
+IEEE Transactions on Computer-Aided Design of Integrated Circuits
+and Systems, vol. 39, no. 11, pp. 3408–3419, 2020.
+[68] B. Zimmer, R. Venkatesan, Y. S. Shao, J. Clemons, M. Fojtik, N. Jiang,
+B. Keller, A. Klinefelter, N. R. Pinckney, P. Raina, S. G. Tell, Y. Zhang,
+W. J. Dally, J. S. Emer, C. T. Gray, S. W. Keckler, and B. Khailany, “A
+0.32-128 tops, scalable multi-chip-module-based deep neural network
+inference accelerator with ground-referenced signaling in 16 nm,” IEEE
+J. Solid State Circuits, vol. 55, no. 4, pp. 920–932, 2020. [Online].
+Available:
+
+APPENDIX
+
+A. Abstract
+
+This appendix provides guidance on accessing and using the
+Gemini framework (introduced in Sec. V) to replicate the
+key results shown in Fig. 5. The process is divided into two
+steps: (1) Conducting DSE for a 72 TOPs setup (Table. I) to
+identify the optimal architecture, referred to as G-ARCH; (2)
+Comparing the efficacy of G-ARCH with G-MAP against the
+baseline architecture S-ARCH and baseline mapping T-MAP,
+across varying batch sizes (introduced in Sec. VI-A) and five
+different networks (introduced in Sec. VI-A3). The remaining
+experiments, which also involve similar DSE and analysis, are
+omitted here for the sake of brevity.
+
+B. Artifact check-list (meta-information)
+
+• Algorithm: Simulated Annealing, Exhaustive Search and
+Dynamic Programming
+
+• Program: C++, Shell, Python (only for data collection)
+
+• Compilation: by Makefile
+
+• Hardware: It is best to have a server with more than 80
+threads.
+
+• Metrics: Cost function (MCα × Eβ × Dγ, MC × E × D is
+employed in DSE. E × D is employed in the comparisons
+with baseline.)
+
+• Experiments: reproduce Fig. 5, including 72TOPs DSE and
+comparisons with baseline.
+
+• How much disk space required (approximately)?: 1GB
+
+• How
+much
+time
+is
+needed
+to
+prepare
+work-
+flow(approximately)?: Several minutes at most.
+
+• How much time is needed to complete experiments (ap-
+proximately)?: For DSE, it takes about 38 minutes with 80
+threads; For comparison, it takes about 14 minutes using
+10 threads. The server is Intel Xeon Platinum 8260 server
+
+• Publicly available?: Yes
+
+• Code licenses (if publicly available)?: BSD 3-Clause License
+
+• Archived (provide DOI)?: 10.5281/zenodo.10207613
+
+C. Description
+
+D. Installation
+
+Then you can run the following command to reproduce the
+Excel data of Fig. 5. The Fig 5.csv file, generated in the
+current directory, can be validated through comparison with
+the Fig 5.csv file, which contains the data used in Fig. 5,
+located in the expected results folder.
+
+For artifact evaluation, start by downloading the artifact
+from Zenodo:
+
+$ wget -O GEMINI_AE.zip
+/10207613/files/GEMINI_AE.zip?download=1
+$ unzip GEMINI_AE.zip
+
+$ python3 Fig5_reproduce.py <output_dir>/compare.
+csv
+
+Our Gemini exploration framework is in “GEMINI”. We
+use Makefile to build the GEMINI framework.
+
+Please note that “<output dir>” refers to the address where
+the “compare.csv” file is stored, which is the folder named
+with a timestamp within the ‘Compare log‘ directory like
+./compare log/2023 11 08 10 56 52/compare.csv.
+
+$ cd GEMINI
+$ make
+
+Then
+the
+executable
+target
+will
+be
+generated
+at
+“./build/stschedule”.
+You can install the needed python packages using pip with
+following commands.
+
+F. Evaluation and expected results
+
+There are two key data results: the optimal architecture
+discovered by DSE (2, 36, 144GB/s, 32GB/s, 16GB/s, 2MB,
+1024) and the improvement ratio of G-ARCH+G-MAP com-
+pared to S-ARCH+T-MAP (1.98× performance improvement,
+1.41× energy efficiency improvement, and 14.3% MC in-
+crease). The optimal architecture and improvement ratio will
+be displayed in the windows after executing dse.sh and
+compare.sh scripts respectively, and can be verified against
+the mentioned results. Moreover, the breakdown of energy
+consumption and delay data for Fig. 5 can be verified by com-
+paring the “Fig 5.csv” file generated in GEMINI folder with
+the “Fig 5.csv” located in the “expected results” directory.
+
+$ pip install -r requirements.txt
+
+Or you can use conda to install with following commands.
+
+$ conda install --file requirements.txt
+
+E. Experiment workflow
+
+1) 72TOPs DSE: Once GEMINI framework is built, you
+can execute DSE experiment and search the best arch with
+command below.
+
+$ ./dse.sh
+
+G. Methodology
+
+The DSE script uses 80 threads and takes around 38 minutes to
+run on Intel Xeon Platinum 8260 server. Then you can see the
+state of current running DSE. Once the process is completed,
+the command-line window will output the optimal architecture.
+You can compare this optimal architecture with the one
+mentioned in Sec. VI-B, which is (2, 36, 144GB/s, 32GB/s,
+16GB/s, 2MB, 1024). In the ”dse log” folder, there will be a
+folder named with the timestamp, containing the outputs for
+each architecture candidate, as well as the summarized “re-
+sult.csv” file. You can compare the generated ”result.csv” with
+the “DSE result.csv” provided in ”expected results” folder,
+which is employed in our paper.
+2) Comparison with Baselines: Once you obtain the op-
+timal architecture, you can proceed with the comparison of
+G-ARCH+G-MAP, S-ARCH+T-MAP, and S-ARCH+G-MAP
+for the five networks and two batch sizes to reproduce Fig. 5
+with following commands.
+
+Submission, reviewing and badging methodology:
+
+•
+review-badging
+
+•
+
+•
+
+$ ./compare.sh <output_dir>/best_arch.txt

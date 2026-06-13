@@ -1,0 +1,1278 @@
+PatchRot: A Self-Supervised Technique for Training
+Vision Transformers
+
+Hemanth Venkateswara
+Georgia State University
+Atlanta, GA, USA
+
+Prabal Bijoy Dutta
+Arizona State University
+Tempe, AZ, USA
+
+Sachin Chhabra
+Arizona State University
+Tempe, AZ, USA
+
+arXiv:2210.15722v1 [cs.CV] 27 Oct 2022
+
+Baoxin Li
+Arizona State University
+Tempe, AZ, USA
+
+Abstract
+
+Vision transformers require a huge amount of labeled data to outperform convo-
+lutional neural networks. However, labeling a huge dataset is a very expensive
+process. Self-supervised learning techniques alleviate this problem by learning
+features similar to supervised learning in an unsupervised way. In this paper, we
+propose a self-supervised technique PatchRot that is crafted for vision transformers.
+PatchRot rotates images and image patches and trains the network to predict the
+rotation angles. The network learns to extract both global and local features from
+an image. Our extensive experiments on different datasets showcase PatchRot
+training learns rich features which outperform supervised learning and compared
+baseline.
+
+1
+Introduction
+
+In the past decade, convolution neural networks (ConvNets) have made tremendous progress in
+various image processing ﬁelds like object recognition (Szegedy et al. [2015], He et al. [2016]),
+segmentation (Ronneberger et al. [2015]), etc. This progress is primarily a result of supervised
+training on labeled data. The features learned by such a network are highly transferable and can be
+used for similar tasks (Pan and Yang [2009], Chhabra et al. [2021], Wang and Deng [2018]). However,
+labeling a dataset is generally expensive and time-consuming.
+
+Self-supervised learning alleviates this problem by learning rich features without the need for manual
+annotation of labeling the dataset. Hence, training a network in an unsupervised way is gaining a
+lot of traction. Self-supervised learning techniques train a network by creating an auxiliary task that
+requires an understanding of the object. (Noroozi and Favaro [2016]) divided an image into patches
+and trained the network to solve a jigsaw puzzle of the shufﬂed patches. Another technique predicts
+the angle of a rotated image (Gidaris et al. [2018]).
+
+Existing self-supervised techniques were designed to train ConvNets. However, in recent years,
+Vision Transformers (ViT) have surpassed ConvNets (Dosovitskiy et al. [2020]). Transformers were
+initially designed for Natural Language Processing (Vaswani et al. [2017]) but now are being applied
+to other modalities like speech (Li et al. [2019]), image (Dosovitskiy et al. [2020]), video (Arnab et al.
+[2021]) etc. Nevertheless, ViTs are considered data-hungry models as they outperform ConvNets only
+
+when huge labeled training data is available. When the amount of training data available is limited,
+their performance is not as good as ConvNets. This is primarily because they lack the inductive bias
+of ConvNets like translation equivariance and locality (Dosovitskiy et al. [2020]). This elevates the
+importance of unsupervised training of ViTs. Existing self-supervised techniques can be applied
+to ViTs. However, we need to keep in mind that ViTs process images differently than ConvNets.
+ConvNets process the image like a grid and learn shared kernels to extract features whereas ViTs
+divide the images into patches and apply self-attention to the embedding of the patches.
+
+In this paper, we propose PatchRot, a self-supervised technique for ViTs. PatchRot trains a ViT to
+predict the rotation of patches as well as that of the image. Given an image, we either rotate the image
+or its patches at a time. The classiﬁcation head of the ViTs contains the global information of the
+image and the patch heads contain the local information. The classiﬁcation head is used to predict
+the rotation angle of the image and the other heads are used to predict the rotation angle for their
+respective patches. This way, PatchRot learns to extract both global and local features. PatchRot is a
+simple self-supervised technique crafted for ViTs. It trains the classiﬁcation head as well as the patch
+heads. Our experiments on different datasets showcase the strength of PatchRot over supervised
+training and compared baselines.
+
+2
+Related Work
+
+2.1
+Self-Supervised Learning
+
+Self-supervised learning methods aim to learn rich features in an unsupervised way that can be
+directly used in other tasks (downstream tasks) such as image classiﬁcation, object detection, image
+segmentation, etc. These techniques generally design a surrogate task that can generate training
+supervision without manual annotation and solving them would require an understanding of the
+object. (Zhang et al. [2016]) proposed to train a ConvNet to colorize a grayscale image. (Pathak et al.
+[2016]) trained a network to ﬁll the missing parts of an image. (Doersch et al. [2015]) trained the
+network to predict the relative position of a patch given another patch from the same image. (Noroozi
+and Favaro [2016]) extracted nine patches from an image and trained the network to solve the jigsaw
+puzzle of the shufﬂed patches. (Gidaris et al. [2018]) proposed a pretext task of predicting the angle
+of 2D rotation (0°, 90°, 180°, 270°) applied to an input image to generate features that are supervised
+through this task. Dosovitskiy et al. [2016] proposed a training scheme to learn features by trying to
+predict the classes of samples generated by a set of transformations.
+
+2.2
+Vision Transformers
+
+In 2020, (Dosovitskiy et al. [2020]) introduced a new class of image-processing networks - Vision
+Transformers (ViT) that operates solely on the attention mechanism. Next, we discuss the different
+components of a ViT - Image Tokenization, Patch Embedding block, Encoder block, and MLP head.
+
+Image Tokenization: ViT splits the 2-dimensional image using into 16 × 16 non-overlapping image
+patches in top-left to bottom right order. This forms a 1-dimensional sequential input of image
+patches which are then used as the input.
+
+Patch Embeddings: A fully connected layer is used to convert each image token into an embedding
+vector. Splitting the image into 1-D image patches destroys the spatial relationships between the
+patches. Hence, a learnable spatial embedding is added to the embedding of patches to provide spatial
+information. Similar to BERT (Devlin et al. [2018]), a learnable class token is added to the start of
+the patch embedding sequence and is used for image classiﬁcation later.
+
+Transformer Encoder: An encoder block consists of a multi-headed self-attention block and a
+forward expansion block. Self-attention block computes attention between the input tokens and
+the forward expansion block utilizes multiple fully-connected layers to transform the input. Both
+the blocks use a normalization layer before processing the input. A residual connections are used
+between input, self-attention block output and the forward expansion block.
+
+MLP Head: At the last encoder block, the output of the class token (added in patch embedding
+block) is used and the rest of the outputs are ignored. The class token output is processed through a
+multi-layer perception classiﬁer (also known as MLP head) which classiﬁes the image into one of the
+categories.
+
+3
+Methodology
+
+3.1
+Problem Deﬁnition
+
+Let x ∈[0, 1]C×H×W be the input image, where C, H, W represent the number of channels, the
+height, and the width of the image, respectively. The goal is to train a ViT Tφ with parameters φ in
+an unsupervised manner and extract high-quality features. As input to the ViT, we preprocess the
+image into a sequence of image patches s(x) = [xs
+1, xs
+2, ..., xs
+N], where N is the number of patches.
+The image patch dimensions are determined by patch size P where xs
+i ∈[0, 1]C×P ×P represents the
+i-th patch of image x and N = H
+
+P · W
+
+P . The image height H and width W is a multiple of patch size
+P to ensure that N is an integer.
+
+3.2
+PatchRot
+
+PatchRot is a technique to train a ViT where the rotation angle of an image and the rotation angle
+of individual patches of an image are predicted. RotNet (Gidaris et al. [2018]) showcased that a
+ConvNet trained to predict the rotation of an image learns features as good as those learned using
+supervised training. We train a ViT where the classiﬁcation head (generally used for predicting the
+object category) is used to predict the rotation angle of the image. We use the last encoder output
+of the other heads to predict the rotation angles for the individual patches using new multilayer
+perceptron (MLP) heads. This way the ViT can produce an output for every element in the input
+sequence whereas ConvNets are limited to just one output. Therefore, PatchRot applies only to ViTs.
+
+We represent the rotation operation as R(; ι), where ι ∈{0, 1, 2, 3} that rotates the input by θ = 90°.ι
+resulting in rotation of 0°, 90°, 180°, or 270°. A rotated image xr = R(x; ι0) uses y = ι as its
+the label for training. Similar to (Gidaris et al. [2018]), we found that training using all 4 angles
+of rotations in the same minibatch yielded the best results. We overload the rotation operator to
+represent the PatchRot version of the image xpr = R(s(x); ιp), where we rotate all of N patches of
+the input image. ιp = {ι1, ι2, ..., ιN} denotes the sequence of rotation applied to the corresponding
+input sequence s(x) and each ιi ∀i = 1, 2, ..., N is sampled randomly using a discrete uniform
+distribution.
+
+We train the ViT Tφ using xr and xpr images. The ViT Tφ = PE ⊙EB ⊙M consists of
+a patch encoding block PE followed by encoder blocks EBi where i ∈{1, 2, ..., e} and e is
+the total number of encoder blocks, and an MLP head M for classiﬁcation. Let E(s(x)) =
+{E0(s(x)), E1(s(x)), ..., EN(s(x))} denote the output at the last encoder block EBe where
+Ei(s(x)) ∈Rh is the i-th output corresponding to the input sequence s(x) and h is the embedding
+size. E0(s(x)) represents the encoding of the classiﬁcation head and {E1(s(x)), ..., EN(s(x))} are
+the encoding for the patch heads. In the case of image rotation xr, the encoding from the classiﬁcation
+head is passed to the MLP head M0 to predict the rotation category of the image as M0(E0(s(xr))).
+The encodings of the patch heads in this case are ignored. In the case of patch rotation, we introduce
+new MLPs M1, M2, ..., MN to classify the encodings of the individual patches. The rotation angles
+of the individual patches are predicted by the MLPs as Mi(Ei(s(xpr))) ∀i = 1, 2, ..., N. PatchRot
+trains the ViT using,
+
+3
+X
+
+N
+X
+
+j=0
+Lce(M0(E0(s(R(x, j)))), y = j) +
+
+i=1
+Lce(Mi(Ei(R(s(x), ιp))), y = θi),
+(1)
+
+where the ﬁrst term is the loss function penalizing rotation misclassiﬁcation for each of the 4 angles
+of image rotation and the second term is the loss function penalizing rotation misclassiﬁcation for the
+image patches. Lce is the standard cross-entropy loss function. Note that we do not rotate the image
+when rotating image patches as doing both simultaneously have demonstrated to hurt the downstream
+task performance.
+
+3.3
+Training Procedure
+
+To avoid the possibility of the network learning to predict the angle of patch rotations using edge
+continuity, we use a buffer gap B between the patches, i.e., we initially partition the image using a
+larger patch size P ′ = P + B, where P ′ > P. Then from each such patch, we randomly crop a P
+
+Figure 1: Model diagram of our approach. The input image is split into patches. The image and the
+patches are rotated by a random angle of 90°.ι resulting in rotation by 0°, 90°, 180°, or 270°. The
+vision transformer (ViT) is trained to predict the rotation angle for the image and each patch using
+new additional MLP heads. Dotted lines denote the weights are shared. Best viewed in Color.
+
+sized patch. This results in a gap between patches of random size between 0 to 2B pixels. Due to the
+buffer between patches, the input size is reduced. Instead of scaling the image/patches to adjust to the
+original input size, we found it beneﬁcial to perform the self-supervised training on reduced image
+size and use the original size for transferring knowledge to downstream tasks. To be precise, the
+PatchRot training image xpr size is C ×Hpr ×Wpr where Hpr = P ·⌊
+H
+P +B ⌋, and Wpr = P ·⌊
+W
+P +B ⌋
+and ⌊.⌋denotes the ﬂoor operation. The number of patches is given by Npr = ⌊
+H
+P +B ⌋· ⌊
+W
+P +B ⌋.
+For creating a rotated image xr, we produce a crop of this size instead of the original size for our
+algorithm and then rotate the cropped image. We were guided by the fact that training on smaller
+resolution images and then ﬁne-tuning with higher resolution images has shown to yield performance
+gains (Touvron et al. [2019]).
+
+Once the network is trained using PatchRot, we remove the newly added MLP heads -
+M1, M2, ..., MN and only use the classiﬁcation head’s encoder output and its MLP head (just
+like the original ViT) for downstream tasks. For adapting the network to the new classiﬁcation task,
+we replace the last classiﬁcation layer from MLP head M0 with a new layer having an output size
+equal to the number of categories in the new task before retraining the network. PatchRot training is
+performed at a smaller input size but for the downstream task, we use the original image size. The
+larger image size results in an increase in the number of input patches: ⌊
+H
+P +B ⌋· ⌊
+W
+P +B ⌋→H
+
+P · W
+
+P .
+Hence, we apply a linear interpolation of the positional embedding as designed in the original ViT
+(Dosovitskiy et al. [2020]) for this case.
+
+4
+Experiments
+
+4.1
+Datasets
+
+We test our approach on datasets like CIFAR-10, CIFAR-100, FashionMNIST, and Tiny-ImageNet
+datasets using a scaled-down version of the ViT (described in section 4.2) due to hardware limitations.
+We use 32 × 32 image size for CIFAR-10, CIFAR-100 and FashionMNIST datasets and 64 × 64
+for Tiny-ImageNet. Random crop with zero padding of size 4 and a random horizontal ﬂip is used
+as augmentations for CIFAR-10, CIFAR-100, and Tiny-ImageNet datasets. We did not apply any
+
+(a) CIFAR-10
+(b) CIFAR-100
+
+(c) FashionMNIST
+(d) Tiny-ImageNet
+
+Figure 2: Classiﬁcation accuracies for (a) CIFAR-10, (b) CIFAR-100, (c) FashionMNIST and (d)
+Tiny-ImageNet datasets for Supervised, RotNet (Gidaris et al. [2018]) and PatchRot. Solid lines
+denote Top-1 accuracy and the dashed lines denote Top-5 accuracy on the Y-axis. The X-axis contains
+different layers of the transformer. While ﬁnetuning on the downstream task all the layers before
+that layer are frozen. NF: No layers are frozen; PE: Patch Embedding block; EB-1 to EB-7 are the
+encoder blocks of the Vision Transformer. MLP: The whole network is frozen except for the new
+output linear layer.
+
+augmentations for FashionMNIST. Also, we do not use any padding while creating patch rotation
+image xpr as padding pixels tend to work as a shortcut to ﬁnd the rotation angle.
+
+4.2
+Training Details
+
+The experiments are performed using ViT-Lite from (Hassani et al. [2021]) (scaled-down version
+of the original ViT architecture (Dosovitskiy et al. [2020]) which is designed for smaller datasets.
+Speciﬁcally, the number of encoder blocks is reduced to 6 with 256 embedding size and 512 expansion
+size. The number of attention heads is also reduced to 4 and the dropout is set to 0.1. We train the
+network with the patch size of P = 4 for CIFAR-10, CIFAR-100, and FashionMNIST and P = 8
+for TinyImageNet. The buffer B is set to 1
+
+4 of the patch size which results in PatchRot input size of
+24 × 24 for 32 × 32 images and 48 × 48 for 64 × 64 images.
+
+We used Adam Optimizer for training the ViT with a learning rate and a weight decay of 5 × 10−4
+and 3 × 10−2 respectively. The learning rate is warmed up for the ﬁrst 10 epochs and then decayed
+using a cosine schedule. The batch size is set to 128. However, due to multiple variations of the same
+image being presented in a mini-batch, the effective batch size for PatchRot is 128×5 samples.
+
+Initalization
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+No ImageRot
+91.8
+91.9
+91.9
+91.4
+91.0
+90.0
+88.8
+82.2
+69.4
+54.9
+No PatchRot
+91.0
+91.2
+90.7
+90.2
+89.4
+88.6
+87.8
+85.3
+80.1
+70.8
+Original Size
+92.1
+92.2
+91.6
+91.1
+90.7
+89.9
+89.0
+86.2
+81.6
+73.9
+Rotate Img & Patch
+90.7
+90.7
+90.8
+90.6
+90.6
+90.2
+88.3
+82.5
+72.8
+58.4
+Reuse MLP head
+91.1
+91.0
+90.9
+90.4
+89.9
+89.6
+87.7
+84.0
+76.6
+65.7
+
+PatchRot-full
+92.6
+92.5
+92.3
+92.4
+91.8
+91.1
+90.0
+87.0
+83.2
+75.8
+
+Table 1: Ablation study of our method on CIFAR-10. Columns denote the parts of the ViT being
+ﬁne-tuned and all the layers before that layer are frozen. NF: No layers are frozen; PE: Patch
+Embedding block; EB-1 to EB-7 are the encoder blocks of the Vision Transformer. MLP: The whole
+network is frozen except for the new output linear layer.
+
+(a) Attention Maps
+(b) Failure cases
+
+Figure 3: Sample Attention Maps of ViT trained using PatchRot on the validation set of Tiny-
+ImageNet. Upper row: Input and Lower row: Attention Map
+
+We follow the procedure of ﬁne-tuning the layers after the self-supervision training as also im-
+plemented by (Noroozi and Favaro [2016]) for the experiments. The self-supervised training is
+performed for 300 epochs and the supervised training is performed for 200 epochs. We provide
+additional experimental results with different input patch sizes in the appendix. The code for PatchRot
+is available at:
+
+4.3
+Results
+
+We compare our approach with supervised learning and image rotation prediction (Gidaris et al.
+[2018]). RotNet is a convolutional neural network approach. We used the code from their ofﬁcal repo
+and used it to train the ViT with the same setting as PatchRot. The results are in Figure 2, and the
+tabular versions are available in the appendix. In Figure 2, NF denotes when no layers are frozen
+and the whole network was trained. MLP denotes linear probing of the learned features where we
+freeze the whole network and only train the last classiﬁcation layer. The middle results denote results
+on ﬁne-tuning speciﬁc encoder blocks. Fine-tuning just the MLP head (one fully connected layer)
+achieves results close to the supervised learning and ﬁne-tuning one encoder block and MLP head
+outperforms the supervised training from scratch.
+
+5
+Analysis
+
+5.1
+Ablation Study
+
+In this section, we test the importance of different components of PatchRot using CIFAR-10 and
+present the results in Table 1. First, we train the ViT on the patch rotation image xpr only and
+exclude the image rotation xr versions (No ImageRot). As we do not train the classiﬁcation head,
+the network learns only the local characteristics and as we freeze more layers, we can notice the drop
+in performance, signifying the importance of global context. Similarly, in the second experiment,
+we exclude the xpr (No PatchRot). This is comparable to the RotNet which is trained to predict
+image rotation using a convolutional network with the only difference that the self-supervised training
+is performed at a reduced image size. Next, we test the signiﬁcance of reduced size training by
+comparing it with self-supervised training on the original image scale (Original Size). To test this, we
+
+Figure 4: Top-5 classiﬁcation accuracy vs Pretraining epochs for CIFAR-100. Supervised denotes the
+supervised accuracy; PatchRot denotes the PatchRot self-supervised accuracy on testset; NF, EB5
+and MLP denotes the accuracy on ﬁnetuning all the layers, freezing layers till EB5 and no ﬁne-tuning
+of the network respectively. Best viewed in color.
+
+divide the image using the original patch size P and we randomly crop P −B sized patches from it.
+These cropped patches are then resized to patch size P to maintain the original image size and still
+have a buffer. We also test our hypothesis of rotating images and patches together (Section 3.2) in
+our next experiment (Rotate Img & Patch). Last, we experiment with the newly added MLP heads
+(Reuse MLP Head). Since adding new MLP heads temporarily increases the model size. Instead of
+adding new MLP heads, we use the same original MLP head for predicting the rotation angle for the
+image and the patches.
+
+5.2
+Attention Maps
+
+We show the attention maps on the validation set of Tiny-ImageNet for ViT trained using PatchRot
+in Figure 3. With just the unsupervised training, the model learns to attend to the main object in
+the image. We also show failure cases in Figure 3b where the model learns to solve the problem by
+attending to a part of the object like the top green part of the tomato or using a background feature
+like sky positioning. More attention maps are available in the appendix.
+
+5.3
+Pre-training epochs vs Classiﬁcation Accuracy
+
+Here, we study the impact of PatchRot’s pretraining on the ﬁnal classiﬁcation performance. We train
+the ViT using our approach with a different number of epochs {10, 25, 50, 75, 100, 150, 200, 250,
+300, 350, and 400}, for the CIFAR-100 dataset. The results are in Figure 4. Pretraining with just a
+few epochs with PatchRot we can observe signiﬁcant improvement in ﬁnal performance compared to
+training from scratch (Supervised). Also, PatchRot did not show any signs of overﬁtting, and training
+it longer (350, 400, and 500) improves the self-supervised test accuracy and the ﬁnal classiﬁcation
+accuracy.
+
+5.4
+Transfer Learning
+
+PatchRot aims to learn rich features in an unsupervised manner and in this section, we show its
+advantage for the transfer learning settings on CIFAR100 →CIFAR10 and CIFAR10 →CIFAR100
+tasks. We ﬁrst train the network on source data using PatchRot vs. the supervised object classiﬁcation
+task. These networks are used as the initialization to train on the target dataset and the results are in
+Figure 5. We can observe that PatchRot extracts better features than the supervised training which can
+be used across datasets. Also, PatchRot has a signiﬁcant margin advantage over supervised training
+which drops only during the last few layers (where layers become domain/task-speciﬁc). Hence,
+pre-training the network with PatchRot has a signiﬁcant advantage over supervised training.
+
+(a) CIFAR100→CIFAR10
+(b) CIFAR10→CIFAR100
+
+Figure 5: PatchRot performance in a transfer learning setting. PatchRot denotes the ViT was trained
+on the source dataset self-supervised using PatchRot. Supervised denotes the ViT was trained on
+source using the supervised object classiﬁcation task. Solid lines and the dashed lines show the Top-1
+and Top-5 accuracy on the Y-axis respectively. The X-axis contains different layers of the transformer
+and while ﬁnetuning on the target dataset all the layers before that layer are frozen.
+
+Labels
+Sup
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+40
+20.8
+38.8
+40.1
+42.1
+44.5
+46.9
+49.7
+50.6
+51.3
+55.2
+27.5
+250
+26.6
+57.5
+60.2
+61.4
+63.4
+64.9
+65.3
+65.8
+65.1
+65.2
+35.5
+1000
+38.6
+70.1
+71.4
+71.9
+72.6
+72.8
+73.8
+73.5
+72.0
+72.2
+58.4
+4000
+53.7
+79.2
+79.6
+80.7
+80.9
+81.1
+80.9
+80.2
+78.4
+77.2
+69.7
+10000
+67.1
+84.7
+85.2
+85.5
+85.6
+85.5
+84.8
+84.3
+82.2
+79.6
+73.0
+20000
+75.2
+88.3
+88.7
+88.9
+88.9
+88.5
+88.0
+86.7
+84.7
+81.1
+74.5
+30000
+79.8
+90.0
+90.5
+90.6
+90.3
+89.9
+89.2
+88.1
+85.9
+82.0
+75.0
+40000
+82.0
+91.7
+92.0
+91.7
+91.6
+91.1
+90.3
+89.2
+86.4
+82.8
+75.6
+
+50000
+83.9
+92.6
+92.5
+92.3
+92.4
+91.8
+91.1
+90.0
+87.0
+83.2
+75.8
+
+Table 2: Results on CIFAR10 in a semi-supervised setting. PatchRot training is performed on all the
+samples and then the network is ﬁne-tuned with labeled samples only. The ﬁrst column denotes the
+number of labeled samples and the second column shows the supervised performance with labeled
+samples only. Other columns denote the parts of the ViT being ﬁne-tuned and all the layers before
+that layer are frozen.
+
+5.5
+Application to Semi-supervised learning
+
+Self-supervised learning techniques are being popularly utilized for semi-supervised learning by
+training the network with labeled data and simultaneously training another output head of the network
+with the unlabeled data using the self-supervised loss (Gidaris et al. [2018], Zhai et al. [2019]). In
+our experiments, instead of training the ViT on both the supervised and PatchRot loss together, we
+ﬁrst train the network with PatchRot (self-supervised loss) on all the data and then ﬁne-tune the
+network using the labeled data only (Similar to previous experiments). We use CIFAR-10 for these
+experiments with {40, 250, 1000, 4000, 10000, 20000, 30000 and 40000} labeled samples and the
+results are in Table 2. The second column (Sup) denotes the test accuracy on training the network
+with labeled samples only. As expected, with the increase in the number of labeled samples, training
+more layers is beneﬁcial. PatchRot pre-training results in superior performance than the Supervised
+training showcasing its application in semi-supervised learning.
+
+(a) SVHN
+(b) MNIST
+
+Figure 6: Top-1 classiﬁcation accuracies for Rotation Invariant datasets: (a) SVHN and (b) MNIST
+for Supervised, RotNet (Gidaris et al. [2018]) and PatchRot. Solid lines denote Top-1 accuracy and
+the dashed lines denote Top-5 accuracy on the Y-axis. The X-axis contains different layers of the
+transformer. While ﬁnetuning on the downstream task all the layers before that layer are frozen.
+
+5.6
+The Case of Rotation Invariant Objects
+
+Predicting the rotation angle of an object works only if the object is distinguishable when rotated by
+different angles. PatchRot also performs rotation on the image patches and predicting their rotation
+angle still requires knowledge of the object in the image. However, some patches can be rotation
+invaritant too but those patches are generally part of the background. Hence, PatchRot is helpful
+for rotation invariant objects as well. We perform this experiment on the digits datasets: SVHN and
+MNIST where digits like 0, 1, and 8 are rotation invariant whereas the other digits can differentiate
+the rotation angles. We use the same experiment setting as the other datasets and the results are
+shown in Figure 6. RotNet (Gidaris et al. [2018]) provides superior performance than supervised
+due to some rotation discriminative digits (like 2, 3, 4, etc) but PatchRot gets a signiﬁcantly higher
+performance than Image-level rotation prediction and supervised training.
+
+6
+Conclusion
+
+In this paper, we proposed PatchRot which is an easy-to-understand and implement self-supervised
+technique. PatchRot trains a Vision transformer to predict rotation angles ∈{0 °, 90°, 180°, 270°}
+of image and image patches. With extensive experiments on multiple datasets, we showcased that a
+Vision transformer pretrained with our approach achieves superior results on downstream supervised
+learning. PatchRot is a robust technique that works for rotation invariant objects as well and can be
+applied in transfer and semi-supervised learning settings.
+
+Acknowledgments and Disclosure of Funding
+
+The work was supported in part by a grant from ONR. Any opinions expressed in this material are
+those of the authors and do not necessarily reﬂect the views of ONR.
+
+References
+
+A. Arnab, M. Dehghani, G. Heigold, C. Sun, M. Luˇci´c, and C. Schmid. Vivit: A video vision transformer. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 6836–6846, 2021.
+
+S. Chhabra, P. B. Dutta, B. Li, and H. Venkateswara. Glocal alignment for unsupervised domain adaptation.
+In Multimedia Understanding with Less Labeling on Multimedia Understanding with Less Labeling, pages
+45–51. 2021.
+
+J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova. Bert: Pre-training of deep bidirectional transformers for
+language understanding. arXiv preprint arXiv:1810.04805, 2018.
+
+C. Doersch, A. K. Gupta, and A. A. Efros. Unsupervised visual representation learning by context prediction.
+2015 IEEE International Conference on Computer Vision (ICCV), pages 1422–1430, 2015.
+
+A. Dosovitskiy, P. Fischer, J. T. Springenberg, M. A. Riedmiller, and T. Brox. Discriminative unsupervised
+feature learning with exemplar convolutional neural networks. IEEE Transactions on Pattern Analysis and
+Machine Intelligence, 38:1734–1747, 2016.
+
+A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. Dehghani, M. Minderer,
+G. Heigold, S. Gelly, et al. An image is worth 16x16 words: Transformers for image recognition at scale. In
+International Conference on Learning Representations, 2020.
+
+S. Gidaris, P. Singh, and N. Komodakis. Unsupervised representation learning by predicting image rotations. In
+International Conference on Learning Representations, 2018.
+
+A. Hassani, S. Walton, N. Shah, A. Abuduweili, J. Li, and H. Shi. Escaping the big data paradigm with compact
+transformers. arXiv preprint arXiv:2104.05704, 2021.
+
+K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learning for image recognition. In Proceedings of the IEEE
+conference on computer vision and pattern recognition, pages 770–778, 2016.
+
+N. Li, S. Liu, Y. Liu, S. Zhao, and M. Liu. Neural speech synthesis with transformer network. In Proceedings of
+the AAAI Conference on Artiﬁcial Intelligence, volume 33, pages 6706–6713, 2019.
+
+M. Noroozi and P. Favaro. Unsupervised learning of visual representations by solving jigsaw puzzles. In
+European conference on computer vision, pages 69–84. Springer, 2016.
+
+S. J. Pan and Q. Yang. A survey on transfer learning. IEEE Transactions on knowledge and data engineering,
+22(10):1345–1359, 2009.
+
+D. Pathak, P. Krahenbuhl, J. Donahue, T. Darrell, and A. A. Efros. Context encoders: Feature learning by
+inpainting. In Proceedings of the IEEE conference on computer vision and pattern recognition, pages
+2536–2544, 2016.
+
+O. Ronneberger, P. Fischer, and T. Brox. U-net: Convolutional networks for biomedical image segmentation. In
+International Conference on Medical image computing and computer-assisted intervention, pages 234–241.
+Springer, 2015.
+
+C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke, and A. Rabinovich.
+Going deeper with convolutions. In Proceedings of the IEEE conference on computer vision and pattern
+recognition, pages 1–9, 2015.
+
+H. Touvron, A. Vedaldi, M. Douze, and H. Jégou. Fixing the train-test resolution discrepancy. Advances in
+neural information processing systems, 32, 2019.
+
+A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin. Attention
+is all you need. Advances in neural information processing systems, 30, 2017.
+
+M. Wang and W. Deng. Deep visual domain adaptation: A survey. Neurocomputing, 312:135–153, 2018.
+
+X. Zhai, A. Oliver, A. Kolesnikov, and L. Beyer. S4l: Self-supervised semi-supervised learning. In Proceedings
+of the IEEE/CVF International Conference on Computer Vision, pages 1476–1485, 2019.
+
+R. Zhang, P. Isola, and A. A. Efros. Colorful image colorization. In ECCV, 2016.
+
+A
+Appendix
+
+A.1
+Tablular and Additional Results
+
+In the main paper, we provided the comparison against RotNet and supervised training in graphs.
+Here, we provide the results in tabular format for easy lookup. We also experiment with training ViT
+using different patch sizes and compare the approach with random initialization in a similar manner.
+The results for these are in Table 3,4,5,6,7,8,9 and 10.
+
+Initalization
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+83.9
+77.2
+75.8
+75.6
+74.0
+70.9
+65.6
+52.9
+41.9
+34.3
+RotNet
+88.7
+89.1
+87.9
+87.0
+85.9
+84.2
+83.0
+81.4
+78.3
+67.6
+PatchRot (Ours)
+92.6
+92.5
+92.3
+92.4
+91.8
+91.1
+90.0
+87.0
+83.2
+75.8
+
+Table 3: Top-1 Classiﬁcation accuracies on CIFAR-10 using patch size of 4.
+
+Initalization
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+79.0
+73.6
+72.8
+72.2
+71.8
+70.2
+65.8
+50.7
+39.3
+31.8
+RotNet
+85.3
+85.5
+84.5
+83.4
+82.7
+81.5
+80.2
+78.2
+74.9
+66.1
+PatchRot (Ours)
+87.2
+87.0
+86.6
+86.2
+84.9
+84.3
+83.0
+80.2
+77.0
+70.0
+
+Table 4: Top-1 Classiﬁcation accuracies on CIFAR-10 using patch size of 8.
+
+Initalization
+Metric
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+Top-1
+50.2
+45.4
+44.3
+43.3
+41.9
+40.4
+37.7
+25.3
+14.8
+10.1
+Top-5
+81.6
+74.2
+74.0
+73.2
+72.7
+70.5
+66.7
+55.2
+42.8
+33.8
+
+RotNet
+Top-1
+62.5
+62.3
+60.7
+58.6
+56.1
+54.7
+53.6
+51.5
+46.2
+32.3
+Top-5
+85.1
+84.9
+84.5
+83.2
+81.8
+81.6
+81.4
+80.7
+76.7
+63.0
+
+PatchRot
+Top-1
+70.6
+70.7
+70.6
+70.4
+69.2
+67.4
+64.7
+60.8
+53.1
+43.1
+Top-5
+90.2
+90.4
+90.1
+90.4
+89.7
+89.0
+88.1
+86.6
+82.5
+75.1
+
+Table 5: Top-1 and Top-5 Classiﬁcation accuracies on CIFAR-100 using patch size of 4.
+
+A.2
+More Attention Maps
+
+We show more attention maps on the validation set of Tiny-ImageNet dataset in Figure 7.
+
+Initalization
+Metric
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+Top-1
+50.2
+45.4
+44.3
+43.3
+41.9
+40.4
+37.7
+25.3
+14.8
+10.1
+Top-5
+76.5
+71.1
+70.6
+69.6
+69.2
+67.9
+65.8
+52.5
+38.2
+29.8
+
+RotNet
+Top-1
+54.1
+53.5
+51.6
+50.4
+47.9
+47.5
+46.2
+45.9
+40.6
+29.4
+Top-5
+80.3
+80.2
+79.0
+77.9
+77.1
+76.0
+75.7
+75.5
+71.1
+59.4
+
+PatchRot
+Top-1
+60.5
+61.2
+60.9
+58.7
+57.1
+54.5
+53.8
+52.2
+45.2
+34.0
+Top-5
+84.9
+85.6
+85.1
+84.2
+83.3
+82.4
+81.6
+81.1
+75.6
+66.0
+
+Table 6: Top-1 and Top-5 Classiﬁcation accuracies on CIFAR-100 using patch size of 8.
+
+Initalization
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+89.8
+87.8
+88.2
+88.2
+87.9
+87.4
+84.5
+79.9
+74.9
+63.1
+RotNet
+89.9
+89.4
+88.5
+88.2
+88.0
+87.4
+87.1
+87.1
+86.2
+77.8
+PatchRot (Ours)
+94.1
+94.0
+94.0
+94.0
+94.1
+93.7
+93.6
+93.1
+92.1
+86.8
+
+Table 7: Top-1 Classiﬁcation accuracies on FashionMNIST using patch size of 4.
+
+Initalization
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+90.7
+76.5
+89.6
+89.1
+88.9
+88.7
+87.9
+85.6
+80.9
+71.8
+RotNet
+91.1
+90.9
+90.4
+90.2
+89.2
+89.0
+88.9
+87.9
+87.1
+76.7
+PatchRot (Ours)
+92.0
+92.4
+92.7
+92.8
+92.6
+92.3
+92.4
+91.4
+89.8
+85.2
+
+Table 8: Top-1 Classiﬁcation accuracies on FashionMNIST using patch size of 8.
+
+Initalization
+Metric
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+Top-1
+41.9
+36.6
+35.4
+33.5
+33.2
+31.9
+29.4
+18.9
+9.9
+6.9
+Top-5
+66.4
+61.4
+60.1
+59.5
+59.3
+57.7
+54.4
+39.5
+26.4
+19.7
+
+RotNet
+Top-1
+45.1
+45.2
+43.8
+41.0
+38.4
+36.9
+36.4
+36.3
+30.7
+22.2
+Top-5
+69.0
+69.1
+67.8
+65.8
+64.0
+63.5
+63.3
+62.6
+55.8
+46.0
+
+PatchRot
+Top-1
+48.6
+47.4
+45.5
+44.6
+43.2
+42.7
+41.6
+40.0
+35.5
+26.3
+Top-5
+73.4
+72.2
+71.1
+70.7
+69.5
+69.5
+68.0
+67.2
+62.3
+52.5
+
+Table 9: Top-1 and Top-5 Classiﬁcation accuracies on Tiny-ImageNet using patch size of 8.
+
+Initalization
+Metric
+NF
+PE
+EB1
+EB2
+EB3
+EB4
+EB5
+EB6
+EB7
+MLP
+
+Random
+Top-1
+33.9
+29.9
+29.5
+28.5
+27.7
+27.4
+25.8
+15.2
+8.3
+5.6
+Top-5
+59.3
+54.7
+54.1
+53.1
+52.5
+52.3
+49.9
+34.6
+23.1
+17.3
+
+RotNet
+Top-1
+35.8
+35.6
+33.7
+31.5
+30.8
+30.2
+29.4
+29.6
+27.6
+22.2
+Top-5
+61.8
+61.1
+59.5
+57.8
+56.7
+56.3
+55.8
+56.1
+53.4
+46.6
+
+PatchRot
+Top-1
+38.2
+37.8
+37.0
+36.2
+34.7
+34.4
+33.9
+33.1
+29.1
+22.8
+Top-5
+65.1
+64.7
+63.8
+62.9
+61.7
+61.5
+60.7
+59.6
+56.1
+46.8
+
+Table 10: Top-1 and Top-5 Classiﬁcation accuracies on Tiny-ImageNet using patch size of 16.
+
+Figure 7: Sample Attention Maps of ViT trained using PatchRot on validation set of Tiny-ImageNet.
+Odd row: Input and Even row: Attention Map

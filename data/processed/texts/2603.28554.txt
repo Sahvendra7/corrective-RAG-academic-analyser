@@ -1,0 +1,1507 @@
+Hydra: Unifying Document Retrieval and Generation
+in a Single Vision-Language Model
+
+Athos Georgiou
+Independent Researcher
+
+arXiv:2603.28554v3 [cs.CV] 19 Apr 2026
+
+April 2026
+
+Abstract
+Visual document understanding typically requires separate retrieval and generation mod-
+els, doubling memory and system complexity. We present Hydra, a dual-head approach that
+provides both ColBERT-style late-interaction retrieval and autoregressive generation from a
+single vision-language model. A single LoRA adapter, trained only for retrieval, is toggled at
+inference: enabling it produces multi-vector embeddings; disabling it recovers the base model’s
+generation quality, with 426 of 426 language-model weight tensors byte-for-byte identical to a
+freshly-loaded Qwen3.5-4B. We identify two failure modes that can silently break generation in
+retrieval-fine-tuned VLMs (attention-mode restoration and lm_head preservation) plus an effi-
+ciency requirement (KV-cache-aware decoding); Hydra sidesteps the first two structurally and
+addresses the third in the decode loop. We release two scales, Hydra-4B and Hydra-0.8B,
+sharing LoRA hyperparameters (r=32, α=32) and optimisation recipe; data mix and projection
+dim differ across scales. The single-model design cuts peak GPU memory from 28.85 GB to
+10.77 GB at 4B (62.7% reduction) and from 5.79 GB to 2.37 GB at 0.8B (59.1%) relative to
+a co-resident two-model deployment. A controlled ablation finds GritLM-style joint training
+matches Hydra’s retrieval-only training on the evaluated modes while its LoRA-on generation
+mode collapses. A proof-of-concept on Qwen2.5-Omni-3B preserves generation equivalence on a
+non-Qwen3.5 backbone and transfers image retrieval within 2–8 pp of Hydra-4B, with zero-shot
+audio retrieval emerging through the frozen Whisper encoder.
+
+1
+Introduction
+
+Document AI systems must solve two distinct tasks: retrieval (finding relevant pages given a
+query) and understanding (extracting and interpreting information within those pages). Modern
+approaches address these with separate models: a retrieval model such as ColPali [Faysse et al.,
+2025] or ColQwen2 [ColPali Team, 2024] for page-level retrieval via ColBERT-style late interac-
+tion [Khattab and Zaharia, 2020, Santhanam et al., 2022], and a generative VLM such as Qwen2.5-
+VL [Bai et al., 2025] for document understanding. This dual-model paradigm is wasteful. Both
+models share a common backbone architecture (a vision-language transformer), yet they must be
+loaded independently, doubling GPU memory requirements and complicating deployment.
+The waste is particularly stark: ColPali-family models are fine-tuned VLMs. ColPali, ColQwen2,
+and ColQwen3.5 [Georgiou, 2026] all begin from a pretrained VLM, add a linear projection head
+(custom_text_proj) for 128- or 320-dimensional multi-vector embeddings, and fine-tune with con-
+trastive loss. This fine-tuning modifies the model’s attention patterns (to bidirectional) and internal
+representations, sacrificing autoregressive generation, though the capability remains latent beneath
+the retrieval-adapted weights.
+
+We observe that this sacrifice is unnecessary when using Low-Rank Adaptation (LoRA) [Hu
+et al., 2022]. Because LoRA adapters are additive (Wadapted = Wbase + BA), disabling them at
+inference time exactly recovers the base model’s weights. This means a single VLM with a retrieval
+LoRA adapter can serve as both:
+
+• A retrieval model (LoRA-on, bidirectional attention →custom_text_proj →320-dim
+embeddings), and
+• A generative VLM (LoRA-off, causal attention →lm_head →autoregressive text).
+Critically, only the retrieval head requires training. Generation capability is recovered by disabling
+the adapter and restoring causal attention, though realizing this in practice requires addressing
+three non-obvious engineering requirements (Section 3.4). Prior work has explored related ideas.
+SV-RAG [Chen et al., 2025] trains two LoRA adapters on a shared VLM (one for retrieval, one
+for generation) and swaps them at inference. URaG [Shi et al., 2026] unifies both tasks by insert-
+ing a retrieval module at an intermediate transformer layer. ColQwen2_4RAG [Oprea and Bâra,
+2025] demonstrated the same LoRA on/off toggling mechanism in an application setting; we add
+a systematic analysis of failure modes that can occur under different training setups (Section 3.4),
+a controlled-baseline retrieval evaluation, and a comparison against joint training. GritLM [Muen-
+nighoff et al., 2025] showed that joint training can unify embedding and generation in text-only
+models. Our contribution is not the toggling mechanism itself, which exists in prior work, but a sys-
+tematic characterisation of when and why it works: identifying two failure modes that silently break
+generation without these safeguards, plus an efficiency requirement, and demonstrating through
+controlled experiments that generation training is unnecessary at the LoRA ranks tested.
+We call this architecture Hydra: one model, two heads.1 Figure 1 illustrates the architecture,
+and Figure 2 shows how this extends to a complete retrieval-augmented generation (RAG) pipeline.
+Our contributions are:
+
+1. A dual-head approach that provides both ColBERT retrieval and autoregressive generation
+from a single VLM, requiring only a single LoRA adapter and no generation training. We
+characterise the operating constraints for making this work: two correctness requirements
+(attention-mode restoration, lm_head preservation) that Hydra sidesteps structurally, plus a
+practical efficiency requirement (KV-cache support) addressed in the decode loop (Section 3).
+2. Two-scale evaluation of the mechanism: retrieval on 22 ViDoRe tasks (V1/V2/V3) at
+both 4B and 0.8B scales, a bitwise generation-equivalence audit showing 426/426 language-
+model weight tensors match a freshly-loaded base model after LoRA is disabled, and efficiency
+measurements demonstrating that the VRAM-savings ratio is stable across scale (Section 5).
+3. A controlled ablation at r=16 comparing Hydra’s retrieval-only training against GritLM-
+style joint training; the two are equivalent on retrieval and LoRA-off generation, while the
+LoRA-on generation mode that joint training was designed to enable collapses (Section 5.4).
+
+2
+Related Work
+
+Unified embedding and generation.
+GritLM [Muennighoff et al., 2025] showed that a single
+LLM can perform both embedding and generation by alternating between objectives during full fine-
+tuning, switching between bidirectional and causal attention masks at inference. OneGen [Zhang et al., 2024]
+unified both in a single forward pass by allocating special retrieval tokens whose hidden states serve
+as query embeddings during autoregressive generation. Both remain text-only and use dense single-
+vector embeddings rather than multi-vector late interaction.
+
+1We release two instantiations on the Qwen3.5 family: HydraQwen3.5-4B (4.60B parameters, retrieval dim 320)
+and HydraQwen3.5-0.8B (≈800M parameters, retrieval dim 128). Full training configuration is in Section 4.
+
+Generation Mode
+
+Retrieval Mode
+
+LoRA-on
+
+LoRA-off
+
+LoRA Adapter
+(r=32, α=32)
+Bidirectional
+Attention
+
+Causal
+Attention
+
+Qwen3.5
+(frozen Wbase)
+
+custom_text_proj
+Rd →R320
+
+lm_head
+Rd →R|V |
+
+320-dim Embeddings
+(MaxSim scoring)
+
+Vision Encoder
+(frozen)
+
+Autoregressive Text
+(KV-cache)
+
+Figure 1: Hydra architecture. A single VLM serves two modes by toggling a LoRA adapter at
+inference time. Left: Retrieval mode (LoRA-on, bidirectional attention) produces multi-vector
+embeddings via custom_text_proj (320-dim shown here for Hydra-4B; Hydra-0.8B uses 128-dim).
+Right: Generation mode (LoRA-off, causal attention) produces autoregressive text via the base
+lm_head with KV-cache. The vision encoder is frozen and shared. No weight copying or model
+reloading occurs between modes. Arrow style indicates the data path active in each mode: solid
+blue = LoRA-on retrieval flow; dashed red = LoRA-bypassed generation flow (the dashed line
+marks that LoRA is disabled along this path, not that the layer is absent).
+
+Unified retrieval and generation for visual documents.
+SV-RAG [Chen et al., 2025] trains
+two separate LoRA adapters on a shared frozen MLLM backbone: one converts the model into a
+ColBERT-style multi-vector retriever, the second fine-tunes it for QA generation, with adapters
+swapped at inference. URaG [Shi et al., 2026] inserts a lightweight retrieval module at an inter-
+mediate transformer layer, exploiting the observation that early layers distribute attention broadly
+while deeper layers concentrate on evidence pages; irrelevant pages are pruned mid-forward-pass,
+achieving retrieval and generation in a single pass.
+VDocRAG [Tanaka et al., 2025] pre-trains
+a VLM with both retrieval and generation objectives but deploys separate components at infer-
+ence. VisRAG [Yu et al., 2024] uses VLMs for both tasks as a two-stage pipeline with separately
+fine-tuned models.
+Hydra differs from SV-RAG in requiring one adapter and no generation training: disabling the
+retrieval adapter exactly recovers the base model’s generation capability. It differs from URaG in
+producing a standalone ColBERT retriever that can be deployed independently of the generation
+pathway, rather than coupling retrieval to an intermediate layer of the generation forward pass.
+
+LoRA as an inference-time switch.
+ColQwen2_4RAG [Oprea and Bâra, 2025] showed that
+toggling ColQwen2’s LoRA adapters on and off switches the same Qwen2-VL backbone between
+retrieval and generation modes, demonstrating the core mechanism in an application context. Our
+contribution relative to that work is a systematic characterisation of failure modes that can oc-
+cur under different training setups (Section 3.4), a controlled-baseline retrieval evaluation, and a
+comparison against joint training. More broadly, aLoRA [Greenewald et al., 2025] invokes differ-
+ent LoRA adapters at different RAG pipeline stages with KV-cache reuse, MeteoRA [Xu et al.,
+2025b] embeds multiple task-specific LoRA adapters with per-token gating, and S-LoRA [Sheng
+et al., 2024] provides serving infrastructure for concurrent adapter selection. Hydra differs from
+these approaches in requiring no generation training and providing the systematic failure-mode
+
+Two-Model Pipeline
+
+ColQwen3.5 + Qwen3.5
+
+Index
+(page
+embeddings)
+
+Indexing
+ColQwen3.5
+(4B params)
+
+∼8.1B total params
+
+28,850 MB peak VRAM
+
+2 models in GPU memory
+
+Qwen3.5
+(4B params)
+Answer
+
+Query
+ColQwen3.5
+Retrieval
+
+Top-k
+Pages
+
+Single-Model Pipeline
+
+Hydra
+
+Index
+(page
+embeddings)
+
+Hydra (4B params)
+
+Indexing
+
+4B total params
+
+Retrieval head
+
+10,770 MB peak VRAM
+
+1 model in GPU memory
+
+Hydra
+
+Hydra
+
+Top-k
+Pages
+
+Query
+
+Generation head
+Answer
+
+Retrieval head
+
+Figure 2: RAG pipeline comparison. Top: A conventional two-model pipeline (ColQwen3.5 for
+retrieval + Qwen3.5 for generation) holds both models co-resident in GPU memory (∼8.1B pa-
+rameters, 28,850 MB peak VRAM). Bottom: Hydra uses a single 4B-parameter model for both
+indexing (retrieval head for embeddings) and querying (retrieval head finds top-k pages, generation
+head answers from them). Both heads share one model in GPU memory, reducing peak VRAM to
+10,770 MB (savings quantified in Figure 3). Solid blue borders = retrieval; red borders = genera-
+tion.
+
+characterisation in Section 3.4.
+
+Scope of comparison.
+We build on ColQwen3.5 [Georgiou, 2026],2 which adapts Qwen3.5 [Qwen
+Team, 2026] for ColBERT-style late-interaction retrieval over patch embeddings [Khattab and
+Zaharia, 2020]. Our evaluation is scoped to this family of vision-first, multi-vector models; single-
+vector and hybrid text-vision approaches use a different retrieval mechanism.
+The controlled-
+baseline comparison in Section 5 is the load-bearing retrieval evidence.
+
+2ColQwen3.5 is a public model (athrael-soju/colqwen3.5-4.5B-v3) by the present author; we cite it as the
+prior single-head retrieval reference on the Qwen3.5 family on which Hydra is constructed. The Hydra-4B retrieval
+comparison in Section 5 is against a same-recipe matched-seed re-train rather than against the public ColQwen3.5-v3
+release, to isolate the dual-head mechanism from training-data and step-count differences.
+
+3
+Method
+
+3.1
+Architecture Overview
+
+Hydra consists of a single ColQwen3.5 model (Qwen3.5 [Qwen Team, 2026] augmented with a linear
+projection head custom_text_proj: Rd →R320), plus two output pathways (Figure 1):
+
+1. Retrieval head: The custom_text_proj projection, producing L2-normalized 320-dim multi-
+vector embeddings for ColBERT-style late-interaction scoring.
+2. Generation head: The base model’s lm_head (Rd →R|V |), producing logits over the vo-
+cabulary for autoregressive decoding.
+A single LoRA adapter (r=32, α=32, dropout 0.05) is applied to all language model projection
+layers (q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, plus the linear-attention
+in_proj_* and out_proj) and the custom_text_proj, excluding the vision encoder.
+The full
+target-module list is in Section 4. The vision encoder remains frozen, ensuring identical visual
+features in both modes.
+
+3.2
+Mode Switching
+
+The two heads are activated by toggling two controls:
+
+Retrieval mode (embedding).
+The LoRA adapter is enabled, and full-attention layers are
+patched to bidirectional attention. Specifically, for each full-attention layer, we replace the causal
+attention mask Mcausal with a bidirectional mask Mbidir:
+
+(
+0
+if positions i and j are both valid (non-padding)
+−∞
+otherwise
+(1)
+
+Mbidir[i, j] =
+
+This is implemented by extracting the diagonal of the 4D causal mask to identify valid positions,
+then constructing a symmetric mask where all valid positions attend to each other. Sliding-window
+layers are left unchanged, as their local attention pattern is compatible with both modes. The for-
+ward pass produces hidden states that are projected through custom_text_proj and L2-normalized
+to yield multi-vector embeddings.
+
+Generation mode.
+The LoRA adapter is disabled, restoring the base model weights (Wadapted −
+BA = Wbase). Full-attention layers revert to their original causal attention. The forward pass
+produces hidden states that are projected through the base lm_head for greedy autoregressive
+decoding.
+This mode switching happens per call, with no weight copying or model reloading (Algorithm 1).
+
+3.3
+Design Rationale: Retrieval-Only Training
+
+Prior approaches to unified retrieval and generation (GritLM [Muennighoff et al., 2025] via joint
+training, SV-RAG [Chen et al., 2025] via dual adapters) assume that generation capability must
+be explicitly trained or preserved. We show this is unnecessary when using LoRA.
+Let Wbase denote the frozen base model weights, B, A the LoRA matrices (whose product
+BA gives the low-rank update), and ϕproj the custom_text_proj parameters. Retrieval training
+optimizes BA and ϕproj via contrastive loss while Wbase (including lm_head) remains frozen. At
+generation time, we disable LoRA and use Wbase directly. Since Wbase was never modified, the
+
+Algorithm 1 Mode switching in Hydra (high-level toggle).
+The body of the Generate call
+additionally invokes the base model’s forward directly to enable KV-caching; see Requirement 3
+in §3.4.
+
+1: function Embed(images)
+
+2:
+Enable LoRA adapter layers
+
+3:
+Set full-attention layers to bidirectional
+
+4:
+return custom_text_proj(forward(images))
+
+5:
+
+6: function Generate(image, prompt)
+
+7:
+Disable LoRA adapter layers
+
+8:
+Restore causal attention on full-attention layers
+
+9:
+return autoregressive_decode(lm_head, forward(image, prompt))
+
+generation capability is equivalent to the pretrained VLM at the weight level (see Section 5.3 for
+empirical verification).
+The ablation in Section 5.4 confirms this systematically: joint training provides no measurable
+benefit. The LoRA toggling approach is simpler: the base model’s weights are recovered exactly,
+yielding generation with no degradation under greedy decoding (Section 5.3).
+
+3.4
+Operating Constraints for Dual-Head Generation
+
+LoRA’s additive structure makes generation equivalence achievable in principle: in any layer where
+LoRA is the only adapter, disabling it returns the layer to its pre-LoRA state. In practice, two
+mechanisms can corrupt the generation pathway during retrieval fine-tuning (Requirements 1–
+2 below), and a third constraint determines whether generation is fast enough to be practical
+(Requirement 3). Our contribution is the identification of these failure modes; Hydra is structured
+so that Requirements 1–2 do not arise, and Requirement 3 is addressed in the decode loop.
+
+Requirement 1:
+Attention mode restoration (inference-time correctness).
+Retrieval
+training patches full-attention layers to bidirectional attention. This is an inference-time setting
+rather than a stored weight: if the patch is not reverted before generation, autoregressive decoding
+fails because the model can attend to future tokens during prefill, breaking the causal structure
+that left-to-right generation depends on. In Qwen3.5’s hybrid architecture, only “full_attention”
+layers (as opposed to sliding-window layers) require this patching, since sliding-window layers use
+a fixed local window that is compatible with both modes. Our implementation stores both the
+original causal and patched bidirectional forward functions per layer, switching between them at
+mode-toggle time.
+
+Requirement 2: Base model lm_head preservation.
+The lm_head used for generation must
+be the original base model’s lm_head, loaded separately from the pretrained checkpoint. Although
+LoRA leaves Wbase frozen in principle, in practice the lm_head can be corrupted during training
+through two mechanisms we identified empirically. First, when lm_head shares tied weights with
+the input embedding layer [Press and Wolf, 2017], gradients from the embedding propagate to
+lm_head even though it is not a LoRA target. Second, failing to set requires_grad=False on
+lm_head allows PyTorch DDP to accumulate and synchronize gradients for it even when no opti-
+mizer group updates it, causing bf16 numerical drift over thousands of steps. Our specific setup
+sidesteps both failure modes structurally. First, ColQwen3.5 inherits from Qwen3_5Model rather
+
+than Qwen3_5ForConditionalGeneration, so the retrieval-trained checkpoint carries no lm_head
+tensor at all and the bitwise audit’s “426/426 stored tensors” set excludes lm_head by construc-
+tion. Second, the token embedding table embed_tokens is neither matched by the LoRA adapter’s
+target_modules nor listed in modules_to_save, so it remains byte-identical to the vanilla base
+through training. Since Qwen3.5 declares lm_head.weight as tied to embed_tokens.weight [Press
+and Wolf, 2017] via its _tied_weights_keys mapping, the weight matrix needed for generation
+is already resident inside the retrieval model. A thin nn.Linear instantiated on PyTorch’s meta
+device and then aliased to embed_tokens.weight provides the generation head at no additional
+memory cost. Outputs are byte-identical to loading a separate base-model instance for lm_head
+extraction, verified on the 50-sample audit in Section 5.5.
+
+Requirement 3: KV-cache-aware generation (efficiency).
+Without KV-cache, each token
+generation step requires a full forward pass including vision encoder processing of pixel values. We
+implement KV-cache-aware generation: pixel values are processed on the first forward step, and
+subsequent steps reuse cached key-value pairs. On a single B200, forcing a 128-token decode on eight
+DocVQA samples, the KV-cache-aware path averages 3.06 s per sample (23.9 ms/tok) versus 23.38 s
+per sample (182.7 ms/tok) for the re-forward-every-step path, an order-of-magnitude speedup (mean
+7.65×, median 5.78× on this small sample; results/efficiency/kv_cache_bench/report.json).
+The mean/median gap reflects per-sample variance over n=8; the headline take-away is that re-
+running the vision encoder per token is a constant-factor regression on the order of ∼6× rather
+than a precise multiplier. This requires calling the base model’s forward pass directly (bypassing
+ColQwen3.5’s wrapper, which does not support use_cache=True) and manually managing the
+attention mask extension at each step.
+
+4
+Training
+
+Only the retrieval head is trained. We use standard ColPali-engine training [Faysse et al., 2025]
+with the ColBERT contrastive loss.
+
+4.1
+Training Data
+
+We combine four visual document retrieval datasets:
+
+• vidore/colpali_train_set [Faysse et al., 2025]
+• openbmb/VisRAG-Ret-Train-Synthetic-data [Yu et al., 2024]
+• openbmb/VisRAG-Ret-Train-In-domain-data [Yu et al., 2024]
+• llamaindex/vdr-multilingual-train [LlamaIndex, 2024] (en, de, es, fr, it)
+Each sample consists of a text query paired with a positive document page image; all datasets
+are publicly available for research use. After filtering null-query rows in the multilingual set, the con-
+catenated training mix contains 760,984 pairs. Hydra-0.8B is trained on the vidore/colpali_train_set
+split only (118,195 pairs) as a smaller-scale instantiation of the same recipe. Evaluation uses the
+test split of vidore/colpali_train_set plus the ViDoRe V1/V2/V3 MTEB suites.
+
+4.2
+Training Configuration
+
+Both Hydra-4B and Hydra-0.8B share the following recipe:
+
+• Loss: ColBERT loss [Khattab and Zaharia, 2020], temperature τ = 0.02, in-batch negatives.
+• LoRA: r=32, α=32, dropout = 0.05. Applied to all LM projection layers (q_proj, k_proj,
+v_proj, o_proj, gate_proj, up_proj, down_proj, plus the linear-attention in_proj_* and
+
+Table 1: ViDoRe retrieval performance at both scales. (a) Hydra-4B paired against a same-recipe
+single-head baseline (r=32, seed 123, identical data and step count). (b) Hydra-0.8B. Per-task
+results in Sections A and B (Appendix).
+
+(a) Hydra-4B (22 tasks)
+
+(b) Hydra-0.8B (22 tasks)
+
+Suite
+Tasks
+Hydra-4B
+Baseline
+∆
+
+Suite
+Tasks
+
+ViDoRe V1
+10
+0.9082
+0.9105
+−0.0023
+ViDoRe V2
+4
+0.5697
+0.5612
++0.0085
+ViDoRe V3
+8
+0.5639
+0.5641
+−0.0002
+
+ViDoRe V1
+10
+0.8560
+ViDoRe V2
+4
+0.5317
+ViDoRe V3
+8
+0.4434
+
+All 22
+22
+0.7215
+0.7210
++0.0005
+
+All 22
+22
+0.6470
+
+Paired t-test p=0.89; 95% CI on ∆: [−0.006, +0.007] (TOST equivalence
+
+at ±1 pp).
+
+out_proj) and the custom_text_proj; vision encoder frozen. custom_text_proj is addi-
+tionally listed in modules_to_save to record the full base weight of the projection head rather
+than only the LoRA delta.
+• Retrieval projection: Rd →R320 for Hydra-4B (d=2560) and Rd →R128 (engine default)
+for Hydra-0.8B.
+• Bidirectional attention: 8 full-attention layers (out of 32 total transformer layers) patched
+during training; the remaining 24 sliding-window layers are left unchanged.
+• Optimizer: AdamW, learning rate 5 × 10−5, cosine schedule with 2.5% warmup, weight
+decay 0.0.
+• Batch: Hydra-4B uses per-device batch 36 across 7 GPUs (effective 252) for 3,020 steps (1
+epoch). Hydra-0.8B uses per-device batch 32 across 7 GPUs (effective 224) for 528 steps (1
+epoch). bf16 throughout; gradient checkpointing on.
+• Seed: 42 for both public releases.
+All results reported are from single training runs per model; the baseline comparison at the
+same recipe (seed 123) is in Section 5.
+
+5
+Experiments
+
+5.1
+Retrieval: ViDoRe Benchmarks
+
+We evaluate retrieval performance on three ViDoRe benchmark suites: V1 [Faysse et al., 2025]
+(10 tasks spanning arxiv papers, forms, tables, and synthetic documents), V2 [Macé et al., 2025]
+(4 tasks: biomedical, ESG, and economics reports), and V3 [Loison et al., 2026] (8 multilingual
+tasks across computer science, energy, finance, HR, industrial, pharmaceuticals, and physics do-
+mains), for 22 tasks in total. Evaluation uses the Massive Text Embedding Benchmark (MTEB)
+framework [Muennighoff et al., 2023] (v2.10.13) with MaxSim scoring. Table 1a reports average
+normalized Discounted Cumulative Gain at rank 5 across all three suites; per-task
+breakdowns are in Section A (Appendix).
+V1 is saturated (mean 0.9082, all 10 tasks ≥0.65); V2 and V3 drop as expected on the harder
+suites.
+We trained a single-head retrieval-only baseline on the same Qwen3.5-4B base with an
+identical recipe (3,020 steps, seed 123) to isolate the effect of the dual-head mechanism from recipe
+choice. Across 22 tasks, mean ∆=+0.0005 with a 95% CI of [−0.006, +0.007], excluding effects
+larger than ∼0.7 pp in either direction (paired t-test p=0.89, Wilcoxon p=1.00, Cohen’s d=0.03).
+This satisfies a TOST [Schuirmann, 1987] two-one-sided test against a ±1 pp margin. Hydra wins
+
+9 tasks, loses 11, and ties 2; no per-task delta exceeds 5 percentage points (max +4.97 pp on ESG
+Reports HL). The dual-head modification therefore adds generation capability without measurable
+retrieval cost relative to a matched single-head baseline. Equivalent retrieval-vs-baseline measure-
+ments at the 0.8B scale are future work; the 0.8B variant is reported in isolation against its own
+scaled training run (Table 1b).
+
+5.2
+Scaling Validation: Hydra-0.8B
+
+To test whether the dual-head mechanism generalises across scale, we train a smaller instantiation
+on the same Qwen3.5 family: Hydra-0.8B (dim 128, trained on vidore/colpali_train_set only,
+528 steps, same LoRA recipe).
+Table 1b reports its retrieval performance.
+The 0.8B variant
+drops ≈5 pp on V1 and ≈4–12 pp on the harder suites relative to 4B, a monotonic scaling trend
+consistent with the base VLM’s smaller capacity. All per-task scores are in Section B (Appendix).
+The efficiency results below record 62.7% savings at 4B and 59.1% at 0.8B; the ratio is stable across
+scale.
+
+5.3
+Generation Quality
+
+Since the generation head uses the unmodified base VLM with LoRA disabled, generation quality
+should be equivalent to the pretrained Qwen3.5.
+
+Bitwise weight recovery.
+As a direct test of the claim that Wadapted−BA=Wbase under LoRA,
+we audit every language-model weight tensor in the Hydra stack (LoRA disabled) against a freshly-
+loaded Qwen3_5ForConditionalGeneration. Three invariants hold at the 4B scale: (i) the adapter
+config targets only retrieval-side modules; (ii) adapter_model.safetensors contains no lm_head
+or embed_tokens tensors (the only non-LoRA entries are the retrieval-side custom_text_proj
+pair); and (iii) 426 of 426 language-model weight tensors are byte-for-byte identical to
+the vanilla base. The 0.8B variant passes the same audit with zero mismatches. Scripts and report
+JSONs are in scripts/test_gen_equivalence_4b.py (4B) and scripts/test_gen_equivalence.py
+(0.8B), with outputs under results/generation_equivalence/ in each model repo.
+
+Decoded-output equivalence.
+We use greedy decoding (T=0) to produce deterministic outputs
+across four VQA benchmarks (DocVQA [Mathew et al., 2021], ChartQA [Masry et al., 2022], In-
+foVQA [Mathew et al., 2022], and TextVQA [Singh et al., 2019]), totalling 15,301 samples, using Av-
+erage Normalized Levenshtein Similarity (ANLS) [Biten et al., 2019]. Per-benchmark ANLS deltas
+are small and sign-mixed: DocVQA +0.0041, ChartQA +0.0000, InfoVQA −0.0043, TextVQA
++0.0008 (max |∆|=0.0043; Table 7 in Appendix). The residual deltas come from differences be-
+tween Hydra’s custom KV-cache generation loop and transformers’ .generate() path (final-norm
+application, EOS token set, logit post-processing); both paths apply identical LM weights, as ver-
+ified bitwise above. The KV-cache isolation test (Section 5.5) is a separate self-consistency check
+across mode switches (50/50 byte-identical outputs, zero embedding drift).
+
+5.4
+Ablation: Joint Training vs. LoRA Toggle
+
+An alternative to Hydra’s retrieval-only training is GritLM-style joint training [Muennighoff et al.,
+2025], which alternates between embedding and generation batches during fine-tuning. For this
+ablation we train a joint model on the same Qwen3.5-4B base using alternating batches (80%
+ColBERT loss, 20% cross-entropy on LLaVA-Instruct VQA data [Liu et al., 2023]), with LoRA
+
+Table 2: Three-mode comparison of Hydra (retrieval-only training) vs. GritLM-style joint training,
+both at r=16. Retrieval: 9 ViDoRe V1 tasks. Generation: DocVQA validation (n=200). Both
+models use the same base and LoRA config; batch size differs (32 for the joint model vs. 112 for
+the Hydra partner) due to the additional memory cost of interleaving generation batches. The
+LoRA-off causal row reports a single shared measurement: with the LoRA adapter disabled the
+two checkpoints share the same base lm_head and embed_tokens, so the LoRA-off forward pass is
+identical for both. Per-checkpoint LoRA-off ANLS for the Hydra partner is therefore not separately
+measured; the column-spanning entry reflects this. Despite different adapter weights when LoRA
+is on (max element-wise diff: 0.50), the two functional modes are equivalent on retrieval and on
+LoRA-off generation; the mode that joint training was designed to unlock (LoRA-on causal) fails.
+
+Inference Mode
+Hydra
+GritLM-style
+
+LoRA-on, bidirectional (retrieval)
+0.8842
+0.8893
+LoRA-off, causal (shared base generation)‡
+0.543 / 0.561 ANLS, 76.5% match
+LoRA-on, causal (target of joint training)
+N/A
+image-blind†
+
+†See text. The n=200 subset is sufficient to detect this catastrophic failure mode; the test is binary (does
+the model condition on image content at all?). ‡Cell measured against the GritLM-style adapter-off path;
+the Hydra partner’s adapter-off measurement is not run independently because, with the same base weights
+and LoRA disabled, the two paths are mathematically identical.
+
+r=16, α=64, dropout 0.197. Batch size is 32 for the joint model vs. 112 for the matched retrieval-
+only partner; interleaving generation batches inflates memory. We evaluate both models in three
+inference modes: LoRA-on retrieval, LoRA-off generation, and LoRA-on generation (the mode
+GritLM-style training is designed to enable).
+Table 2 summarizes the results. On the LoRA-on retrieval mode and LoRA-off generation mode,
+the two training approaches are equivalent within experimental noise, despite large adapter-weight
+differences (max element-wise diff 0.50).
+The notable finding is that LoRA-on generation, the mode that joint training was designed
+to enable, fails entirely. On DocVQA (n=200, T=0), the jointly-trained model produces a single
+token (“The”) with probability p=0.91 regardless of image content, unable to condition on visual
+input. LoRA toggling is therefore structurally necessary at this rank: the low-rank subspace cannot
+simultaneously serve both attention modes. GritLM’s full fine-tuning successfully supports both
+modes [Muennighoff et al., 2025], so the LoRA-on causal failure is a low-rank constraint rather
+than a fundamental property of bidirectional attention. In-batch negatives dominate ColBERT-
+loss signal, so the ∼3.5× batch difference is a confound on the retrieval delta (0.8893 vs. 0.8842
+GritLM slightly ahead despite the smaller batch). The retrieval equivalence claim rests
+on this being within experimental noise; the single-token collapse does not.
+
+5.5
+Efficiency
+
+We measure the practical overhead of the single-model architecture across two scales. All measure-
+ments are from the audit scripts released alongside the public model weights; report JSONs are in
+the respective results/mode_switch_vram/ directories.
+
+Memory.
+A two-model deployment of ColQwen3.5 + Qwen3.5 (both co-resident in GPU memory,
+as a serving deployment that wishes to amortise model load and parallelise embed/generate would)
+peaks at 28.85 GB at the 4B scale, while Hydra-4B peaks at 10.77 GB over the same cycle, a 62.7%
+
+−62.7%
+
+32
+
+28.85
+
+Peak VRAM (GB)
+
+24
+
+16
+
+−59.1%
+
+10.77
+
+8
+
+5.79
+
+2.37
+
+0
+
+Hydra-0.8B
+
+Hydra-4B
+
+Two-model deployment
+Hydra (single model)
+
+Figure 3: Peak GPU memory for a retrieve-then-generate workflow at both scales. A conventional
+two-model deployment holds a ColQwen3.5 retriever and a Qwen3.5 generator simultaneously (red);
+Hydra holds a single set of weights and toggles the LoRA adapter in place (blue). The single-
+model design cuts peak VRAM by 59.1% at the 0.8B scale and 62.7% at the 4B scale; the
+ratio is stable across backbone size. Numbers from bench_mode_switch_vram_4b.py (4B) and
+bench_mode_switch_vram.py (0.8B).
+
+reduction (Figure 3). The 0.8B variant shows 59.1% savings, confirming the ratio is stable across
+scale. Hydra generation (4B: 10.77 GB, 0.8B: 2.37 GB) is the peak-memory mode in both cases
+since both weight branches are resident.3
+
+Mode-switching latency.
+A full round-trip (retrieval →generation →retrieval) takes 6.4 ms
+mean (median 6.3 ms; min–max 5.9–7.6 ms) over 50 iterations, representing 1.9% of a single gen-
+eration call (331 ms) and making it negligible relative to inference (Figure 4).
+The latency is
+dominated by the LoRA enable/disable plus attention-mode swap and is not rank-sensitive in our
+measurements.
+
+KV-cache state isolation.
+A shared model raises the concern that internal state from one mode
+could leak into the other. We test this with a contamination protocol on 50 DocVQA inputs: com-
+pare single-pass Hydra generation against round-trip generation sandwiched between two Hydra
+embed calls (embed →generate(decoy) →embed →generate-under-test). Embeddings are bitwise
+identical across the two embed calls (max element-wise diff=0.0, cosine similarity=1.0) and final-
+generation outputs are byte-identical to the single-pass baseline in 100% of cases (50/50). No KV-
+cache or attention-mode state persists across mode switches. Report JSON: results/kv_cache_isolation/
+in the model repo.
+
+5.6
+Summary
+
+Table 3 consolidates results across all evaluation dimensions for both public model scales.
+
+3At 0.8B, Hydra retrieval (1.90 GB) fits below vanilla base generation (2.02 GB) because the ColQwen3.5 shell has
+no lm_head tensor until it is aliased on demand; at 4B the effect reverses (retrieval 9.57 GB vs. vanilla base 9.46 GB)
+because the larger custom_text_proj (dim 320) outweighs the absent lm_head alias. The 28.85 GB baseline is the
+simultaneous-residency serving configuration that Hydra’s single-model design most directly displaces; a lazy-loading
+pipeline would trade reload latency for lower steady-state peak.
+
+6.4 ms (1.9%)
+
+331 ms
+
+0
+50
+100
+150
+200
+250
+300
+331
+
+Wall time (ms)
+
+mode-switch round-trip
+single generation call
+
+Figure 4: Mode-switching latency is negligible. A full round-trip (retrieval →generation →re-
+trieval) takes 6.4 ms mean (median 6.3 ms; min–max 5.9–7.6 ms) over 50 iterations—1.9% of a sin-
+gle generation call (331 ms). The switch cost is dominated by enabling/disabling the LoRA adapter
+plus swapping the attention mode on 8 full-attention layers; both are pointer-level operations rather
+than matmul. Source: results/efficiency/mode_switch/mode_switch_latency_report.json
+in the public Hydra-4B repo; measured on a single NVIDIA B200.
+
+Table 3: Summary of Hydra. Efficiency measured on a single GPU.
+
+Metric
+Hydra-4B
+Hydra-0.8B
+
+ViDoRe V1 mean
+0.9082 (10 tasks)
+0.8560 (10 tasks)
+ViDoRe V2 mean
+0.5697
+0.5317
+ViDoRe V3 mean
+0.5639
+0.4434
+Gen equivalence (LM weights bitwise match)
+426/426
+320/320
+Trainable parameters
+65.75M (1.43% of 4.60B)
+scaled by backbone
+Peak VRAM (Hydra)
+10.77 GB
+2.37 GB
+Peak VRAM (two-model)
+28.85 GB
+5.79 GB
+
+6
+Omni-Modal Extension
+
+6.1
+Proof of Concept: Omni-Modal Generalization
+
+To test whether the Hydra mechanism generalizes beyond a single model family and modality,
+we apply it, without additional training, to Qwen2.5-Omni-3B [Xu et al., 2025a], a multimodal
+model with native support for image, audio, and video input, as well as text and speech output.
+
+Setup.
+We use vidore/colqwen-omni-v0.14, a ColBERT adapter trained on 127K image-text
+pairs atop the Qwen2.5-Omni-3B backbone using colpali-engine [Faysse et al., 2025]. The adapter
+was trained on image data only; audio retrieval and video embedding are produced zero-shot
+through the base model’s frozen Whisper audio encoder [Radford et al., 2023] and Qwen2.5-Omni’s
+native Thinker–Talker vision stack [Xu et al., 2025a].
+We apply the Hydra architecture as-is:
+LoRA-on with bidirectional attention for retrieval (via custom_text_proj, 128-dim embeddings),
+LoRA-off with causal attention for generation (via the base model’s lm_head).
+No additional
+training is performed.
+The model additionally supports speech synthesis via the Qwen2.5-Omni talker module and
+BigVGAN vocoder [Lee et al., 2023], giving Hydra three inference modes from a single 4.4B-
+parameter model instance:
+
+4
+
+1. Retrieval (LoRA on, bidirectional): ColBERT multi-vector embeddings over images, audio,
+or video.
+2. Text generation (LoRA off, causal): Autoregressive text conditioned on any input modality.
+3. Speech generation (LoRA off, causal, talker enabled): Spoken answers via thinker–talker–
+vocoder pipeline.
+
+Image retrieval.
+The model achieves 0.8865 average on V1 (10 tasks), 0.5353 on V2
+(4 tasks), and 0.4907 on V3 (8 tasks). Relative to Hydra-4B (Table 1a), the Omni variant lands
+within ∼2 pp on V1 (0.8865 vs. 0.9082), ∼3 pp on V2 (0.5353 vs. 0.5697), and lower on V3 (−7.3 pp;
+0.4907 vs. 0.5639) despite a smaller backbone (3B) and different model family; full per-task results
+are in Table 9 (Appendix).
+
+Audio retrieval (zero-shot).
+We evaluate text-to-audio retrieval on AudioCaps [Kim et al.,
+2019] (n=500 test clips, 7–10 s each at 16 kHz). Audio clips are embedded by routing raw wave-
+forms through the Whisper feature extractor [Radford et al., 2023] and the shared projection head;
+captions are embedded as text queries through the same backbone.
+Using ColBERT MaxSim
+scoring over the full 500×500 similarity matrix, the model achieves = 26.2%, = 55.6%,
+= 69.0%, and MRR = 40.6%, with no audio contrastive training, relying entirely on cross-
+modal transfer through the shared Qwen2.5-Omni backbone. For reference, supervised audio-text
+models (e.g., CLAP [Elizalde et al., 2023]) achieve ≈35–40% on this benchmark; the gap is
+expected given zero-shot transfer.
+
+Generation equivalence.
+We evaluate generation preservation on InfographicVQA [Mathew
+et al., 2022] validation (n=2,801) under greedy decoding (T=0, 128 new tokens) with a short-answer
+prompt suffix applied identically to both paths to suppress Qwen2.5-Omni’s default sentence-
+form outputs. Base Qwen2.5-Omni-3B and Hydra-Omni (LoRA off, lm_head extracted from the
+thinker) attain identical strict ANLS of 0.7257 with ∆=+0.0000 (95% CI [+0.0000, +0.0000]) and
+2,801/2,801 (100.00%) byte-identical outputs across the full validation set. The short-answer
+prompt suffix used here was not used in the Hydra-4B InfoVQA run (max |∆|=0.0043, 31.06% exact
+match; Table 7), so the two decoding setups differ. The published report is results/infovqa_report.json
+in the Omni repo.
+
+Speech generation.
+Hydra-Omni can also produce spoken answers by routing through the
+thinker, talker, and BigVGAN vocoder [Lee et al., 2023] pipeline, producing coherent 24 kHz speech
+from the same model instance. Video embeddings are produced by the pipeline as a forward-pass
+output but not evaluated as retrieval.
+
+7
+Discussion
+
+LoRA as a mode switch.
+The ablation in Section 5.4 confirms that LoRA toggling, rather than
+joint training, is the operative mechanism: GritLM-style training achieves equivalent results but
+still requires toggling, confirming the additional complexity provides no benefit.
+
+Comparison with prior unified architectures.
+Table 4 compares Hydra against prior unified
+retrieval-generation architectures across key design dimensions. Hydra is the only approach that
+requires no generation training and uses a single adapter; the base model’s generation capability is
+recovered by disabling the adapter rather than being explicitly trained or preserved.
+
+Table 4: Structural comparison of unified retrieval-generation architectures.
+Hydra is the only
+approach requiring no generation training and a single adapter.
+VRAM figures for Hydra are
+measured at the 4B scale; rows for other systems are structural rather than measured (we did not
+run identical co-resident benchmarks against SV-RAG, URaG, or GritLM).
+
+Property
+Hydra
+SV-RAG
+URaG
+GritLM
+
+Adapters needed
+1
+2 (swapped)
+0 (custom)
+0 (full FT)
+Generation training
+None
+Yes
+Yes
+Yes
+Retriever independence
+Yes
+Yes
+No
+N/A
+Multi-vector retrieval
+Yes
+Yes
+Yes
+No
+Resident backbones
+1 (10.77 GB∗)
+1 (2 adapters)
+1 (custom module)
+1
+
+∗Measured for Hydra at 4B; rows for other systems are structural rather than measured. SV-RAG [Chen et al., 2025] swaps
+two LoRA adapters on a shared frozen MLLM backbone (§2); only one backbone is resident at a time, structurally
+comparable to Hydra. The distinction in this row is the number of adapters and whether generation training is required, not
+the number of resident backbones.
+
+Production deployment considerations.
+Hydra’s single-model design reduces memory but
+introduces deployment trade-offs. LoRA adapters incur measurable throughput overhead in cur-
+rent serving frameworks [Sheng et al., 2024]. Additionally, the model cannot serve retrieval and
+generation requests simultaneously; mode switches serialize these operations at the model level,
+unlike a two-model deployment that can parallelize them across concurrent queries. LoRA serv-
+ing infrastructure (S-LoRA [Sheng et al., 2024], vLLM adapter routing) is actively improving, but
+deployments should evaluate throughput requirements alongside memory constraints.
+
+Limitations.
+
+• VLM families: Tested on Qwen3.5 (0.8B, 4B) and Qwen2.5-Omni (3B). While the omni-
+modal extension (Section 6) demonstrates generality across model families and modalities,
+testing on non-Qwen architectures (InternVL, LLaVA) remains future work.
+• Single training run: Canonical 4B and 0.8B results are each from one training run; vari-
+ance across seeds is not estimated. The 4B same-recipe single-head baseline (seed 123) used
+throughout Section 5 is reported in full per-suite (Table 1a, Table 5); we do not have a
+matched-seed baseline for 0.8B.
+• Generation evaluation: Bitwise equivalence verified for both scales (Section 5.3); decoded-
+output ANLS measurements are reported per-benchmark in the appendix and via the audit
+scripts released with the model.
+• Audio/video retrieval: The omni-modal results (Section 6) are zero-shot; explicit audio
+and video contrastive training would likely improve performance but is not explored.
+• Ablation scope: The GritLM-style comparison (Section 5.4) is run at r=16, α=64, single
+seed, 20/80 generation/retrieval mix.
+The single-token collapse under LoRA-on causal is
+categorical; the retrieval-equivalence conclusion is bounded by the ablation’s scope.
+• Video retrieval: The omni-modal extension (Section 6) verifies that the pipeline produces
+video embeddings but does not evaluate them on retrieval benchmarks. “Video embedding”
+should not be interpreted as “video retrieval.”
+• End-to-end RAG: Retrieval and generation are evaluated independently. We do not eval-
+uate the full retrieve-then-generate pipeline (Figure 2) end-to-end; combined pipeline quality
+(e.g., answer accuracy given retrieved context) remains untested.
+
+Reproducibility.
+External reproducers should be aware of one packaging-level pitfall in the
+dependency stack: in the colpali-engine 0.3.15 release we tested against, loading ColQwen3_5
+directly from the public Qwen3.5-4B checkpoint random-initialises the language-model weights be-
+cause the Hub checkpoint’s model.layers.* key prefix is not stripped by the package’s checkpoint-
+conversion mapping. The working path is to transplant from Qwen3_5ForConditionalGeneration
+before attaching the adapter (see test_gen_equivalence_{4b,08b}.py in the released model re-
+pos). All published Hydra checkpoints include the post-transplant state, so from_pretrained on
+the released revisions does not require manual patching.
+
+Future work.
+Several directions are promising: (1) testing on non-Qwen VLM families (In-
+ternVL [Chen et al., 2024], LLaVA [Liu et al., 2023]); (2) multi-page cross-attention for document-
+level reasoning; (3) explicit audio and video contrastive training to improve zero-shot retrieval
+performance; (4) adapter composition for additional tasks beyond retrieval and generation; (5) col-
+lapsing multi-component visual-document RAG stacks into one local VLM, trading specialist-
+component quality and hosted-API access for deployment locality at a capability cost we do not
+characterise here.
+
+Broader impact.
+Hydra can process sensitive documents (medical records, legal filings, financial
+reports), and the single-model design concentrates both retrieval and generation behind one access
+point. This simplifies access control relative to multi-model pipelines, but a compromised model
+exposes both capabilities simultaneously. Deployments should enforce document-level permissions
+and audit query logs accordingly.
+
+8
+Conclusion
+
+Hydra demonstrates that a single retrieval-trained LoRA adapter suffices to provide both ColBERT-
+style document retrieval and autoregressive generation from one VLM instance, with no generation
+training. The key practical insight is the characterisation of failure modes that can silently cor-
+rupt the base model’s generation capability under different training setups (weight-tying gradients,
+DDP synchronization artifacts), together with the observation that the same weight-tying property
+provides a free recovery path when the architecture leaves embed_tokens frozen (Section 3.4).
+The ablation indicates that joint training does not make the adapted weights support both
+attention modes simultaneously, so toggling is required regardless.
+The omni-modal extension
+shows the mechanism preserves image retrieval and generation equivalence on a non-Qwen3.5 back-
+bone (Qwen2.5-Omni-3B), with audio retrieval emerging zero-shot through the base model’s frozen
+Whisper encoder. The 0.8B sister model confirms the VRAM-savings ratio is stable across scale.
+More broadly, LoRA adapters are not merely a training convenience; they are inference-time
+mode switches. One model, two heads.
+
+Code and models.
+The full set of artefacts is indexed in a single HuggingFace collection:
+//huggingface.co/collections/athrael-soju/hydra-dual-head-retrieval-and-generation.
+Individual model weights are released at
+5-4B (Hydra-4B), (small-scale in-
+stantiation, with a live Gradio Space at
+5-0.8B-demo), and (omni ex-
+tension). The GritLM-style joint-training ablation is at
+DualHead-GritLM-Qwen3.5-4B, and the matched single-head retrieval-only baseline lives inside
+
+the Hydra-4B repository under baseline/. Training and evaluation scripts ship inside each model
+repository under scripts/; per-benchmark results live under results/.
+
+A
+Per-Task Retrieval Results: Hydra-4B
+
+Table 5: Per-task retrieval performance of Hydra-4B and the matched single-head baseline (same
+recipe, r=32, seed 123) on ViDoRe V1, V2, and V3 (MTEB v2.10.13, MaxSim scoring).
+
+ViDoRe V1 (10 tasks)
+ViDoRe V2 & V3
+
+Task
+Hydra-4B
+Baseline
+Task
+Hydra-4B
+Baseline
+
+ArxivQA
+0.9193
+0.9223
+V2
+DocVQA
+0.6593
+0.6570
+BioMedical Lectures
+0.5939
+0.6096
+InfoVQA
+0.9328
+0.9405
+ESG Reports (HL)
+0.7328
+0.6831
+ShiftProject
+0.9133
+0.9233
+ESG Reports
+0.5207
+0.5264
+SynthDocQA-AI
+1.0000
+1.0000
+Economics Reports
+0.4314
+0.4256
+SynthDocQA-Energy
+0.9776
+0.9826
+V2 Average
+0.5697
+0.5612
+SynthDocQA-Gov
+0.9742
+0.9667
+V3
+SynthDocQA-Health.
+0.9963
+0.9963
+Computer Science
+0.7279
+0.7209
+Tabfquad
+0.8951
+0.8957
+Energy
+0.6682
+0.6585
+Tatdqa
+0.8141
+0.8203
+Finance (EN)
+0.5860
+0.5791
+Finance (FR)
+0.4694
+0.4505
+HR
+0.5162
+0.5498
+Industrial
+0.4699
+0.4929
+Pharmaceuticals
+0.5958
+0.5998
+Physics
+0.4782
+0.4610
+
+V1 Average
+0.9082
+0.9105
+V3 Average
+0.5639
+0.5641
+
+B
+Per-Task Retrieval Results: Hydra-0.8B
+
+Table 6: Per-task retrieval performance of Hydra-0.8B. Source: results/vidore/ in the public
+model repo.
+
+ViDoRe V1 (10 tasks)
+ViDoRe V2 & V3
+
+Task
+
+Task
+
+ArxivQA
+0.8511
+V2
+DocVQA
+0.6134
+BioMedical Lectures
+0.5423
+InfoVQA
+0.9061
+ESG Reports (HL)
+0.5678
+ShiftProject
+0.7682
+ESG Reports
+0.4954
+SynthDocQA-AI
+0.9819
+Economics Reports
+0.5212
+SynthDocQA-Energy
+0.9628
+V2 Average
+0.5317
+SynthDocQA-Gov
+0.9293
+V3
+SynthDocQA-Health.
+0.9769
+Computer Science
+0.6319
+Tabfquad
+0.7848
+Energy
+0.4908
+Tatdqa
+0.7859
+Finance (EN)
+0.4343
+Finance (FR)
+0.3044
+HR
+0.4093
+Industrial
+0.3210
+Pharmaceuticals
+0.5508
+Physics
+0.4051
+
+V1 Average
+0.8560
+V3 Average
+0.4434
+
+C
+Per-Benchmark Generation Results
+
+Base Qwen3.5-4B via model.generate() vs. Hydra-4B with LoRA disabled on four VQA bench-
+marks under greedy decoding (T=0, 128 new tokens). Exact Match% is the fraction of base/Hydra
+output pairs that are byte-identical strings.
+
+Table 7:
+Generation equivalence across four VQA benchmarks.
+Base:
+Qwen3.5-4B via
+model.generate(); Hydra: same weights with LoRA disabled, using the custom KV-cache path.
+Greedy decoding, 128 new tokens. Max |∆|=0.0043 across all four benchmarks (DocVQA, the
+largest sample with the highest base ANLS, dominates the comparison).
+
+Benchmark
+n
+Base ANLS
+Hydra-4B ANLS
+∆
+Exact Match%
+
+DocVQA
+5,000
+0.5449
+0.5490
++0.0041
+71.08%
+ChartQA†
+2,500
+0.0015
+0.0015
++0.0000
+22.92%
+InfoVQA
+2,801
+0.1804
+0.1761
+−0.0043
+31.06%
+TextVQA†
+5,000
+0.0566
+0.0574
++0.0008
+16.20%
+
+Total
+15,301
+
+† On ChartQA and TextVQA the base Qwen3.5-4B ANLS is at the noise floor (0.0015 and 0.0566
+respectively) under our prompt format: Qwen3.5-4B is not instruction-tuned for these benchmarks’
+expected short-answer format, so its raw outputs do not match references at the surface-form level that
+ANLS scores. The Hydra equivalence claim on these rows is the delta (∆, second-to-last column), not the
+absolute score: both paths produce the same near-zero output. We report these benchmarks for
+completeness; rely on DocVQA and InfoVQA, where base ANLS is in a meaningful range, as the
+load-bearing equivalence evidence.
+
+D
+Released Artifacts
+
+Table 8 consolidates the scripts and report JSONs referenced inline. All paths are relative to the
+corresponding HuggingFace model repository.
+
+Table
+8:
+Released
+artifacts:
+script
+→
+claim
+→
+report
+JSON.
+Repos:
+athrael-soju/HydraQwen3.5-4B, -0.8B, HydraQwen2.5-Omni-3B.
+
+Section
+Script
+Cl
+
+Section 3.4 (Req. 3)
+scripts/bench_kv_cache.py
+KV
+Section 5.3
+scripts/test_gen_equivalence_4b.py (4B), scripts/test_gen_equivalence.py (0.8B)
+42
+Section 5 (Eff.)
+scripts/bench_mode_switch_vram_4b.py (4B), scripts/bench_mode_switch_vram.py (0.8B)
+Pe
+Section 5.5
+results/kv_cache_isolation/run.py
+50
+Section 6
+(in Omni repo)
+In
+
+E
+Omni-Modal Per-Task Results
+
+Table
+9:
+Hydra-Omni
+image
+retrieval
+on
+ViDoRe
+V1,
+V2,
+and
+V3.
+Model:
+vidore/colqwen-omni-v0.1 (Qwen2.5-Omni-3B backbone, 4.4B total parameters).
+No Hydra-
+specific training. V1 is the full 10-task set, directly comparable to the Hydra-4B V1 column in
+Table 5.
+
+ViDoRe V1
+ViDoRe V2
+ViDoRe V3
+
+Task
+
+Task
+
+Task
+
+SynthDocQA-AI
+0.9852
+ESG Reports (HL)
+0.6050
+Computer Science
+0.6727
+SynthDocQA-Healthcare
+0.9663
+BioMedical Lectures
+0.5827
+Energy
+0.5574
+SynthDocQA-Energy
+0.9566
+ESG Reports
+0.4860
+Pharmaceuticals
+0.5446
+SynthDocQA-Gov
+0.9529
+Economics Reports
+0.4676
+HR
+0.4953
+InfoVQA
+0.9341
+Finance (EN)
+0.4636
+Tabfquad
+0.8891
+Physics
+0.4180
+ArxivQA
+0.8677
+Industrial
+0.4012
+ShiftProject
+0.8398
+Finance (FR)
+0.3731
+Tatdqa
+0.8196
+DocVQA
+0.6537
+
+V1 Average
+0.8865
+V2 Average
+0.5353
+V3 Average
+0.4907
+
+Table 10: Hydra-Omni generation equivalence on InfoVQA, using the same protocol as Table 7.
+Base: Qwen2.5-Omni-3B thinker via Qwen2_5OmniThinkerForConditionalGeneration; Hydra-
+Omni: vidore/colqwen-omni-v0.1 with LoRA disabled and lm_head extracted from the thinker.
+Greedy decoding, 128 new tokens, with a short-answer prompt suffix applied identically to both
+paths (needed because Qwen2.5-Omni’s default outputs are sentence-form). 95% CI via 10,000-
+sample bootstrap.
+
+Benchmark
+n
+Base ANLS
+Hydra-Omni ANLS
+∆(95% CI)
+Exact Match%
+
+InfoVQA
+2,801
+0.7257
+0.7257
++0.0000 [+0.0000, +0.0000]
+100.00%
+
+References
+
+Shuai Bai et al. Qwen2.5-VL technical report, 2025.
+
+Ali Furkan Biten, Rubèn Tito, Andres Mafla, Lluis Gomez, Marçal Rusiñol, Ernest Valveny, C. V.
+Jawahar, and Dimosthenis Karatzas.
+Scene text visual question answering.
+In IEEE/CVF
+International Conference on Computer Vision (ICCV), pages 4291–4301, 2019.
+
+Jian Chen, Ruiyi Zhang, Yufan Zhou, Tong Yu, Franck Dernoncourt, Jiuxiang Gu, Ryan A. Rossi,
+Changyou Chen, and Tong Sun. SV-RAG: LoRA-contextualizing adaptation of MLLMs for long
+document understanding. In International Conference on Learning Representations, 2025.
+
+Zhe Chen et al. InternVL: Scaling up vision foundation models and aligning for generic visual-
+linguistic tasks. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 24185–24198, 2024.
+
+ColPali Team. ColQwen2: Visual document retrieval with ColQwen2, 2024. HuggingFace model
+card: vidore/colqwen2-v1.0.
+
+Benjamin Elizalde, Soham Deshmukh, Mahmoud Al Ismail, and Huaming Wang. CLAP: Learn-
+ing audio concepts from natural language supervision. In IEEE International Conference on
+Acoustics, Speech and Signal Processing (ICASSP), 2023.
+
+Manuel Faysse, Hugues Sibille, Tony Wu, Bilel Omrani, Gautier Viaud, Céline Hudelot, and Pierre
+Colombo. ColPali: Efficient document retrieval with vision language models. In International
+Conference on Learning Representations, 2025.
+
+Athos Georgiou. ColQwen3.5: Visual document retrieval with Qwen3.5, 2026. HuggingFace model:
+athrael-soju/colqwen3.5-4.5B-v3.
+
+Kristjan Greenewald, Luis Lastras, Thomas Parnell, Vraj Shah, Lucian Popa, Giulio Zizzo, Chulaka
+Gunasekara, Ambrish Rawat, and David Cox. Activated LoRA: Fine-tuned LLMs for intrinsics,
+2025.
+
+Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang,
+and Weizhu Chen.
+LoRA: Low-rank adaptation of large language models.
+In International
+Conference on Learning Representations, 2022.
+
+Omar Khattab and Matei Zaharia. ColBERT: Efficient and effective passage search via contextual-
+ized late interaction over BERT. In Proceedings of the 43rd International ACM SIGIR Conference
+on Research and Development in Information Retrieval, pages 39–48, 2020.
+
+Chris Dongjoo Kim, Byeongchang Kim, Hyunmin Lee, and Gunhee Kim. AudioCaps: Generating
+captions for audios in the wild. In Conference of the North American Chapter of the Association
+for Computational Linguistics (NAACL-HLT), pages 119–132, 2019.
+
+Sang-gil Lee, Wei Ping, Boris Ginsburg, Bryan Catanzaro, and Sungroh Yoon.
+BigVGAN: A
+universal neural vocoder with large-scale training.
+In International Conference on Learning
+Representations, 2023.
+
+Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. In Advances
+in Neural Information Processing Systems, 2023.
+
+LlamaIndex. VDR: Visual document retrieval multilingual training set, 2024. HuggingFace dataset:
+llamaindex/vdr-multilingual-train.
+
+António Loison, Quentin Macé, Antoine Edy, Victor Xing, Tom Balough, Gabriel Moreira, Bo Liu,
+Manuel Faysse, Céline Hudelot, and Gautier Viaud. ViDoRe v3: A comprehensive evaluation of
+retrieval augmented generation in complex real-world scenarios, 2026.
+
+Quentin Macé, António Loison, and Manuel Faysse. ViDoRe benchmark v2: Raising the bar for
+visual retrieval, 2025.
+
+Ahmed Masry, Do Xuan Long, Jia Qing Tan, Shafiq Joty, and Enamul Hoque.
+ChartQA: A
+benchmark for question answering about charts with visual and logical reasoning. In Findings of
+the Association for Computational Linguistics: ACL 2022, pages 2263–2279, 2022.
+
+Minesh Mathew, Dimosthenis Karatzas, and C. V. Jawahar. DocVQA: A dataset for VQA on doc-
+ument images. In IEEE/CVF Winter Conference on Applications of Computer Vision (WACV),
+pages 2200–2209, 2021.
+
+Minesh Mathew, Viraj Bagal, Rubèn Tito, Dimosthenis Karatzas, Ernest Valveny, and C. V. Jawa-
+har. InfographicVQA. In IEEE/CVF Winter Conference on Applications of Computer Vision
+(WACV), pages 1697–1706, 2022.
+
+Niklas Muennighoff, Nouamane Tazi, Loïc Magne, and Nils Reimers. MTEB: Massive text em-
+bedding benchmark.
+In Proceedings of the 17th Conference of the European Chapter of the
+Association for Computational Linguistics, pages 2014–2037, 2023.
+
+Niklas Muennighoff, Hongjin Su, Liang Wang, Nan Yang, Furu Wei, Tao Yu, Amanpreet Singh,
+and Douwe Kiela. Generative representational instruction tuning. In International Conference
+on Learning Representations, 2025.
+
+Simona-Vasilica Oprea and Adela Bâra. Transforming product discovery and interpretation using
+vision–language models. Journal of Theoretical and Applied Electronic Commerce Research, 20
+(3):191, 2025. doi: 10.3390/jtaer20030191.
+
+Ofir Press and Lior Wolf. Using the output embedding to improve language models. In Conference
+of the European Chapter of the Association for Computational Linguistics (EACL), pages 157–
+163, 2017.
+
+Qwen Team. Qwen3.5-4B, 2026. HuggingFace model: Qwen/Qwen3.5-4B.
+
+Alec Radford, Jong Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, and Ilya Sutskever.
+Robust speech recognition via large-scale weak supervision.
+In International Conference on
+Machine Learning (ICML), pages 28492–28518, 2023.
+
+Keshav Santhanam, Omar Khattab, Jon Saad-Falcon, Christopher Potts, and Matei Zaharia. Col-
+BERTv2: Effective and efficient retrieval via lightweight late interaction. In Conference of the
+North American Chapter of the Association for Computational Linguistics (NAACL), pages 3715–
+3734, 2022.
+
+Donald J Schuirmann.
+A comparison of the two one-sided tests procedure and the power ap-
+proach for assessing the equivalence of average bioavailability. Journal of Pharmacokinetics and
+Biopharmaceutics, 15(6):657–680, 1987. doi: 10.1007/BF01068419.
+
+Ying Sheng, Shiyi Cao, Dacheng Li, Coleman Hooper, Nicholas Lee, Shuo Yang, Christopher
+Chou, Banghua Zhu, Lianmin Zheng, Kurt Keutzer, Joseph E. Gonzalez, and Ion Stoica. S-
+LoRA: Serving thousands of concurrent LoRA adapters. In Proceedings of Machine Learning
+and Systems (MLSys), 2024.
+
+Yongxin Shi, Jiapeng Wang, Zeyu Shan, Dezhi Peng, Zening Lin, and Lianwen Jin. URaG: Unified
+retrieval and generation in multimodal LLMs for efficient long document understanding.
+In
+Proceedings of the AAAI Conference on Artificial Intelligence, 2026. Oral presentation.
+
+Amanpreet Singh, Vivek Natarajan, Meet Shah, Yu Jiang, Xinlei Chen, Dhruv Batra, Devi Parikh,
+and Marcus Rohrbach.
+Towards VQA models that can read.
+In IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), pages 8317–8326, 2019.
+
+Ryota Tanaka, Taichi Iki, Taku Hasegawa, Kyosuke Nishida, Kuniko Saito, and Jun Suzuki.
+VDocRAG: Retrieval-augmented generation over visually-rich documents. In IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition (CVPR), pages 24827–24837, 2025.
+
+Jin Xu, Zhifang Guo, Jinzheng He, et al. Qwen2.5-Omni technical report, 2025a.
+
+Jingwei Xu, Junyu Lai, and Yunpeng Huang. MeteoRA: Multiple-tasks embedded LoRA for large
+language models. In International Conference on Learning Representations, 2025b.
+
+Shi Yu et al. VisRAG: Vision-based retrieval-augmented generation on multi-modality documents,
+2024.
+
+Jintian Zhang, Cheng Peng, Mengshu Sun, Xiang Chen, Lei Liang, Zhiqiang Zhang, Jun Zhou,
+Huajun Chen, and Ningyu Zhang. OneGen: Efficient one-pass unified generation and retrieval
+for LLMs. In Findings of the Association for Computational Linguistics: EMNLP 2024, pages
+5075–5093, 2024.

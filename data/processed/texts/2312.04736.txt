@@ -1,0 +1,3116 @@
+Is Feedback All You Need? Leveraging Natural
+Language Feedback in Goal-Conditioned
+Reinforcement Learning
+
+Sabrina McCallum1,2, Max Taylor-Davies1,2, Stefano V. Albrecht1, Alessandro Suglia2
+
+1University of Edinburgh 2Heriot-Watt University
+
+arXiv:2312.04736v1 [cs.CL] 7 Dec 2023
+
+Abstract
+
+Despite numerous successes, the field of reinforcement learning (RL) remains far
+from matching the impressive generalisation power of human behaviour learning.
+One possible way to help bridge this gap be to provide RL agents with richer,
+more human-like feedback expressed in natural language. To investigate this idea,
+we first extend BabyAI to automatically generate language feedback from the
+environment dynamics and goal condition success. Then, we modify the Decision
+Transformer architecture to take advantage of this additional signal. We find that
+training with language feedback either in place of or in addition to the return-to-go
+or goal descriptions improves agents’ generalisation performance, and that agents
+can benefit from feedback even when this is only available during training, but not
+at inference.1
+
+1
+Introduction
+
+Despite significant advances over decades of research, modern AI systems still lag significantly
+behind the learning abilities of humans. During their development, human infants develop a wide
+range of adaptive behaviours through an open-ended learning process that is remarkable for both its
+sample efficiency and generalisation [1]. One likely contributing factor is that, while infant learners
+do engage in trial-and-error learning, they are also able to draw from a variety of feedback sources
+beyond their immediate environment. One such source is other humans, who can provide them with
+additional feedback signals in the form of natural language [2; 3]. Sometimes, this feedback is akin
+to a classic reward signal, such as a parent praising (or scolding) their child for doing something
+right (or wrong). But it can also be richer and more structured, conveying information tailored to the
+learner’s current goal, such as explanations of specific observations or events. This allows the learner
+to update their prior knowledge and build a more stable and accurate model of the world [4; 5].
+
+While they are able to achieve superhuman performance on tasks such as Go [6; 7], Starcraft II [8]
+and Dota [9], reinforcement learning (RL) agents, in contrast to humans, typically struggle with
+both sample efficiency and generalisation. This is seen especially in settings where the environment
+reward is sparse or under-specified [10]. Additionally, there may be environment–task combinations
+for which no sufficiently expressive Markov reward function exists, or, for tasks specified in language,
+a mismatch in abstraction between task and reward could arise [11]. Inspired by human learning,
+we therefore investigate whether RL agents can learn more generalisable policies in sparse-reward
+environments when introduced to richer and more human-like feedback signals expressed through
+natural language. We modify an existing offline RL algorithm, specifically the Decision Transformer
+[12], to condition on different types of language feedback provided by the environment. Our method
+includes a procedure to automatically generate this language feedback based on the agent’s actions
+and current goal, and requires no human-in-the-loop involvement. We find evidence that conditioning
+
+1Code available at github.com/uoe-agents/feedback-dt
+
+on language feedback can boost generalisation performance relative to baselines conditioning only
+on goal instructions or returns, and can match or outperform these baselines when goal instructions
+or returns are not available, even when feedback is not provided at inference time.
+
+2
+Preliminaries
+
+Offline reinforcement learning.
+We apply our method in the context of offline RL and model
+the decision-making process as a Partially Observable Markov Decision Process (POMDP), which
+generalises the Markov Decision Process (MDP) to cases where the underlying states cannot be
+observed directly by the agent. The MDP tuple here consists of finite sets of unobservable states
+S and actions A, a transition dynamics function T(s, a, s′) = P(s′|s, a), a reward function r =
+R(s, a), a distribution µ of initial states s0, a finite set of observations Ω, an observation function
+O(s′, a, o′) = P(o′|s′, a), and a discount factor γ ∈[0, 1). The agent selects actions according to a
+policy π(a|o), which, for the partially observable case, defines a distribution over actions conditioned
+on observations. The optimal policy to be learned is specified by a learning objective, most commonly
+the maximisation of the expected discounted return, or cumulative reward, Eπ[PT
+t=1 γtrt]. In offline
+RL problems, the agent only has access to a fixed dataset D = {(o(i)
+t , a(i)
+t , r(i)
+t , o(i)
+t+1)} of rollouts of
+trajectories generated using an unknown (sub-optimal) policy πB, and is not permitted to explore
+the environment to collect additional data. We consider only the sparse-reward setting, where
+the learning problem is made harder by the fact that the agent receives positive reward only upon
+successfully achieving its goal. We further assume that D does not contain the optimal behaviour,
+and that consequently, naive imitation would result in sub-optimal performance.
+
+Decision Transformer.
+Rather than relying on past rewards, the Decision Transformer (DT) [12]
+conditions action generation on future desired returns. This is modelled using returns-to-go, where ˆ
+Rt
+is the discounted return-to-go from timestep t to the end of the episode ˆ
+Rt = PT
+t′=t γt′−trt′. At test
+time, the behaviour can be specified by providing an appropriate desired return, such as 1 for success or
+0 for failure, alongside the initial state. The DT approach leverages the GPT [13] architecture, which
+achieves autoregressive generation by means of a causal self-attention mask, so that the prediction of
+the action at timestep t depends only on tokens from timesteps up to t. For computational reasons,
+this is typically limited to a given context size which includes the last K timesteps in the input to the
+model. Where K = 1, the resulting policy is considered Markovian. Trajectories are represented as
+sequences of return-to-go (RTG), action, and state τ = ( ˆR1, s1, a1, ˆR2, s2, a2, . . . , ˆRT , sT , aT ), as
+this format lends itself to training and generation in an autoregressive fashion. Instead of maximising
+the expected discounted return, the learning objective of the Decision Transformer is to minimise
+the next-action prediction loss given the history and current state, typically measured as either
+cross-entropy loss (for discrete actions) or mean-squared error (for continuous actions).
+
+3
+Related work
+
+Reinforcement Learning from Human Feedback (RLHF).
+A related area of work can be found
+in RLHF, which describes a methodology for dynamically adapting machine learning models, such
+as large language models (LLMs) [14; 15; 16; 17] and more recently, vision-and-language models
+(VLMs) [18; 19], to hard-to-specify goals which are typically linked to human preferences or
+behaviours. Responses generated by the base model are typically rated or ranked by human evaluators,
+and this feedback is used to train a reward model via supervised learning. Finally, the learned reward
+model is used to iteratively refine the outputs of the base model to align more closely with users’
+expressed preferences [20]. Both RLHF and our work use auxiliary feedback information to aid
+learning where it is potentially not easily possible to capture the desired behaviour in a simple
+pre-specified reward signal. However, while in RLHF, learning from feedback typically occurs as a
+separate subsequent process, we consider it as part of the main training procedure. Likewise, we do
+not use the feedback samples to train any explicit reward model, but pass them directly to the core
+behaviour-learning model.
+
+language
+feedback
+f
+
+m
+language
+instructions
+
+return-to-go
+R^
+
+a
+a
+
+...
+...
+Transformer Decoder
+
+R^
+R^
+
+m
+
+s
+a
+f
+m
+s
+a
+f
+
+Figure 1: We extend the capabilities of the Decision Transformer (return-conditioned) and Text
+Decision Transformer (instruction-conditioned), with the option to condition on language feedback.
+
+Feedback in LLM prompts.
+Taking advantage of the in-context learning capabilities of pretrained
+LLMs, a number of recent studies on language tasks such as chain-of-thought reasoning [21; 22; 23;
+24] include language feedback provided by humans or other LLMs in model prompts. Concurrent
+work leverages feedback based on compiler errors in prompts for language-to-code generation
+[25; 26; 27; 28]. This is complemented by a growing body of work which prompts pretrained
+LLMs or VLMs to generate plans for a range of robotic manipulation and embodied AI tasks, and
+which incorporate feedback on the generated plan into the prompt. The feedback used is typically
+automatically generated and ranges from simple binary task completion feedback [29] to more
+verbose feedback messages from the environment and execution errors [30; 31; 32; 18]. While these
+approaches inspired our notion of feedback and the mechanism used to generate it, we do not make
+use of pretrained models or in-context learning, and apply feedback specifically in the context of RL.
+
+4
+Proposed method
+
+We propose the Feedback Decision Transformer (FDT), a method that leverages the Decision
+Transformer [12] algorithm for language-conditioned offline RL and conditions action generation on
+sequences of actions, partial image observations and automatically generated language feedback, as
+illustrated in Figure 1). The proposed architecture allows us to optionally combine language feedback
+with other signals proposed in previous studies, including returns-to-go [12] and/or goal instructions
+[33], or rely soley on language feedback. The subsequent paragraphs describe our architecture, as
+well as the approach used to automatically generate language feedback from the learning environment,
+in more detail.
+
+Architecture.
+We build upon the Decision Transformer [12], which casts RL as a sequence
+modelling problem, where behaviour is produced by generating action sequences in an auto-regressive
+manner and conditioned on the desired return. The Transformer [34] has emerged as the architecture
+of choice for pre-training LLM’s and VLM’s, and has been shown to be competitive on offline RL
+and Imitation Learning (IL) benchmarks thanks to its flexibility with respect to input encoding, and
+its ability to condition on previous timesteps over long contexts through the self-attention mechanism.
+The Text Decision Transformer (TDT) [33] adapts the original DT for goal-conditioned IL and
+conditions action generation on language goal instructions instead of RTG. Our architecture, the
+Feedback Decision Transformer (FDT), which is illustrated in Figure 1, extends both methods by
+allowing action generation to be conditioned on RTG, goal instructions, language feedback, or any
+combination thereof. For the decoder, we adapt the implementation of the Decision Transformer based
+on GPT2 [13] according to [12], and we train an encoder for the image observations concurrently
+with the decoder. Details are provided in Table 5 in Appendix A.2. As in the original implementation,
+
+action
+
+no
+Is the action
+permissable given the
+current state?
+
+generate
+Rule Feedback
+
+action: forward
+: left
+pickup
+action
+action:
+
+feedback: “Not a good
+idea! You can't move
+forward here as there's
+a key blocking the way.”
+
+yes
+
+yes
+
+no
+Does the next state
+correspond to
+sub-goal success?
+
+generate
+Task Feedback
+
+return
+
+constant
+No Feedback
+
+feedback: “No
+feedback available.”
+feedback: “Great job!
+You've completed a part
+of your task by picking
+up a yellow key.”
+
+Figure 2: Different actions can result in either Rule Feedback, no feedback, or Task Feedback.
+
+actions and RTG are encoded linearly, and we use absolute positional embeddings. We extend
+the original model with sentence-level embeddings for the mission and language feedback strings,
+for which we downsample pre-trained embeddings from a frozen SentenceBERT model [35]. All
+embeddings are 128-dimensional, and language embeddings are provided one sentence per timestep.
+We minimise the mean cross-entropy loss across the discrete actions using the standard, unweighted
+reduction, as we find that computing a weighted mean of the losses based on the length of the episode
+achieves no significant improvements. We do not predict observations, returns-to-go, mission or
+language feedback. However, existing work on world models [36], such as Dreamer [37][38][39],
+TransDreamer [40], and most notably Dynalang [41], which predicts not only future states and
+rewards, but also future language, shows this to be a promising avenue for future research.
+
+Augmenting environments with language feedback.
+We propose a method to automatically gener-
+ate low-level language feedback using predefined rules and templates, and define two feedback types,
+’Rule Feedback’ and ’Task Feedback’, which capture different information about the consequences
+of the agent’s actions, as is illustrated in Figure 2. Note that according to our feedback generation
+procedure, the environment never returns both Rule and Task Feedback at the same timestep, and
+that not every action results in either of the feedback types to be generated. When neither Rule nor
+Task Feedback is triggered, we return the constant string "No feedback available.". For our Task
+Feedback, we decompose high-level goal instructions into granular sub-goals in order to generate
+feedback on the agent’s progress towards the goal. The current sub-goal completed by the agent is
+then explicitly referred to in the Task Feedback string, along with a message that specifies whether
+an intermediate goal condition, or the final goal condition of the task has been met. Rule Feedback
+is provided when an action is executed that violates any of the physical constraints or predicates
+imposed by the environment. We conceptualise this as a type of corrective feedback extended with
+a detailed explanation for the failure. Note that while correction feedback is referenced in other
+work, such as HomeGrid [41], our Rule Feedback does not rely on heuristics which are outside of the
+dynamics of the simulator, such as distance measures, and we avoid the use of instruction language
+in the feedback to clearly distinguish this from the goal instructions. In a similar vein to recent
+work in the space of LLMs for language-to-code generation [18] and planning [30], which leverages
+execution errors for actions as automatic feedback, we exploit the internal action validation logic for
+simulators that do not return execution errors or similar system messages as such. Due to the way we
+conceptualise Rule Feedback, it generally coincides with the previous observation being repeated,
+that is, the environment does not change as a result of the action. For templates and rules, please refer
+to Appendix A.1.
+
+Table 1: BabyAI levels used in our experiments. The top four levels are single rooms, the bottom
+four mazes. GC’s = goal conditions. Only GoToObj has no distractor objects. *Cannot be "door".
+
+Level
+Mission space
+GC’s
+Stepsmax
+Episodes
+
+GoToObj
+go to {the/a} {col} {type}
+1
+64
+1,280
+GoToLocal
+go to {the/a} {col} {type}
+1
+64
+1,280
+PickupLoc
+pick up {the/a} {col} {type}* {loc} 2
+64
+1,280
+PutNextLocal
+put {the/a} {col1} {type1}
+next to {the/a} {col2} {type2}
+4
+128
+1,280
+
+Pickup
+pick up {the/a} {col} {type}*
+2
+576
+12,800
+PutNext
+put {the/a} {col1} {type1}
+next to {the/a} {col2} {type2}
+4
+1,152
+12,800
+
+Synth
+go to {the/a} {col} {type},
+pick up {the/a} {col} {type},
+open {the/a} {col} door,
+put {the/a} {col1} {type1}
+next to {the/a} {col2} {type2}
+
+1/2/4
+1,152
+12,800
+
+SynthLoc
+Same as Synth, but with loc language
+1/2/4
+1,152
+12,800
+
+5
+Experiments
+
+In our experiments, we test if an agent’s ability to generalise to unseen environments and tasks
+when rewards are sparse can be improved when it has access to language feedback on its actions.
+Specifically, we investigate 1) whether different types of language feedback can complement tra-
+ditional numerical feedback in the form of RTG, or goal instructions (mission strings) to improve
+performance, and 2) whether language feedback can replace RTG or goal instructions to achieve
+equivalent or improved performance. We consider whether the answer to these research questions
+differs for different types of tasks and environments, as well as generalisation scenarios, and when
+language feedback is provided only during training, but not at test time. Lastly, we test Task Feedback
+and Rule Feedback separately and in combination, and examine how this impacts 2).
+
+5.1
+Experiment setup
+
+Environment and datasets
+To test our approach, we extend BabyAI [42], a suite of 2D gridworld
+environments which facilitates the training and benchmarking of agents on goal-oriented tasks
+specified in language. Levels in BabyAI increase in difficulty, and range from simple single rooms
+containing only the goal object, to complicated mazes with many objects. Harder levels involve
+multiple sub-goals, long horizons and complex compositional instructions. All levels in BabyAI pose
+challenges associated with sparse rewards, as only a terminal reward r ∈(0, 1] is provided at the
+end of successful episodes, otherwise the reward is 0. In keeping with the original experiments in
+BabyAI in [42], we discount the returns using γ = 0.99, which is aligned with the sparse-reward
+setting. We select a subset of eight levels including four single rooms and four mazes, which are
+listed in Table 1, and use a random policy to generate offline training datasets for each level. For the
+single-room levels, we generate 10 different trajectories for 128 environment instances each, and 10
+times as many for the more complex maze levels. Trajectories are composed of sequences of mission
+string, partial image observation, discrete action, scalar reward and feedback string for each timestep.
+Note that we include trajectories independently of whether the episode was successful or not, and
+that harder levels contain potentially very few successful episodes. Since our training datasets do not
+contain optimal trajectories, our setting differs from both those of the original DT and the TDT.
+
+Performance measure.
+By default, BabyAI environments include high-level language goal in-
+structions, or ’missions’, which consist of one or multiple action instructions (either go to, open,
+pick up, or put next) paired with goal objects, which are specified using color, type and location
+descriptors. Apart from the simple goto, these actions involve multiple steps; we decompose them
+into their component steps, which serve as sub-goals (or goal conditions) for the purpose of generating
+Task Feedback and calculating the goal-condition success rate [43], which we use to evaluate and
+compare model performance. Goal-condition success rate is commonly used in instruction following
+
+Table 2: Attributes and held-out values used to evaluate OOD generalisation in our experiments.
+*’Fixed goal object’ is only applicable to levels where the mission space includes PutNext instructions.
+**’Relative goal location’ is only applicable to levels with location language (Loc levels).
+Scenario
+Held out
+
+Interpolation
+Goal object colour and type
+yellow box
+Fixed goal object* colour and type
+blue ball
+Agent starting location in room
+top left
+
+Extrapolation
+Relative goal location**
+on your right
+Room size
+< 8 x 8 tiles
+
+tasks [43; 44; 45; 46] and allows for a more granular, non-binary perspective on task success. We
+calculate the final score as the average goal-condition success of each test episode. To illustrate
+our conceptualisation of goal conditions, the mission "put a yellow ball next to the green box"
+would be decomposed into four sub-goals: go to a yellow ball, pick up a yellow ball,
+go next to the green box, and put a yellow ball next to the green box. Note that
+we do not use these sub-goals directly as a learning signal.
+
+Zero-shot compositional generalisation.
+We devise an evaluation protocol for zero-shot generali-
+sation inspired by previous work on compositional generalisation for grounded language learning,
+including benchmarks such as CompGuessWhat?! [47], as well as gSCAN [48] and its descendants
+[49; 50; 51; 52; 53], which, while predominantly explored in the context of supervised learning, is
+relevant for work in RL [54]. Specifically, we design three combinatorial interpolation [54] scenarios,
+and two extrapolation scenarios. The combinatorial interpolation scenarios test the agent’s ability
+to generalise to novel combinations of context dimension values that have been seen individually
+during training, but not together [54; 55]. For instance, an agent that was trained to solve missions
+where the possible set of goal objects would have included yellow keys and green boxes, but never
+yellow boxes, would be required to systematically recombine the values "yellow" for the goal object
+colour dimension and "box" for the goal object type dimension at test time. For tasks where the
+instructions involve putting one goal object next to another (fixed) goal object, we hold out type-value
+combinations for either the first or the second object. In addition, we test an unseen combination of X
+and Y coordinates for the room quadrant the agent is spawned in. Extrapolation scenarios test the
+agent’s ability generalise to values outside of the range of values that were seen during training for a
+given context dimension. We apply this to a categorical dimension (the relative location of the goal
+object to the agent’s starting position) and a discrete numerical dimension (the size of rooms). We
+evaluate generalisation on environments seeded with 128 held-out seeds each for in-distribution (IID)
+and out-of-distribution (OOD) contexts, whereby the IID seeds are drawn from the same distribution
+as, but do not include, the training seeds, and both training seeds and IID test seeds seed missions
+that do not contain the held-out values for our interpolation and extrapolation scenarios described
+above. The OOD environments are OOD with respect to exactly one of the scenarios. We report
+OOD performance averaged across the different scenarios, as well as broken down by scenario, in
+Appendix A.3.
+
+Model variants and ablations.
+We compare the relative performance of different variants of our
+feedback-conditioned model against baselines which condition only on RTG or only on mission,
+and investigate a) whether conditioning on language feedback in addition to RTG or mission boosts
+the generalisation performance of the baselines, b) whether we can exceed, or at least match, the
+generalisation performance of the baselines by relying solely on language feedback, and whether
+this differs across generalisation scenarios and levels. Additionally, we investigate c) whether
+providing feedback not only during training but additionally at inference can improve generalisation
+performance. This means that, while for variants using the mission string, we provide the mission
+string for both training and inference, for those variants using feedback, we ablate whether the model
+has access to the actual feedback at inference time or whether it is given a constant, randomly sampled
+placeholder embedding. For models using the RTG, we use a target RTG of 1 during inference, which
+is the maximum achievable in BabyAI. We use a context length of up to 64 timesteps. Further details
+on the training procedure are provided in Appendix A.2.
+
+IID generalisation averaged across all levels)
+Δ gc success rate (RTG-only/DT baseline: 31.37%)
+
+IID generalisation averaged across all levels
+Δ gc success rate (mission-only/TDT baseline: 26.46%)
+
++ 10%
+
++ 10%
+
++ 4.96
++ 4.28
++ 5.62
+
++ 3.79
+
++ 2.64
++ 1.88
+
++ 0.05
+
+31.37%
+
+26.46%
+
+- 1.34
+
+- 10%
+
+- 10%
+
+only
+feedback
+(no RTG)
+
+RTG
++ all
+feedback
+
+RTG
++ rule
+feedback
+
+RTG
++ task
+feedback
+
+only
+feedback
+(no mission)
+
+mission
++ all
+feedback
+
+mission
++ rule
+feedback
+
+mission
++ task
+feedback
+
+OOD generalisation averaged across all levels)
+Δ gc success rate (RTG-only/DT baseline: 29.52%)
+
+OOD generalisation averaged across all levels
+Δ gc success rate (mission-only/TDT baseline: 26.89%)
+
++ 10%
+
++ 10%
+
++ 4.96
+
++ 2.33
++ 2.59
++ 1.93
++ 3.26
+
++ 2.41
++ 2.12
+
+26.89%
+
+29.52%
+
+- 2.15
+
+- 10%
+
+- 10%
+
+only
+feedback
+(no mission)
+
+mission
++ all
+feedback
+
+mission
++ rule
+feedback
+
+mission
++ task
+feedback
+
+only
+feedback
+(no RTG)
+
+RTG
++ all
+feedback
+
+RTG
++ rule
+feedback
+
+RTG
++ task
+feedback
+
+Figure 3: Difference in performance between the return-only (DT) and mission-only (TDT) baselines
+and our proposed variants that condition with feedback. For all results, including a breakdown by
+level and OOD type, please refer to Appendix A.3.
+
+5.2
+Experimental results
+
+Our empirical results indicate that for tasks in the sparse-reward, partially observable setting of
+BabyAI, conditioning action generation on language feedback can facilitate the learning of policies
+that generalise more successfully than when action generation is conditioned solely on RTG or one-off
+language instructions (i.e., the mission string). While in some cases, language feedback alone is an
+insufficient learning signal, we find that it can boost performance when provided in addition to RTG
+or language goal instructions, the other signals considered in our setup. Specifically, we observe
+that language feedback tends to be more useful for certain task and environment types, and supports
+certain generalisation scenarios more so than others. Additionally, our results suggest that the two
+types of feedback - Task and Rule Feedback - do not necessarily complement each other and are not
+always equally suited to be used in combination with the RTG and mission. The following paragraphs
+provide more details on these observations.
+
+Combining RTG with Task Feedback boosts performance, especially on single-room levels.
+Since Rule Feedback seems to negatively impact performance on most of the maze levels when
+combined with the RTG, we hypothesise that while this dense feedback discourages unnecessary
+behaviour that has no effect on the environment, thereby reducing the risk of the environment timing
+out in easier levels with lower max steps, it is less helpful in harder maze levels, where the agent
+is allowed to try to complete the task for longer, and potentially distracts from the goal-relevant
+behaviour encouraged by the RTG.
+
+Combining mission with Rule Feedback boosts performance, especially on levels with longer
+horizons. Conversely, we observe that combining the mission with only the Task Feedback can be
+detrimental for performance. Unlike Rule Feedback, which is explicitly linked to the effect of the
+previous action, Task Feedback encapsulates the cumulative effect of the full sequence of actions
+since the previous goal condition, and we hypothesise that when presented with the mission and the
+Task Feedback together, the model has to learn to simultaneously leverage two long-horizon signals
+at the same time.
+
+Replacing RTG with feedback improves OOD performance, especially when extrapolating to
+new goal locations. We record performance improvements for all language-related OOD scenarios,
+and find that the improvements are more significant the lower the performance of the RTG-only
+baseline is, as well as when the relative goal location is OOD. These findings could be an indication
+
+that language feedback captures transferable, higher-level information where behaviour learned on
+the basis of a numerical reward is perhaps too specific to the training configurations and tasks.
+
+Replacing mission with feedback improves OOD performance, especially on levels with two
+or more sub goals. We observe the most significant improvements when the performance of the
+baseline is poor and the model seemingly fails to learn a generalisable mapping to task-relevant
+behaviour from the mission alone, as well as for test environments where the model has to generalise
+to unseen relative goal locations or fixed goal objects, both of which are specified in the final part of
+the mission.
+
+Providing feedback at inference is only useful when performance is otherwise poor. Apart from
+the feedback-only variant, the performance change with feedback at inference appears to be inversely
+proportional to the performance achieved without feedback at inference. While this behaviour merits
+further investigation, we hypothesise that this is possibly due to a shift in the distribution of feedback
+encountered at inference compared with the distribution of feedback in the training episodes, and that
+this negatively affects the agent’s performance.
+
+6
+Limitations and future work
+
+While we limit ourselves to demonstrating the potential of language feedback for goal-conditioned
+RL on a single algorithm and learning environment, we are optimistic that the underlying idea can
+be transferred successfully to other RL algorithms and environments beyond 2D gridworlds—we
+aim to explore this in future work. Replacing templates with more diverse language, e.g. generated
+with LLM prompting, similar to recent work in Reinforcement Learning from AI Feedback (RLAIF)
+[56], could provide the additional flexibility and scalability required for transfer to more diverse task,
+action and observation spaces, without having to rely on humans in the loop.
+
+As our feedback is generated automatically and does not rely on human annotators, it should translate
+directly to the online setting in the scope of simulated learning environments. It remains to be seen if
+pre-training agents in this or a similar fashion would be sufficient for successful sim-to-real transfer;
+however, we believe that providing free-form language feedback to robots deployed in the real world
+would be intuitive for human collaborators and operators. Exploring the implications of this approach
+to Human-Robot-Interaction is an interesting and promising avenue for future research.
+
+Our approach is multi-modal insofar as we utilise both image and language inputs, but the representa-
+tions for the different modalities are learned in isolation from one another. Future work could see this
+extended to multi-modal representations that are both grounded and situated.
+
+7
+Conclusion
+
+We investigate the potential of using automatically generated language feedback to train agents in
+sparse-reward environments with language-specified goals. We find evidence that conditioning on
+such feedback in addition to goal instructions or desired return can yield significant improvements in
+generalisation to unseen environments, including environments that correspond to one of multiple
+OOD scenarios and that require agents to interpolate or extrapolate to new contexts. Within the
+BabyAI environment suite, feedback seems to provide a useful complementary signal to desired
+return in easy levels, and to goal instructions in harder levels. Additionally, we establish that language
+feedback can potentially serve as an alternative condition when goal instructions or desired return
+are not available. Lastly, we observe that while in most cases, providing feedback during training is
+sufficient, there are instances where feedback is only effective when it is also provided at test time.
+
+References
+
+[1] J. R. Saffran, R. N. Aslin, and E. L. Newport, “Statistical learning by 8-month-old
+infants,”
+Science,
+vol. 274,
+no. 5294,
+pp. 1926–1928,
+1996. [Online]. Available:
+
+[2] J. A. C. Hattie and H. S. Timperley, “The power of feedback,” Review of Educational Research,
+vol. 77, pp. 112 – 81, 2007.
+
+[3] L. E. Schulz, “The origins of inquiry: inductive inference and exploration in early childhood,”
+Trends in Cognitive Sciences, vol. 16, pp. 382–389, 2012.
+
+[4] T. Miller, “Explanation in artificial intelligence: Insights from the social sciences,” Artificial
+intelligence, vol. 267, pp. 1–38, 2019.
+
+[5] T. Lombrozo, “The structure and function of explanations,” Trends in cognitive sciences, vol. 10,
+no. 10, pp. 464–470, 2006.
+
+[6] D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre, G. Van Den Driessche, J. Schrittwieser,
+I. Antonoglou, V. Panneershelvam, M. Lanctot et al., “Mastering the game of go with deep
+neural networks and tree search,” nature, vol. 529, no. 7587, pp. 484–489, 2016.
+
+[7] D. Silver, J. Schrittwieser, K. Simonyan, I. Antonoglou, A. Huang, A. Guez, T. Hubert, L. Baker,
+M. Lai, A. Bolton et al., “Mastering the game of go without human knowledge,” nature, vol.
+550, no. 7676, pp. 354–359, 2017.
+
+[8] O. Vinyals, I. Babuschkin, W. M. Czarnecki, M. Mathieu, A. Dudzik, J. Chung, D. H. Choi,
+R. Powell, T. Ewalds, P. Georgiev et al., “Grandmaster level in starcraft ii using multi-agent
+reinforcement learning,” Nature, vol. 575, no. 7782, pp. 350–354, 2019.
+
+[9] C. Berner, G. Brockman, B. Chan, V. Cheung, P. Debiak, C. Dennison, D. Farhi, Q. Fischer,
+S. Hashme, C. Hesse, R. Józefowicz, S. Gray, C. Olsson, J. W. Pachocki, M. Petrov, H. P.
+de Oliveira Pinto, J. Raiman, T. Salimans, J. Schlatter, J. Schneider, S. Sidor, I. Sutskever,
+J. Tang, F. Wolski, and S. Zhang, “Dota 2 with large scale deep reinforcement learning,” ArXiv,
+vol. abs/1912.06680, 2019.
+
+[10] J. M. C. Ocana, R. Capobianco, and D. Nardi, “An overview of environmental features that
+impact deep reinforcement learning in sparse-reward domains,” Journal of Artificial Intelligence
+Research, vol. 76, pp. 1181–1218, 2023.
+
+[11] D. Abel, W. Dabney, A. Harutyunyan, M. K. Ho, M. L. Littman, D. Precup, and S. Singh, “On
+the expressivity of markov reward,” ArXiv, vol. abs/2111.00876, 2021.
+
+[12] L. Chen, K. Lu, A. Rajeswaran, K. Lee, A. Grover, M. Laskin, P. Abbeel, A. Srinivas, and
+I. Mordatch, “Decision transformer: Reinforcement learning via sequence modeling,” in Neural
+Information Processing Systems, 2021.
+
+[13] A. Radford, J. Wu, R. Child, D. Luan, D. Amodei, and I. Sutskever, “Language models are
+unsupervised multitask learners,” 2019.
+
+[14] J. Scheurer, J. A. Campos, T. Korbak, J. S. Chan, A. Chen, K. Cho, and E. Perez, “Training
+language models with language feedback at scale,” ArXiv, vol. abs/2303.16755, 2023.
+
+[15] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. L. Wainwright, P. Mishkin, C. Zhang, S. Agarwal,
+K. Slama, A. Ray, J. Schulman, J. Hilton, F. Kelton, L. E. Miller, M. Simens, A. Askell,
+P. Welinder, P. F. Christiano, J. Leike, and R. J. Lowe, “Training language models to follow
+instructions with human feedback,” ArXiv, vol. abs/2203.02155, 2022.
+
+[16] N. Stiennon, L. Ouyang, J. Wu, D. M. Ziegler, R. J. Lowe, C. Voss, A. Radford, D. Amodei,
+and P. Christiano, “Learning to summarize from human feedback,” ArXiv, vol. abs/2009.01325,
+2020.
+
+[17] D. M. Ziegler, N. Stiennon, J. Wu, T. B. Brown, A. Radford, D. Amodei, P. Christiano, and
+G. Irving, “Fine-tuning language models from human preferences,” ArXiv, vol. abs/1909.08593,
+2019.
+
+[18] J. Yang, Y. Dong, S. Liu, B. Li, Z. Wang, C. Jiang, H. Tan, J. Kang, Y. Zhang, K. Zhou, and
+Z. Liu, “Octopus: Embodied vision-language programmer from environmental feedback,” 2023.
+
+[19] Z. Sun, S. Shen, S. Cao, H. Liu, C. Li, Y. Shen, C. Gan, L. Gui, Y.-X. Wang, Y. Yang, K. Keutzer,
+and T. Darrell, “Aligning large multimodal models with factually augmented rlhf,” ArXiv, vol.
+abs/2309.14525, 2023.
+
+[20] S. Casper, X. Davies, C. Shi, T. K. Gilbert, J. Scheurer, J. Rando, R. Freedman, T. Korbak,
+D. Lindner, P. Freire, T. Wang, S. Marks, C.-R. Ségerie, M. Carroll, A. Peng, P. J. Christof-
+fersen, M. Damani, S. Slocum, U. Anwar, A. Siththaranjan, M. Nadeau, E. J. Michaud, J. Pfau,
+D. Krasheninnikov, X. Chen, L. L. di Langosco, P. Hase, E. Biyik, A. D. Dragan, D. Krueger,
+D. Sadigh, and D. Hadfield-Menell, “Open problems and fundamental limitations of reinforce-
+ment learning from human feedback,” ArXiv, vol. abs/2307.15217, 2023.
+
+[21] S. An, Z. Ma, Z. Lin, N. Zheng, J.-G. Lou, and W. Chen, “Learning from mistakes makes llm
+better reasoner,” ArXiv, vol. abs/2310.20689, 2023.
+
+[22] B. Peng, M. Galley, P. He, H. Cheng, Y. Xie, Y. Hu, Q. Huang, L. Lidén, Z. Yu, W. Chen,
+and J. Gao, “Check your facts and try again: Improving large language models with external
+knowledge and automated feedback,” ArXiv, vol. abs/2302.12813, 2023.
+
+[23] T. Wang, P. Yu, X. Tan, S. O’Brien, R. Pasunuru, J. Dwivedi-Yu, O. Y. Golovneva, L. Zettle-
+moyer, M. Fazel-Zarandi, and A. Celikyilmaz, “Shepherd: A critic for language model genera-
+tion,” ArXiv, vol. abs/2308.04592, 2023.
+
+[24] A. Madaan, N. Tandon, P. Clark, and Y. Yang, “Memory-assisted prompt editing to improve
+gpt-3 after deployment,” in Conference on Empirical Methods in Natural Language Processing,
+2022.
+
+[25] X. Chen, M. Lin, N. Schärli, and D. Zhou, “Teaching large language models to self-debug,”
+2023.
+
+[26] A. Ni, S. Iyer, D. R. Radev, V. Stoyanov, W. tau Yih, S. I. Wang, and X. V. Lin, “Lever: Learning
+to verify language-to-code generation with execution,” ArXiv, vol. abs/2302.08468, 2023.
+
+[27] X. Wang, H. Peng, R. Jabbarvand, and H. Ji, “Leti: Learning to generate from textual interac-
+tions,” ArXiv, vol. abs/2305.10314, 2023.
+
+[28] J. Yang, A. Prabhakar, K. Narasimhan, and S. Yao, “Intercode: Standardizing and benchmarking
+interactive coding with execution feedback,” ArXiv, vol. abs/2306.14898, 2023.
+
+[29] W. Huang, F. Xia, T. Xiao, H. Chan, J. Liang, P. R. Florence, A. Zeng, J. Tompson, I. Mordatch,
+Y. Chebotar, P. Sermanet, N. Brown, T. Jackson, L. Luu, S. Levine, K. Hausman, and B. Ichter,
+“Inner monologue: Embodied reasoning through planning with language models,” in Conference
+on Robot Learning, 2022.
+
+[30] K. Rana, J. Haviland, S. Garg, J. Abou-Chakra, I. D. Reid, and N. Sünderhauf, “Sayplan:
+Grounding large language models using 3d scene graphs for scalable task planning,” ArXiv, vol.
+abs/2307.06135, 2023.
+
+[31] M. Skreta, N. Yoshikawa, S. Arellano-Rubach, Z. Ji, L. B. Kristensen, K. Darvish, A. Aspuru-
+Guzik, F. Shkurti, and A. Garg, “Errors are useful prompts: Instruction guided task programming
+with verifier-assisted iterative prompting,” ArXiv, vol. abs/2303.14100, 2023.
+
+[32] G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. J. Fan, and A. Anandkumar, “Voy-
+ager: An open-ended embodied agent with large language models,” ArXiv, vol. abs/2305.16291,
+2023.
+
+[33] A. L. Putterman, K. Lu, I. Mordatch, and P. Abbeel, “Pretraining for language conditioned
+imitation with transformers,” 2022.
+
+[34] A. Vaswani, N. M. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and
+I. Polosukhin, “Attention is all you need,” in Neural Information Processing Systems, 2017.
+
+[35] N. Reimers and I. Gurevych, “Sentence-bert: Sentence embeddings using siamese bert-
+networks,” in Conference on Empirical Methods in Natural Language Processing, 2019.
+
+[36] D. R. Ha and J. Schmidhuber, “World models,” ArXiv, vol. abs/1803.10122, 2018.
+
+[37] D. Hafner, T. P. Lillicrap, J. Ba, and M. Norouzi, “Dream to control: Learning behaviors by
+latent imagination,” ArXiv, vol. abs/1912.01603, 2019.
+
+[38] D. Hafner, T. P. Lillicrap, M. Norouzi, and J. Ba, “Mastering atari with discrete world models,”
+ArXiv, vol. abs/2010.02193, 2020.
+
+[39] D. Hafner, J. Pasukonis, J. Ba, and T. P. Lillicrap, “Mastering diverse domains through world
+models,” ArXiv, vol. abs/2301.04104, 2023.
+
+[40] C. Chen, Y.-F. Wu, J. Yoon, and S. Ahn, “Transdreamer: Reinforcement learning with trans-
+former world models,” ArXiv, vol. abs/2202.09481, 2022.
+
+[41] J. Lin, Y. Du, O. Watkins, D. Hafner, P. Abbeel, D. Klein, and A. D. Dragan, “Learning to
+model the world with language,” ArXiv, vol. abs/2308.01399, 2023.
+
+[42] M. Chevalier-Boisvert, D. Bahdanau, S. Lahlou, L. Willems, C. Saharia, T. H. Nguyen, and
+Y. Bengio, “Babyai: A platform to study the sample efficiency of grounded language learning,”
+in International Conference on Learning Representations, 2018.
+
+[43] M. Shridhar, J. Thomason, D. Gordon, Y. Bisk, W. Han, R. Mottaghi, L. Zettlemoyer, and
+D. Fox, “Alfred: A benchmark for interpreting grounded instructions for everyday tasks,” 2020
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 10 737–10 746,
+2019.
+
+[44] A. R. Akula, S. Gella, A. Padmakumar, M. Namazifar, M. Bansal, J. Thomason, and D. Z.
+Hakkani-Tür, “Alfred-l: Investigating the role of language for action learning in interactive
+visual environments,” in Conference on Empirical Methods in Natural Language Processing,
+2022.
+
+[45] A. Padmakumar, J. Thomason, A. Shrivastava, P. Lange, A. Narayan-Chen, S. Gella, R. Pi-
+ramithu, G. Tur, and D. Z. Hakkani-Tür, “Teach: Task-driven embodied agents that chat,” in
+AAAI Conference on Artificial Intelligence, 2021.
+
+[46] M. Shridhar, X. Yuan, M.-A. Côté, Y. Bisk, A. Trischler, and M. J. Hausknecht, “Alfworld:
+Aligning text and embodied environments for interactive learning,” ArXiv, vol. abs/2010.03768,
+2020.
+
+[47] A. Suglia, I. Konstas, A. Vanzo, E. Bastianelli, D. Elliott, S. Frank, and O. Lemon, “Compguess-
+what?!: A multi-task evaluation framework for grounded language learning,” in Annual Meeting
+of the Association for Computational Linguistics, 2020.
+
+[48] L. Ruis, J. Andreas, M. Baroni, D. Bouchacourt, and B. M. Lake, “A benchmark for systematic
+generalization in grounded language understanding,” ArXiv, vol. abs/2003.05161, 2020.
+
+[49] T. Cao, J. Wang, Y. Zhang, and S. Manivasagam, “Zero-shot compositional policy learning via
+language grounding,” 2020.
+
+[50] C. Heinze-Deml and D. Bouchacourt, “Think before you act: A simple baseline for composi-
+tional generalization,” ArXiv, vol. abs/2009.13962, 2020.
+
+[51] Z. Wu, E. Kreiss, D. C. Ong, and C. Potts, “Reascan: Compositional reasoning in language
+grounding,” ArXiv, vol. abs/2109.08994, 2021.
+
+[52] A. Sikarwar, A. Patel, and N. Goyal, “When can transformers ground and compose: Insights
+from compositional generalization benchmarks,” ArXiv, vol. abs/2210.12786, 2022.
+
+[53] M. Aghzal, E. Plaku, and Z. Yao, “Can large language models be good path planners? a
+benchmark and investigation on spatial-temporal reasoning,” ArXiv, vol. abs/2310.03249, 2023.
+
+[54] R. Kirk, A. Zhang, E. Grefenstette, and T. Rocktäschel, “A survey of zero-shot generalisation in
+deep reinforcement learning,” Journal of Artificial Intelligence Research, vol. 76, pp. 201–264,
+2021.
+
+[55] D. Hupkes, V. Dankers, M. Mul, and E. Bruni, “Compositionality decomposed: How do neural
+networks generalise?” Journal of Artificial Intelligence Research, vol. 67, pp. 757–795, 2020.
+
+[56] H. Lee, S. Phatale, H. Mansoor, K. Lu, T. Mesnard, C. Bishop, V. Carbune, and A. Rastogi,
+“Rlaif: Scaling reinforcement learning from human feedback with ai feedback,” ArXiv, vol.
+abs/2309.00267, 2023.
+
+[57] M. Towers, J. K. Terry, A. Kwiatkowski, J. U. Balis, G. d. Cola, T. Deleu, M. Goulão,
+A. Kallinteris, A. KG, M. Krimmel, R. Perez-Vicente, A. Pierré, S. Schulhoff, J. J.
+Tai, A. T. J. Shen, and O. G. Younis, “Gymnasium,” Mar. 2023. [Online]. Available:
+
+A
+Appendix
+
+A.1
+Datasets
+
+BabyAI levels
+We select only a subset of the original levels in BabyAI. For an exhaustive overview
+of the remaining levels, the reader may refer to the original paper [42]. We use configurations of these
+levels that are registered as Gymnasium [57]. Some levels have multiple registered configurations,
+which differ in terms of room size, the number of distractor objects, closed doors, etc. In the case of
+levels with multiple configurations, we use all available configurations, although we consider some
+configurations to be entirely OOD, usually with respect to the room size. Note that the object col
+dimension can take one of six values ("blue", "green", "grey", "red", "purple", "yellow"), and the
+type dimension one of four ("ball", "box", "key", "door"), and loc can be either "on your left",
+"on your right", "above" or "below". Note that levels which include the pick up action cannot
+be instantiated with type "door", and that location language (loc) is relative to the agents starting
+position and is not updated to reflect the agent’s movement.
+
+Feedback generation
+Note that our feedback generation is entirely deterministic, and we fully
+control language through the use of hand-crafted templates, rather than by prompting an LLM.
+Feedback is generated when the corresponding rule is triggered. For Rule Feedback, this refers
+to certain combinations of the action and a pre-condition. In the case of Task Feedback, the rule
+corresponding to sub-goal success is determined by the instruction type. Both sets of rules and the
+corresponding templates are provided in Tables 3 and 4.
+
+Table 3: Task Feedback templates and their corresponding rules, which check whether the effect
+of an action corresponds to the current goal condition. Note that unlike the other instruction types,
+GoNextTo is not a default BabyAI instruction type and used exclusively as a sub-goal for PutNext
+instructions.
+
+Instruction
+type
+Action
+Condition
+Feedback template
+
+Goal(FrontCell)
+"Fantastic!
+You’ve completed {a part of
+}your task by going to {goal object descrip-
+tion}."
+
+GoTo
+forward
+left
+right
+
+NextTo(FrontCell,
+Goal)
+"That’s right! You’ve completed {a part of
+}your task by going next to goal object de-
+scription."
+
+GoNextTo
+forward
+left
+right
+
+Open
+toggle
+Goal(FrontCell)
+∧
+OpenDoor(FrontCell)
+"That’s correct! You’ve completed {a part
+of }your task by opening {goal door descrip-
+tion}."
+
+Pickup
+pickup
+Carrying(Object)
+∧
+Goal(Object)
+"Great job!
+You’ve completed {a part of
+}your task by picking up {goal object descrip-
+tion}."
+
+PutNext
+drop
+NextTo(FrontCell,
+FixedGoal) ∧Move-
+Goal(FrontCell)
+
+"That’s right! You’ve completed {a part of
+}your task by going next to goal object de-
+scription."
+
+Table 4: Rule Feedback templates and their corresponding rules, which check whether an action has
+violated any of the pre-conditions for the action to have an effect on the environment.
+
+Action
+Condition
+Feedback template
+
+forward
+Wall(FrontCell)
+"Not a good idea! You can’t move forward while you’re
+facing the wall."
+forward
+Object(FrontCell) ∧
+¬Door(FrontCell)
+"Not a good idea! You can’t move forward here as
+there’s a {object} blocking the way."
+forward
+Door(FrontCell)
+∧
+Closed(FrontCell)
+"Not a good idea! You can’t move forward here as the
+door in front of you is closed."
+forward
+Door(FrontCell)
+∧
+Locked(FrontCell)
+"Not a good idea! You can’t move forward here as the
+door in front of you is locked."
+
+pickup
+Wall(FrontCell)
+"Not a good idea! You can’t pick up the wall."
+pickup
+Empty(FrontCell)
+"Not a good idea! There’s nothing in front of you, and
+you can’t pick up empty space."
+pickup
+Door(FrontCell)
+"Not a good idea! You can’t pick up doors."
+pickup
+Object(Carrying)
+"Not a good idea! You can’t pick up another object
+while you’re already carrying one."
+
+drop
+Wall(FrontCell)
+"Don’t do that! You can’t drop an object while you’re
+facing the wall."
+drop
+Object(FrontCell) ∧
+¬Door(FrontCell)
+"Don’t do that! You can’t drop an object on top of
+another object, and there’s already a {object type} in
+front of you."
+drop
+Door(FrontCell)
+"Don’t do that! You can’t drop an object while you’re
+facing a door."
+drop
+Empty(Carrying)
+"Don’t do that! You’re not carrying any object so drop-
+ping has no effect."
+
+toggle
+Wall(FrontCell)
+"That won’t work here. You can’t open the wall."
+toggle
+Object(FrontCell) ∧
+¬Box(Object)
+"That won’t work here. You can’t open {object type}s."
+
+toggle
+Empty(FrontCell)
+"That won’t work. There’s nothing in front of you, and
+you can’t open empty space."
+toggle
+Door(FrontCell)
+∧
+Locked(FrontCell) ∧
+¬Key(Carrying)
+
+"That won’t work here. You can’t open a locked door
+without a key of the same color as the door, and you’re
+not carrying any key."
+toggle
+Door(FrontCell)
+∧
+Locked(FrontCell) ∧
+Key(Carrying)
+∧
+¬SameCol(Carrying,
+FrontCell)
+
+"That won’t work here. You can’t open a locked door
+without a key of the same color as the door. You’re
+carrying a {key color} key, but the door in front of you
+is {door color}."
+
+A.2
+Model Architecture and training
+
+We keep most of the default values for training parameters listed in Table 6 as used by [12] for their
+model corresponding to the GPT2-based architecture. We train for up to 10 epochs with early stopping
+based on goal-condition success on the training seeds, and using batches of 64 samples consisting of
+sub-episodes with context length 64. In the case of single-room levels with simple actions (goto and
+pickup), this corresponds to the full episode for unsuccessful episodes; successful episodes in these
+levels are shorter than our (maximum) context length. Note that we use random starting points within
+episodes from which to sample sub-episodes and that consequently, even sub-episodes sampled from
+episodes that are longer than the context length can contain fewer than 64 steps. The value used for
+early stopping patience is based on level complexity, whereby we double the patience value after first
+two levels and again after the first four levels.
+
+Table 5: Architecture hyperparameters
+
+(a) Decoder [12]
+
+(b) Image encoder [42]
+
+Parameter
+Value
+
+Parameter
+Value
+
+N layers
+3
+N attention heads
+1
+Hidden dimension
+128
+Dropout
+0.1
+Non-linearity
+ReLU
+
+N convolutions
+3
+Channels
+16, 32, 64
+Filter sizes
+2x2, 2x2, 2x2
+Strides
+1, 1, 1
+Non-linearity
+ReLU
+
+Table 6: Training hyperparameters
+
+(a) Optimisation
+
+(b) Other
+
+Parameter
+Value
+
+Parameter
+Value
+
+Optimiser
+AdamW
+β1, β2
+0.9, 0.99
+Weight decay
+1 × 10−4
+Learning rate
+5 × 10−4
+Scheduler
+Linear
+Warm-up ratio
+0.1
+
+Max gradient norm
+0.25
+Max epochs
+10
+Early stopping
+- patience (val steps)
+8/16/32
+- threshold
+0.01
+Batch size
+64
+
+A.3
+Further results
+
+A.3.1
+Performance by environment type
+
+IID generalisation (single-room envs)
+
+IID generalisation (maze envs)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
+
++ 10
+
++ 8.15
++ 8.59
++ 7.52
+
++ 1.56
+
++ 0.05
+
+34.28*
+
+28.47*
+
+- 1.47
+- 2.88
+- 4.84
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+omly
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (single-room envs)
+
+OOD generalisation (maze envs)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
+
++ 10
+
++ 6.53
++ 4.77
++ 6.82
+
++ 2.97
+
++ 1.63
+
+34.27*
+
+24.40*
+
+- 1.66
+- 1.14
+- 0.59
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 4: IID and OOD generalisation performance by environment type for the proposed variants
+conditioning on RTG and/or feedback compared against the RTG-only (vanilla DT) baseline.
+
+IID generalisation (single-room envs)
+
+IID generalisation (maze envs)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 7.95
+
++ 6.01
++ 4.25
++ 3.28
+
++ 3.90
++ 4.29
+
++ 1.27
+
+29.83*
+
+23.10*
+
+- 3.95
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (single-room envs)
+
+OOD generalisation (mazes)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++10
+
++ 10
+
++ 5.86
++ 4.68
++ 4.46
+
++ 4.11
+
++ 2.14
+
++ 0.30
+
+33.13*
+
+20.17*
+
+- 0.06
+
+- 6.14
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 5: IID and OOD generalisation performance by environment type for the proposed variants
+conditioning on mission and/or feedback compared against the mission-only (vanilla TDT) baseline.
+
+A.3.2
+Performance by level
+
+IID generalisation (‘GoToObj’)
+
+IID generalisation (‘Pickup’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 50
+
++ 10
+
++ 25.78
++ 26.57
+
++ 15.63
+
++ 2.73
++ 1.56
+
++ 3.91
+
+39.84*
+
+21.88*
+
+- 3.91
+- 3.13
+- 10
+
+- 50
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+omly
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+IID generalisation (‘GoToLocal’)
+
+IID generalisation (‘PutNext’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 25
+
++ 10
+
++ 8.60
++ 7.03
+
++ 3.51
+
++ 5.47
++ 2.34
+
++ 1.17
+
+50.78*
+
+29.30*
+
+- 2.74
+
+- 7.03
+
+- 25
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
+IID generalisation (‘PutNextLocal’)
+
+IID generalisation (‘Synth’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
+
++ 10
+
++ 5.86
+
++ 3.32
+
++ 3.12
+
++ 0.98
+
++ 0.78
+
+12.50*
+
+24.61*
+
+- 0.98
+- 1.37
+- 0.98
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+IID generalisation (‘PickupLoc’)
+
+IID generalisation (‘SynthLoc’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
+
++ 10
+
++ 4.30
+
++ 1.18
+
+33.98*
+
+38.09*
+
+- 1.56
+
+- 1.18
+
+- 8.79
+- 8.99
+- 7.43
+
+- 10
+
+- 10
+
+- 8.98
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 6: IID generalisation performance by level for the proposed variants conditioning on return
+and/or feedback compared against the return-only (vanilla DT) baseline.
+
+OOD generalisation (‘GoToObj’)
+
+OOD generalisation (‘Pickup’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 50
+
++ 10
+
++ 7.04
+
++ 19.53
++ 23.70
+
++ 15.62
+
++ 2.35
+
++ 2.35
++ 0.79
+
++ 1.56
+
+50.50*
+
+18.16*
+
+- 50
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (‘GoToLocal’)
+
+OOD generalisation (‘PutNext’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 25
+
++ 10
+
++ 4.76
++ 2.91
++ 5.29
+
++ 1.23
+
+50.00*
+
+32.23*
+
+- 0.79
+
+- 0.39
+
+- 3.65
+- 4.76
+
+- 25
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (‘PutNextLocal’)
+
+OOD generalisation (‘Synth’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
++ 7.57
+
++ 10
+
++ 2.28
+
++ 1.27
+
++ 0.83
+
++ 0.32
+
+16.94*
+
+17.84*
+
+- 1.82
+
+- 4.00
+
+- 3.91
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (‘PickupLoc’)
+
+OOD generalisation (‘SynthLoc’)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
+
++ 10
+
++ 6.90
+
++ 1.95
++ 2.87
+
++ 2.30
+
++ 0.34
+
+26.17*
+
+26.56*
+
+- 0.65
+
+- 2.83
+
+- 3.32
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 7: OOD generalisation performance by level for the proposed variants conditioning on return
+and/or feedback compared against the return-only (vanilla DT) baseline.
+
+IID generalisation (‘GoToObj’)
+
+IID generalisation (‘Pickup’)
+
++ 10.16
+
++ 10
++ 8.99
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 50
+
++ 6.65
+
++ 2.34
++ 0.78
+
++ 2.34
+
++ 0.79
+
+41.41*
+
+15.62*
+
+- 2.35
+
+- 50
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+IID generalisation (‘GoToLocal’)
+
+IID generalisation (‘PutNext’)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10.15
+
++ 25
+
++ 10
+
++ 14.84
+
++ 4.88
++ 6.25
+
++ 8.59
++ 4.68
+
+41.41*
+
+25.59*
+
+- 1.57
+
+- 13.29
+- 25
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
+IID generalisation (‘PutNextLocal’)
+
+IID generalisation (‘Synth’)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 7.22
+
++ 4.88
++ 4.88
+
++ 2.93
+
++ 1.37
+
+13.48*
+
+24.22*
+
+- 0.59
+
+- 1.37
+
+- 2.54
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+IID generalisation (‘PickupLoc’)
+
+IID generalisation (‘SynthLoc’)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 6.84
++ 8.60
+
++ 4.50
+
++ 1.95
++ 2.73
++ 3.51
+
++ 2.35
+
+23.05*
+
+25.95*
+
+- 3.52
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 8: IID generalisation performance by level for the proposed variants conditioning on mission
+and/or feedback compared against the mission-only (vanilla TDT) baseline.
+
+OOD generalisation (‘GoToObj’)
+
+OOD generalisation (‘Pickup’)
+
++ 10
++ 9.57
++ 11.33
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++50
+
++ 5.47
++ 5.66
+
++ 0.52
+
+52.08*
+
+10.94*
+
+- 7.55
+- 8.85
+- 9.37
+
+- 50
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (‘GoToLocal’)
+
+OOD generalisation (‘PutNext’)
+
++ 12.04
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 25
+
++ 10
+
++ 6.45
++ 5.66
+
++ 0.27
+
+48.94*
+
+25.39*
+
+- 0.32
+
+- 5.29
+- 2.11
+
+- 24.07
+- 25
+
+- 10
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
+OOD generalisation (‘PutNextLocal’)
+
+OOD generalisation (‘Synth’)
+
++ 9.62
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 6.15
++ 6.45
+
++ 3.65
+
++ 2.98
+
++ 2.67
++ 2.15
+
++ 0.65
+
+14.89*
+
+16.47*
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation (‘PickupLoc’)
+
+OOD generalisation (‘SynthLoc’)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 5.20
++ 5.86
+
++ 5.23
++ 3.66
+
++ 2.08
++ 2.60
+
++ 2.25
+
+22.92*
+
+23.63*
+
+- 0.39
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 9: OOD generalisation performance by level for the proposed variants conditioning on mission
+and/or feedback compared against the mission-only (vanilla TDT) baseline.
+
+A.3.3
+OOD performance by OOD type
+
+OOD generalisation - goal object (on all levels)
+
+OOD generalisation - goal object (on all levels)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 4.69
++ 3.64
++ 3.84
+
++ 3.48
++ 2.23
++ 0.12
+
++ 2.74
+
+24.80*
+
+25.54*
+
+- 4.35
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation - agent location (on all levels)
+
+OOD generalisation - agent location (on all levels)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 6.49
+
++ 2.96
+
++ 1.04
++ 1.51
++ 0.81
++ 0.67
+
++ 0.95
+
+28.30*
+
+33.75*
+
+- 1.06
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation - room size (on all levels)
+
+OOD generalisation - room size (on all levels)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
+
++ 10
+
++ 7.45
+
++ 5.88
+
++ 2.99
+
++ 1.32
++ 1.37
+
+39.46*
+
+42.94*
+
+- 0.78
+
+- 4.26
+
+- 5.20
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+OOD generalisation - fixed goal object (on all levels)
+
+OOD generalisation - fixed goal object (on all levels)
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 10
++ 8.54
+
++ 10
+
++ 3.61
++ 5.51
+
++ 4.54
+
++ 1.75
+
+12.65*
+
+16.65*
+
+- 3.37
+- 1.61
+- 0.63
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 10: OOD generalisation performance across all eight levels for the proposed variants con-
+ditioning on return and/or feedback and mission and/or feedback compared against the return-only
+(vanilla DT) and mission-only (vanilla TDT) baselines, respectively, w.r.t. agent starting location,
+goal object color and type, room size and fixed goal object color and type.
+
+OOD generalisation - goal location (on all levels)
+
+OOD generalisation - goal location (on all levels)
+
++ 13.86
+
+Δ gc success rate (%)
+*vanilla DT (RTG)
+
++ 10
++ 9.76
++ 8.01
+
+Δ gc success rate (%)
+*vanilla FDT (mission)
+
++ 9.37
+
++ 10
+
++ 3.32
++ 3.90
+
++ 1.37
++ 1.07
+
+33.79*
+
+29.69*
+
+- 10
+
+- 10
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+only
+feedback
+
++ all
+feedback
+
++ rule
+feedback
+
++ task
+feedback
+
+Figure 11: OOD generalisation performance for the proposed variants conditioning on return and/or
+feedback and mission and/or feedback compared against the return-only (vanilla DT) and mission-
+only (vanilla TDT) baselines, respectively, w.r.t. relative goal location across all levels.
+
+A.3.4
+Impact of feedback at inference
+
+Table 7: Performance of the feedback-only variant against the mission-only and RTG-only baselines,
+and change in performance when using feedback at inference. *OOD performance averaged across
+OOD types.
+
+Baseline
+Level
+IID performance (%)
+OOD performance* (%)
+Delta
+Change
+Delta
+Change
+(vs baseline)
+(at inference)
+(vs baseline)
+(at inference)
+
+All levels
++4.96
+-2.34
++4.96
+-4.99
+GoToObj
++2.34
+-18.75
+-0.52
+-28.38
+GoToLocal
++14.84
+-0.78
++0.27
++6.35
+PutNextLocal
++4.88
+-0.39
++9.62
+-6.00
+PickupLoc
++1.95
++10.94
++5.20
+-2.47
+Pickup
++8.99
+-5.47
++9.57
+-0.39
+PutNext
++4.88
+-2.35
++6.45
+-4.11
+Synth
+-0.59
+-2.54
++3.65
+-0.98
+SynthLoc
++2.35
++0.58
++5.23
+-2.69
+
+mission
+
+All levels
++0.05
+-2.34
++2.33
+-4.99
+GoToObj
++3.91
+-18.75
++1.56
+-28.38
+GoToLocal
++5.47
+-0.78
+-0.79
++6.35
+PutNextLocal
++5.86
+-0.39
++7.57
+-6.00
+PickupLoc
+-8.98
++10.94
++1.95
+-2.47
+Pickup
++2.73
+-5.47
++2.35
+-0.39
+PutNext
++1.17
+-2.35
+-0.39
+-4.11
+Synth
+-0.98
+-2.54
++2.28
+-0.98
+SynthLoc
+-8.79
++0.58
++2.30
+-2.69
+
+RTG
+
+Table 8: Performance of the variants with all feedback in addition to mission/RTG against the respec-
+tive baselines, and change in performance when using feedback at inference. *OOD performance
+averaged across OOD types.
+
+Baseline
+Level
+IID performance (%)
+OOD performance* (%)
+Delta
+Change
+Delta
+Change
+(vs baseline)
+(at inference)
+(vs baseline)
+(at inference)
+
+All levels
++4.28
+-7.20
++2.41
+-6.63
+GoToObj
++0.78
+-10.94
+-7.55
+-15.88
+GoToLocal
++8.59
+-18.75
+-5.29
+-17.99
+PutNextLocal
++4.88
+-4.10
++6.15
+-0.63
+PickupLoc
++2.73
+-3.51
++5.86
+-6.90
+PutNext
++6.25
+-3.52
++5.66
+-3.58
+Pickup
++6.65
+-11.33
++11.33
+-7.04
+Synth
+-2.54
++0.98
++0.65
+-0.32
+SynthLoc
++6.84
+-6.45
++3.66
+-3.95
+
+mission
+
+All levels
++2.64
+-1.15
++2.59
+-4.07
+GoToObj
++25.78
+-9.37
++19.53
+-14.32
+GoToLocal
++2.34
++5.47
++4.76
+-3.97
+PutNextLocal
++3.32
+-7.62
++0.83
+-6.69
+PickupLoc
++1.18
+-0.78
++2.87
+-5.73
+Pickup
++1.56
+-6.64
++7.04
+-7.23
+PutNext
+-2.74
++0.20
+-3.65
+-1.04
+Synth
+-1.37
++5.47
+-3.91
++4.10
+SynthLoc
+-8.99
++4.10
+-2.83
++0.54
+
+RTG
+
+Table 9: Performance of the variants with Rule Feedback in addition to mission/RTG compared
+against the respective baselines, and change in performance when using feedback at inference. *OOD
+performance averaged across OOD types.
+
+Baseline
+Level
+IID performance (%)
+OOD performance* (%)
+Delta
+Change
+Delta
+Change
+(vs baseline)
+(at inference)
+(vs baseline)
+(at inference)
+
+All levels
++5.62
+-9.99
++2.12
+-6.70
+GoToObj
+-2.35
+-22.65
+-8.85
+-17.19
+GoToLocal
++4.68
+-8.59
+-2.11
+-17.99
+PutNextLocal
++7.22
+-6.25
++6.45
+-3.32
+PickupLoc
++3.51
+-4.68
++2.08
++1.04
+Pickup
++10.16
+-10.16
++5.47
+-0.39
+PutNext
++10.15
+-17.38
++12.04
+-12.89
+Synth
++2.93
+-4.88
++2.67
+-4.56
+SynthLoc
++8.60
+-5.28
+-0.39
++0.20
+
+mission
+
+All levels
++1.88
+-0.22
++1.93
+-2.34
+GoToObj
++26.57
+-11.72
++23.70
+-20.31
+GoToLocal
++8.60
+0.00
++2.91
+-1.06
+PutNextLocal
++0.78
+-4.88
+-4.00
+-2.05
+PickupLoc
+-1.56
+-3.12
+-0.65
+-1.82
+Pickup
+-3.91
+-3.13
++2.35
++1.37
+PutNext
+-7.03
++8.59
+-4.76
++4.76
+Synth
+-0.98
++5.08
+-1.82
++4.94
+SynthLoc
+-7.43
++7.43
++0.34
+-3.12
+
+RTG
+
+Table 10: Performance of the variants with Task Feedback in addition to mission/RTG compared
+against the respective baselines, and change in performance when using feedback at inference. *OOD
+performance averaged across OOD types.
+
+Baseline
+Level
+IID performance (%)
+OOD performance* (%)
+Delta
+Change
+Delta
+Change
+(vs baseline)
+(at inference)
+(vs baseline)
+(at inference)
+
+All levels
+-1.34
++4.23
+-2.15
++3.79
+GoToObj
++2.34
++3.13
+-9.37
++10.41
+GoToLocal
+-13.29
++18.76
+-24.07
++21.96
+PutNextLocal
+-1.37
++0.59
++2.98
+-1.17
+PickupLoc
+-3.52
++7.42
++2.60
++1.30
+PutNext
+-1.57
++3.71
+-0.32
++1.69
+Pickup
++0.79
++5.07
++5.66
++4.30
+Synth
++1.37
+-1.76
++2.15
+-2.93
+SynthLoc
++4.50
+-3.13
++2.25
+-1.42
+
+mission
+
+All levels
++3.79
+-3.59
++3.26
+-4.21
+GoToObj
++15.63
+-14.06
++15.62
+-20.57
+GoToLocal
++7.03
+-1.56
++5.29
+-3.17
+PutNextLocal
++3.12
+-5.85
++1.27
+-6.74
+PickupLoc
++4.30
++0.39
++6.90
++1.44
+Pickup
+-3.13
+-1.17
++0.79
++2.73
+PutNext
++3.51
+-3.90
++1.23
+-6.05
+Synth
++0.98
+-0.59
++0.32
+-1.82
+SynthLoc
+-1.18
+-1.95
+-3.32
++1.71
+
+RTG

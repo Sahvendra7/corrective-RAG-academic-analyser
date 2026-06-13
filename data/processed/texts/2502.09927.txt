@@ -1,0 +1,2227 @@
+GRANITE VISION: A LIGHTWEIGHT, OPEN-SOURCE
+MULTIMODAL MODEL FOR ENTERPRISE INTELLIGENCE
+
+Granite Vision Team, IBM Research
+See Contributions and Acknowledgments section for full authors list
+
+ABSTRACT
+
+arXiv:2502.09927v1 [cs.CV] 14 Feb 2025
+
+We introduce Granite Vision, a lightweight large language model with vision capabili-
+ties, specifically designed to excel in enterprise use cases, particularly in visual document
+understanding. Our model is trained on a comprehensive instruction-following dataset, in-
+cluding document-related tasks, such as content extraction from tables, charts, diagrams,
+sketches, and infographics, as well as general image tasks. The architecture of Gran-
+ite Vision is centered around visual modality alignment with a decoder-only, 2 billion-
+parameter Granite large language model. Additionally, we introduce a dedicated safety
+classification approach in test-time that leverages a sparse set of attention vectors to iden-
+tify potential harmful inputs. Despite its lightweight architecture, Granite Vision achieves
+strong results in standard benchmarks related to visual document understanding, as well
+as on the LiveXiv benchmark, which is designed to avoid test set contamination by us-
+ing a constantly updated corpus of recently published Arxiv papers. We are releasing
+the model under the Apache-2 license, allowing for both research and commercial use,
+while offering complete visibility into the training data and other relevant details. See
+for model weights.
+
+1
+INTRODUCTION
+
+The confluence of computer vision and natural language processing has led to significant advances in multi-
+modal learning, enabling large language models to effectively integrate and reason about visual content and
+linguistic data. Both proprietary and open-source multimodal models (Grattafiori et al., 2024; Team et al.,
+2024; OpenAI, 2023a; Abdin et al., 2024a; Dai et al., 2024; Zhang et al., 2024a; Wang et al., 2024; Agrawal
+et al., 2024; Li et al., 2024b; Chen et al., 2024b; Deitke et al., 2024a) have achieved remarkable success on
+a range of standard benchmarks, including visual question-answering, as well as more complex tasks such as
+multi-image reasoning and video understanding.
+
+While this progress is exciting, a notable disparity remains: smaller models, typically with 1-4 billion pa-
+rameters, have consistently fallen short of achieving performance comparable to their larger counterparts
+containing tens of billions of parameters. In addition, existing models are predominantly trained on natural
+images, which can limit their performance in other domains, such as visual document understanding, where
+the unique visual characteristics, such as layouts, fonts, and graphics, significantly differ from natural images
+and require a more fine-grained comprehension of the visual content.
+
+In this work, we introduce Granite Vision, a compact vision-language model with approximately 3 billion
+parameters1, tailored to excel in enterprise use cases. Although our model can process general images, the
+first version of Granite Vision is particularly focused on visual document understanding, enabling automated
+content extraction from tables, charts, infographics, plots, diagrams, sketches, and more. Figure 1 shows
+qualitative examples of our model’s output for visual document understanding tasks and general image de-
+scription. Granite Vision extends the Granite family of large language models ( Granite Team (2024)), which
+have been trained on more than 12 trillion tokens, achieving state-of-the-art performance for their size, while
+being designed for enterprise usage, with full visibility into the training data.
+
+1We denote our model as Granite-Vision-3.1-2B, where the version (3.1) and size (2B) of the base large language
+model are explicitly indicated. However, when considering the integrated vision encoder and projector, the total parameter
+count of our model increases to 3 billion parameters.
+
+(a)
+(b)
+
+What is the total order price?
+
+Describe the document in high level.
+
+Granite
+
+The document is an Interest Accrual Form for the
+National and Community Service Corporations. It
+outlines the process for accruing interest on a
+qualified student loan during a member's term of
+national service. The form requires the member to
+provide their personal information, loan details,
+and certify the accuracy of the information
+provided. The member must also authorize the
+release of loan information to the National Service
+Trust.
+
+$52.48
+
+Granite
+
+Vision
+
+Vision
+
+What has been ordered?
+
+1 WINE BOTTLE, 2 CHEESE STEAK, 1 SPICY
+BARQUE STEAK
+
+Granite
+
+Vision
+
+What is the name of the member that the form
+is filled in for?
+
+(c)
+
+The name of the member is Elizabeth
+Alexandra Windsor.
+
+Granite
+
+Vision
+
+Is there a signature missing in the form?
+
+Yes, the signature is missing in the form.
+
+Granite
+
+Vision
+
+(d)
+
+Describe the scene in this image.
+
+The image depicts a scene of a car accident.
+There is a damaged vehicle with its front end
+severely damaged, with the hood crumpled and
+the front wheel detached. The car is parked on a
+street, and there are some trees and buildings in
+the background. Two individuals are present in
+the scene, one of whom is a man wearing a high-
+visibility vest and the other is a woman. The man
+is kneeling down and appears to be examining
+the damage to the car, while the woman is
+crouching beside him, looking at the damage.
+The man is holding a tablet in his hand, possibly
+taking notes or looking up information about the
+damage. The woman is wearing a striped shirt
+and jeans. The overall atmosphere of the image
+suggests that the individuals are assessing the
+damage to the car and possibly discussing the
+next steps in the aftermath of the accident.
+
+Granite
+
+Vision
+
+What is the highest scoring model on
+ChartQA and what is the score?
+
+The highest scoring model on ChartQA is
+Granite Vision 3.1 with a score of 0.86.
+Granite
+
+Vision
+
+Figure 1: Qualitative examples generated by Granite Vision, showcasing its diverse capabilities including (a)
+document understanding such as receipt calculation, (b) form understanding with human handwritten text,
+(c) knowledge-grounded image description, (d) table understanding, etc.
+
+As a key contribution of our work, we meticulously curate a comprehensive instruction-following dataset
+for visual document understanding, comprising around 13 million images and 80 million instructions, which
+span a diverse set of of tasks, including document question-answering , scene text understanding, key-value
+extraction, text grounding, layout parsing, captioning, UI understanding, and code (see Figure 2). We con-
+structed this dataset by (i) mining documents from the web and synthesizing instructions as described in
+Section 3.1, and (ii) unifying multiple public datasets into a single format. In addition to documents, our
+training data is further enriched by the inclusion of instruction-following data for general images from public
+datasets (Tong et al., 2024; Li et al., 2024b; Laurenc¸on et al., 2024b; Liu et al., 2023b).
+
+Similar to LLaVA (Liu et al., 2023c), our approach uses a projector to establish a connection between the
+visual encoder and a Granite large language model. Our training protocol consists of multiple stages, pro-
+gressing from training the projector in isolation to jointly fine-tuning both the projector and the large language
+model, using denser image resolution grids at the latest stages. We also extract multi-layer features from the
+encoder, allowing us to better capture fine-grained details that are important for visual document understand-
+ing. Finally, we propose a novel method for safety classification as a separate module to identify harmful
+inputs based on a sparse set of attention vectors, which are selectively chosen to maximize safety classifica-
+tion performance.
+
+Compared to other models of similar parameter size, Granite Vision achieves state-of-the-art results on estab-
+lished benchmarks for visual document understanding, conversion of tables and charts to structured formats,
+and the LiveXiv benchmark (Shabtay et al., 2024), which evaluates the model on recently published Arxiv
+papers, helping to mitigate the risk of test set contamination that can arise when models are trained on web-
+scraped data. In addition to its strong performance in enterprise settings, our model demonstrates competitive
+results on standard vision-language benchmarks. To promote openness and collaboration, we make the model
+publicly available under the Apache-2 license, allowing visibility into the training data and procedures.
+
+2
+RELATED WORK
+
+2.1
+MULTIMODAL LARGE LANGUAGE MODELS
+
+Recent advances in multimodal large language models (MLLMs) have demonstrated significant progress in
+understanding and generating content across different data modalities. Comprehensive surveys by Yin et al.
+(2024) and Wadekar et al. (2024) closely outline the various approaches to architecture design, training strate-
+gies, and evaluation methodologies in the field. The introduction of Flamingo (Alayrac et al., 2022) high-
+lighted a remarkable performance of the transformer cross-attention architecture in vision-language tasks,
+serving as a catalyst for further advancements in the multimodal domain. The launch of GPT-4V (OpenAI,
+2023b) has sparked a competitive race in the development of powerful commercial-use MLLMs, leading to
+multimodal models like GPT-4o (OpenAI, 2024), Claude 3.5 Sonnet (Anthropic, 2024), and Gemini Pro 1.5
+(Team et al., 2024). In parallel, the open-source community has made significant contributions, with models
+like BLIP2 (Li et al., 2023), Phi-3.5-vision (Abdin et al., 2024b), LLaVA-OneVision (Li et al., 2024c), and
+Llama 3.2-vision (Grattafiori et al., 2024) showing competitive performance on benchmarks while maintain-
+ing transparency and accessibility. To mitigate the high costs associated with training large models in an
+end-to-end manner, a common approach involves employing modular architectures. These architectures typi-
+cally combine a pre-trained modality encoder and a pre-trained large language model (LLM) with a learnable
+modality connector, with the latter comprising only a small portion of the total parameters (Bai et al., 2023;
+Tong et al., 2024; Chen et al., 2024b). More recently, Zhang et al. (2024a) demonstrated that even relatively
+small models can achieve strong performance with careful data curation and optimized training strategies.
+Building on these insights, our model uniquely achieves state-of-the-art results on standard document and
+other benchmarks, all while operating at a significantly reduced scale (around 3 billion parameters).
+
+2.2
+VISUAL DOCUMENT UNDERSTANDING
+
+Visual document understanding, particularly the ability to comprehend charts, diagrams, tables, and docu-
+ment images, represents a crucial application area for MLLMs. Two primary technical challenges emerge
+in enabling MLLMs to process documents and associated images effectively: adequately encoding high-
+resolution images, and accurately interpreting visually-situated text within the documents. Recent approaches
+to addressing these challenges are often broadly categorized into two groups based on their text recognition
+methodology. The first category, including models like DocFormer (Appalaraju et al., 2021), LayoutLMv3
+(Huang et al., 2022), and, more recently, DocLLM (Wang et al., 2023), relies on external optical charac-
+
+ter recognition (OCR) systems to process text within images. The second category consists of “OCR-free”
+models, e.g. Donut (Kim et al., 2022b), UReader (Ye et al., 2023), mPLUG-DocOwl 1.5 (Hu et al., 2024a),
+and DocPedia (Feng et al., 2024). Besides the specialized multimodal document understanding models (Liao
+et al., 2024; Liu et al., 2024a), strong performance is also achieved by general MLLMs instruction-tuned
+on document datasets (Li et al., 2024c; Dai et al., 2024). While recent efforts (Mathew et al., 2021; Hug-
+gingFace, 2025; Rodriguez et al., 2024) have produced several open-source document understanding datasets
+to advance model performance in this domain, large comprehensive datasets without restrictive licensing re-
+main relatively limited. Our approach builds upon this foundation by leveraging a comprehensive instruction-
+following dataset for visual document understanding, incorporating both synthetic data and public datasets.
+
+3
+DATA
+
+Granite Vision has been trained on a comprehensive instruction-following dataset, which covers a wide va-
+riety of visual categories ranging from document images to general images. The training data consists of
+a combination of pre-curated public vision datasets, common-crawl PDFs, and data that is synthesized in-
+house. A detailed view of our data is presented in Figure 2, which depicts document understanding datasets,
+and Figure 3, which represents general image datasets. Our document understanding data (Figure 2) covers a
+variety of document classes such as general document images, charts, flowcharts, diagrams and several more
+encompassing a diverse set of visual Q&A tasks. See Table 5 (in Appendix) for a comprehensive overview
+of the datasets. Such diverse data is chosen to ensure the model’s ability to generalize across a wide array of
+document-centric applications. In addition to document datasets, we incorporated training data from multiple
+publicly available generic image datasets (Figure 3). In the following sections, we dive deep into differ-
+ent data categories, data collection processes, synthetic data generation techniques, and data pre-processing
+pipelines.
+
+3.1
+IBM CURATED DATASETS
+
+In this section, we will describe several large synthetic document Q&A datasets created at IBM and focused
+on a diverse set of document and Q&A tasks. In order to seed this effort, we leveraged DocFM, a large-scale
+comprehensive dataset effort at IBM consisting of 85 million document pages extracted from unique PDF
+documents sourced from Common Crawl, Wikipedia, and ESG (Environmental, Social, and Governance)
+reports. DocFM served as a foundation for generating our synthetic datasets, which capitalized on its enriched
+nature for granular filtering and balancing.
+
+DocFM was created using Docling (Livathinos et al., 2025), an open-source document conversion toolkit
+developed by IBM. Docling facilitated the extraction and enrichment of each page with a rich set of attributes,
+resulting in a highly detailed representation of document pages. Specifically, this enabled:
+
+• Text and Positional Metadata Extraction: Parsing each PDF page to retrieve textual content along
+with its positional metadata.
+
+• Layout Understanding: Identification of structural components such as headers, footers, para-
+graphs, lists, captions, code, formulas, form elements, pictures, footnotes, and document indices.
+
+• Reading Order Detection: Establishing the reading sequence of extracted content based on layout
+and parsed output.
+
+• Language Detection: Identifying the primary language present on each page.
+
+• Figure Classification: Labeling visual elements, such as charts, images, and diagrams.
+
+To ensure high-quality textual representation, we focused exclusively on PDFs with extractable content, en-
+suring reliable and efficient text processing while minimizing noise.
+
+3.1.1
+DOCFM - DATA COLLECTION & FILTERING
+
+A large portion of the DocFM dataset was obtained from the Common Crawl corpus which is an open repos-
+itory of web data. It is freely accessible and distributed as monthly archive files in various formats (“seg-
+ments”). Among these segments, the URL index contains a list of crawled URLs accompanied by metadata,
+such as the media type specified by the HTTP header and the media type detected by Common Crawl from the
+actual URL content. By adhering to the Robots Exclusion Protocol (Koster et al., 2022) (commonly known as
+
+Table QA
+
+Scene Text
+
+Document QA
+
+■K12 Printing (256.6 K)
+■OCR-VQA (165.7 K)
+■TextOCR (25.1 K)
+■Ureader CAP (22.0 K)
+■TextVQA (22.0 K)
+■Llavar (19.8 K)
+■ST-VQA (16.4 K)
+■RenderedText (10.0 K)
+■IIIT5K (2.0 K)
+
+■DocFM-VQA (2.4 M)
+■Docmatix (565.0 K)
+■synthdog-en (500.0 K)
+■pixmo-docs (255.4 K)
+■HME100K (74.5 K)
+■Ureader QA (72.7 K)
+■ArxivQA (54.4 K)
+■Ureader KG (37.6 K)
+■Tech Book QA (10.4K)
+■DocVQA (10.2 K)
+■IAM (5.7 K)
+■Business Document QA (3.3K)
+■Visualmrc (3.0 K)
+
+■RoBUT-wikiSQL (75.0 K)
+■RoBUT-WTQ (38.0 K)
+■tabmwp (22.7 K)
+■RoBUT-SQA (8.5 K)
+■MultiHiertt (7.6 K)
+■Finqa (5.3 K)
+■Hitab (2.5 K)
+
+Diagram QA
+
+■TQA (27.3 K)
+■DocFM-VQA-Flowcharts (16.6 K)
+■AI2D GPT4V (4.9 K)
+■AI2D InternVL (3.2 K)
+■AI2D (2.4 K)
+■Diagram Image2Text (0.3 K)
+
+UI Screen / Code
+
+■Datikz-v2 (94.4 K)
+■Datikz (47.9 K)
+■screenqa (33.2 K)
+■screen2words (15.7 K)
+■websight (10.0 K)
+■Omniact (4.9 K)
+
+Chart QA
+
+■Unichart (611.0 K)
+■Tinychart (606.0 K)
+■DocFM-VQA-Charts (548.7 K)
+■Dvqa (200.0 K)
+■PlotQA (157.0 K)
+■FigureQA (100.0 K)
+■DocFM-VQA-AugChartQA(35.1 K)
+■Chart2Text (27.0 K)
+■ChartQA (18.3 K)
+■Vistext (9.9 K)
+
+Reasoning / Captioning
+
+■DocFM Visual Cue & Captioning
+(1.2M)
+■Textcaps (22.0 K)
+■DocReason (8.7 K)
+
+Structure Parsing
+
+■OCR-CC (1.0 M)
+■CCpdf (937.8 K)
+■PubTables (569.3 K)
+■DocFM-ChartExtraction (550.4 K)
+■TURL (200.0 K)
+■PubTabNet (199.8 K)
+■RVL-CDIP (159.4 K)
+■DUE (104.5 K)
+■FinTabNet (98.9 K)
+
+Grounding / Text Localization
+
+■Multi-grained Text Localization
+(1.0 M)
+■DocFM Rule Based Grounding
+(190 K)
+■KVP10K (8.0 K)
+
+Infographics QA
+
+■InfographicVQA (8.5 K)
+
+Figure 2: Overview of our comprehensive collection of document understanding datasets used for Granite
+Vision training.
+
+Image Count per Category Across Datasets
+
+Cauldron
+LLaVa-OneVision
+Cambrian-7m
+
+General
+276.5 K
+881.3 K
+1.8 M
+Language/Captioning
+202.1 K
+N/A
+N/A
+Math/Science/Reasoning
+178.4 K
+318.0 K
+354.5 K
+Image Comparison
+188.9 K
+N/A
+N/A
+
+QA Count per Category Across Datasets
+
+Cauldron
+LLaVa-OneVision
+Cambrian-7m
+
+General
+812.7 K
+2.0 M
+7.9 M
+Language/Captioning
+203.3 K
+1.2 M
+1.8 M
+Math/Science/Reasoning
+765.1 K
+464.8 K
+802.0 K
+Image Comparison
+237.9 K
+N/A
+N/A
+
+Figure 3: Overview of general image datasets used for Granite Vision training.
+
+“robots.txt”), Common Crawl ensures basic operational guarantees. We obtained the Common Crawl dataset
+partition through the following process:
+
+• A set of trusted web domains likely to contain relevant PDF files was manually curated. Addition-
+ally, websites of affiliations from public GitHub 2 repositories, primarily universities and educational
+institutions, were identified. In total, we cataloged more than 45,000 domains to increase the rele-
+vance of the dataset and minimize potential issues related to web crawl data (e.g., toxic language,
+hate speech, abusive language, or profanity).
+• For each domain in the curated list, a search was conducted across the Common Crawl index seg-
+ments of 13 archives (spanning May 2021 to January/February 2023) to identify URLs with the
+media type “application/pdf,” as either declared or detected.
+• For each discovered URL, we made an attempt to download the PDF file from the source. If suc-
+cessful, the file and its metadata were stored in a database.
+
+Through this process, 4.96 million URLs were identified, resulting in 3.98 million PDF files after accounting
+for exact (binary) duplicates and invalid links. Additionally, we included 838,237 PDF documents retrieved
+from CCpdf (Turski et al., 2023a). After deduplicating, 4.6 million unique PDF files (75.5 million pages)
+remained in the Common Crawl partition. Following the conversion process, we successfully converted 65
+million pages.
+
+In addition, a total of 7,696 ESG reports were all sourced directly from Responsibility Reports3.
+To complement this, an automated pipeline using a headless Chrome browser component was employed
+to convert 20M pages of Wikipedia articles into PDF format. The list of articles was derived from the
+wikipedia dataset (Foundation).
+
+DocFM is a very large dataset which we plan to use for a variety of downstream visual learning applications
+in the future. For the current release of Granite Vision, we focused on a subset of DocFM for creation of
+a family of synthetic visual QA datasets (LLM and rule-based document and chart VQA) which will be
+described next.
+
+3.1.2
+IBM SYNTHETIC VISUAL Q&A DATASETS
+
+DocFM-VQA (Synthetic Document VQA):
+There’s a lack of large-scale instruction-following datasets
+focused on visually-rich document understanding. The most commonly used dataset, DocVQA (Mathew
+et al., 2021), is limited in size as it contains only 10K images and 40K QA pairs. Docmatix (HuggingFace,
+2025) has been recently introduced as a potential large-scale alternative to DocVQA, but it uses only the
+textual parts of documents for QA pairs generation.
+
+2
+3
+
+In our work, we leverage a large language model (Mixtral 8x22B), to synthetically generate a large-scale
+visual question answering (VQA) dataset using a subset of DocFM as seed. We call this dataset DocFM
+verbalization-based VQA or DocFM-VQA in short. We employed a “verbalized” representation of the doc-
+uments as context for the LLM’s (Mixtral 8x22B) QA generation. This involved extracting text from pro-
+grammatic PDFs and augmenting it with verbal descriptions of visual elements such as charts, images, and
+tables. This approach encouraged the generation of questions that specifically target these elements. Our
+verbalization process included: 1) Converting charts to tables using DePlot (Liu et al., 2023a), 2) Replacing
+images with captions generated by BLIP2 (Li et al., 2023). 3) Converting tables to markdown format using
+TableFormer (Nassar et al., 2022). The DocFM-VQA contains a total of 20 million QA pairs from 2.4 million
+randomly selected pages from the DocFM dataset. This dataset facilitates the training of models capable of
+robust performance on visually rich documents. While we explored the use of leading Visual Language Mod-
+els (VLMs) to filter out potential hallucinations in the generated QAs, the observed performance benefits did
+not outweigh the computational cost. Therefore, filtering was not incorporated into the current model version.
+
+DocFM-VQA-charts (Synthetic Chart VQA):
+A general framework for synthetic QA generation on
+charts is to use tabular data in textual form, using an LLM to generate QAs on it, and using code to gen-
+erate the appropriate visual chart. However, we observed two main issues with this approach. First, the
+generated QAs are unable to refer to visual properties like the used markers or plot colors. Second, LLMs
+tend to generate simple questions, such as a single data point extraction. As a result, large-scale synthetic
+chart QA datasets tend to dramatically improve the performance on synthetically generated benchmarks but
+have a smaller effect on human questions or human-annotated benchmarks (e.g. ChartQA’s augmented vs.
+human splits).
+
+In our work, we addressed the two issues mentioned above by augmenting the tabular form of the data, used as
+input to the LLM for generating QAs, with additional information. To solve the first issue of the LLM lacking
+knowledge of the visual appearance of the chart, we first choose a random marker and color for each data
+sequence. This information is added to the table consumed by the LLM and provided as input to the code used
+for rendering the chart. To solve the second issue (of very simplistic QAs), we added to each table additional
+rows and columns. These rows and columns contain additional information calculated based on the original
+table using code. It includes max, min, sum, average, and a random operation (addition or subtraction)
+between two randomly chosen columns/rows, e.g. “Column 1 + Column 3”. This pre-calculated information
+encourages the model to ask questions requiring higher-order reasoning. It also allows the model to produce
+more accurate ground-truth answers for cases that require arithmetic capabilities that LLMs struggle with
+(Schwartz et al., 2024).
+
+We used the augmented table approach as input to the DocFM-VQA pipeline to generate the DocFM-VQA-
+Charts dataset. It contains 5.5M QAs on about 500K synthetic charts rendered based on random numeric
+tables extracted from the DocFM dataset. We additionally augmented the ChartQA training set with the pre-
+calculated columns and rows information (without markers and colors) and generated additional QAs for the
+dataset’s existing images.
+
+DocFM-VQA-flowcharts (Synthetic Flowchart VQA):
+In order for the model to better understand
+flowcharts we generated synthetic flowcharts with QA pairs. We used an LLM (Mixtral 8x7B) for gener-
+ating the flowchart nodes and edges. We then use those nodes and edges to query an LLM for QA pairs and
+to render a visual representation of the flowchart. We used the pipeline described below to generate 17K
+JSON representation and rendered flowcharts. The JSONs are fed to the DocFM-VQA pipeline to generate
+76K QA pairs.
+
+The flowchart synthesis pipeline:
+
+• Identify Business Domains and Industries: Utilize the LLM to extract various business domains and
+identify industries associated with typical business processes.
+
+• List Business Process Types: For each business domain and industry, use the LLM to generate a
+comprehensive list of business process types.
+
+• Generate Business Processes: For each business process type, we employ the LLM to create multiple
+business processes constructed in a JSON format. Each process should have nodes and edges, with
+the number of nodes ranging from 5 to 20.
+
+• Create Flowchart Images: For each generated business process, use the ‘graphviz’ package to create
+a flowchart image. Incorporate random shapes, arrows, and colors to enhance visual diversity.
+
+DocFM-ChartExtraction:
+We created a training dataset of 550K chart images to ensure that the model can
+perform structured data extraction from chart visualizations. The dataset was generated by converting tables
+extracted from DocFM and public stock market data into diverse chart types using matplotlib, including line,
+scatter, bar, pie, candlestick, and OHLC charts. For each visualization, training examples included extraction
+instruction with randomized output format requirements (Markdown, HTML, or JSON) and varied natural
+language phrasings. To enhance document-level understanding capabilities, 100K DocFM-derived charts
+were embedded into their source document contexts by covering the original table with the chart image.
+The financial subset comprises 40K candlestick and OHLC charts generated from NASDAQ, S&P500, and
+NYSE stock data. This synthetic dataset enables the training of vision-language models to extract structured
+information from diverse visualization types while handling multiple output formats and document contexts.
+
+DocFM Visual Cue and Captioning:
+In order to create this dataset, we masked captions on images and
+then used the captions to generate questions regarding images. We implemented a multi-step process as fol-
+lows: 1) Using Docling (Livathinos et al., 2025) we filtered to get figures associated with their corresponding
+captions; 2) We utilized Granite 3.1 8B model to analyze the captions for the presence of visual cues such as
+“black arrow,” “on the left,” “red circle,” and similar indicators of figure elements or regions of interest; 3) If
+the caption contained an explicit identifier (e.g., “Figure 5”), we extracted it using the parsed text from the
+PDF. The caption body text was then masked on the image, leaving only the identifier visible. If no explicit
+identifier was present, we used the figure’s bounding box as a fallback identifier. This identifier can then
+be used for the question, “What is the black arrow pointing at in Figure 5.?”. 4) Leveraging the LLM, we
+generated context-specific questions about the figure, using the caption to inform the question formulation
+and answer while hiding the textual context in the image.
+
+DocFM Rule Based Grounding:
+We further complemented our data by implementing rule-based ap-
+proaches to generate synthetic tasks focused on specific document elements like text localization, figures,
+and tables. Leveraging Docling’s layout detector (Pfitzmann et al., 2022), we generated questions that query
+the location of text passages and other page elements. To encourage a deeper understanding of visual com-
+ponents, we masked captions associated with figures and tables, keeping only their identifiers. Subsequently,
+we employed templates to generate questions prompting the model to provide captions for these figures and
+tables. Furthermore, using defined templates we generated more operations such as selecting row, columns
+by index, or by value or comparison using only images. For the latter, we leverage the table understanding
+methods from Docling (Nassar et al., 2022; Lysak et al., 2023).
+
+3.2
+PUBLIC DATASETS
+
+Our Granite Vision model is primarily focused on visual document understanding tasks. Therefore, we further
+enriched our data using a number of pre-curated high-quality, publicly available document-related datasets,
+which encompass several diverse tasks such as Document QA, Table QA, Chart QA, Diagram QA, OCR and
+scene-text related tasks, reasoning and grounding, UI screen/code and structure understanding. A detailed
+view of public document centric datasets is shown in Figure 2. For details readers are referred to Table 5 (in
+Appendix).
+
+Beyond document-centric content, we also included high quality general image Q&As sourced from public
+datasets to ensure robust performance in general visual tasks as well. Specifically, we acquired data from
+three high-quality collections: Cauldron4, Cambrian-7M5 and LLaVa-OneVision-Data6. These datasets cover
+a wide range of domains and tasks, including image captioning, visual question answering (VQA), and object
+recognition, providing the foundational knowledge for general-purpose vision-language models. More details
+and statistics about general images data are shown in Figure 3.
+
+3.3
+DATA PREPROCESSING
+
+Data pre-processing consisted of multiple annotation and filtering steps to conform to regulatory and safety
+requirements and improve overall data quality as described below.
+
+4
+5
+6
+
+• Restricted Data removal: All public datasets underwent a rigorous legal vetting process to identify
+data that could violate any legal or PII related requirements. All such data was removed, including
+datasets originating outside of the US and those with unclear license agreements.
+
+• Sexual Abuse Material (CSAM) removal: All CSAM was removed from the datasets using state-of-
+the-art NSFW (not safe for work) detection methods.
+
+• Face blurring: Face blurring was performed to obfuscate all visual PII from the data.
+
+• Deduplication: Since we combined multiple dataset collections, there could be duplication of text
+as well as visual data. Similar images were detected through two methods: exact pixel-wise match,
+or perceptual hash matching (Zauner, 2010), for robustness against minor transformations. Records
+with identical texts and similar images were removed.
+
+4
+GRANITE VISION MODEL
+
+In this section, we describe our model, including the architecture (Section 4.1), the training procedure (Sec-
+tion 4.2), and the use of Sparse Attention Vectors (SAVs) for safety classification (Section 4.3). An overview
+of our architecture is shown in Figure 4.
+
+4.1
+ARCHITECTURE
+
+Vision-and-language models are designed to process two data modalities simultaneously, such as images and
+corresponding text instructions. Each modality is encoded into a shared embedding space, which is then
+utilized for reasoning by a language model f parameterized by θ. Specifically, an image is encoded using
+a pre-trained visual encoder, denoted as v parameterized by ϕ, and a projector M parameterized by λ. A
+corresponding textual prompt is tokenized and encoded using a fixed language encoder l parameterized by γ.
+Given an input image I and a text instruction P, the language model generates a text response R as follows:
+R = fθ(Mλ(vϕ(I)), lγ(P)). This section provides a detailed description of each of these components.
+
+Vision Encoder vϕ.
+For an input image I, we
+use a vision encoder vϕ to provide visual features
+X = vϕ(I). In our implementation, X is a con-
+catenation of outputs from multiple layers, allowing
+us to combine these different levels of representa-
+tion, providing rich representations that are bene-
+ficial for visual document understanding. We use
+SigLIP (Zhai et al., 2023) as our vision encoder
+with 384 × 384 resolution. Additionally, we use the
+“AnyRes” technique in our training as in Li et al.
+(2024c), which is designed to accommodate images
+of various high resolutions. The ability to process
+high-resolution images is of particular importance
+for document understanding, especially when deal-
+ing with documents containing small text fonts, as it
+enables accurate text recognition.
+
+“The highest value inside the chart under Overall Accuracy is 57.1”
+
+𝒇𝜽: Language Model
+
+𝑴𝝀: Projector
+
+𝒍𝜸: Language Encoder
+
+𝒗𝝓: Visual Encoder
+
+I: Image Input
+
+P: Language
+
+Instruction
+
+“What is the highest value
+
+inside the chart under
+
+Specifically, we use a global image, and a grid
+configuration that divides the image into multiple
+patches (or views), resulting in an additional multi-
+patch setting. We select the closest resolution from
+a predefined set that allows the original image size
+to be tiled into patches of size 384 × 384. We tile
+the image using up to ten patches, leading to a wide
+variety of aspect ratios ranging from 1 : 10 through 1 : 1 to 10 : 1 at different scales resulting in a total of 27
+different tiling options. Next, the visual features X are forwarded to the projector M.
+
+Overall Accuracy?”
+
+Figure 4: Architecture of Granite Vision.
+
+Projector Mλ.
+Here we apply Mλ, a two-layer MLP with GELU activation function as the projection layer
+to convert the visual features into a sequence of visual tokens: Tvis = Mλ(X). This operation connects the
+
+image features into the word embedding space. We ensure the Tvis tokens have the same dimensionality as
+the word embedding space in the language model.
+
+Language Encoder lγ.
+For a text instruction P, we extract the text tokens Tlang as the instruction under-
+goes tokenization using a language encoder Tlang = lγ(P).
+
+Language Model fθ.
+The visual tokens Tvis and language tokens Tlang are then concatenated and fed into
+a language model fθ. We use Granite 3.1-2B-Instruct (Granite Team, 2024) as our language model fθ, which
+is trained for next token prediction. Granite 3.1 represents IBM’s third generation of large language models,
+released to the open-source community under an Apache 2.0 license, as well as matching top performance
+on general, enterprise, and safety language benchmarks. It supports up to 128K context length and shares
+a similar architecture as popular LLMs like Llama (Grattafiori et al., 2024) to ensure compatibility with
+open-source inference and fine-tuning pipelines.
+
+4.2
+TRAINING PROCEDURE
+
+The training procedure of our Granite Vision model consists of three stages: (i) Pre-training for projector M,
+(ii) Pre-training with language model fθ and the Projector M, and (iii) Instruction tuning. Each image I is
+accompanied by a text instruction P, and the predictions consist of the answer A produced by the model.
+Specifically, for a response R, we compute the probability of the target words by the following equation:
+
+|R|
+Y
+
+p(A | I, P) =
+
+i=1
+pψ(xi | I, P)
+(1)
+
+where ψ represents the trainable parameters. We note that ψ contains the following trainable parameters men-
+tioned above (θ, ϕ, λ), with different subsets are trained at various training stages. In addition, xi is the current
+prediction token. To calculate loss, we use the standard cross-entropy function with these probabilities. Next,
+we describe our three-step training process.
+
+Stage 1: Pre-training for Projector Mλ.
+In this step, the entire network (other than the projector Mλ)
+is frozen to correctly align visual and language tokens. For this stage, we use 558k image-text pairs with
+captions taken from LLaVA-Pretrain7. Additionally, we use only the following scales in this stage: (384,
+768), (768, 384), (768, 768), (1152, 384), and (384, 1152).
+
+Finally, we perform a hyperparameter search randomly on 5% of the data to select a batch size of 512, warm
+up ratio of 0.03, and learning rate of 1e −4 with a cosine scheduler. We also used the following multi-turn
+conversation template:
+
+<|system|>
+”A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite
+answers to the user’s questions.”
+<|user|>P 1
+<|assistant|>A1<|end of text|>
+<|user|>P 2
+<|assistant|>A2<|end of text|>
+
+where (P i, Ai) is the i-th conversation pair iteration.
+
+Stage 2: Pre-training with Language Model fθ for Projector M.
+In order to align the LLM with the
+updated visual features that have been processed by the projector, we use a second pre-training stage, in
+which we keep the vision encoder frozen and fine-tune the LLM fθ and the Projector Mλ. We use the same
+image-text pairs data and same multi-conversation template as in stage 1.
+
+It is important to note that at the end of this stage, we retain only Projector Mλ weights and discard the
+fine-tuned LLM, reverting the language model to its original weights for the next stage. We found that this
+procedure leads to a better starting point for the following instruction tuning stage.
+
+In stage 2, for the LLM and Projector Mλ, we use different learning rates of 8e−05 and 32e−05, respectively,
+and kept the same other stage 1 hyperparameters.
+
+7
+
+Stage 3: Instruction Tuning.
+In the last stage, we perform supervised fine-tuning with all the instruction-
+following data. Here, we update both the pre-trained weights of the projector M and the language model
+fθ, while keeping the visual encoder weights frozen. We use approximately 20M image-text pairs from our
+collected datasets, as described in Section 3. We retained the same hyperparameters from stage 2, with the
+exception of the batch size, which was set to 1024.
+
+4.3
+SPARSE ATTENTION VECTORS FOR SAFETY
+
+Here we outline how we use sparse attention vectors (as proposed in Mitra et al. (2024) and Huang et al.
+(2024)), derived from the activation space of a Granite Vision model, as features for a safety classification
+setup. Our key insight is that within Granite Vision’s many attention heads and transformer layers, there
+is a sparse subset of features that are useful for identifying safety if we formalize a range of safety tasks
+as classification problems. We present the following three-step method to identify and utilize these safety
+features.
+
+Step 1: Extracting General Attention Vectors.
+Given our model and few-shot samples of label pairs
+{(x1, y1), (x2, y2), . . . , (xN, yN)}, we first extract the attention vectors for each sequence xi. Here, the
+labels in the few-shot demonstrations indicate specific safety characteristics of the query, like ’harmful’ and
+’non-harmful’ classes. Next, for every xi, we compute the attention vector hm
+l for head m from layer l for
+the final token xT
+i . This yields a set of attention vectors {hm
+l (xT
+i ) | i = 1, . . . , N} for each head m and layer
+l.
+
+Step 2: Finding Safety Vectors.
+In order to identify which attention vectors are naturally suited to a safety
+task, we evaluate each vector’s discriminative ability by computing its performance under a nearest class
+centroid classifier.
+
+Specifically, for each class c ∈C, we compute its mean attention vector across few shot examples:
+
+µl,m
+c
+=
+1
+|Nc|
+
+X
+
+c
+hm
+l (xT
+j )
+
+where Nc is the set of indices of examples with label c. For each input xi, we compute its cosine similarity
+to each class centroid head:
+
+sl,m(xi, c) =
+hm
+l (xT
+i ) · µl,m
+c
+∥hm
+l (xT
+i )∥∥µl,m
+c
+∥
+,
+∀c ∈C
+
+Next, we measure the discriminative ability of each head by its performance as follows:
+
+N
+X
+
+score(l, m) =
+
+i=1
+1[ˆy = yi]
+
+where the nearest class centroid label is given as ˆy, and 1[·] is the indicator function that evaluates to 1 when
+the condition is true. We denote the set of k top-scoring heads as HSAV:
+
+HSAV = {(l, m) | score(l, m) is among top K}
+
+Step 3: Classification with Safety Vectors.
+Given a sample sequence input Q to classify, we leverage our
+sparse set of heads HSAV for safety prediction. For each head (l, m) ∈HSAV, we compute the class centroid
+µl,m
+c
+closest to the sequence input as follows:
+
+ˆyl,m = arg max
+c∈C
+sl,m(QT , c)
+
+where sl,m is defined as in Step 2. The final prediction counts the majority across all heads in HSAV:
+
+X
+
+arg max
+y∈C
+
+(l,m)∈HSAV
+1[ˆyl,m = y]
+
+Using this approach, we are able to determine whether a new input sequence is safe. We note that this
+approach can be used more generally, as it has been used in Mitra et al. (2024) to extract multimodal features
+from large multimodal models for general discriminative vision-language tasks.
+
+5
+EVALUATION
+
+5.1
+STANDARD BENCHMARKS
+
+We evaluated our models on a set of popular public benchmarks. Since the current Granite Vision release is
+mainly geared towards document understanding, our focus is on document-related benchmarks. However, we
+also report results for key natural-image benchmarks. We used the standardized lmms-eval package (Zhang
+et al., 2024b; Li et al., 2024a) to run the evaluations. We do not use any test time optimizations such as prompt
+tuning or chain-of-thought. The results for most other models were also produced by running the standard
+lmms-eval benchmarks when possible. For the remaining models, we used the results reported by the original
+authors or from the publicly reported benchmarks.
+
+Document related benchmarks
+
+• DocVQA: A benchmark designed to evaluate the models’ ability to understand and extract textual
+information from documents (Mathew et al., 2021).
+
+• ChartQA: A benchmark which focuses on question answering about charts, requiring both visual
+and logical reasoning to interpret data presented in various chart formats (Masry et al., 2022).
+
+• TextVQA: Challenges models to read and reason about text present within images to answer ques-
+tions accurately (Yang et al., 2021).
+
+• AI2D: Contains grade school science diagrams, aimed at evaluating diagram understanding and
+question answering capabilities (Kembhavi et al., 2016).
+
+• InfoVQA: Contains infographics - documents that combine textual, graphical, and visual elements
+to communicate information effectively. The questions require models to perform joint reasoning
+across document layout, text, and data visualizations (Mathew et al., 2022).
+
+• OCRBench: A benchmark designed to evaluate Optical Character Recognition (OCR) capabilities
+within various contexts, assessing the accuracy and robustness of OCR in documents and in-the-wild
+(Liu et al., 2024b).
+
+• WebSRC: A Web-based Structural Reading Comprehension benchmark. It consists of screenshots
+and question-answer pairs created based on the corresponding HTML source code and metadata.
+Each question in WebSRC requires a certain structural understanding of a web page to answer, and
+the answer is either a text span on the web page or yes/no.
+
+• LiveXiv: A benchmark which specifically focuses on testing multi-modal models’ ability to under-
+stand domain-specific visual content like graphs, charts, and tables from scientific manuscripts. It
+is a live benchmark, containing recently published papers on Arxiv, helping prevent test set con-
+tamination that can occur with static benchmarks when models are trained on web-scraped data. It
+contains questions dealing with figures (VQA) and with tables (TQA) (Shabtay et al., 2024).
+
+Natural image benchmarks
+
+• MMMU: A comprehensive benchmark designed to evaluate Multimodal Large Language Models on
+both perception and cognition abilities across various subtasks, ensuring robust and diverse testing
+of these models (Yue et al., 2024).
+
+• VQAv2: A benchmark for Visual Question Answering containing open-ended questions about im-
+ages, designed to test a model’s ability to understand and reason about visual content (Goyal et al.,
+2017).
+
+• RealWorldQA: Focuses on question answering in real-world scenarios, requiring models to inter-
+pret and reason over complex visual and textual information present in everyday images.
+
+• VizWiz: Contains over 31,000 visual questions originating from blind individuals, aiming to help
+answer visual questions posed by this community, with each question accompanied by crowdsourced
+answers (Gurari et al., 2018).
+
+• OK VQA: A benchmark designed for visual question answering tasks that require external knowl-
+edge beyond what is visible in the image, featuring over 14,000 questions to evaluate the reasoning
+abilities of AI models (Marino et al., 2019).
+
+Document benchmarks
+Other benchmarks
+
+RealWorldQA
+
+LiveXiv VQA
+
+LiveXiv TQA
+
+VizWiz VQA
+
+OCRBench
+
+TextVQA
+
+OK VQA
+
+DocVQA
+
+InfoVQA
+
+WebSRC
+
+ChartQA
+
+MMMU
+
+VQAv2
+
+AI2D
+
+Model
+Size
+
+Small models 1B-4B
+Molmo-E
+1B
+0.66 0.60 0.62 0.63 0.44 0.65 0.68 0.47 0.36 0.32 0.57 0.55 0.49 0.40
+MM1.5*
+1B
+0.81 0.67 0.72 0.59 0.50
+-
+-
+-
+-
+0.36
+-
+0.53
+-
+-
+SmolVLM*
+2.2B 0.80 0.72 0.72 0.84
+-
+0.65
+-
+-
+-
+0.38
+-
+-
+-
+-
+MM1.5*
+3B
+0.87 0.74 0.76 0.66 0.58
+-
+-
+-
+-
+0.37
+-
+0.57
+-
+-
+Phi3v
+4B
+0.87 0.81 0.69 0.79 0.55 0.64 0.91 0.61 0.48 0.42 0.76 0.60 0.57 0.51
+Phi3.5v
+4B
+0.88 0.82 0.70 0.79
+0.61 0.64 0.91 0.63 0.51 0.44 0.77 0.58 0.57 0.53
+Granite Vision
+3B
+0.88 0.86
+0.76 0.78 0.63 0.75 0.90 0.61 0.55 0.35 0.81 0.65 0.64 0.57
+
+Mid-size models 7B-13B
+Molmo-D
+7B
+0.73 0.58 0.70 0.79 0.52 0.70 0.76 0.61 0.51
+-
+0.68 0.51 0.45 0.51
+Molmo-O
+7B
+0.70 0.59 0.59 0.77 0.50 0.66 0.77 0.60 0.46
+-
+0.38 0.67 0.56 0.39
+MM1.5*
+7B
+0.88 0.78 0.76 0.72 0.59
+-
+-
+-
+-
+0.42
+-
+0.62
+-
+-
+Cambrian-1*
+8B
+0.78 0.73 0.72 0.73
+-
+0.62
+-
+-
+-
+0.43
+-
+0.64
+-
+-
+Llama3.2*
+11B 0.88 0.83
+-
+0.91
+-
+-
+-
+-
+-
+0.51 0.75
+-
+-
+-
+Pixtral
+12B 0.91 0.83 0.76 0.80 0.56 0.66 0.90 0.75 0.61 0.50 0.79 0.63 0.58 0.59
+Cambrian-1*
+13B 0.77 0.74 0.73 0.74
+-
+0.62
+-
+-
+-
+0.40
+-
+0.63
+-
+-
+
+Larger models
+MM1.5*
+30B 0.91 0.83 0.79 0.77 0.67
+-
+-
+-
+-
+0.47
+-
+0.69
+-
+-
+Cambrian-1*
+34B 0.76 0.76 0.77 0.80
+-
+0.60
+-
+-
+-
+0.50
+-
+0.68
+-
+-
+NNLM-D*
+72B 0.92 0.86 0.82 0.94
+-
+-
+-
+-
+-
+0.60 0.85 0.70
+-
+-
+Llava-OV*
+72B 0.93 0.84
+-
+0.86 0.79
+-
+-
+-
+-
+0.57
+-
+0.72
+-
+-
+Llama3.2*
+90B 0.90 0.85
+-
+0.92
+-
+-
+-
+-
+-
+0.60 0.78
+-
+-
+-
+Claude-Sonnet*
+-
+0.95 0.91
+-
+0.95
+-
+-
+-
+0.75 0.83 0.68
+-
+-
+-
+-
+Gemini-1.5-Pro*
+-
+0.93 0.87 0.79 0.94 0.81
+-
+-
+-
+-
+0.62 0.80 0.70
+-
+-
+GPT-4V*
+-
+0.88 0.78
+-
+0.76
+-
+-
+-
+-
+-
+0.53
+-
+0.56
+-
+-
+GPT-4o*
+-
+0.93 0.85
+-
+0.84
+-
+-
+-
+0.60 0.54 0.69
+-
+0.75
+-
+-
+
+Table 1: Performance comparison across different models and benchmarks. For models marked with * we
+report only the available numbers from the original publication or the published benchmark and did not run
+the evaluations in the controlled lmms-eval setup.
+
+The results are presented in Table 1. Granite Vision demonstrates impressive performance across document-
+related and natural image benchmarks. In the small model category (1B-4B), it achieves leading scores on
+most key benchmarks, e.g. DocVQA (88%) and ChartQA (86%), outperforming other models. Particularly
+notable is that its performance on these tasks is competitive with much larger proprietary models, such as
+Gemini-1.5-Pro, GPT-4o, and GPT-4V, which have significantly more parameters. The results highlight that
+Granite-Vision’s data curation and training approach are particularly effective for document understanding
+tasks, achieving strong results despite its compact size.
+
+5.2
+ADDITIONAL EVALUATIONS
+
+Converting tables and charts to a structured format are important tasks for enterprise use cases. We added to
+lmms-eval the benchmarks described below and compared our model with other open models.
+
+Table extraction
+To evaluate the ability of models to turn a table image into a structured format, we used
+the test sets of PubTables (Smock et al., 2022) and FinTabNet (Chen et al., 2021). We instruct the model
+to extract the data in HTML table format and evaluate performance according to Tree-Edit-Distance-based
+Similarity (TEDS) from Zhong et al. (2020). It measures both the table structure similarity and each cell
+string edit distance.
+
+Table Extraction
+Chart Extraction
+Model
+Size
+PubTables
+FinTabNet
+MD
+HTML
+
+Small models 1B-4B
+Molmo-E
+1B
+0.28
+0.28
+0.57
+0.54
+SmolVLM
+2.2B
+0.32
+0.18
+0.12
+0.02
+Phi3.5v
+4B
+0.58
+0.28
+0.77
+0.40
+Granite Vision
+3B
+0.70
+0.54
+0.93
+0.95
+
+Larger models 7B-12B
+Molmo-D
+7B
+0.34
+0.25
+0.62
+0.62
+Molmo-O
+7B
+0.25
+0.15
+0.60
+0.60
+Pixtral
+12B
+0.73
+0.48
+0.93
+0.92
+
+Table 2: Table and chart extraction performance comparison across different models. Tables from PubTables
+and FinTabNet are extracted into HTML format and evaluated with the TEDS metric. Charts, from the
+ChartQA dataset, are extracted to either MD or HTML based on the prompt and evaluated with the mTEDS
+metric.
+
+Chart extraction
+Similar to table extraction evaluation, we also evaluate the ability of models to turn a
+chart image into a structured format. We used the test set of ChartQA (Masry et al., 2022) for this evaluation.
+We instruct the model to extract the data in Markdown or HTML format, the prompt includes an example of
+the expected format. Model performance is evaluated according to a Modified TEDS (mTEDS) metric. The
+original TEDS measures string edit distance for each cell, which is not optimal for numerical values where
+the distance should take into account the scale of chart values. We define mTEDS as follows, let T be a table
+with numeric values V = {vij} excluding headers. Define the normalized function:
+
+N(vij) = round
+
+20 ·
+vij
+maxi,j(abs(Vgt))
+
+
+,
+
+where Vgt represents the ground truth table values. The metric applies standard TEDS computation on the
+normalized values, comparing structural and content similarity between predicted and ground truth tables.
+This normalization accounts for scale-dependent accuracy in chart data extraction while maintaining TEDS’s
+ability to evaluate structural correctness.
+
+The results are reported in Table 2. Granite Vision significantly outperforms other models in its size cate-
+gory. It shows an advantage of +12%-+39% over the second-best models in tables and charts extraction
+to markdown and HTML. Notably, Granite Vision’s performance is comparable to the 4 times larger Pixtral
+model.
+
+5.3
+SAFETY BENCHMARKS
+
+To evaluate the safety capabilities of our Granite Vision model, we employ two different setups. First, we
+utilize the standard VLM-as-a-Judge setup as described in (Li et al., 2024f). Second, we also introduce a new
+safety classification setup, where we formalize a range of safety tasks as classification problems. This new
+setup is aimed at building safer and more reliable AI models by leveraging strong classification capabilities.
+While existing generative MLLMs typically do not excel at classification tasks (Mitra et al., 2024; Huang
+et al., 2024), we believe that enhancing their discriminative capabilities is essential for enabling diverse
+applications and more sophisticated reasoning.
+
+For the new safety classification setup, we also apply our Safety Vectors (SVs) approach (See Section 4.3) to
+our Granite Vision model. Our method is compared with other strong baselines on three public benchmarks:
+VLGuard (Zong et al., 2024), RTVLM (Li et al., 2024f), and LMM-Halucination (Chen et al., 2024a).
+
+Benchmarks.
+(i) VLGuard (Zong et al., 2024) focuses on vision-language safety and identifies four main
+categories of harmful content: Privacy, Risky Behavior, Deception and Hateful Speech. The dataset consists
+of images from diverse sources and the instructions are generated by GPT-4V (OpenAI, 2023a) with each
+safe image having both safe and unsafe instructions, and each unsafe image having a single instruction. (ii)
+RTVLM (Li et al., 2024f) is the first red teaming dataset to benchmark current MLLMs in terms of several
+different aspects: faithfulness, privacy, safety, and fairness. In this dataset, 5,200 samples have been annotated
+
+Model
+VLGuard
+RTVLM
+
+Unsafe
+Safe-Unsafe
+Mislead
+Politics
+Racial
+Jailbreak
+
+LLaVA-v1.5-7B
+5.3
+7.4
+8.6
+7.3
+7.2
+4.4
+Phi3.5-vision
+8.7
+9.3
+8.5
+8.2
+8.2
+9.3
+SmolVLM
+4.8
+7.7
+5.6
+6.0
+4.6
+7.3
+Granite Vision (Ours)
+6.5
+8.6
+7.7
+7.2
+7.7
+4.5
+
+Table 3: Results for the VLM-as-a-Judge setup. We evaluate on the VLGuard and RTVLM benchmarks. The
+score has a range between [0,10], and higher is better.
+
+by humans, or generated by GPT-4 accompanied by examples provided by humans. To ensure that the test
+data is unique and has not been seen by any of the evaluated VLMs, the authors produced new question-image
+pairs from publicly available images or generated from diffusion. (iii) LMM-Halucination (Chen et al.,
+2024a) is a dataset that evaluates the hallucinations of the models when answering multi-modal tasks. We
+use the default evaluation method provided in the dataset to identify whether this scenario is “hallucinating”
+or “not hallucinating”, and compute the accuracy rate on correctly identified scenarios.
+
+Baselines.
+We compared Granite Vision’s safety performance against the following MLLMs: (i) Phi-3.5-
+vision (Abdin et al., 2024b) is part of a family of small language models, which are designed for high capa-
+bility and cost-effectiveness, performing well on tasks like language understanding, reasoning, coding, and
+math; (ii) LLaVA-v1.5-7B (Liu et al., 2023c) is a state-of-the-art MLLM that maps CLIP visual features to the
+LLM’s embedding space and uses instruction tuning on the diverse LLaVA-Instruct-158k dataset for visual
+alignment. This dataset combines images with various response types, including conversational, descriptive,
+and reasoning, to enhance alignment; (iii) SmolVLM (Hugging-Face, 2024) is a new family of 2B small
+vision-language models capable of answering questions about images, describing visual content, creating
+stories based on multiple images, or functioning solely as a language model. Its lightweight design makes it
+ideal for on-device applications while ensuring strong performance.
+
+We next discuss the two distinct safety evaluation setups.
+
+VLM-as-a-Judge Setup.
+Here, we perform a standard evaluation using the approach of VLM-as-a-Judge
+in the same manner as described in the RTVLM evaluation procedure (see Table 8 in Li et al. (2024f)).
+Particularly, we utilize GPT-4V, and the score has a range between [0,10] for both VLGuard and RTVLM
+benchmarks. In the evaluation of VLGuard, we distinguish between two categories of image-instruction pairs
+as provided by the original categories: “Unsafe”, where both the images and instructions are unsafe, and
+“Safe-Unsafe”, where the images are unsafe but the instructions are safe. For RTVLM, we evaluate using
+the same setup as in (Li et al., 2024f), focusing on four safety categories: ‘Mislead’, ‘Politic’, ‘Racial’, and
+‘Jailbreak’. Last, we compare with other baselines, like Phi-3.5-vision (Abdin et al., 2024b), LLaVA-v1.5-
+7B (Liu et al., 2023c), SmolVLM (Hugging-Face, 2024).
+
+Results are shown in Table 3. As can be seen, Granite Vision performs comparably to other baselines on
+the standard safety evaluation setup. Readers must note that Granite Vision is the most lightweight model
+compared to baselines. We believe that there’s definitely scope for further improvement and we discuss this
+in our future work. In the next section, we describe our new efforts to formalize a wide range of safety tasks
+as classification problems.
+
+Safety Classification Setup.
+In this setup, we reformat the tasks in VLGuard to be a classification task and
+we report the raw classification accuracy of our method. Specifically, we prompt the model with labels, and
+ask it to select the right answer, comparing it to the ground truth. The motivation behind reformulating safety
+tasks as classification problems is that it encourages the development of MLLMs with robust discriminative
+abilities, crucial for safety-critical applications, and provides a clear, quantifiable metric for assessing safety
+performance. Last, we also apply our Safety Vectors (SVs) approach (See Section 4.3) to our Granite Vision
+model.
+
+For VLGuard, the set of class labels is given by C = {“safe”, “unsafe”}. We use the metric VLGuard
+proposed Attack Success Rate (ASR) for evaluating unsafe inputs and Helpfulness for evaluating safe inputs.
+Note that accuracy is the complement of the ASR and can be calculated as 1 - ASR. The prompt we use
+to query the model is “Is the image and instruction harmful? Answer the question with Yes or No.” In our
+
+implementation, we extract the SVs from the train set and evaluate on the test set. In this experiment, we
+focus solely on the “Unsafe” category, as it is the most relevant aspect for safety evaluation. For MHalu, the
+set of class labels for this task is given by C = {“hallucinating”, “not hallucinating”}, and the prompt we use
+to query the model is “Is the Claim hallucinating? Answer the question with Yes or No.”
+
+Results are shown in Table 4. It can be observed from the table
+that Granite Vision performs relatively well in terms of safety
+when the task is reformulated as a classification task. This is
+somewhat surprising, as MLLMs typically struggle with dis-
+criminative vision-and-language tasks (Mitra et al., 2024), and
+safety classification poses a significant challenge. Addition-
+ally, our approach for finding SVs seems to be more effective,
+probably due to the fact that this approach can utilize multimodal features for downstream discriminative
+tasks. Overall, we believe that framing safety evaluation as a classification task may offer a valuable frame-
+work for improving the safety of AI models, and we anticipate that future research on this aspect will provide
+further advancements in safety research.
+
+MHalu VLGuard
+
+Granite Vision
+78.0
+86.0
++Safety Vectors
+80.7
+96.2
+
+Table 4: Safety classification Results.
+
+Summary and Future Directions.
+Ensuring the safety of generative MLLMs is absolutely crucial in order
+to prevent harm, build trust, address ethical concerns, and enable their responsible deployment in real-world
+applications. Our results demonstrate that Granite Vision performs almost at par with baselines (despite
+being the lightest MLLM in the comparison pool) for VLM-as-a-Judge task. Notably, the addition of Safety
+Vectors to Granite Vision leads to a significant improvement in safety classification performance. We do
+acknowledge that further work needs to be done to improve high-level reasoning and correct occasional
+incorrect outputs to improve reliability in sensitive tasks, which require nuanced classification. To address
+these, we will incorporate more reasoning-focused and structure-related data into the training process in the
+future.
+
+In addition, we showed in this paper that finding safety vectors (SVs) in Granite Vision’s attention heads led
+to significant improvements when safety tasks were reformulated as classification problems. Current reliance
+for SVs is on few-shot samples which are informative but may have limited scope in terms of capturing the
+range of possible safety issues that can be encountered. To further improve the model’s ability to identify and
+address all safety concerns, we plan to investigate scaling up SVs using more training data in future research.
+
+6
+CONCLUSION
+
+In this paper, we presented Granite Vision, a compact large language model with integrated vision capabili-
+ties, tailored to meet the unique demands of enterprise use cases, in particular visual document understanding.
+Our model achieves strong results in standard benchmarks and is publicly available under a permissive license
+for both research and commercial use. Our future work includes enabling multi-page document process-
+ing through context compression, learning with structured inputs and outputs, multi-hop reasoning, steering
+model activations for enhanced reasoning capabilities, and exploring techniques to preserve Granite Vision
+language-only capabilities.
+
+REFERENCES
+
+Marah Abdin, Jyoti Aneja, Hany Awadalla, Ahmed Awadallah, Ammar Ahmad Awan, Nguyen Bach, Amit
+Bahree, Arash Bakhtiari, Jianmin Bao, Harkirat Behl, Alon Benhaim, Misha Bilenko, Johan Bjorck,
+S´ebastien Bubeck, Martin Cai, Qin Cai, Vishrav Chaudhary, Dong Chen, Dongdong Chen, Weizhu Chen,
+Yen-Chun Chen, Yi-Ling Chen, Hao Cheng, Parul Chopra, Xiyang Dai, Matthew Dixon, Ronen Eldan,
+Victor Fragoso, Jianfeng Gao, Mei Gao, Min Gao, Amit Garg, Allie Del Giorno, Abhishek Goswami,
+Suriya Gunasekar, Emman Haider, Junheng Hao, Russell J. Hewett, Wenxiang Hu, Jamie Huynh, Dan Iter,
+Sam Ade Jacobs, Mojan Javaheripi, Xin Jin, Nikos Karampatziakis, Piero Kauffmann, Mahoud Khademi,
+Dongwoo Kim, Young Jin Kim, Lev Kurilenko, James R. Lee, Yin Tat Lee, Yuanzhi Li, Yunsheng Li, Chen
+Liang, Lars Liden, Xihui Lin, Zeqi Lin, Ce Liu, Liyuan Liu, Mengchen Liu, Weishung Liu, Xiaodong Liu,
+Chong Luo, Piyush Madan, Ali Mahmoudzadeh, David Majercak, Matt Mazzola, Caio C´esar Teodoro
+Mendes, Arindam Mitra, Hardik Modi, Anh Nguyen, Brandon Norick, Barun Patra, Daniel Perez-Becker,
+Thomas Portet, Reid Pryzant, Heyang Qin, Marko Radmilac, Liliang Ren, Gustavo de Rosa, Corby Ros-
+set, Sambudha Roy, Olatunji Ruwase, Olli Saarikivi, Amin Saied, Adil Salim, Michael Santacroce, Shital
+Shah, Ning Shang, Hiteshi Sharma, Yelong Shen, Swadheen Shukla, Xia Song, Masahiro Tanaka, Andrea
+
+Tupini, Praneetha Vaddamanu, Chunyu Wang, Guanhua Wang, Lijuan Wang, Shuohang Wang, Xin Wang,
+Yu Wang, Rachel Ward, Wen Wen, Philipp Witte, Haiping Wu, Xiaoxia Wu, Michael Wyatt, Bin Xiao, Can
+Xu, Jiahang Xu, Weijian Xu, Jilong Xue, Sonali Yadav, Fan Yang, Jianwei Yang, Yifan Yang, Ziyi Yang,
+Donghan Yu, Lu Yuan, Chenruidong Zhang, Cyril Zhang, Jianwen Zhang, Li Lyna Zhang, Yi Zhang, Yue
+Zhang, Yunan Zhang, and Xiren Zhou. Phi-3 technical report: A highly capable language model locally
+on your phone, 2024a. URL
+
+Marah Abdin, Jyoti Aneja, Hany Awadalla, Ahmed Awadallah, Ammar Ahmad Awan, Nguyen Bach, Amit
+Bahree, Arash Bakhtiari, Jianmin Bao, Harkirat Behl, et al. Phi-3 technical report: A highly capable
+language model locally on your phone. arXiv preprint arXiv:2404.14219, 2024b.
+
+Pravesh Agrawal, Szymon Antoniak, Emma Bou Hanna, Baptiste Bout, Devendra Chaplot, Jessica Chud-
+novsky, Diogo Costa, Baudouin De Monicault, Saurabh Garg, Theophile Gervet, Soham Ghosh, Am´elie
+H´eliou, Paul Jacob, Albert Q. Jiang, Kartik Khandelwal, Timoth´ee Lacroix, Guillaume Lample, Diego Las
+Casas, Thibaut Lavril, Teven Le Scao, Andy Lo, William Marshall, Louis Martin, Arthur Mensch, Pa-
+vankumar Muddireddy, Valera Nemychnikova, Marie Pellat, Patrick Von Platen, Nikhil Raghuraman, Bap-
+tiste Rozi`ere, Alexandre Sablayrolles, Lucile Saulnier, Romain Sauvestre, Wendy Shang, Roman Soletskyi,
+Lawrence Stewart, Pierre Stock, Joachim Studnia, Sandeep Subramanian, Sagar Vaze, Thomas Wang, and
+Sophia Yang. Pixtral 12b, 2024. URL
+
+Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc,
+Arthur Mensch, Katie Millican, Malcolm Reynolds, Roman Ring, Eliza Rutherford, Serkan Cabi, Tengda
+Han, Zhitao Gong, Sina Samangooei, Marianne Monteiro, Jacob Menick, Sebastian Borgeaud, Andrew
+Brock, Aida Nematzadeh, Sahand Sharifzadeh, Mikolaj Binkowski, Ricardo Barreira, Oriol Vinyals, An-
+drew Zisserman, and Karen Simonyan. Flamingo: a visual language model for few-shot learning, 2022.
+URL
+
+Anthropic.
+Claude
+3.5
+sonnet,
+2024.
+URL
+
+claude-3-5-sonnet. Accessed: 2025-01-15.
+
+Srikar Appalaraju, Bhavan Jasani, Bhargava Urala Kota, Yusheng Xie, and R. Manmatha.
+Docformer:
+End-to-end transformer for document understanding, 2021. URL
+11539.
+
+Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang Lin, Chang Zhou, and
+Jingren Zhou. Qwen-vl: A versatile vision-language model for understanding, localization, text reading,
+and beyond, 2023. URL
+
+Jonas Belouadi, Anne Lauscher, and Steffen Eger. Automatikz: Text-guided synthesis of scientific vector
+graphics with tikz, 2023.
+
+Ali Furkan Biten, Ruben Tito, Andres Mafla, Lluis Gomez, Marc¸al Rusinol, Ernest Valveny, CV Jawahar,
+and Dimosthenis Karatzas. Scene text visual question answering, 2019.
+
+Łukasz Borchmann, Michał Pietruszka, Tomasz Stanislawek, Dawid Jurkiewicz, Michał Turski, Karolina
+Szyndler, and Filip Grali´nski. Due: End-to-end document understanding benchmark, 2021.
+
+Xiang Chen, Chenxi Wang, Yida Xue, Ningyu Zhang, Xiaoyan Yang, Qiang Li, Yue Shen, Jinjie Gu, and
+Huajun Chen. Unified hallucination detection for multimodal large language models, 2024a.
+
+Zhe Chen, Jiannan Wu, Wenhai Wang, Weijie Su, Guo Chen, Sen Xing, Muyan Zhong, Qinglong Zhang,
+Xizhou Zhu, Lewei Lu, et al. Internvl: Scaling up vision foundation models and aligning for generic
+visual-linguistic tasks.
+In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pp. 24185–24198, 2024b.
+
+Zhiyu Chen, Wenhu Chen, Charese Smiley, Sameena Shah, Iana Borova, Dylan Langdon, Reema Moussa,
+Matt Beane, Ting-Hao Huang, Bryan Routledge, et al. Finqa: A dataset of numerical reasoning over
+financial data, 2021.
+
+Zhoujun Cheng, Haoyu Dong, Zhiruo Wang, Ran Jia, Jiaqi Guo, Yan Gao, Shi Han, Jian-Guang Lou, and
+Dongmei Zhang. Hitab: A hierarchical table dataset for question answering and natural language genera-
+tion, 2022.
+
+Wenliang Dai, Nayeon Lee, Boxin Wang, Zhuolin Yang, Zihan Liu, Jon Barker, Tuomas Rintamaki, Moham-
+mad Shoeybi, Bryan Catanzaro, and Wei Ping. Nvlm: Open frontier-class multimodal llms, 2024. URL
+
+Matt Deitke, Christopher Clark, Sangho Lee, Rohun Tripathi, Yue Yang, Jae Sung Park, Mohammadreza
+Salehi, Niklas Muennighoff, Kyle Lo, Luca Soldaini, Jiasen Lu, Taira Anderson, Erin Bransom, Kiana
+Ehsani, Huong Ngo, Yen-Sung Chen, Ajay Patel, Mark Yatskar, Chris Callison-Burch, Andrew Head,
+Rose Hendrix, Favyen Bastani, Eli VanderBilt, Nathan Lambert, Yvonne Chou, Arnavi Chheda, Jenna
+Sparks, Sam Skjonsberg, Michael Schmitz, Aaron Sarnat, Byron Bischoff, Pete Walsh, Chris Newell,
+Piper Wolters, Tanmay Gupta, Kuo-Hao Zeng, Jon Borchardt, Dirk Groeneveld, Jen Dumas, Crystal Nam,
+Sophie Lebrecht, Caitlin Wittlif, Carissa Schoenick, Oscar Michel, Ranjay Krishna, Luca Weihs, Noah A.
+Smith, Hannaneh Hajishirzi, Ross B. Girshick, Ali Farhadi, and Aniruddha Kembhavi. Molmo and pixmo:
+Open weights and open data for state-of-the-art multimodal models. CoRR, abs/2409.17146, 2024a. URL
+
+Matt Deitke, Christopher Clark, Sangho Lee, Rohun Tripathi, Yue Yang, Jae Sung Park, Mohammadreza
+Salehi, Niklas Muennighoff, Kyle Lo, Luca Soldaini, et al. Molmo and pixmo: Open weights and open
+data for state-of-the-art multimodal models, 2024b.
+
+Xiang Deng, Huan Sun, Alyssa Lees, You Wu, and Cong Yu. Turl: Table understanding through representa-
+tion learning, 2022.
+
+Hao Feng, Qi Liu, Hao Liu, Jingqun Tang, Wengang Zhou, Houqiang Li, and Can Huang. Docpedia: Un-
+leashing the power of large multimodal model in the frequency domain for versatile document understand-
+ing, 2024. URL
+
+Wikimedia Foundation. Wikimedia downloads. URL
+
+Yash Goyal, Tejas Khot, Douglas Summers-Stay, Dhruv Batra, and Devi Parikh. Making the v in vqa matter:
+Elevating the role of image understanding in visual question answering, 2017.
+
+IBM Granite Team. Granite 3.0 language models, 2024.
+
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle,
+Aiesha Letman, Akhil Mathur, Alan Schelten, and ... The llama 3 herd of models, 2024. URL
+//arxiv.org/abs/2407.21783.
+
+Danna Gurari, Qing Li, Abigale J Stangl, Anhong Guo, Chi Lin, Kristen Grauman, Jiebo Luo, and Jeffrey P
+Bigham. Vizwiz grand challenge: Answering visual questions from blind people, 2018.
+
+Adam W Harley, Alex Ufkes, and Konstantinos G Derpanis.
+Evaluation of deep convolutional nets for
+document image classification and retrieval, 2015.
+
+Yu-Chung Hsiao, Fedir Zubach, Gilles Baechler, Victor Carbune, Jason Lin, Maria Wang, Srinivas Sunkara,
+Yun Zhu, and Jindong Chen. Screenqa: Large-scale question-answer pairs over mobile app screenshots,
+2022.
+
+Anwen Hu, Haiyang Xu, Jiabo Ye, Ming Yan, Liang Zhang, Bo Zhang, Chen Li, Ji Zhang, Qin Jin, Fei Huang,
+and Jingren Zhou. mplug-docowl 1.5: Unified structure learning for ocr-free document understanding,
+2024a. URL
+
+Anwen Hu, Haiyang Xu, Jiabo Ye, Ming Yan, Liang Zhang, Bo Zhang, Chen Li, Ji Zhang, Qin Jin, Fei
+Huang, et al. mplug-docowl 1.5: Unified structure learning for ocr-free document understanding, 2024b.
+
+Brandon Huang, Chancharik Mitra, Assaf Arbelle, Leonid Karlinsky, Trevor Darrell, and Roei Herzig. Mul-
+timodal task vectors enable many-shot multimodal in-context learning, 2024.
+
+Yupan Huang, Tengchao Lv, Lei Cui, Yutong Lu, and Furu Wei. Layoutlmv3: Pre-training for document ai
+with unified text and image masking, 2022. URL
+
+Hugging-Face.
+Smolvlm,
+2024.
+URL
+
+SmolVLM-Instruct.
+
+HuggingFace.
+Docmatix:
+A new approach to document understanding, 2025.
+URL
+huggingface.co/blog/docmatix. Accessed: 2025-01-14.
+
+Kushal Kafle, Brian Price, Scott Cohen, and Christopher Kanan. Dvqa: Understanding data visualizations
+via question answering, 2018.
+
+Samira Ebrahimi Kahou, Vincent Michalski, Adam Atkinson, ´Akos K´ad´ar, Adam Trischler, and Yoshua
+Bengio. Figureqa: An annotated figure dataset for visual reasoning, 2017.
+
+Raghav Kapoor, Yash Parag Butala, Melisa Russak, Jing Yu Koh, Kiran Kamble, Waseem AlShikh, and
+Ruslan Salakhutdinov. Omniact: A dataset and benchmark for enabling multimodal generalist autonomous
+agents for desktop and web. In European Conference on Computer Vision, pp. 161–178. Springer, 2024.
+
+Aniruddha Kembhavi, Mike Salvato, Eric Kolve, Minjoon Seo, Hannaneh Hajishirzi, and Ali Farhadi. A
+diagram is worth a dozen images, 2016.
+
+Aniruddha Kembhavi, Minjoon Seo, Dustin Schwenk, Jonghyun Choi, Ali Farhadi, and Hannaneh Hajishirzi.
+Are you smarter than a sixth grader? textbook question answering for multimodal machine comprehension,
+2017.
+
+Geewook Kim, Teakgyu Hong, Moonbin Yim, JeongYeon Nam, Jinyoung Park, Jinyeong Yim, Wonseok
+Hwang, Sangdoo Yun, Dongyoon Han, and Seunghyun Park. Ocr-free document understanding trans-
+former, 2022a.
+
+Geewook Kim, Teakgyu Hong, Moonbin Yim, Jeongyeon Nam, Jinyoung Park, Jinyeong Yim, Wonseok
+Hwang, Sangdoo Yun, Dongyoon Han, and Seunghyun Park. Ocr-free document understanding trans-
+former, 2022b. URL
+
+M Koster, G Illyes, H Zeller, and L Sassman. Rfc 9309 robots exclusion protocol, 2022.
+
+Hugo Laurenc¸on, L´eo Tronchon, and Victor Sanh. Unlocking the conversion of web screenshots into html
+code with the websight dataset, 2024.
+
+Hugo Laurenc¸on, Andr´es Marafioti, Victor Sanh, and L´eo Tronchon. Building and better understanding
+vision-language models: insights and future directions., 2024a.
+
+Hugo Laurenc¸on, L´eo Tronchon, Matthieu Cord, and Victor Sanh. What matters when building vision-
+language models?, 2024b.
+
+Bo Li, Peiyuan Zhang, Kaichen Zhang, Fanyi Pu, Xinrun Du, Yuhao Dong, Haotian Liu, Yuanhan Zhang,
+Ge Zhang, Chunyuan Li, and Ziwei Liu. Lmms-eval: Accelerating the development of large multimodal
+models, March 2024a. URL
+
+Bo Li, Yuanhan Zhang, Dong Guo, Renrui Zhang, Feng Li, Hao Zhang, Kaichen Zhang, Yanwei Li, Ziwei
+Liu, and Chunyuan Li. Llava-onevision: Easy visual task transfer, 2024b.
+
+Bo Li, Yuanhan Zhang, Dong Guo, Renrui Zhang, Feng Li, Hao Zhang, Kaichen Zhang, Peiyuan Zhang,
+Yanwei Li, Ziwei Liu, and Chunyuan Li. Llava-onevision: Easy visual task transfer, 2024c. URL
+//arxiv.org/abs/2408.03326.
+
+Bo Li, Yuanhan Zhang, Dong Guo, Renrui Zhang, Feng Li, Hao Zhang, Kaichen Zhang, Peiyuan Zhang,
+Yanwei Li, Ziwei Liu, et al. Llava-onevision: Easy visual task transfer, 2024d.
+
+Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. BLIP-2: bootstrapping language-image pre-training
+with frozen image encoders and large language models, 2023.
+
+Lei Li, Yuqi Wang, Runxin Xu, Peiyi Wang, Xiachong Feng, Lingpeng Kong, and Qi Liu. Multimodal arxiv:
+A dataset for improving scientific comprehension of large vision-language models, 2024e.
+
+Mukai Li, Lei Li, Yuwei Yin, Masood Ahmed, Zhenguang Liu, and Qi Liu. Red teaming visual language
+models, 2024f. URL
+
+Wenhui Liao, Jiapeng Wang, Hongliang Li, Chengyu Wang, Jun Huang, and Lianwen Jin. Doclayllm: An ef-
+ficient and effective multi-modal extension of large language models for text-rich document understanding,
+2024. URL
+
+Chaohu Liu, Kun Yin, Haoyu Cao, Xinghua Jiang, Xin Li, Yinsong Liu, Deqiang Jiang, Xing Sun, and Linli
+Xu. Hrvda: High-resolution visual document assistant, 2024a. URL
+2404.06918.
+
+Fangyu Liu, Julian Martin Eisenschlos, Francesco Piccinno, Syrine Krichene, Chenxi Pang, Kenton Lee,
+Mandar Joshi, Wenhu Chen, Nigel Collier, and Yasemin Altun. Deplot: One-shot visual language reason-
+ing by plot-to-table translation, 2023a. URL
+
+Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee. Improved baselines with visual instruction tuning,
+2023b.
+
+Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. In NeurIPS, 2023c.
+
+Yuliang Liu, Zhang Li, Mingxin Huang, Biao Yang, Wenwen Yu, Chunyuan Li, Xu-Cheng Yin, Cheng-Lin
+Liu, Lianwen Jin, and Xiang Bai. Ocrbench: on the hidden mystery of ocr in large multimodal models,
+2024b.
+
+Nikolaos Livathinos, Christoph Auer, Maksym Lysak, Ahmed Nassar, Michele Dolfi, Panos Vagenas,
+Cesar Berrospi Ramis, Matteo Omenetti, Kasper Dinkla, Yusik Kim, Shubham Gupta, Rafael Teix-
+eira de Lima, Valery Weber, Lucas Morin, Ingmar Meijer, Viktor Kuropiatnyk, and Peter W. J. Staar.
+Docling: An efficient open-source toolkit for ai-driven document conversion, 2025.
+URL
+//arxiv.org/abs/2501.17887.
+
+Pan Lu, Liang Qiu, Kai-Wei Chang, Ying Nian Wu, Song-Chun Zhu, Tanmay Rajpurohit, Peter Clark, and
+Ashwin Kalyan. Dynamic prompt learning via policy gradient for semi-structured mathematical reasoning,
+2022.
+
+Maksym Lysak, Ahmed Nassar, Nikolaos Livathinos, Christoph Auer, and Peter Staar.
+Optimized table
+tokenization for table structure recognition. In Document Analysis and Recognition - ICDAR 2023: 17th
+International Conference, San Jos´e, CA, USA, August 21–26, 2023, Proceedings, Part II, pp. 37–50, Berlin,
+Heidelberg, 2023. Springer-Verlag. ISBN 978-3-031-41678-1. doi: 10.1007/978-3-031-41679-8 3. URL
+
+Kenneth Marino, Mohammad Rastegari, Ali Farhadi, and Roozbeh Mottaghi. Ok-vqa: A visual question
+answering benchmark requiring external knowledge, 2019.
+
+U-V Marti and Horst Bunke. The iam-database: an english sentence database for offline handwriting recog-
+nition, 2002.
+
+Ahmed Masry, Do Xuan Long, Jia Qing Tan, Shafiq Joty, and Enamul Hoque. Chartqa: A benchmark for
+question answering about charts with visual and logical reasoning, 2022.
+
+Ahmed Masry, Parsa Kavehzadeh, Xuan Long Do, Enamul Hoque, and Shafiq Joty. Unichart: A universal
+vision-language pretrained model for chart comprehension and reasoning, 2023.
+
+Minesh Mathew, Dimosthenis Karatzas, and CV Jawahar. Docvqa: A dataset for vqa on document images.
+In Proceedings of the IEEE/CVF winter conference on applications of computer vision, pp. 2200–2209,
+2021.
+
+Minesh Mathew, Viraj Bagal, Rub`en Tito, Dimosthenis Karatzas, Ernest Valveny, and CV Jawahar. Info-
+graphicvqa, 2022.
+
+Nitesh Methani, Pritha Ganguly, Mitesh M Khapra, and Pratyush Kumar. Plotqa: Reasoning over scientific
+plots, 2020.
+
+Anand Mishra, Karteek Alahari, and CV Jawahar. Scene text recognition using higher order language priors,
+2012.
+
+Anand Mishra, Shashank Shekhar, Ajeet Kumar Singh, and Anirban Chakraborty. Ocr-vqa: Visual question
+answering by reading text in images, 2019.
+
+Chancharik Mitra, Brandon Huang, Tianning Chai, Zhiqiu Lin, Assaf Arbelle, Rogerio Feris, Leonid Kar-
+linsky, Trevor Darrell, Deva Ramanan, and Roei Herzig. Sparse attention vectors: Generative multimodal
+model features are discriminative vision-language classifiers, 2024.
+
+Oshri Naparstek, Ophir Azulai, Inbar Shapira, Elad Amrani, Yevgeny Yaroker, Yevgeny Burshtein, Roi Pony,
+Nadav Rubinstein, Foad Abo Dahood, Orit Prince, et al. Kvp10k: A comprehensive dataset for key-value
+pair extraction in business documents. In International Conference on Document Analysis and Recognition,
+pp. 97–116. Springer, 2024.
+
+Ahmed Nassar, Nikolaos Livathinos, Maksym Lysak, and Peter Staar. Tableformer: Table structure under-
+standing with transformers. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pp. 4614–4623, June 2022.
+
+Jason Obeid and Enamul Hoque. Chart-to-text: Generating natural language descriptions for charts by adapt-
+ing the transformer model, 2020.
+
+OpenAI. Gpt-4 technical report. ArXiv, abs/2303.08774, 2023a.
+
+OpenAI.
+Gpt-4v(ision) technical work and authors,
+2023b.
+URL
+contributions/gpt-4v/. Accessed: 2025-01-15.
+
+OpenAI. Hello gpt-4o, 2024. URL Accessed:
+2025-01-15.
+
+Birgit Pfitzmann, Christoph Auer, Michele Dolfi, Ahmed S. Nassar, and Peter Staar. Doclaynet: A large
+human-annotated dataset for document-layout segmentation. In Proceedings of the 28th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining, KDD ’22, pp. 3743–3751, New York, NY, USA,
+2022. Association for Computing Machinery. ISBN 9781450393850. doi: 10.1145/3534678.3539043.
+URL
+
+Juan Rodriguez, Xiangru Jian, Siba Smarak Panigrahi, Tianyu Zhang, Aarash Feizi, Abhay Puri, Akshay
+Kalkunte, Franc¸ois Savard, Ahmed Masry, Shravan Nayak, Rabiul Awal, Mahsa Massoud, Amirhossein
+Abaskohi, Zichao Li, Suyuchen Wang, Pierre-Andr´e No¨el, Mats Leon Richter, Saverio Vadacchino, Shub-
+bam Agarwal, Sanket Biswas, Sara Shanian, Ying Zhang, Noah Bolger, Kurt MacDonald, Simon Fauvel,
+Sathwik Tejaswi, Srinivas Sunkara, Joao Monteiro, Krishnamurthy DJ Dvijotham, Torsten Scholak, Nico-
+las Chapados, Sepideh Kharagani, Sean Hughes, M. ¨Ozsu, Siva Reddy, Marco Pedersoli, Yoshua Bengio,
+Christopher Pal, Issam Laradji, Spandanna Gella, Perouz Taslakian, David Vazquez, and Sai Rajeswar.
+Bigdocs: An open and permissively-licensed dataset for training multimodal models on document and
+code tasks, 2024. URL
+
+Eli Schwartz, Leshem Choshen, Joseph Shtok, Sivan Doveh, Leonid Karlinsky, and Assaf Arbelle. Numero-
+Logic: Number encoding for enhanced LLMs’ numerical reasoning. In Yaser Al-Onaizan, Mohit Bansal,
+and Yun-Nung Chen (eds.), Proceedings of the 2024 Conference on Empirical Methods in Natural Lan-
+guage Processing, pp. 206–212, Miami, Florida, USA, November 2024. Association for Computational
+Linguistics. doi: 10.18653/v1/2024.emnlp-main.12. URL
+emnlp-main.12/.
+
+Nimrod Shabtay, Felipe Maia Polo, Sivan Doveh, Wei Lin, M Jehanzeb Mirza, Leshem Chosen, Mikhail
+Yurochkin, Yuekai Sun, Assaf Arbelle, Leonid Karlinsky, et al. Livexiv–a multi-modal live benchmark
+based on arxiv papers content, 2024.
+
+Oleksii Sidorov, Ronghang Hu, Marcus Rohrbach, and Amanpreet Singh. Textcaps: a dataset for image
+captioning with reading comprehension, 2020.
+
+Amanpreet Singh, Vivek Natarajan, Meet Shah, Yu Jiang, Xinlei Chen, Dhruv Batra, Devi Parikh, and Marcus
+Rohrbach. Towards vqa models that can read, 2019.
+
+Amanpreet Singh, Guan Pang, Mandy Toh, Jing Huang, Wojciech Galuba, and Tal Hassner. Textocr: Towards
+large-scale end-to-end reasoning for arbitrary-shaped scene text, 2021.
+
+Brandon Smock, Rohith Pesala, and Robin Abraham. Pubtables-1m: Towards comprehensive table extraction
+from unstructured documents.
+In Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pp. 4634–4642, 2022.
+
+Ryota Tanaka, Kyosuke Nishida, and Sen Yoshida. Visualmrc: Machine reading comprehension on document
+images, 2021.
+
+Benny J Tang, Angie Boggust, and Arvind Satyanarayan. Vistext: A benchmark for semantically rich chart
+captioning, 2023.
+
+Gemini Team, Petko Georgiev, Ving Ian Lei, Ryan Burnell, Libin Bai, Anmol Gulati, Garrett Tanzer, Damien
+Vincent, Zhufeng Pan, Shibo Wang, et al. Gemini 1.5: Unlocking multimodal understanding across mil-
+lions of tokens of context, 2024. URL
+
+Shengbang Tong, Ellis Brown, Penghao Wu, Sanghyun Woo, Manoj Middepogu, Sai Charitha Akula, Jihan
+Yang, Shusheng Yang, Adithya Iyer, Xichen Pan, Ziteng Wang, Rob Fergus, Yann LeCun, and Saining
+Xie. Cambrian-1: A fully open, vision-centric exploration of multimodal llms, 2024. URL
+//arxiv.org/abs/2406.16860.
+
+Michał Turski, Tomasz Stanisławek, Karol Kaczmarek, Paweł Dyda, and Filip Grali´nski. Ccpdf: Building a
+high quality corpus for visually rich documents from web crawl data, 2023a.
+
+Michał Turski, Tomasz Stanisławek, Karol Kaczmarek, Paweł Dyda, and Filip Grali´nski. Ccpdf: Building a
+high quality corpus for visually rich documents from web crawl data, 2023b.
+
+Shakti N. Wadekar, Abhishek Chaurasia, Aman Chadha, and Eugenio Culurciello. The evolution of multi-
+modal model architectures, 2024. URL
+
+Bryan Wang, Gang Li, Xin Zhou, Zhourong Chen, Tovi Grossman, and Yang Li. Screen2words: Automatic
+mobile ui summarization with multimodal learning, 2021.
+
+Dongsheng Wang, Natraj Raman, Mathieu Sibue, Zhiqiang Ma, Petr Babkin, Simerjot Kaur, Yulong Pei,
+Armineh Nourbakhsh, and Xiaomo Liu. Docllm: A layout-aware generative language model for multi-
+modal document understanding, 2023. URL
+
+Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin Chen, Xuejing Liu, Jialin
+Wang, Wenbin Ge, et al. Qwen2-vl: Enhancing vision-language model’s perception of the world at any
+resolution, 2024.
+
+Zhengyuan Yang, Yijuan Lu, Jianfeng Wang, Xi Yin, Dinei Florencio, Lijuan Wang, Cha Zhang, Lei Zhang,
+and Jiebo Luo. Tap: Text-aware pre-training for text-vqa and text-caption, 2021.
+
+Jiabo Ye, Anwen Hu, Haiyang Xu, Qinghao Ye, Ming Yan, Guohai Xu, Chenliang Li, Junfeng Tian, Qi Qian,
+Ji Zhang, Qin Jin, Liang He, Xin Alex Lin, and Fei Huang. Ureader: Universal ocr-free visually-situated
+language understanding with multimodal large language model, 2023. URL
+abs/2310.05126.
+
+Shukang Yin, Chaoyou Fu, Sirui Zhao, Ke Li, Xing Sun, Tong Xu, and Enhong Chen. A survey on multimodal
+large language models. National Science Review, 11(12), November 2024. ISSN 2053-714X. doi: 10.
+1093/nsr/nwae403. URL
+
+Ye Yuan, Xiao Liu, Wondimu Dikubab, Hui Liu, Zhilong Ji, Zhongqin Wu, and Xiang Bai. Syntax-aware
+network for handwritten mathematical expression recognition, 2022.
+
+Xiang Yue, Yuansheng Ni, Kai Zhang, Tianyu Zheng, Ruoqi Liu, Ge Zhang, Samuel Stevens, Dongfu Jiang,
+Weiming Ren, Yuxuan Sun, et al. Mmmu: A massive multi-discipline multimodal understanding and
+reasoning benchmark for expert agi, 2024.
+
+Christoph Zauner. Implementation and benchmarking of perceptual image hash functions, 2010.
+
+Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, and Lucas Beyer. Sigmoid loss for language image
+pre-training, 2023.
+
+Haotian Zhang, Mingfei Gao, Zhe Gan, Philipp Dufter, Nina Wenzel, Forrest Huang, Dhruti Shah, Xianzhi
+Du, Bowen Zhang, Yanghao Li, Sam Dodge, Keen You, Zhen Yang, Aleksei Timofeev, Mingze Xu, Hong-
+You Chen, Jean-Philippe Fauconnier, Zhengfeng Lai, Haoxuan You, Zirui Wang, Afshin Dehghan, Peter
+Grasch, and Yinfei Yang. Mm1.5: Methods, analysis & insights from multimodal llm fine-tuning, 2024a.
+URL
+
+Kaichen Zhang, Bo Li, Peiyuan Zhang, Fanyi Pu, Joshua Adrian Cahyono, Kairui Hu, Shuai Liu, Yuanhan
+Zhang, Jingkang Yang, Chunyuan Li, and Ziwei Liu. Lmms-eval: Reality check on the evaluation of large
+multimodal models, 2024b. URL
+
+Liang Zhang, Anwen Hu, Haiyang Xu, Ming Yan, Yichen Xu, Qin Jin, Ji Zhang, and Fei Huang. Tinychart:
+Efficient chart understanding with visual token merging and program-of-thoughts learning, 2024c.
+
+Yanzhe Zhang, Ruiyi Zhang, Jiuxiang Gu, Yufan Zhou, Nedim Lipka, Diyi Yang, and Tong Sun. Llavar:
+Enhanced visual instruction tuning for text-rich image understanding, 2023.
+
+Yilun Zhao, Yunxiang Li, Chenying Li, and Rui Zhang. Multihiertt: Numerical reasoning over multi hierar-
+chical tabular and textual data, 2022.
+
+Yilun Zhao, Chen Zhao, Linyong Nan, Zhenting Qi, Wenlin Zhang, Xiangru Tang, Boyu Mi, and Dragomir
+Radev. Robut: A systematic study of table qa robustness against human-annotated adversarial perturba-
+tions, 2023.
+
+Xinyi Zheng, Doug Burdick, Lucian Popa, Peter Zhong, and Nancy Xin Ru Wang. Global table extractor
+(gte): A framework for joint table identification and cell structure recognition using visual context. Winter
+Conference for Applications in Computer Vision (WACV), 2021.
+
+Xu Zhong, Elaheh ShafieiBavani, and Antonio Jimeno Yepes. Image-based table recognition: data, model,
+and evaluation, 2020.
+
+Yongshuo Zong, Ondrej Bohdal, Tingyang Yu, Yongxin Yang, and Timothy Hospedales. Safety fine-tuning
+at (almost) no cost: A baseline for vision large language models, 2024.
+
+7
+APPENDIX
+
+Table 5: A comprehensive overview of document understanding datasets used in Granite Vision.
+
+Datasets
+# Images # QA Pairs
+
+Document QA
+
+DocFM-VQA
+2.4 M
+19.9 M
+Docmatix (Laurenc¸on et al., 2024a)
+565.0 K
+3.9 M
+synthdog-en (Kim et al., 2022a)
+500.0 K
+500.0 K
+pixmo-docs (Deitke et al., 2024b)
+255.4 K
+2.3 M
+HME100K (Yuan et al., 2022)
+74.5 K
+74.5 K
+Ureader QA (Ye et al., 2023)
+72.7 K
+370 K
+ArxivQA (Li et al., 2024e)
+54.4 K
+100 K
+Ureader KG (Ye et al., 2023)
+37.6 K
+37.6 K
+Tech Book QA
+10.4 K
+17.8 K
+DocVQA (Mathew et al., 2021)
+10.2 K
+39.5 K
+IAM (Marti & Bunke, 2002)
+5.7 K
+5.7 K
+Business Document QA
+3.3 K
+7.8 K
+Visualmrc (Tanaka et al., 2021)
+3.0 K
+12 K
+
+Chart QA
+
+Unichart (Masry et al., 2023)
+611.0 K
+6.9 M
+Tinychart (Zhang et al., 2024c)
+606.0 K
+4.5 M
+DocFM-VQA-Charts
+548.7 K
+5.5 M
+Dvqa (Kafle et al., 2018)
+200.0 K
+2.3 M
+PlotQA (Methani et al., 2020)
+157.0 K
+20.2 M
+FigureQA (Kahou et al., 2017)
+100.0 K
+1.3 M
+DocFM-VQA-AugChartQA
+35.1 K
+294.2 K
+Chart2Text (Obeid & Hoque, 2020)
+27.0 K
+30.0 K
+ChartQA (Masry et al., 2022)
+18.3 K
+28.3 K
+Vistext (Tang et al., 2023)
+9.9 K
+9.9 K
+
+Infographics QA
+
+Infographic VQA (Mathew et al., 2022)
+8.5 K
+35.7 K
+
+Table QA
+
+RoBUT-wikiSQL (Zhao et al., 2023)
+75.0 K
+86.2 K
+RoBUT-WTQ (Zhao et al., 2023)
+38.0 K
+44.1 K
+tabmwp (Lu et al., 2022)
+22.7 K
+23 K
+RoBUT-SQA (Zhao et al., 2023)
+8.5 K
+34.1 K
+MultiHiertt (Zhao et al., 2022)
+7.6 K
+7.8 K
+Finqa (Chen et al., 2021)
+5.3 K
+6.25 K
+Hitab (Cheng et al., 2022)
+2.5 K
+7.8 K
+
+Diagram QA
+
+TQA (Kembhavi et al., 2017)
+27.3 K
+29.8 K
+DocFM-VQA-Flowcharts
+16.6 K
+74.6 K
+AI2D GPT4V (Li et al., 2024b)
+4.9 K
+4.9 K
+AI2D InternVL (Li et al., 2024b)
+3.2 K
+12.4 K
+AI2D (Kembhavi et al., 2016)
+2.4 K
+7.5 K
+Diagram Image2Text7
+0.3 K
+0.3 K
+
+Reasoning / Captioning
+
+DocFM Visual Cue & Captioning
+1.2 M
+2.1 M
+Textcaps (Sidorov et al., 2020)
+22.0 K
+22.0 K
+DocReason8
+8.7 K
+25.8 K
+
+Continued on next page
+
+Table 5 – Continued from previous page
+Datasets
+# Images # QA Pairs
+
+Grounding / Text Localization
+
+Multi-grained Text Localization (Hu et al., 2024b)
+1.0 M
+1.0 M
+DocFM Rule Based Grounding
+190 K
+534.4 K
+KVP10K (Naparstek et al., 2024)
+8.0 K
+8.0 K
+
+Scene Text
+
+K12 Printing (Li et al., 2024d)
+256.6 K
+256.6 K
+OCR-VQA (Mishra et al., 2019)
+165.7 K
+801.6 K
+TextOCR (Singh et al., 2021)
+25.1 K
+25.1 K
+Ureader CAP (Ye et al., 2023)
+22.0 K
+91.4 K
+TextVQA (Singh et al., 2019)
+22.0 K
+34.6 K
+Llavar (Zhang et al., 2023)
+19.8 K
+43.2 K
+ST-VQA (Biten et al., 2019)
+16.4 K
+22 K
+RenderedText9
+10.0 K
+10.0 K
+IIIT5K (Mishra et al., 2012)
+2.0 K
+2.0 K
+
+UI Screen / Code
+
+Datikz-v210
+94.4 K
+94.4 K
+Datikz (Belouadi et al., 2023)
+47.9 K
+48.2 K
+screenqa (Hsiao et al., 2022)
+33.2 K
+80.8 K
+screen2words (Wang et al., 2021)
+15.7 K
+15.7 K
+websight (Laurenc¸on et al., 2024)
+10.0 K
+10.0 K
+Omniact (Kapoor et al., 2024)
+4.9 K
+0.13 K
+
+Structure Parsing
+
+OCR-CC (Yang et al., 2021)
+1.0 M
+1.0 M
+CCpdf (Turski et al., 2023b)
+937.8 K
+937.8 K
+PubTables (Smock et al., 2022)
+569.3 K
+569.3 K
+Chart2Table
+550.4 K
+550.4 K
+TURL (Deng et al., 2022)
+200.0 K
+200.0 K
+PubTabNet (Zhong et al., 2020)
+199.8 K
+199.8 K
+RVL-CDIP (Harley et al., 2015)
+159.4 K
+159.4 K
+DUE (Borchmann et al., 2021)
+104.5 K
+1.6 M
+FinTabNet (Zheng et al., 2021)
+98.9 K
+98.9 K
+
+7
+8
+9
+10
+
+8
+CONTRIBUTIONS AND ACKNOWLEDGMENTS
+
+Authors (alphabetical order):
+
+Granite Vision Technical Leadership:
+
+Assaf Arbelle, Leonid Karlinsky, Peter Staar, Rogerio Feris, Tal Drory
+
+Project Management:
+
+Abraham Daniels
+
+Core Contributors:
+
+Ahmed Nassar, Amit Alfassi, Bo Wu, Eli Schwartz, Dhiraj Joshi, Jovana Kondic, Nimrod Shabtay, Pengyuan
+Li, Roei Herzig, Shafiq Abedin, Shaked Perek, Sivan Harary, Udi Barzelay
+
+Contributors:
+
+Adi Raz Goldfarb, Aude Oliva, Ben Wieles, Bishwaranjan Bhattacharjee, Brandon Huang, Christoph Auer,
+Dan Gutfreund, David Beymer, David Wood, Hilde Kuehne, Jacob Hansen, Joseph Shtok, Ken Wong, Luis
+Angel Bathen, Mayank Mishra, Maksym Lysak, Michele Dolfi, Mikhail Yurochkin, Nikolaos Livathinos,
+Nimrod Harel, Ophir Azulai, Oshri Naparstek, Rafael Teixeira de Lima, Rameswar Panda, Sivan Doveh,
+Shubham Gupta, Subhro Das, Syed Zawad, Yusik Kim, Zexue He
+
+Platform:
+
+Alexander Brooks, Gabe Goodhart
+
+Product Management:
+
+Anita Govindjee, Derek Leist, Ibrahim Ibrahim
+
+IBM Research Leadership:
+
+Aya Soffer, David Cox, Kate Soule, Luis Lastras, Nirmit Desai, Shila Ofek-koifman, Sriram Raghavan,
+Tanveer Syeda-Mahmood
+
+Acknowledgments:
+
+We would like to acknowledge Amy Angelini, Bob Calio, Brian Belgodere, Dakshi Agrawal, Heiko Ludwig,
+Hendrik Strobelt, John Smith, Kim Martineau, Kush Varshney, Mauro Martino, Petros Zerfos, Ray Rose, and
+Sandeep Gopisetty. We would also like to acknowledge the support from IBM Research AI and the MIT-IBM
+Watson AI lab.

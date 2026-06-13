@@ -1,0 +1,1837 @@
+Calibration Drift Under Reasoning:
+How Chain-of-Thought Budgets Induce
+Overconfidence in Large Language Models
+
+arXiv:2606.11211v1 [cs.CL] 24 Apr 2026
+
+Prakul Sunil Hiremath
+
+Harshit R Hiremath
+
+Department of Computer Science and Engineering
+Visvesvaraya Technological University, Belagavi
+
+Department of Computer Science and Business System
+SG Balekundri Institute of Technology, Belagavi
+
+June 11, 2026
+
+Abstract
+The ability of large language models (LLMs) to express calibrated
+uncertainty is a prerequisite for their safe deployment. Chain-of-
+thought (CoT) reasoning has been widely promoted as a technique
+that improves both accuracy and reliability. We argue that this pic-
+ture is incomplete: in at least some model scales and problem types,
+increasing the reasoning budget beyond a problem-specific threshold
+can cause models to become systematically overconfident—reporting
+high verbalized probabilities for answers that are incorrect. We term
+this phenomenon Calibration Drift Under Reasoning (cdur)
+and study it formally and empirically.
+Formally, we define a reasoning budget B and analyze condi-
+tions under which the Expected Calibration Error ECE(B) traces a
+non-monotone trajectory in B: initially falling as reasoning corrects
+surface errors, then rising as extended chains produce internally con-
+sistent but factually wrong trajectories. We introduce a Hypothesis
+Lock-In Model grounded in autoregressive generation to explain this
+mechanism.
+Empirically, we evaluate Llama-3.1-8B and Llama-3.3-70B on 47
+reasoning-trap questions across four reasoning budgets and three
+seeds (1,368 API calls; 574 valid responses). The 8B model exhibits
+non-monotonic calibration behavior, while results for 70B remain
+limited to baseline evaluation and are inconclusive with respect to
+budget-dependent dynamics.
+We introduce CABStop, a calibration-aware stopping rule that
+halts reasoning when confidence diverges from an auxiliary accuracy
+estimate. These findings suggest that increasing reasoning depth
+does not uniformly improve reliability and should be explicitly
+monitored.
+
+Keywords: calibration, chain-of-thought reasoning, Expected Calibration Error,
+overconfidence, large language models, reasoning budgets
+
+Code & data available at
+GitHub
+·
+Zenodo
+
+Contents
+
+1
+Introduction
+4
+1.1
+The Core Phenomenon . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+4
+1.2
+Why This Matters
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+4
+1.3
+Contributions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+5
+
+2
+Background and Related Work
+5
+2.1
+Calibration in Machine Learning . . . . . . . . . . . . . . . . . . . . . . .
+5
+2.2
+Chain-of-Thought Reasoning . . . . . . . . . . . . . . . . . . . . . . . . .
+5
+2.3
+Overconfidence in LLMs . . . . . . . . . . . . . . . . . . . . . . . . . . .
+6
+2.4
+Stopping Rules and Optimal Inference
+. . . . . . . . . . . . . . . . . . .
+6
+
+3
+Formalizing Calibration Drift Under Reasoning
+6
+3.1
+Reasoning Budget . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+6
+3.2
+Calibration as a Function of Reasoning Budget . . . . . . . . . . . . . . .
+6
+3.3
+Definition of CDUR . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+7
+3.4
+Propositions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+7
+
+4
+Mechanistic Model: Hypothesis Lock-In
+8
+4.1
+The Commitment Model . . . . . . . . . . . . . . . . . . . . . . . . . . .
+8
+4.2
+Connection to Autoregressive Generation . . . . . . . . . . . . . . . . . .
+9
+4.3
+Connection to RLHF Reward Shaping
+. . . . . . . . . . . . . . . . . . .
+9
+4.4
+Empirical Signatures of Hypothesis Lock-In
+. . . . . . . . . . . . . . . .
+9
+4.5
+Hypothesis Lock-In Diagram . . . . . . . . . . . . . . . . . . . . . . . . .
+10
+
+5
+Experimental Setup
+10
+5.1
+Models . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+10
+5.2
+Dataset Construction . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+10
+5.3
+Validity Filtering and Potential Bias
+. . . . . . . . . . . . . . . . . . . .
+11
+5.4
+Reasoning Budgets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+11
+5.5
+Confidence Elicitation and Its Limitations
+. . . . . . . . . . . . . . . . .
+12
+5.6
+Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+12
+
+6
+Results
+13
+6.1
+Main Result: Non-Monotonic Calibration Dynamics . . . . . . . . . . . .
+13
+6.2
+Interpreting the 8B Calibration Arc . . . . . . . . . . . . . . . . . . . . .
+13
+6.3
+The 70B Results Gap . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+14
+6.4
+Wrong + Confident Analysis (Smoking Gun) . . . . . . . . . . . . . . . .
+14
+6.5
+Confidence–Accuracy Scatter: Limitations of Aggregate ECE . . . . . . .
+15
+6.6
+Statistical Uncertainty and Variance
+. . . . . . . . . . . . . . . . . . . .
+15
+6.7
+Confidence–Accuracy Decoupling
+. . . . . . . . . . . . . . . . . . . . . .
+16
+6.8
+Error Persistence Under Extended Reasoning . . . . . . . . . . . . . . . .
+16
+6.9
+When More Reasoning Helps vs. Hurts . . . . . . . . . . . . . . . . . . .
+16
+6.10 Trap Category Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+17
+
+7.2
+Formulation as an Optimal Stopping Problem . . . . . . . . . . . . . . .
+17
+7.3
+Algorithm . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+18
+7.4
+TikZ: CABStop Mechanism
+. . . . . . . . . . . . . . . . . . . . . . . . .
+18
+7.5
+Discussion . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+18
+
+8
+Threats to Validity
+19
+
+9
+Discussion
+20
+9.1
+When CDUR Should Be Expected . . . . . . . . . . . . . . . . . . . . . .
+20
+9.2
+Implications for Inference-Time Scaling . . . . . . . . . . . . . . . . . . .
+20
+9.3
+Implications for Model Evaluation . . . . . . . . . . . . . . . . . . . . . .
+21
+9.4
+Theoretical Limitations . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+21
+9.5
+Connections to Human Reasoning . . . . . . . . . . . . . . . . . . . . . .
+21
+
+10 Future Work
+21
+
+11 Conclusion
+22
+
+A Proof Details
+24
+A.1 Formal Consistency Score
+. . . . . . . . . . . . . . . . . . . . . . . . . .
+24
+A.2 Discussion of Assumption Robustness . . . . . . . . . . . . . . . . . . . .
+24
+
+B Dataset: Trap Question Examples
+24
+
+C Experimental Logs (Summary)
+25
+
+1
+Introduction
+
+A model is well-calibrated if its expressed confidence in an answer reliably tracks the
+probability that the answer is correct [De Groot and Fienberg, 1983, Guo et al., 2017].
+Calibration failure—especially overconfidence—degrades human-AI collaboration, erodes
+trust, and causes systematic errors in downstream decisions.
+
+Chain-of-thought (CoT) prompting [Wei et al., 2022] has become a standard technique for
+improving LLM performance on multi-step reasoning tasks. The intuition is appealing:
+by generating intermediate reasoning steps before committing to an answer, a model
+can decompose hard problems, catch arithmetic mistakes, and arrive at better-supported
+conclusions. Large-scale results confirm that longer reasoning chains often raise accuracy
+[Kojima et al., 2022, Lightman et al., 2023].
+
+Our central claim. Accuracy improvement does not imply calibration improvement.
+More precisely, we observe that at least in the small-model regime and on structured
+reasoning-trap tasks, increasing reasoning budget can inflate confidence without propor-
+tionally inflating correctness—a regime we call Calibration Drift Under Reasoning
+(cdur). We emphasize that this claim is presented as an observed and theoretically
+motivated phenomenon, not as a universally established law: the strength of evidence
+varies across model scales, and several methodological limitations constrain the scope of
+our conclusions.
+
+1.1
+The Core Phenomenon
+
+Consider a model that initially responds to a question with low confidence and imperfect
+accuracy. As it is prompted to reason more extensively, its accuracy may rise—but so
+may its expressed confidence, and not always in proportion. At some budget level B∗,
+confidence may begin to outpace accuracy. Past B∗, the model is not merely wrong; it is
+confidently wrong.
+
+This pattern is illustrated schematically in Figure 2 and explored empirically in Section 6,
+where we find behavior consistent with this description for Llama-3.1-8B. Evidence for
+the larger Llama-3.3-70B model is incomplete (Section 6.3).
+
+1.2
+Why This Matters
+
+Safety. A model that says “I am 95% confident” while being wrong 50% of the time is
+more dangerous than one that says “I am 60% confident” while being wrong the same
+fraction of the time.
+
+Inference-time scaling. Recent work proposes allocating more compute at inference time
+to difficult problems [Snell et al., 2024]. Without calibration awareness, such scaling may
+backfire: the model becomes more expensive and, in certain regimes, more overconfident.
+
+Human oversight. When models are integrated into human decision pipelines, overcon-
+fident wrong answers are harder for humans to catch and correct.
+
+1.3
+Contributions
+
+This paper makes the following contributions, stated precisely to reflect the scope of our
+evidence:
+
+(1) Formal framework. We provide a rigorous definition of cdur as a property of
+the calibration function ECE(B), and state three formal propositions characterizing
+its behavior under a probabilistic reasoning model (Section 3). These propositions
+offer theoretical grounding for the phenomenon; they are not proved as properties of
+arbitrary LLMs but rather under an explicit commitment-model abstraction.
+
+(2) Hypothesis Lock-In Model. We introduce and analyze a mechanistic model of au-
+toregressive reasoning that explains why calibration drift may occur, and characterize
+the conditions under which it is most severe (Section 4).
+
+(3) Empirical observation. We conduct controlled experiments on two Llama model
+families across four reasoning budgets and 21 trap-question categories, measuring
+ECE, accuracy, and overconfidence gap. For Llama-3.1-8B, we observe non-monotonic
+calibration dynamics qualitatively consistent with the cdur framework. For Llama-
+3.3-70B, results are limited to the no-reasoning condition and are thus suggestive but
+inconclusive (Section 6).
+
+(4) CABStop algorithm. We propose a principled stopping rule for inference-time
+reasoning that halts before the overconfidence regime, and analyze it as an instance
+of optimal stopping (Section 7).
+
+2
+Background and Related Work
+
+2.1
+Calibration in Machine Learning
+
+The formal study of calibration originates in the forecasting literature [De Groot and
+Fienberg, 1983, Murphy, 1977]. Guo et al. [2017] showed that modern deep neural networks
+are poorly calibrated and that temperature scaling provides a simple post-hoc fix. Desai
+and Durrett [2020] extended this analysis to text classification with pre-trained language
+models. For generative models, calibration must be measured via verbalized probabilities
+[Kadavath et al., 2022, Xiong et al., 2024] since token-level likelihoods are not directly
+accessible in deployment.
+
+2.2
+Chain-of-Thought Reasoning
+
+Wei et al. [2022] demonstrated that few-shot CoT prompting substantially improves
+performance on arithmetic and commonsense reasoning. Kojima et al. [2022] showed that
+zero-shot CoT (“let’s think step by step”) achieves comparable gains. Lightman et al.
+[2023] studied process-level supervision, showing that rewarding correct intermediate steps
+further improves accuracy.
+
+Budget-constrained reasoning has been explored in the context of inference-time scaling
+[Snell et al., 2024, Muennighoff et al., 2025], where additional compute is allocated
+proportionally to estimated problem difficulty.
+
+2.3
+Overconfidence in LLMs
+
+Xiong et al. [2024] showed that LLMs are systematically overconfident when asked to
+verbalize their confidence, especially on harder questions. Zhou et al. [2023] documented
+that chain-of-thought can increase hallucination in certain conditions. Turpin et al. [2023]
+showed that spurious reasoning patterns are common even in high-accuracy responses.
+Our work is distinguished by the explicit focus on the interaction between reasoning
+budget and calibration, characterized formally as a function ECE(B).
+
+2.4
+Stopping Rules and Optimal Inference
+
+The optimal stopping literature [Wald, 1947, Chow and Robbins, 1961] provides a natural
+framework for deciding when to halt a sequential computation. Graves [2016] applied
+adaptive computation to recurrent networks. Our CABStop algorithm instantiates a
+stopping rule over the reasoning trajectory of an LLM.
+
+3
+Formalizing Calibration Drift Under Reasoning
+
+We now provide a formal account of the cdur phenomenon. Let Q be a set of questions
+and A a label space. A model M takes as input a question q ∈Q, a reasoning budget
+B ∈N ∪{0}, and produces an answer ˆa ∈A together with a verbalized confidence
+ˆp ∈[0, 1].
+
+3.1
+Reasoning Budget
+
+Definition 3.1 (Reasoning Budget)
+
+A reasoning budget B is an upper bound on the number of tokens allocated to
+intermediate reasoning steps prior to answer generation. We say B = 0 corresponds
+to direct (no-reasoning) inference, and B = ∞denotes unbounded reasoning.
+In practice, we discretize: B ∈{none, light, medium, heavy}, corresponding to ap-
+proximately 0, 128, 512, and 2048 tokens respectively.
+
+3.2
+Calibration as a Function of Reasoning Budget
+
+Definition 3.2 (Budget-Conditional Calibration)
+
+For a reasoning budget B, define:
+
+Acc(B) = Pq[ˆa(q, B) = a∗(q)],
+(1)
+Conf(B) = Eq[ˆp(q, B)],
+(2)
+OG(B) = Conf(B) −Acc(B)
+(overconfidence gap),
+(3)
+
+where a∗(q) is the ground-truth answer and expectations are over the question
+distribution.
+The Expected Calibration Error at budget B is
+
+ECE(B) = E
+h
+|ˆp(q, B) −P[ˆa(q, B) = a∗(q) | ˆp(q, B)]|
+i
+,
+(4)
+
+where the expectation is over questions and the inner probability is over randomness
+in generation.
+
+3.3
+Definition of CDUR
+
+Definition 3.3 (Calibration Drift Under Reasoning, cdur)
+
+A model M exhibits Calibration Drift Under Reasoning if there exists a critical
+budget B∗∈(0, ∞) such that:
+
+d ECE(B)
+
+dB
+< 0
+for B < B∗,
+d ECE(B)
+
+dB
+> 0
+for B > B∗.
+(5)
+
+That is, B 7→ECE(B) is U-shaped with a minimum at B∗.
+
+Intuitively, initial reasoning (B < B∗) resolves surface ambiguity and improves calibration.
+Extended reasoning (B > B∗) locks in an incorrect hypothesis and accumulates spurious
+internal evidence, raising confidence without improving accuracy. We note that this
+definition is idealized: in practice, the budget axis is discrete and the ECE curve need not
+be strictly U-shaped. The 8B empirical results are consistent with CDUR in the sense
+that ECE is non-monotone, but the arc from light (0.104) to medium (0.050) to heavy
+(0.015) does not match a simple U-shape. We discuss this discrepancy in Section 6.2.
+
+3.4
+Propositions
+
+Proposition 3.4 (Confidence Inflation Under Commitment)
+
+Under a commitment model (Definition 4.1), extended reasoning increases conditional
+confidence ˆp(q, B) monotonically in B, even when the correctness probability P[ˆa = a∗]
+is unchanged.
+
+Proof sketch. Let h0 denote the initial hypothesis sampled at the start of the reasoning
+chain (Definition 4.1). Subsequent tokens are generated conditioned on h0. The verbalized
+confidence ˆp is a function of the internal consistency of the chain: more tokens consistent
+with h0 yield higher ˆp.
+
+Formally, let Rt be the t-th reasoning token and let C(R1, . . . , Rt; h0) be a consistency score
+(e.g., fraction of tokens that reinforce h0). Under an autoregressive model conditioned
+on h0, E[C(R1, . . . , Rt; h0)] is non-decreasing in t because each subsequent token is drawn
+from a distribution already conditioned on h0, making tokens supporting h0 more likely.
+
+Since ˆp = g(C) for some non-decreasing g, it follows that E[ˆp(q, B)] is non-decreasing in B.
+Meanwhile, the correctness event depends only on whether h0 is the correct hypothesis,
+which is fixed at sampling time and unchanged by subsequent reasoning.
+
+Proposition 3.5 (Error Amplification)
+
+If the initial hypothesis selection has error probability ε, then the expected overconfi-
+dence gap E[OG(B)] is monotonically non-decreasing in B for B > B∗.
+
+Proof sketch. Partition questions into two sets: Q+ where h0 = a∗(correct initialization)
+and Q−where h0 ̸= a∗(incorrect). For q ∈Q+, extended reasoning increases ˆp while
+maintaining correctness, leaving OG roughly constant. For q ∈Q−, extended reasoning
+increases ˆp while accuracy remains 0, increasing OG by Proposition 3.4. The overall gap
+satisfies
+E[OG(B)] = (1−ε) · OG+(B) + ε · OG−(B),
+
+where OG+(B) ≈0 and OG−(B) = ˆp−(B) is non-decreasing. Since ε > 0, E[OG(B)] is
+non-decreasing in B.
+
+Proposition 3.6 (Accuracy Plateau with Confidence Growth)
+
+There exists a regime [B∗, B∗∗] in which Acc(B) is approximately constant while
+Conf(B) continues to increase, resulting in a widening overconfidence gap.
+
+Proof sketch. Accuracy Acc(B) depends on whether reasoning successfully corrects errors
+in h0. Correction requires the model to generate a token sequence that contradicts h0
+and substitutes an alternative—this is a low-probability event under the commitment
+model (the model is explicitly conditioned on h0). For large B, the probability of such
+a correction decreases further since more of the context supports h0. Hence Acc(B) is
+approximately constant past B∗. In contrast, Conf(B) continues to grow by Proposition 3.4.
+The difference Conf(B) −Acc(B) = OG(B) is therefore increasing on [B∗, B∗∗] for any
+B∗∗> B∗.
+
+Remark 3.1. These propositions are stylized: they rely on the commitment model defined
+in Section 4. They are intended to provide theoretical intuition consistent with our
+empirical findings, not to characterize the full behavior of arbitrary autoregressive LLMs.
+In practice, real models can revise initial hypotheses mid-chain, especially at heavy
+reasoning budgets—and this is part of why accuracy continues to rise even past B∗in our
+8B results.
+
+4
+Mechanistic Model: Hypothesis Lock-In
+
+4.1
+The Commitment Model
+
+Definition 4.1 (Commitment Model)
+
+Given a question q, reasoning under budget B proceeds in three stages:
+
+based on the full context (q, R).
+
+This model is an idealization of autoregressive generation. The key structural feature
+is Step 2: the reasoning chain is conditioned on h0, making it a constrained trajectory
+rather than a free search. An important consequence is that Pθ(Rt | q, h0, R<t) assigns
+higher mass to tokens that are consistent with h0, and the probability of generating a
+token that contradicts h0 is low.
+
+4.2
+Connection to Autoregressive Generation
+
+In an autoregressive LLM, h0 is not sampled explicitly. Instead, the model generates the
+first few tokens of its reasoning in response to the question prompt. These early tokens
+function as h0 in our model: they determine the trajectory of subsequent generation via
+attention. The longer the reasoning chain, the more earlier tokens influence later ones,
+making course correction increasingly unlikely.
+
+This is consistent with empirical findings on self-consistency [Wang et al., 2022]: longer
+reasoning chains are more self-consistent, but self-consistency does not imply correctness.
+
+4.3
+Connection to RLHF Reward Shaping
+
+Modern LLMs are fine-tuned with Reinforcement Learning from Human Feedback (RLHF)
+[Ouyang et al., 2022]. Human raters tend to prefer responses that are confident and
+internally coherent [Turpin et al., 2023]. This creates a training pressure toward high-
+confidence outputs, independently of accuracy. Combined with the commitment model,
+RLHF provides a mechanistic pathway through which training may amplify the cdur
+phenomenon: models are rewarded for appearing confident, especially when their reasoning
+is fluent and internally consistent.
+
+4.4
+Empirical Signatures of Hypothesis Lock-In
+
+The Hypothesis Lock-In Model makes several testable predictions. We examine each
+against our empirical results.
+
+Persistence of errors across budget levels.
+If lock-in occurs, we expect specific
+incorrect answers to persist as the budget increases: once committed to a wrong h0, the
+model should continue predicting the same wrong answer even when given additional
+reasoning tokens. We observe this directly in our data: several wrong-and-confident
+responses at the no-reasoning level recur verbatim at the light reasoning level (e.g., the
+syllogism case, expected: “no”, predicted: “yes” with confidence 1.0, appearing at both
+none and light budgets). This is qualitative evidence consistent with Proposition 3.4.
+
+categories systematically elicit wrong confident answers, consistent with stable h0 sampling
+for these problem types.
+
+Failure of extended reasoning to correct.
+Proposition 3.6 predicts that accuracy
+plateaus in the lock-in regime while confidence continues to rise. For Llama-3.1-8B,
+accuracy at medium reasoning (0.653) is actually lower than at light (0.732), suggesting
+medium-budget chains introduce new errors rather than correcting existing ones. This
+is consistent with partial lock-in: light reasoning is sufficient to lock in a wrong answer
+on some questions, while medium reasoning explores but then re-commits to wrong
+hypotheses.
+
+Connection to formal propositions.
+Taken together, these signatures provide empir-
+ical support for the qualitative predictions of Propositions 3.4 and 3.6: confidence rises
+faster than accuracy (OG > 0.25 at all budgets), and wrong answers show cross-budget
+stability. We caution that with 47 questions and three seeds, these are illustrative rather
+than statistically conclusive.
+
+4.5
+Hypothesis Lock-In Diagram
+
+Figure 1 provides a schematic of the lock-in process.
+
+5
+Experimental Setup
+
+5.1
+Models
+
+We evaluate two models from the Llama family:
+
+• Llama-3.1-8B: A compact instruction-tuned model. We use it to study cdur in the
+small-model regime. This model is the primary source of multi-budget evidence in this
+paper.
+
+• Llama-3.3-70B: A high-capacity model. Due to resource constraints, we report only
+the no-reasoning condition for this model; conclusions about its calibration dynamics
+across budgets are therefore not possible from current data (see Section 6.3).
+
+Both models are accessed via their instruction-following variants. Inference temperature
+is set to 0.7 to allow for variability across seeds.
+
+5.2
+Dataset Construction
+
+We construct a dataset of reasoning-trap questions: questions specifically designed
+to elicit common cognitive failure modes. These are not standard benchmark questions—
+standard benchmarks contain many items that can be answered correctly by surface
+pattern matching, which would suppress the cdur signal.
+
+The dataset contains 47 distinct trap questions. Each question is evaluated over 3 random
+seeds and 4 reasoning budgets, yielding 47 × 3 × 4 × 2 = 1,128 intended evaluations per
+model family (plus non-trap items), for a total of 1,368 API calls.
+
+5.3
+Validity Filtering and Potential Bias
+
+Not all model responses can be scored. A response is considered valid if:
+
+(1) It contains an extractable answer in the expected format (numeric, boolean, or
+short-form text).
+
+(2) It contains an extractable verbalized confidence in [0, 1] or as a percentage.
+
+(3) Neither the answer nor the confidence field is empty or a refusal.
+
+Of 1,368 total responses, 574 were valid trap-question responses (42% overall validity
+rate). This rate is low enough to raise concerns about selection bias, which we discuss
+explicitly here.
+
+Causes of invalidity.
+Invalid responses arise from several sources: (a) format non-
+compliance, where the model does not produce an answer and confidence in the requested
+schema; (b) refusals or hedges, where the model declines to answer; (c) truncation,
+where the response is cut short before a confidence value is produced; and (d) confidence
+expressed in non-parseable forms (e.g., “moderately confident”).
+
+Selection bias risk.
+Critically, invalidity may be correlated with uncertainty. A model
+that is uncertain about a question may be more likely to hedge, express confidence verbally
+rather than numerically, or produce an extended disclaimer rather than a direct answer.
+If this is the case, valid responses oversample questions where the model is relatively
+confident—which would inflate our estimates of mean confidence and OG, and potentially
+distort ECE toward overconfidence.
+
+Budget-specific effects.
+Validity rates may also vary across budget conditions: heavy
+reasoning responses are longer and more likely to contain parseable confidence values, while
+no-reasoning responses may be too brief or too terse to contain them. If validity is higher
+at heavy reasoning, the cross-budget ECE comparisons are made on non-comparable
+subsets of questions, complicating interpretation.
+
+Mitigation and transparency.
+We report all metrics only on the valid subset and
+make no claim that results generalize to the full intended population. Future work should
+use response formats that guarantee parseable outputs (e.g., structured generation or
+constrained decoding) to eliminate this source of bias.
+
+5.4
+Reasoning Budgets
+
+We implement reasoning budgets via prompt engineering. Each budget condition uses a
+specific system-level instruction:
+
+Light Show a brief 2–3 sentence chain of thought before answering.
+
+Medium Show a structured, step-by-step solution before answering.
+
+Heavy Work through the problem completely, exploring multiple approaches and checking
+your work, before giving a final answer.
+
+5.5
+Confidence Elicitation and Its Limitations
+
+After each response, we append a standardized follow-up prompt: “On a scale from 0 to
+1, how confident are you in your answer? Give only a number.”
+
+Verbalized confidence vs. epistemic uncertainty.
+Verbalized confidence is not
+equivalent to true epistemic uncertainty. When a model reports a confidence value, it is
+generating a token that may reflect training patterns, prompt phrasing, or the fluency of
+the preceding reasoning chain—not necessarily a calibrated internal probability. Xiong et
+al. [2024] have shown that verbalized confidence in LLMs is systematically miscalibrated,
+particularly on difficult questions.
+
+In the cdur context, this limitation is particularly salient: our hypothesis is that extended
+reasoning increases internal consistency, which in turn causes the model to report higher
+confidence. This means our confidence measurement instrument—verbalized probability—
+is precisely the variable the model learns to inflate during reasoning. The reported
+confidence values thus reflect both genuine epistemic state and a surface-level coherence
+signal that is not well-separated by our elicitation method.
+
+Why results remain meaningful.
+Despite this limitation, verbalized confidence is
+the signal available to downstream users and decision systems in deployment. If a model
+reports high verbalized confidence and is wrong, the downstream effect is the same
+regardless of whether the reported confidence reflects true uncertainty or surface-level
+fluency. Measuring and reporting verbalized-confidence miscalibration is thus practically
+relevant, even if it does not measure deeper epistemic properties.
+
+Alternative confidence signals.
+Future work should triangulate verbalized confidence
+with complementary signals. Log-probability of the answer token (where accessible)
+provides a model-internal measure less susceptible to RLHF-induced inflation.
+Self-
+consistency across k independent completions [Wang et al., 2022] provides a behavioral
+estimate of answer stability. Ensemble agreement across models provides an orthogonal
+check. Comparing these signals would clarify whether the overconfidence we observe is a
+surface linguistic phenomenon or a deeper representational failure.
+
+5.6
+Metrics
+
+Expected Calibration Error (ECE).
+We use equal-width binning with 10 bins over
+[0, 1]:
+
+M
+X
+
+|Bm|
+
+Acc(Bm) −Conf(Bm)
+,
+(6)
+
+ECE =
+
+N
+
+m=1
+
+where Bm is the m-th confidence bin, N is the total number of samples, and Acc, Conf
+are the mean accuracy and mean confidence within each bin.
+
+Overconfidence gap (OG).
+OG = Conf −Acc, measured globally. Positive values
+indicate overconfidence; negative values indicate underconfidence.
+
+Wrong + Confident.
+The count of responses that are simultaneously incorrect (ˆa ̸= a∗)
+and highly confident (ˆp ≥0.90). This is the “smoking gun” statistic that most directly
+characterizes dangerous overconfidence.
+
+6
+Results
+
+6.1
+Main Result: Non-Monotonic Calibration Dynamics
+
+Figure 2 shows the theoretical cdur curve, and Table 3 (Appendix C) reports full
+numerical results. We summarize the key observations here.
+
+Llama-3.1-8B.
+The 8B model exhibits non-monotonic calibration dynamics: ECE
+is 0.044 ± 0.015 at no-reasoning, rises to 0.104 ± 0.034 at light reasoning, then falls
+to 0.050 ± 0.049 at medium and 0.015 ± 0.005 at heavy reasoning.
+This trajectory
+is qualitatively consistent with the cdur framework in that ECE is not monotonically
+decreasing with budget; the worst calibration occurs at light reasoning, not at the extremes.
+We interpret this in detail in Section 6.2.
+
+Llama-3.3-70B.
+The 70B model results are limited to the no-reasoning condition: ECE
+= 0.035 ± 0.026, OG = +0.155. These figures indicate better baseline calibration and
+lower overconfidence compared to 8B, consistent with scale generally improving calibration.
+However, we cannot confirm or deny CDUR dynamics for this model, as no multi-budget
+data are available. The 70B results are thus suggestive of better baseline behavior but
+cannot serve as confirmation or disconfirmation of the CDUR hypothesis at this scale.
+
+Overconfidence Gap.
+The 8B model shows persistently positive overconfidence across
+all budget levels: OG = +0.49 at no-reasoning, falling to +0.25–+0.34 at other bud-
+gets. Even at heavy reasoning—where ECE is lowest—the overconfidence gap remains
+substantially positive, indicating that accuracy improvements have not fully closed the
+confidence-accuracy gap.
+
+6.2
+Interpreting the 8B Calibration Arc
+
+The observed 8B trajectory (ECE: 0.044 →0.104 →0.050 →0.015) does not match a
+clean U-shape as depicted in the schematic. The following interpretation is more accurate.
+
+At no reasoning, the model produces direct, often confident answers. Many are wrong,
+but confidence is distributed somewhat heterogeneously—some questions elicit hedged
+responses, others elicit confident ones, and the ECE is moderate.
+
+At light reasoning, the model generates brief chains that are often insufficient to fully
+analyze the trap question. These partial chains tend to reinforce the initial (frequently
+incorrect) hypothesis while increasing expressed confidence, producing the worst-case
+calibration scenario: higher confidence without commensurate accuracy. This is the regime
+most clearly predicted by the commitment model.
+
+At medium reasoning, the model generates longer chains that sometimes begin to uncover
+the trap, but also sometimes compound errors by adding reasoning steps that re-justify a
+wrong initial direction. The high standard deviation (±0.049) at medium budget reflects
+this instability.
+
+At heavy reasoning, extended chains allow the model to explore multiple solution paths
+and occasionally self-correct. The combination of higher accuracy (0.739) and still-high
+confidence (≈0.984) results in a lower ECE. However, persistent overconfidence (OG
+= +0.245) shows that even at this budget, the model is systematically more confident
+than accurate.
+
+We characterize the 8B results as exhibiting partial CDUR behavior: the ECE trajectory
+is non-monotone, the worst calibration occurs at intermediate reasoning budgets, and
+overconfidence persists throughout. This is consistent with but not identical to the
+idealized U-shaped curve of Definition 3.3.
+
+6.3
+The 70B Results Gap
+
+Resource constraints limited the 70B evaluation to the no-reasoning condition. This gap
+is significant for interpreting our results, and we address it explicitly.
+
+What the 70B results do and do not show.
+The no-reasoning ECE of 0.035 and
+OG of +0.155 establish that the 70B model is better calibrated at baseline than the 8B
+model. The lower OG (+0.155 vs. +0.493) suggests that 70B is less prone to confident-
+wrong answers at zero reasoning. These findings are consistent with scale improving
+calibration—a pattern noted in prior work [Kadavath et al., 2022].
+
+However, we cannot infer anything about how the 70B model’s calibration changes with
+reasoning budget. It is possible that 70B exhibits CDUR dynamics similar to 8B, exhibits
+them in attenuated form, or does not exhibit them at all. All three outcomes are compatible
+with the current data.
+
+Appropriate framing.
+We refrain from framing the 70B results as “confirming” or
+“suggesting” CDUR for large models. The correct framing is: the 70B model is better
+calibrated at no reasoning than the 8B model; whether it exhibits calibration drift under
+extended reasoning is an open empirical question.
+
+6.4
+Wrong + Confident Analysis (Smoking Gun)
+
+Table 2 lists model responses where the model was simultaneously wrong and expressed
+confidence ≥0.90.
+
+spatial categories dominate the wrong+confident list (Figure 3), consistent with prior
+findings that LLMs struggle with precise discrete enumeration and 3D spatial reasoning.
+
+6.5
+Confidence–Accuracy Scatter:
+Limitations of Aggregate
+ECE
+
+ECE aggregates calibration error into a scalar, which obscures the structure of per-sample
+confidence-accuracy relationships. A per-sample scatter plot of (ˆpi, 1[ˆai = a∗
+i ]) would
+reveal features that aggregate ECE does not capture.
+
+Under ideal calibration, such a scatter would align with the diagonal: responses with
+confidence ˆp would be correct with probability ˆp. What we expect to observe in our data,
+based on the aggregate OG values, is a systematic upward displacement from the diagonal:
+a cluster of high-confidence (ˆp ≈1.0) incorrect answers that should fall at zero accuracy
+on the scatter.
+
+This structure has practical implications beyond what ECE reports. A model with ECE
+= 0.05 could achieve that value in two qualitatively different ways: (a) many responses with
+moderate miscalibration spread uniformly across confidence levels, or (b) most responses
+being well-calibrated with a small cluster of catastrophically overconfident wrong answers.
+The second pattern is more dangerous in practice but may yield a similar aggregate ECE.
+
+Given our wrong-and-confident count (Table 2), we expect our data to exhibit pattern (b).
+Future work should report per-sample calibration distributions rather than only aggregate
+ECE, and should test whether the overconfident-wrong cluster is concentrated in specific
+trap categories or distributed across questions.
+
+6.6
+Statistical Uncertainty and Variance
+
+Impact of small sample size.
+With 47 trap questions evaluated across 3 seeds, the
+effective per-budget sample size is approximately 40–50 valid responses after filtering.
+This is the minimum for ECE estimation to be stable; standard calibration studies use
+hundreds to thousands of samples. Our ECE estimates should be treated as indicative
+rather than precise.
+
+Interpreting standard deviations.
+The reported standard deviations across seeds
+(e.g., ECE = 0.050 ± 0.049 at medium budget) are large relative to the mean in some
+conditions. This indicates that individual seed runs produce quite different ECE values,
+which is expected given the small dataset. Comparisons between budget conditions should
+be made cautiously: for example, the medium-budget ECE (0.050) and no-reasoning ECE
+(0.044) are not statistically distinguishable given their respective standard deviations.
+
+Claims calibrated to evidence.
+Given these limitations, we state the following care-
+fully: we observe that light-reasoning ECE is substantially higher than both no-reasoning
+and heavy-reasoning ECE in the 8B model, and that this difference is directionally consis-
+tent across all three seeds. We do not claim that this pattern is statistically significant by
+conventional tests, nor that it would replicate exactly on a different dataset.
+
+6.7
+Confidence–Accuracy Decoupling
+
+A central prediction of the cdur framework is that Conf(B) and Acc(B) can diverge: as
+B increases, confidence may rise faster (or fall slower) than accuracy.
+
+For Llama-3.1-8B, accuracy increases from 0.461 (none) to 0.739 (heavy). However, the
+overconfidence gap remains above 0.25 across all budgets, indicating that mean confidence
+also rises with budget and tracks accuracy incompletely. The gap is highest at no-reasoning
+(+0.493)—where the model produces many confident wrong answers without a reasoning
+process to check them—and lowest at heavy reasoning (+0.245).
+
+This decoupling is captured by Proposition 3.6: there exists a range of B where accuracy
+plateaus but confidence continues to grow.
+Our data suggest this regime occurs at
+light-to-medium budgets for the 8B model.
+
+6.8
+Error Persistence Under Extended Reasoning
+
+One might expect that heavy reasoning would always correct errors present at lower
+budgets.
+Our data partially contradict this. The syllogism example (expected: no,
+predicted: yes, confidence 1.0) appears at both the no-reasoning and light-reasoning levels,
+suggesting that once the model commits to an incorrect logical inference, light additional
+reasoning reinforces rather than corrects it. This is consistent with the lock-in mechanism
+of Section 4.
+
+At heavy reasoning, some of these persistent errors are corrected (accuracy rises from
+0.461 to 0.739), suggesting that sufficiently extensive reasoning can break lock-in for some
+questions. However, the non-zero overconfidence gap at heavy reasoning (+0.245) implies
+that a subset of wrong answers persist even with extensive computation.
+
+6.9
+When More Reasoning Helps vs. Hurts
+
+Based on our results, we characterize three regimes:
+
+Regime I: Surface correction (B ≪B∗). Short reasoning chains catch arithmetic
+slips and minor ambiguities.
+Accuracy rises; calibration improves.
+This is the
+conventional wisdom about CoT.
+
+Regime II: Lock-in (B ≈B∗). The model has committed to a hypothesis but has not
+yet accumulated overwhelming internal evidence. Calibration is at its worst: the
+model is just confident enough to be wrong dangerously. This is the critical budget
+B∗.
+
+Regime III: Heavy reasoning (B ≫B∗). Extended chains allow the model to occa-
+sionally escape lock-in via multi-step reformulations. ECE falls again as accuracy
+rises. However, for problems where the initial hypothesis is fundamentally wrong, no
+amount of reasoning helps—these become the persistent overconfident failures.
+
+The practical implication is that moderate reasoning budgets may produce worse calibration
+than either no reasoning or heavy reasoning for calibration-sensitive tasks. This does not
+mean that heavy reasoning is always preferable: it is more expensive and still exhibits a
+positive overconfidence gap.
+
+6.10
+Trap Category Analysis
+
+Figure 3 reports the distribution of wrong+confident responses by trap category. Counting,
+set_theory, spatial, and semantic errors dominate. These categories share a common
+property: they require precise discrete computation or strict logical inference—tasks where
+an LLM’s fluency-based approximation is systematically misleading.
+
+7
+The CABStop Algorithm
+
+7.1
+Motivation
+
+The cdur analysis identifies a critical budget B∗beyond which calibration may improve
+or worsen depending on the problem. In practice, B∗is unknown and problem-dependent.
+A practical algorithm must decide on the fly when to stop allocating reasoning tokens.
+
+7.2
+Formulation as an Optimal Stopping Problem
+
+Let (ˆat, ˆpt) denote the model’s answer and confidence after t reasoning tokens. Let ˆαt
+be an auxiliary estimate of the correctness probability at step t (e.g., from a lightweight
+verifier or from self-consistency across multiple samples). Define the calibration gap at
+step t:
+∆t = ˆpt −ˆαt.
+(7)
+
+CABStop is a stopping rule τ ∗defined as:
+
+τ ∗= min{t : ∆t > δ},
+(8)
+
+where δ > 0 is a calibration tolerance threshold.
+
+This is a first-passage stopping rule over the stochastic process (∆t)t≥0. The rule halts
+reasoning when the model’s expressed confidence exceeds its estimated accuracy by more
+than δ.
+
+Proposition 6.1 (Optimality of CABStop under Monotone Confidence)
+
+If ˆpt is non-decreasing and ˆαt is approximately constant past B∗, then τ ∗minimizes
+expected ECE among all stopping rules of the form τ = inf{t : f(∆t) > c} for any
+non-decreasing f.
+
+Proof sketch. The ECE at stopping time τ satisfies
+
+ECE(τ) ≈|ˆpτ −ˆατ| = |∆τ|.
+
+Under the stated monotonicity assumptions, ∆t is non-decreasing, so the first time ∆t
+crosses δ is also the time that minimizes the future expected ECE (since past τ ∗, ∆t ≥δ
+and ECE only worsens). Among rules of the given form, the threshold rule with threshold
+δ is optimal by the structure of first-passage times.
+
+Algorithm 1 CABStop: Confidence-Accuracy Budget Stopping
+
+Require: Question q, calibration threshold δ, check interval ∆B, max budget Bmax
+Ensure: Answer ˆa, confidence ˆp, stopping budget τ ∗
+
+1: t ←0, R ←ϵ (empty reasoning chain)
+2: while t < Bmax do
+3:
+Generate ∆B more reasoning tokens: R ←R ∪Rt:t+∆B
+4:
+t ←t + ∆B
+5:
+Extract candidate answer ˆat and confidence ˆpt from (q, R)
+6:
+Compute auxiliary accuracy estimate ˆαt
+▷e.g., self-consistency over k samples
+7:
+if ˆpt −ˆαt > δ then
+8:
+return ˆat, ˆpt, τ ∗= t
+9:
+end if
+10: end while
+11: return ˆaBmax, ˆpBmax, τ ∗= Bmax
+
+7.3
+Algorithm
+
+7.4
+TikZ: CABStop Mechanism
+
+7.5
+Discussion
+
+Choice of δ.
+In our experiments, OG > 0.10 consistently corresponds to what practi-
+tioners would consider problematic overconfidence. We recommend δ = 0.10 as a starting
+point, which aligns with the conventional ECE threshold for “well-calibrated” systems.
+The appropriate δ is task- and deployment-dependent and should be tuned accordingly.
+
+Auxiliary accuracy estimation.
+The most straightforward implementation uses self-
+consistency [Wang et al., 2022]: generate k independent continuations from the current
+reasoning state and use the fraction agreeing with ˆat as ˆαt. With k = 5, this adds modest
+compute overhead relative to the inference budget.
+
+Failure cases of CABStop.
+CABStop assumes ˆαt provides a meaningful signal about
+correctness. This assumption fails in at least two important scenarios.
+
+First, when the model is consistently wrong across samples: if all k self-consistency
+samples agree on an incorrect answer, ˆαt will be high (reflecting consistency) even though
+accuracy is zero. In this case, ∆t = ˆpt −ˆαt will be small and CABStop will not halt
+early—precisely when it should. This failure mode is most likely on questions in the
+high-frequency trap categories (counting, syllogism), where the model may have a strong
+prior toward a specific wrong answer.
+
+Second, when confidence is not monotone in t: the optimality guarantee of Proposition 6.1
+requires ˆpt to be non-decreasing. In practice, verbalized confidence may fluctuate, especially
+when the model partially reconsiders an intermediate step. In this case, the stopping rule
+may trigger and release prematurely.
+
+Practical recommendations.
+Based on our empirical observations, we offer the
+following guidance for practitioners choosing reasoning budgets for calibration-sensitive
+applications.
+
+For tasks requiring precise discrete computation (counting, set theory, modular arithmetic,
+combinatorics), light reasoning budgets appear particularly risky: our results suggest they
+increase confidence without commensurate accuracy gains. Either no reasoning (for speed)
+or heavy reasoning (for accuracy) is preferable to a brief chain-of-thought that may lock
+in a wrong answer.
+
+For tasks requiring multi-step logical inference (syllogisms, conditionals), the risk of early
+lock-in is high. Self-consistency checking—generating multiple independent chains and
+comparing answers—is a low-cost intervention that can improve confidence calibration
+without increasing single-chain budget.
+
+Monitoring the OG metric (Conf −Acc) on a held-out calibration set, separately for
+each reasoning budget, is recommended for any deployment where calibration matters. A
+model showing OG > 0.20 at a given budget should be treated with caution, even if its
+accuracy is acceptable.
+
+8
+Threats to Validity
+
+We report the following threats transparently. Some of these are discussed in detail in
+earlier sections; we consolidate them here for clarity.
+
+Small sample size.
+The dataset contains 47 trap questions, yielding approximately
+8–10 valid responses per trap type per model per budget. This limits the statistical power
+of all analyses, and particularly per-category analyses. ECE estimates are sensitive to
+outliers at this sample size. Confidence intervals across seeds partially mitigate this, but
+the standard deviations reported in Table 3 are large in several conditions, indicating that
+results should be interpreted as directional rather than precise.
+
+Validity filtering and selection bias.
+As discussed in Section 5.3, the 42% validity
+rate may introduce systematic bias.
+If models are more likely to provide parseable
+responses when confident, our ECE estimates will be biased toward overconfidence. The
+direction of this bias is consistent with our main finding, meaning we cannot rule out the
+possibility that the observed overconfidence is partly an artifact of selection.
+
+Verbalized confidence limitations.
+As discussed in Section 5.5, verbalized confidence
+is not equivalent to model-internal epistemic uncertainty. Results should be interpreted
+as measuring a behaviorally expressed property—verbalized confidence—rather than true
+uncertainty.
+
+Model family restriction.
+We evaluate only models from the Llama-3 family. Whether
+cdur manifests similarly in GPT-4o, Claude-3.5, Gemini, or other families is an open
+empirical question. Based on our theoretical analysis, we expect the phenomenon to be
+present in any model with RLHF-style training, but its severity may vary substantially.
+
+Prompt sensitivity.
+Budget levels are implemented via prompt engineering, which
+may interact with model-specific instruction-following behavior. The specific wording of
+budget prompts could affect both reasoning quality and confidence elicitation, and we
+have not conducted ablations over prompt formulations.
+
+Incomplete 70B data.
+As discussed in Section 6.3, the absence of multi-budget data
+for the 70B model means that scale-related conclusions are severely limited. We do not
+draw conclusions about the scaling behavior of cdur.
+
+9
+Discussion
+
+9.1
+When CDUR Should Be Expected
+
+The cdur phenomenon is not expected to manifest equally across all task types. Based
+on our theoretical model and empirical results, calibration drift under reasoning is most
+likely for tasks that share the following properties.
+
+Discrete, exact-answer structure. Problems with a unique correct answer determined
+by precise discrete computation (counting, modular arithmetic, combinatorics) leave little
+room for the model to “almost be right.” A wrong initial hypothesis is simply wrong, and
+reasoning that elaborates on it increases confidence without improving accuracy. Our
+results confirm that these categories dominate the wrong-and-confident distribution.
+
+Non-obvious traps. Problems where a plausible-seeming wrong answer exists (e.g.,
+anchoring, spurious pattern completion, base-rate neglect) are particularly vulnerable,
+because the initial hypothesis sampled by the model is likely to be the trap answer.
+RLHF-trained models, which are rewarded for fluent and confident responses, may be
+especially prone to sampling the most plausible-seeming hypothesis rather than the correct
+one.
+
+Short reasoning chains insufficient for correction. For problems requiring multiple
+precise logical steps to reach the answer, short reasoning chains may correctly identify the
+problem type but fail to execute all necessary steps, producing a confident partial answer.
+
+Conversely, for open-ended generation tasks, subjective evaluation tasks, and tasks with
+many acceptable answers, the lock-in mechanism is less relevant: there is no unique correct
+h0, and confidence-accuracy alignment is harder to measure.
+
+9.2
+Implications for Inference-Time Scaling
+
+Recent work proposes scaling inference-time compute as a complementary axis to training-
+time compute [Snell et al., 2024]. Our findings suggest a nuance: inference-time scaling
+improves accuracy but may worsen calibration at intermediate budget levels. A system
+that scales compute without monitoring calibration may present confidently wrong answers
+to users at the budget levels where the scaling is cheapest.
+
+9.3
+Implications for Model Evaluation
+
+Standard benchmarks measure accuracy. Our results suggest that calibration should be
+measured alongside accuracy, particularly as a function of reasoning budget. A model that
+achieves high accuracy at heavy reasoning but poor ECE at light reasoning may perform
+poorly in deployment scenarios where the full reasoning budget is not always available.
+
+We recommend that future model evaluations report (Acc(B), ECE(B)) curves across
+multiple budgets, not just peak accuracy.
+
+9.4
+Theoretical Limitations
+
+The Hypothesis Lock-In Model (Section 4) is a stylized approximation. Real autoregressive
+LLMs can revise their hypothesis mid-chain, especially when prompted with explicit
+revision instructions. The propositions in Section 3 should be understood as characterizing
+a specific mechanistic regime—where the model’s context is dominated by an early
+committed hypothesis—rather than as universal laws governing all LLM reasoning.
+
+The commitment model also does not account for the structured attention patterns of
+Transformer architectures, temperature effects on hypothesis sampling, or the effect of
+instruction-following fine-tuning on the probability of self-correction. A more precise
+mechanistic account would require analysis at the level of attention weights and token
+probabilities, which is left to future work.
+
+9.5
+Connections to Human Reasoning
+
+The cdur phenomenon has a human cognition analog: post-hoc rationalization [Haidt,
+2001]. Humans often form an initial intuitive judgment and then construct reasoning that
+justifies it, increasing their confidence without increasing its accuracy. The commitment
+model in Section 4 formalizes this structure in the LLM setting. The parallel suggests
+that cdur may be a general feature of systems trained to produce justified conclusions
+rather than accurate ones, extending beyond LLMs to any architecture with a generate-
+then-justify structure.
+
+10
+Future Work
+
+Empirical replication at scale.
+The most pressing need is a larger dataset—at least
+500 trap questions—to provide robust per-category calibration estimates and to verify the
+non-monotone ECE trajectory with statistical significance.
+
+Across model families.
+Testing cdur on GPT-4o, Claude-3.5, and Gemini models
+would determine whether the phenomenon is universal or Llama-specific. Completing the
+70B evaluation across all budget conditions is a near-term priority.
+
+Training interventions.
+RLHF may be modified to reward calibrated confidence
+rather than expressed confidence. Calibration-aware reward models—which penalize high
+verbalized confidence on wrong answers—are a natural next step.
+
+Better auxiliary estimators.
+CABStop depends on the quality of ˆαt. Lightweight
+verifier models, reward models, or retrieval-augmented consistency checks could improve
+the accuracy estimate without substantial compute overhead, and would address the
+consistent-wrong-answer failure case.
+
+Adaptive budgeting.
+A learned policy that maps (question, current calibration gap)
+to (continue/stop) would be a stronger version of CABStop. This could be framed as
+a reinforcement learning problem with a calibration-aware reward, and would avoid the
+need for a hand-tuned threshold δ.
+
+Formal lower bounds.
+Can we prove a lower bound on the overconfidence gap under
+the commitment model for specific problem classes? This would provide a theoretical
+floor on achievable calibration and would clarify when no amount of budget tuning can
+resolve the overconfidence problem.
+
+Per-sample calibration analysis.
+As discussed in Section 6.5, future work should
+report per-sample confidence-accuracy distributions in addition to aggregate ECE, to
+distinguish between uniform miscalibration and concentrated dangerous overconfidence.
+
+11
+Conclusion
+
+We have introduced Calibration Drift Under Reasoning (cdur): the phenomenon
+whereby increasing reasoning budget may first improve and then worsen model calibration,
+producing non-monotone dynamics in the ECE(B) curve. We have provided:
+
+(1) A formal definition of cdur and three propositions characterizing it under a probabilis-
+tic Hypothesis Lock-In Model, establishing theoretical grounding for the phenomenon
+under an explicit mechanistic abstraction.
+
+(2) Empirical evidence from Llama-3.1-8B on 47 reasoning-trap questions spanning 21
+cognitive failure modes, showing non-monotone ECE dynamics and persistent overcon-
+fidence gaps exceeding 0.25 across all budget levels. We report limited Llama-3.3-70B
+results (no-reasoning only) and explicitly acknowledge that cdur dynamics at this
+scale remain unconfirmed.
+
+(3) The CABStop algorithm—a calibration-aware stopping rule grounded in optimal
+stopping theory—which halts reasoning when the confidence-accuracy gap exceeds a
+threshold. We also characterize its failure cases and discuss practical guidance for
+threshold selection.
+
+We have been explicit about the methodological limitations of this study: the small
+dataset, the 42% validity rate and its potential for selection bias, the imprecision of
+verbalized confidence as an uncertainty signal, and the incomplete multi-scale evaluation.
+These limitations do not negate the value of the theoretical framework or the empirical
+observations for the 8B model, but they do call for the results to be treated as preliminary
+evidence motivating further investigation rather than as settled empirical findings.
+
+this non-monotonicity can be dangerous in practice. As inference-time scaling becomes a
+mainstream technique, calibration monitoring—ideally combined with adaptive stopping
+rules—deserves attention as a first-class concern alongside accuracy optimization.
+
+References
+
+Chow, Y. S., and Robbins, H. (1961). On optimal stopping rules. Zeitschrift für Wahrschein-
+lichkeitstheorie und verwandte Gebiete, 2(1):33–49.
+
+De Groot, M. H. and Fienberg, S. E. (1983). The comparison and evaluation of forecasters.
+Journal of the Royal Statistical Society: Series D (The Statistician), 32(1-2):12–22.
+
+Desai, S. and Durrett, G. (2020). Calibration of pre-trained transformers. Proceedings of
+EMNLP.
+
+Graves, A. (2016). Adaptive computation time for recurrent neural networks. arXiv
+preprint arXiv:1603.08983.
+
+Guo, C., Pleiss, G., Sun, Y., and Weinberger, K. Q. (2017). On calibration of modern
+neural networks. Proceedings of ICML.
+
+Haidt, J. (2001). The emotional dog and its rational tail: A social intuitionist approach
+to moral judgment. Psychological Review, 108(4):814.
+
+Kadavath, S., Conerly, T., Askell, A., Henighan, T., Drain, D., Perez, E., Schiefer, N.,
+Hatfield-Dodds, Z., DasSarma, N., Tran-Johnson, T., et al. (2022). Language models
+(mostly) know what they know. arXiv preprint arXiv:2207.05221.
+
+Kojima, T., Gu, S. S., Reid, M., Matsuo, Y., and Iwasawa, Y. (2022). Large language
+models are zero-shot reasoners. Advances in Neural Information Processing Systems, 35.
+
+Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J.,
+Schulman, J., Sutskever, I., and Cobbe, K. (2023). Let’s verify step by step. arXiv
+preprint arXiv:2305.20050.
+
+Muennighoff, N., et al. (2025). Scaling LLM test-time compute optimally can be more
+effective than scaling model parameters. arXiv preprint arXiv:2408.03314.
+
+Murphy, A. H. (1977). The value of climatological, categorical and probabilistic forecasts
+in the cost-loss ratio situation. Monthly Weather Review, 105(7):803–816.
+
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C.,
+Agarwal, S., Slama, K., Ray, A., et al. (2022). Training language models to follow
+instructions with human feedback. Advances in Neural Information Processing Systems,
+35.
+
+Snell, C., Lee, J., Xu, K., and Kumar, A. (2024). Scaling LLM test-time compute optimally
+can be more effective than scaling model parameters. arXiv preprint arXiv:2408.03314.
+
+Turpin, M., Michael, J., Perez, E., and Bowman, S. R. (2023). Language models don’t
+always say what they think: Unfaithful explanations in chain-of-thought prompting.
+arXiv preprint arXiv:2305.04388.
+
+Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery, A., and Zhou,
+D. (2022). Self-consistency improves chain of thought reasoning in language models.
+arXiv preprint arXiv:2203.11171.
+
+Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E., Le, Q., and
+Zhou, D. (2022). Chain-of-thought prompting elicits reasoning in large language models.
+Advances in Neural Information Processing Systems, 35.
+
+Xiong, M., Hu, Z., Lu, X., Li, Y., Fu, J., He, J., and Hooi, B. (2024). Can LLMs express
+their uncertainty? An empirical evaluation of confidence elicitation in LLMs. Proceedings
+of ICLR.
+
+Zhou, W., Sha, Z., Zhang, Q., Gong, W., Shan, B., Yang, L., He, X., and Liu, B. (2023).
+Navigating the grey area: How expressions of uncertainty and overconfidence affect
+language models. arXiv preprint arXiv:2302.13439.
+
+A
+Proof Details
+
+A.1
+Formal Consistency Score
+
+We define the consistency score C used in Proposition 3.4 as follows. Let T be the
+vocabulary and Vh0 ⊂T be the set of tokens that reinforce hypothesis h0 (e.g., tokens
+that share lexical content with h0 or that appear in reasoning chains that conclude with
+h0, as measured by a reference corpus). Then:
+
+t
+X
+
+C(R1, . . . , Rt; h0) = 1
+
+i=1
+1[Ri ∈Vh0].
+
+t
+
+This is a running fraction, and E[C] = P[Ri ∈Vh0 | h0] =: ρ(h0) ∈(0, 1) by assumption.
+
+Under the commitment model, P[Ri ∈Vh0 | h0, R1, . . . , Ri−1] is non-decreasing in i (since
+the context increasingly supports h0), so C is a submartingale with positive drift for all
+t ≥1. Hence E[C(R1, . . . , Rt; h0)] is non-decreasing in t.
+
+A.2
+Discussion of Assumption Robustness
+
+The key assumption is that Pθ(Ri ∈Vh0 | h0, R<i) is non-decreasing in i. This holds under
+self-attention architectures when:
+
+1. h0 appears in the first few tokens of the reasoning chain and thus in the attention
+window.
+
+2. The model has been trained to produce coherent, self-consistent outputs (as encour-
+aged by RLHF).
+
+Both conditions hold approximately for current instruction-tuned LLMs. We do not claim
+they hold universally, and the assumption may be violated when the model encounters
+strong contradictory evidence mid-chain or when explicit revision instructions are provided.
+
+B
+Dataset: Trap Question Examples
+
+Counting (highest frequency).
+Question: “A frog climbs 3 meters up a 10-meter
+wall each day and slides back 2 meters each night. How many days to reach the top?”
+Expected: 8. Common wrong answer: 10. Trap: On day 8, the frog reaches 10m during
+the day before sliding back; students often compute 10/1 = 10 naively.
+
+Set theory.
+Question: “In a class of 30, 18 play football, 15 play cricket, and 5
+play both. How many play neither?” Expected: 2. Common wrong answer: 3. Trap:
+Inclusion-exclusion requires |F ∪C| = 18 + 15 −5 = 28; neither = 30 −28 = 2.
+
+Syllogism.
+Question: “All A are B. All B are C. Is it true that all C are A?” Expected:
+No. Common wrong answer: Yes. Trap: The converse of a universal statement does not
+follow.
+
+Probability.
+Question: “A box has 2 red and 2 blue balls.
+You draw 2 without
+replacement. What is the probability both are red?” Expected: 1/6. Common wrong
+answer: 1/4. Trap: The draws are dependent; P = 2
+
+4 · 1
+
+3 = 1
+
+6.
+
+C
+Experimental Logs (Summary)
+
+Table 3 reproduces the full summary statistics from the experimental runs. Standard
+deviations are computed across 3 seeds; the 70B model was not evaluated at multi-budget
+conditions, and those entries are absent.
+
+Wrong + Confident (ˆp ≥0.90), by Trap Category
+
+counting
+27
+
+set theory
+18
+
+spatial
+18
+
+semantic
+13
+
+compound
+11
+
+operator prec.
+10
+
+relative motion
+9
+
+probability
+9
+
+syllogism
+7
+
+anchor
+6
+
+algebra
+5
+
+modular
+4
+
+percentage
+4
+
+mixture
+3
+
+combinatorics
+3
+
+pattern
+2
+
+exponential
+2
+
+contrapositive
+1
+
+Count
+0
+5
+10
+15
+20
+25
+threshold
+
+Figure 1: Hypothesis Lock-In. The initial hypothesis h0 commits the reasoning trajectory.
+Correct initialization leads to self-reinforcing correct chains; incorrect initialization leads
+to self-reinforcing incorrect chains. In both cases, confidence ˆp tends to rise with chain
+length.
+
+Table 1: Reasoning-trap categories used in the evaluation dataset. Categories are ordered
+by observed wrong + confident frequency (see Figure 3).
+
+Rank
+Category
+Description
+
+1
+counting
+Off-by-one and boundary errors in discrete
+counting
+2
+set_theory
+Confusion between union, intersection, and
+complement
+3
+spatial
+Failures in 3D spatial reasoning and perspec-
+tive
+4
+semantic
+Lexical ambiguity and scope confusion
+5
+compound
+Multi-step errors compounding across a chain
+6
+operator_precedence
+Misapplication of mathematical order of op-
+erations
+7
+relative_motion
+Incorrect frame-of-reference reasoning
+8
+probability
+Base-rate neglect and conditional probability
+errors
+9
+syllogism
+Invalid syllogistic inference (affirming the con-
+sequent, etc.)
+10
+anchor
+Anchoring to salient but irrelevant numerical
+values
+11
+conditional_prob
+Confusion of P(A|B) with P(B|A)
+12
+algebra
+Sign errors and variable substitution mistakes
+13
+modular
+Errors in modular arithmetic (e.g., day-of-
+week calculations)
+14
+percentage
+Percentage-of-percentage and base confusion
+15
+mixture
+Weighted average and mixture problem errors
+16
+combinatorics
+Permutation/combination
+and
+double-
+counting errors
+17
+pattern
+Spurious pattern extrapolation
+18
+exponential
+Misestimation of exponential vs. linear growth
+19
+contrapositive
+Failure to correctly negate and reverse condi-
+tionals
+20
+modular (misc.)
+Additional modular reasoning items
+21
+(other)
+Miscellaneous cross-category items
+
+ECE(B)
+
+CALIBRATION
+IMPROVES
+
+OVERCONFIDENCE
+REGIME
+
+0.10
+
+Calibration Sweet Spot
+
+ECE∗
+
+Reasoning Budget B
+
+0
+
+none
+light
+heavy
+
+B∗
+
+Figure 2: Schematic of the cdur phenomenon. ECE(B) is U-shaped in the reasoning
+budget B under the theoretical model. The green region (B < B∗) is the beneficial
+reasoning regime; the orange region (B > B∗) is the overconfidence regime. Empirical
+results for 8B are qualitatively consistent with non-monotone dynamics, but do not
+perfectly match this schematic (see Section 6.2).
+
+Table 2: Selected “smoking gun” examples: incorrect responses with verbalized confidence
+≥0.90. All are from Llama-3.1-8B, no-reasoning condition.
+
+Model
+Budget
+Trap Type
+Expected
+Predicted
+Conf.
+
+8B
+none
+anchor
+5
+10
+1.0
+8B
+none
+compound
+629
+567
+1.0
+8B
+none
+syllogism
+no
+yes
+1.0
+8B
+none
+counting
+10
+7
+1.0
+8B
+none
+probability
+1/4
+1/8
+1.0
+8B
+none
+op_prec.
+16
+4
+1.0
+8B
+none
+set_theory
+30
+50
+1.0
+8B
+none
+spatial
+512
+27
+1.0
+8B
+none
+algebra
+20
+14
+1.0
+8B
+none
+modular
+friday
+Saturday
+1.0
+8B
+light
+syllogism
+no
+yes
+1.0
+
+Wrong + Confident (ˆp ≥0.90), by Trap Category
+
+counting
+27
+
+set theory
+18
+
+spatial
+18
+
+semantic
+13
+
+compound
+11
+
+operator prec.
+10
+
+relative motion
+9
+
+probability
+9
+
+syllogism
+7
+
+anchor
+6
+
+algebra
+5
+
+modular
+4
+
+percentage
+4
+
+mixture
+3
+
+combinatorics
+3
+
+pattern
+2
+
+exponential
+2
+
+contrapositive
+1
+
+Count
+0
+5
+10
+15
+20
+25
+threshold
+
+Figure 3: Distribution of wrong-and-confident responses (ˆp ≥0.90) by trap category,
+aggregated across both models, all budgets, and all seeds. Categories requiring precise
+discrete computation or strict logical reasoning dominate.
+
+Input q
+start reasoning
+
+Elicit ˆat, ˆpt
+Estimate ˆαt
+ˆpt −ˆαt > δ?
+
+Generate
+∆B tokens
+
+no
+
+yes
+no
+
+Continue
+reasoning
+t ≥Bmax?
+
+Stop.
+Return ˆat, ˆpt
+
+yes
+
+Force stop.
+Return answer.
+
+Figure 4: CABStop control flow. At each reasoning checkpoint, the algorithm compares
+the model’s expressed confidence ˆpt with an auxiliary accuracy estimate ˆαt. Reasoning
+halts when their gap exceeds the calibration threshold δ.
+
+Table 3: Full results: ECE (mean ± std across 3 seeds), overconfidence gap, and accuracy
+for trap questions. The large standard deviation at 8B medium budget reflects high
+seed-to-seed variability and should be interpreted cautiously. 70B results are available
+only at the no-reasoning condition.
+
+Model
+Budget
+ECE ± std
+OG (conf−acc)
+Accuracy
+
+Llama-3.1-8B
+none
+0.0436 ± 0.0154
++0.493
+0.461
+Llama-3.1-8B
+light
+0.1040 ± 0.0339
++0.249
+0.732
+Llama-3.1-8B
+medium
+0.0496 ± 0.0492
++0.336
+0.653
+Llama-3.1-8B
+heavy
+0.0145 ± 0.0049
++0.245
+0.739
+
+Llama-3.3-70B
+none
+0.0352 ± 0.0264
++0.155
+0.825
+Llama-3.3-70B
+light
+not evaluated
+Llama-3.3-70B
+medium
+not evaluated
+Llama-3.3-70B
+heavy
+not evaluated

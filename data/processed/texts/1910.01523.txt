@@ -1,0 +1,1843 @@
+ReNAS: Relativistic Evaluation of Neural Architecture Search
+
+Yixing Xu1, Yunhe Wang1, Kai Han1, Yehui Tang14, Shangling Jui2, Chunjing Xu1, Chang Xu3
+
+1Noah’s Ark Lab, Huawei Technologies, 2Huawei Technologies
+3The University of Sydney, 4Peking University
+
+{yixing.xu,
+
+arXiv:1910.01523v7 [cs.LG] 23 Sep 2021
+
+Abstract
+
+tomatic way to design neural network architectures without
+human intervention. Neural Architecture Search (NAS) has
+been proposed to address this need [4, 17, 27, 28, 45, 38].
+Motivated by different searching strategies and assump-
+tions, a number of NAS algorithms have been proposed to
+increase the search speed and the performance of the re-
+sulting network [3, 18, 36, 21], including discrete searching
+methods such as Evolutionary Algorithm (EA) based meth-
+ods [24, 29, 31], Reinforcement Learning (RL) based meth-
+ods [2, 30, 49, 50], and continuous searching methods such
+as DARTS [25] and CARS [44].
+There have been a large body of works focusing on de-
+signing different searching methods. However, the architec-
+ture evaluation scheme has not been sufﬁciently studied yet.
+For the sake of evaluation efﬁciency, early stopping strat-
+egy is often adopted in the architecture evaluation phase
+of discrete searching methods. Based on the intermediate
+performance of a super-net, continuous searching methods
+optimize a series of learnable parameters to select layers
+or operations in deep neural networks. Nevertheless, these
+coarse architecture evaluations could prevent us from se-
+lecting the optimal neural architecture (detailed information
+can be found in Sec.3.1). A recent report suggested that the
+performances of the networks discovered by current NAS
+frameworks are similar to that of random search [33, 43].
+Most recently, there is an alternative way to evaluate neu-
+ral architecture by learning a performance predictor. For
+example, Domhan et al. proposed a weight probabilistic
+model to extrapolate the performance from the ﬁrst part of a
+learning curve [9]. Klein et al. used a Bayesian neural net-
+work to predict unobserved learning curves [20]. These two
+methods rely on Markov chain Monte Carlo (MCMC) sam-
+pling procedures and hand-crafted curve function, which
+are computationally expensive. Deng et al. [8] developed
+a uniﬁed way to encode individual layers into vectors and
+brought them together to form an integrated description via
+LSTM, and directly predicted the performance of a network
+architecture. Sun et al. [37] proposed an end-to-end off-line
+performance predictor based on random forest.
+Methods mentioned above focused on predicting the
+
+An effective and efﬁcient architecture performance eval-
+uation scheme is essential for the success of Neural Archi-
+tecture Search (NAS). To save computational cost, most of
+existing NAS algorithms often train and evaluate intermedi-
+ate neural architectures on a small proxy dataset with lim-
+ited training epochs. But it is difﬁcult to expect an accurate
+performance estimation of an architecture in such a coarse
+evaluation way. This paper advocates a new neural archi-
+tecture evaluation scheme, which aims to determine which
+architecture would perform better instead of accurately pre-
+dict the absolute architecture performance. Therefore, we
+propose a relativistic architecture performance predictor in
+NAS (ReNAS). We encode neural architectures into feature
+tensors, and further reﬁning the representations with the
+predictor. The proposed relativistic performance predictor
+can be deployed in discrete searching methods to search for
+the desired architectures without additional evaluation. Ex-
+perimental results on NAS-Bench-101 dataset suggests that,
+sampling 424 (0.1% of the entire search space) neural ar-
+chitectures and their corresponding validation performance
+is already enough for learning an accurate architecture per-
+formance predictor. The accuracies of our searched neu-
+ral architectures on NAS-Bench-101 and NAS-Bench-201
+datasets are higher than that of the state-of-the-art meth-
+ods and show the priority of the proposed method. 1
+
+1. Introduction
+
+Recent years have witnessed the emergence of many
+well-known Convolutional Neural Networks (CNNs), (e.g.
+VGG [35], ResNet [15], MobileNet [16]).
+They have
+achieved state-of-the-art results in many real-world appli-
+cations [26, 32, 35, 48, 39, 14, 6, 5]. However, the design
+of these sophisticated CNNs were heavily relied on human
+expert experience. Thus, it is attractive to investigate an au-
+
+1Published on CVPR 2021.
+The
+pytorch
+code
+can
+be
+found
+at
+
+noah/Efﬁcient-Computing/tree/master/Efﬁcient-NAS/ReNAS
+
+Figure 1: Pipeline of the proposed ReNAS. Sampled Networks: Architectures are sampled from the pre-deﬁned search space
+and trained until converge to get the ground-truth results. Performance Prediction. Sampled architectures are encoded into
+feature tensors by leveraging the adjacency matrix and features that can well represent the computational power. Then, a
+predictor is used to predict the ﬁnal accuracy. Loss Function. The pairwise ranking based loss function is used to train the
+predictor. Compared to mean squared error (MSE) loss, ranking based loss function may derive a prediction that is far from
+the ground-truth but in the correct ranking position, which is crucial to the following searching algorithms to search for the
+best architecture.
+
+in the MindSpore model zoo 2.
+
+exact performance of a given neural architecture with
+element-wise loss function such as mean squared error
+(MSE) or least absolute error (L1). However, in neural ar-
+chitecture search, what we care about is actually which neu-
+ral architecture would lead to a better performance. Hence,
+instead of a deterministic evaluation of neural architectures,
+it is more reasonable to adopt a relativistic way to evaluate
+the performance of architectures.
+
+2. Problem Formulation
+
+In this section, we ﬁrst instantiate the problem of evalua-
+tion scheme used in the previous methods. Then, we give an
+elaborate introduction of the proposed performance predic-
+tor. Speciﬁcally, developing architecture performance pre-
+dictor consists of three parts: encoding network architecture
+into a feature tensor, the regressor (predictor) to predict the
+performance and the objective function to be optimized. In
+this paper, we propose a new approach to encode neural net-
+work architectures in cell-based search space into feature
+tensors and to design the regressor. Furthermore, we pro-
+pose the pair-wise ranking loss to optimize the regressor.
+
+In this paper, we aim to learn an architecture perfor-
+mance predictor that focuses on the rankings of different
+architectures. Speciﬁcally, given a cell-based search space
+with a uniﬁed super-net for all of the architectures (e.g.
+NASBench [46, 12], DARTS [25]), we produce a way to
+encode network architectures into tensors by leveraging the
+adjacency matrix of the cell and features that can well rep-
+resent the computational power of a given architecture (e.g.
+FLOPs and parameters of each node). Then, pairwise rank-
+ing based loss function is used instead of element-wise
+loss function, since keeping rankings between different net-
+works are more important than accurately predicting their
+absolute performance for most of the searching methods.
+The pipeline of the proposed method is shown in Fig. 1. The
+experimental results on NAS-Bench-101 search space show
+that the proposed predictor achieves a higher prediction per-
+formance compared to the other state-of-the-art predictors,
+and can efﬁciently ﬁnd the architecture with top 0.02% ac-
+curacy in the whole search space by training only 424 (0.1%
+of the entire search space) neural architectures. Comparison
+with other state-of-the-art EA/RL/differential NAS methods
+on NAS-Bench-201 also shows the priority of the proposed
+method. Searched model on NAS-Bench-101 can be found
+
+2.1. Evaluation Scheme
+
+In case of saving computational resource and time, a
+commonly used evaluation scheme in the previous NAS
+methods is to train the neural network N on part of the train-
+ing dataset ˜D ∈D with early stop strategy, in which D is
+the entire training dataset. The model is then tested on the
+validation set, and the intermediate accuracy ACC(N, ˜D)
+stands for an approximation of the performance of the
+model in the subsequent searching algorithms instead of
+the ground-truth accuracy ACC(N, D).
+Previous meth-
+ods [23, 47, 43] assumed that there is a linear relationship
+between the intermediate accuracy and the ground-truth ac-
+curacy:
+
+ACC(N, D) = k × ACC(N, ˜D) + σ,
+(1)
+
+2
+
+by a 0-1 adjacency matrix A ∈{0, 1}n×n and a type vector
+t ∈{1, · · ·, 5}n (5 different node types containing input,
+3 × 3 conv, 1 × 1 conv, 3 × 3 max-pooling and output), in
+which n is the number of nodes. Furthermore, we calcu-
+late FLOPs and parameters of each node and derive a FLOP
+vector f ∈Rn (we assume the input image size is 32 × 32)
+and a parameter vector p ∈Rn.
+Since the number of nodes may be different in each cell,
+we pad the adjacency matrix A with 0 and the size is ﬁxed
+as 7 × 7. The type vector t, FLOP vector f and parameter
+vector p are padded accordingly. Note that the input and the
+output node should be ﬁxed as the ﬁrst and last node, thus
+the zero-padding is added at penultimate row and column
+each time until the size of A is 7 × 7. After that, we broad-
+cast the vectors into matrices, and make an element-wise
+multiplication with the adjacency matrix to get the type ma-
+trix T, FLOP matrix F and parameter matrix P, and ﬁnally
+concatenate them together to get a 19 × 7 × 7 tensor T to
+represent a speciﬁc architecture in NAS-Bench-101. An ex-
+ample of the process of deriving feature tensor is shown in
+Sec.2 of the supplementary material.
+Note that the feature tensor representations are not ro-
+bust to permutation, i.e., permuting the adjacency and type
+matrices may lead to different results. This problem can
+be solved by ﬁxing the order of the nodes. Speciﬁcally,
+we sort nodes by distances to INPUT node with depth-
+ﬁrst-search in order to reduce the non-unique ordering phe-
+nomenon. For those nodes with the same depth, we investi-
+gate a simple data augmentation method (i.e., permuting the
+adjacency and type matrices of the same architecture based
+on the nodes with the same depth) so that all of the repre-
+sentations for a speciﬁc architecture are assigned with the
+same label.
+
+where k is the scaling factor and σ is the offset.
+How-
+ever, the assumption in Eq. 1 may not hold in practice, and
+the intermediate accuracy may break the original rankings
+between architectures since lighter architectures often con-
+verge faster on smaller dataset than cumbersome architec-
+tures, but perform worse when using the whole training set
+[33]. Note that producing correct rankings for the search-
+ing algorithm is rather important, since the searching algo-
+rithms always select relatively better architectures regard-
+less of their absolute performance.
+Thus, we focus on learning the correct rankings between
+different architectures with predictor. Speciﬁcally, given a
+predictor ε and two different architectures N1 and N2. De-
+note ε(N; W) as the predicted performance of a given ar-
+chitecture N in which W is the weight matrix of the predic-
+tor, we should have:
+
+ε(N1; W) > ε(N2; W),
+
+if and only if ACC(N1, D) > ACC(N2, D),
+(2)
+
+which means that the predictor should rank different net-
+work architectures into the right order according to their
+ground-truth performance.
+
+2.2. Feature Tensor of Cell-Based Search Space
+
+Commonly, a cell-based search space with a uniﬁed
+super-net stacks the same searched cell to get the ﬁnal ar-
+chitecture [25, 46, 12]. In this section, we give an intro-
+duction on encoding the architectures in cell-based search
+space into feature tensors.
+Encoding a neural architecture is important for a predic-
+tor to predict the performance. Peephole [8] chose layer
+type, kernel width, kernel height and channel number as the
+representations of each layer. E2EPP [37] forced the net-
+work architecture to be composed of the DenseNet blocks,
+ResNet blocks and pooling blocks, and generated features
+based on these blocks.
+However, those features are not strong enough to en-
+code a network architecture. Different from the methods
+mentioned above, we focus on encoding architectures into
+feature tensors by leveraging the adjacency matrix of the
+cell and features that can well represent the computational
+power of a given architecture. In the following, we use
+NAS-Bench-101 dataset [46] as an example, which contains
+over 423k unique CNN architectures and their train, valida-
+tion and test accuracies on CIFAR-10 dataset. The same
+methods can be applied on other cell-based search space.
+Different cells produce different CNN architectures. In
+each cell there are no more than 7 nodes in which IN and
+OUT nodes are ﬁxed to represent the input and output ten-
+sors of the cell, respectively. The other nodes are randomly
+selected from 3 different operations: 3×3 convolution, 1×1
+convolution and 3 × 3 max-pooling. The edges are limited
+to no more than 9. Speciﬁcally, the cell can be represented
+
+2.3. Architecture Performance Predictor
+
+Given the feature tensor mentioned above, we propose
+the architecture performance predictor and introduce the
+ranking based loss function.
+In practice, there are usually limited training data for
+the predictor due to the massive time and resource spent
+on training a single neural architecture. Thus, in order to
+prevent the over-ﬁtting problem, we use a simple LeNet-5
+architecture to predict the ﬁnal accuracy of a given network
+architecture tensor T .
+When training the predictor, a commonly used loss func-
+tion is element-wise MSE or L1 loss function [8, 19, 37].
+They assume that a lower MSE or L1 loss leads to a better
+ranking results. However, this is not always the case. For
+example, given two networks with ground-truth classiﬁca-
+tion accuracies of 0.9 and 0.91 on the validation set. In the
+ﬁrst circumstance, they are predicted to have accuracies of
+0.91 and 0.9, and in the second circumstance of 0.89 and
+0.92. MSE losses are the same in both situations, but the
+
+them:
+L = L1 + λL2,
+(5)
+
+former is worse since the ranking between two networks is
+changed and the architecture with worse performance will
+be selected by the searching methods. We believe that the
+rankings of predicted accuracies between different architec-
+tures are more important than their absolute performance
+when applying network performance predictor to different
+searching methods.
+Formally,
+given n different network architectures
+and their ground-truth performance {(Ni, yi)}n
+i=1, and
+{ε(Ni; W)}n
+i=1 is the output of the predictor (short as
+ε(Ni)), which are the n objects to be ranked. We deﬁne
+the pairwise ranking based loss function as:
+
+in which λ is the hyper-parameter that controls the impor-
+tance between two different loss functions. Therefore, the
+effects of the proposed predictor are two folds. The ﬁrst is
+to directly predict accuracies with correct ranking, the sec-
+ond is to generate features with the property of continuity
+which indirectly helps to predict the accuracies.
+Finally, the performance predictor is integrated into dis-
+crete searching algorithms such as EA (RL) based searching
+method by replacing the ﬁtness (reward) of a given architec-
+ture with the output of our predictor (see Fig. 1). EA based
+method is used in the following experiments, and the indi-
+vidual is fed into the predictor and the output is treated as
+the ﬁtness of the model in EA method within milliseconds.
+
+n−1
+X
+
+n
+X
+
+L1(W) =
+
+j=i+1
+φ((ε(Ni) −ε(Nj)) ∗sign(yi −yj)),
+
+i=1
+
+(3)
+in which φ(z) = (a −z)+ is hinge function with parameter
+a. Given a pair of examples, the loss is 0 only when the
+examples are in the correct order and differed by a margin.
+Other functions like logistic function φ(z) = log(1 + e−z)
+and exponential function φ(z) = e−z can also be applied
+here.
+Besides utilizing the ﬁnal output, we believe that the fea-
+ture extracted before the last FC layer is also useful. The
+continuity is a common assumption in machine learning,
+i.e. the performance changes continuously along the feature
+space. However, this is not the case for primary network
+architecture, in which a slightly change of the architecture
+may lead to a radical change of the performance (e.g. skip
+connect). Thus, we consider learning the feature with the
+property of continuity.
+In order to generate features with continuity, consider
+the triplet {(η(Ni; W), yi)}3
+i=1 in which η(Ni; W) (short
+as η(Ni)) is the feature generated before the ﬁnal FC layer.
+The Euclidean distance between the two features is com-
+puted as dij = ||η(Ni) −η(Nj)||2, and the difference of
+the performance between two architectures is simply com-
+puted as lij = |yi −yj|. Thus, we achieve the property of
+continuity by deﬁning the loss function as:
+
+3. Theoretical Analysis
+
+In this section, we analyze the generalization error bound
+and prove that using the proposed pairwise ranking based
+loss function (Eq. 3) is better than using MSE loss when
+solving the ranking problem, under the assumption of using
+a two layer neural network with ReLU activation function.
+Firstly, we reformulate the ranking based loss function.
+Given an input pair (x, y), (x′, y′) ∈(X × Y)2, denote
+f : X →R as the ranking function on X, and ℓ: R × (X ×
+Y)2 →{0, R+} be the ranking loss function, the expected
+error of f can be deﬁned as [1]:
+
+Rℓ(f) = E((X,Y ),(X′,Y ′))∼(X×Y)2[ℓ(f, (X, Y ), (X′, Y ′))].
+(6)
+Given a training set D = {xi, yi}n
+i=1 ∈{X, Y}n, the em-
+pirical error of f is deﬁned as:
+
+n−1
+X
+
+n
+X
+
+ˆRℓ(f) =
+1
+n(n −1)
+
+j=i+1
+ℓ(f, (xi, yi), (x′
+i, y′
+i)),
+(7)
+
+i=1
+
+and the regularized empirical error is deﬁned as:
+
+ˆRλ
+ℓ(f) = ˆRℓ(f) + λC(f),
+(8)
+
+n−2
+X
+
+n−1
+X
+
+n
+X
+
+L2(W) =
+
+k=j+1
+φ((dij −dik) ∗sign(lij −lik)).
+
+in which the second term is the regularization term and λ >
+0 is the regularization parameter.
+Thus, when using the loss function φ(z) = (a −z)+,
+Eq. 3 equals to using a hinge ranking loss which is denoted
+as:
+
+j=i+1
+
+i=1
+
+(4)
+Given a single triplet, there are several different pairs, and
+the pair with smaller distance (smaller dij) should have
+similar performance (smaller lij).
+Eq.(4) compares two
+different pairs, and produces a cost when the former pair
+has larger distance (bigger dij) but similar performance
+(smaller lij) compared to the latter, and vice versa. The
+loss is accumulated on all different triplets.
+Note that although the form of Eq. 3 and Eq. 4 are simi-
+lar, the purposes behind are quite different. Given the equa-
+tions above, the ﬁnal loss function is the combination of
+
+ℓh(f, (x, y), (x′, y′)) = [a−(f(x)−f(x′))·sign(y−y′)]+,
+(9)
+and the element-wise MSE loss can be denote as:
+
+ℓmse(f, (x, y), (x′, y′)) = 1
+
+2[(f(x) −y)2 + (f(x′) −y′)2].
+(10)
+
+4.1. Predictor Performance Comparison on NAS-
+Bench-101
+
+In the following, we give the generalization error bounds
+when using pairwise ranking based loss function and MSE
+loss, and show that the proposed loss function is better. The
+proof is applied in the supplementary material.
+
+We compared the proposed predictor with the methods
+introduced in Peephole [8] and E2EPP [37].
+The NAS-
+Bench-101 dataset is selected as the training and testing sets
+of the predictors.
+Recall that one of the fundamental idea in ReNAS is that
+the ranking of the predicted values is more important than
+their absolute values when embedding the predictor into dif-
+ferent searching methods. Thus, for the quantitative com-
+parison, we use the Kendall’s Tau (KTau) [34] as the indi-
+cator:
+
+Theorem 1. Given A as the symmetric ranking algorithm3
+
+whose outputs of samples on a training dataset D ∈(X ×
+Y)n is fD = arg minf∈F ˆRλ
+ℓ(f), in which n ∈N is the
+number of training samples. Denote cx and cf as the upper
+bound of the inputs and weights such that for all x ∈X
+and f : X →R we have |x| ≤cx and ∥f∥2 ≤cf.
+Also given ℓh as the hinge ranking loss function that sat-
+isfy 0 ≤ℓh(f, (x, y), (x′, y′)) ≤L for all f : X →R and
+(x, y), (x′, y′) ∈(X × Y)2, and ℓmse as the MSE loss func-
+tion that also satisfy 0 ≤ℓmse(f, (x, y), (x′, y′)) ≤L. Then
+for any 0 < δ < 1, with probability at least 1 −δ we have:
+
+KTau = 2 × number of concordant pairs
+
+C2n
+−1,
+(13)
+
+in which n is the number of samples, C2
+n = n(n −1)/2
+and concordant pair means the rankings of predicted values
+and the actual values of a given pair are the same. KTau
+ranges from −1 to 1 and is suitable for judging the quality
+of the predictive rankings. A higher value indicates a better
+ranking.
+In order to clearly review the inﬂuence of using feature
+tensor and pairwise loss, we conduct the following 6 ver-
+sions of the proposed methods by ﬁxing the predictor as
+LeNet and varying the feature encoding method and the loss
+function, including:
+ReNAS-1 (type matrix + MSE): Using only the type
+matrix as feature and MSE loss function.
+ReNAS-2 (tensor + MSE): Using the proposed feature
+tensor and MSE loss function.
+ReNAS-3 (type matrix + L1): Using only the type ma-
+trix as feature and loss function L1 (Eq. 3).
+ReNAS-4 (tensor + L1): Using the proposed feature
+tensor and loss function L1.
+ReNAS-5 (type matrix + L): Using only the type matrix
+as feature and loss function L (Eq. 5).
+ReNAS-6 (tensor + L): Using the proposed feature ten-
+sor and loss function L.
+Note that the search space in NAS-Bench-101 dataset
+and E2EPP are different from each other, and the encoding
+method proposed in E2EPP is unable to be used directly on
+NAS-Bench-101 dataset. In order to apply NAS-Bench-101
+dataset to E2EPP, we produce surrogate method for E2EPP
+and use the feature encoding method proposed in the pre-
+vious section instead of the original encoding method pro-
+duced by E2EPP. The other parts remain unchanged.
+The experimental results are shown in Tab. 1. Consider
+that the training samples can only cover a small propor-
+tion of the search space in reality, we focus on the second
+column when using only 0.1% (424 models and the cor-
+responding validation accuracies) of the NAS-Bench-101
+dataset as training set. Different proportions are used in the
+experiment for integrity. The results show that the proposed
+
+Rℓh(fD) < ˆRℓh(fD) +
+8c2
+xc2
+f
+λn
+
+r
+
++ (
+4c2
+xc2
+f
+λ
++ L)
+
+2 ln(1/δ)
+
+n
+,
+(11)
+
+and
+
+Rℓmse(fD) < ˆRℓmse(fD) +
+8( cxcf L
+
+λ + 1)c2
+xc2
+f
+λn
+
+2
+√
+
+r
+
++ (
+4( cxcf L
+
+λ + 1)c2
+xc2
+f
+λ
++ L)
+
+2
+√
+
+2 ln(1/δ)
+
+n
+. (12)
+
+Since ( cxcf L
+
+λ + 1) > 1, also note that the lower the gap
+between the expected error and the empirical error, the bet-
+ter the generalization ability. Thus, we can say that using
+pairwise ranking based loss function (Eq. 3) has a better
+generalization ability than using element-wise MSE loss.
+
+2
+√
+
+4. Experiments
+
+In this section, we conduct several experiments on ver-
+ifying the effectiveness of the proposed network perfor-
+mance predictor. After that, the best CNN architecture is
+found by embedding the predictor into EA algorithm and
+is compared to other state-of-the-art predictors to verify its
+performance.
+The parameter settings for training the predictor and
+searching for best architecture are detailed below. When
+training the predictor, we used Adam to train the LeNet ar-
+chitecture with initial learning rate of 1 × 10−3; the weight
+decay is set to 5 × 10−4; the batch size is set to 1024 and
+trained for 200 epochs. When using the EA algorithm, we
+set the maximum generation number to 500 and population
+size to 64. The probability for selection, crossover and mu-
+tation are set to 0.5, 0.3 and 0.2, respectively.
+
+3The output of a symmetric ranking algorithm is independent of the
+order of elements in the training sequence D. The proposed algorithm can
+be easily proved to be a symmetric ranking algorithm.
+
+Table 1: The Kendall’s Tau (KTau) of Peephole, E2EPP and the proposed algorithms on the NAS-Bench-101 dataset with
+different proportions of training samples.
+
+Methods
+0.1%
+1%
+10%
+30%
+50%
+70%
+90%
+
+Peephole [8]
+0.4556
+0.4769
+0.4963
+0.4977
+0.4972
+0.4975
+0.4951
+E2EPP [37]
+0.5038
+0.6734
+0.7009
+0.6997
+0.7011
+0.6992
+0.6997
+ReNAS-1
+0.3465
+0.5911
+0.7914
+0.8229
+0.8277
+0.8344
+0.8350
+ReNAS-2
+0.4856
+0.6090
+0.8103
+0.8430
+0.8399
+0.8504
+0.8431
+ReNAS-3
+0.6039
+0.7943
+0.8752
+0.8894
+0.8949
+0.8976
+0.8995
+ReNAS-4
+0.6335
+0.8136
+0.8762
+0.8900
+0.8957
+0.8979
+0.8997
+ReNAS-5
+0.6096
+0.7949
+0.8756
+0.8854
+0.8898
+0.8911
+0.8918
+ReNAS-6
+0.6574
+0.8161
+0.8763
+0.8873
+0.8910
+0.8923
+0.8954
+
+Table 2: The classiﬁcation accuracy (%) on CIFAR-10
+dataset and the ranking (%) among different architectures in
+NAS-Bench-101 dataset using EA algorithm with the pro-
+posed predictor and the peer competitors. Predictors are
+trained with 0.1% samples randomly selected from NAS-
+Bench-101 dataset.
+
+encoding method can represent an architecture better than
+without using it, and the KTau indicator increases about
+0.14 when using MSE loss and 0.05 when using pairwise
+loss.
+When using pairwise loss instead of element-wise
+MSE loss, the KTau indicator increases about 0.26 when
+using only the type matrix as feature, and about 0.17 when
+using the proposed feature tensor. It means that pairwise
+loss is better than MSE loss at ranking regardless of input
+feature.
+Comparing to other state-of-the-art methods, Peephole
+used kernel size and channel number as features in addition
+to layer (node) type, and shows better result than ReNAS-1
+method which uses only the layer (node) type as features.
+However, it performs worse than ReNAS-2 method when
+using all the feature proposed, which again shows the supe-
+riority of using feature tensors. E2EPP used random forest
+as predictor, which has advantages only when the training
+samples are extremely rare. When using limited training
+data, the proposed method with loss function L (Eq. 5)
+achieves the best KTau performance, while the proposed
+method with L1 loss (Eq. 3) is better when more training
+data is used. The results show that generating features with
+continuity has advantageous to model ranking when little
+training data is used, which is often the case in reality.
+A qualitative comparisons on NAS-Bench-101 dataset is
+shown in Fig. 2. We show the results of training predictors
+using 0.1% training data, the x axis of each point represents
+the true ranking among all the points and the y axis denotes
+the corresponding predicted ranking. The points made by
+a perfect predictor lie on the line y = x, and the closer
+the points to line y = x the better. The results show that
+the predicted ranking made by ReNAS is better than other
+state-of-the-art methods.
+
+Method
+accuracy(%)
+ranking(%)
+
+Peephole [8]
+92.63 ± 0.31
+12.32
+E2EPP [37]
+93.47 ± 0.44
+1.23
+RS
+93.72 ± 0.13
+0.23
+ReNAS-1
+92.36 ± 0.27
+16.93
+ReNAS-2
+93.03 ± 0.21
+6.09
+ReNAS-3
+93.43 ± 0.26
+1.50
+ReNAS-4
+93.90 ± 0.21
+0.04
+ReNAS-5
+93.48 ± 0.18
+1.21
+ReNAS-6
+93.95 ± 0.11
+0.02
+
+101, and we cannot prevent EA algorithm from searching
+the architectures in the training set. Thus, in order to reduce
+the inﬂuence of the training set, we used only 0.1% of NAS-
+Bench-101 dataset as training samples to train the predictor,
+and subsequently used for EA algorithm. The ﬁnal perfor-
+mance tested on CIFAR-10 dataset with the best architec-
+ture searched by EA algorithm with the proposed predictor,
+the results of random search (RS) and the peer competitors
+mentioned above are shown in Tab. 2. Speciﬁcally, the best
+performances among top-10 architectures selected by EA
+algorithm with different predictors are reported and the ex-
+periments are repeated 20 times with different random seed
+to alleviate the randomness.
+
+The second column represents the classiﬁcation accu-
+racies of the selected models on CIFAR-10 test set, and
+the third column represents the true ranking of the se-
+lected models among all the 423k different models in NAS-
+Bench-101 dataset.
+The proposed method outperforms
+other competitors, and ﬁnds an network architecture with
+
+4.2. Architecture Search Results on NAS-Bench-
+101
+
+When searching for the best architecture, the size of the
+training set of the predictor should be limited since the
+search space in EA algorithm is the same as in NAS-Bench-
+
+(a) Peephole
+(b) E2EPP
+(c) Proposed
+
+Figure 2: The predicted ranking and true ranking of Peephole, E2EPP and the proposed method on NAS-Bench-101 dataset.
+1000 models are randomly selected for exhibition purpose. The x axis denotes the true ranking, and the y axis denotes the
+corresponding predicted ranking.
+
+Table 3: The classiﬁcation accuracy (%) on CIFAR-10
+dataset and the ranking (%) among different architectures
+in NAS-Bench-101 dataset using the predictors trained with
+0.1% samples selected from NAS-Bench-101 dataset. Dif-
+ferent selection methods are used.
+
+the search space is often different from NAS-Bench-101
+dataset, which means the training samples needs to be col-
+lected from scratch. Thus, we give some intuitions of se-
+lecting model architectures from search space as training
+samples. 0.1% samples are selected from NAS-Bench-101
+dataset as training samples with the method of random se-
+lection, select by parameters and select by FLOPs. When
+selecting by parameters (FLOPs), all samples are sorted by
+their total parameters (FLOPs), and selected uniformly. Dif-
+ferent predictors are trained with different training samples
+using proposed method, and are further integrated into EA
+algorithm for searching. The performance of the best archi-
+tectures are shown in Tab. 3. The results show that random
+selection performs best. A possible reason is that architec-
+tures with similar parameters (FLOPs) perform diversely,
+and the uniformly selected architectures cannot represent
+the true performance distribution of the architectures with
+similar parameters (FLOPs). Thus, random selection is our
+choice, and is worth trying when generating training sam-
+ples from search space in reality.
+
+Method
+accuracy(%)
+ranking(%)
+
+random selection
+93.95 ± 0.11
+0.02
+select by parameters
+93.84 ± 0.21
+0.08
+select by FLOPs
+93.76 ± 0.13
+0.16
+
+Table 4: The classiﬁcation accuracy (%) on CIFAR-100
+dataset among different architectures in NAS-Bench-101
+using EA algorithm with the proposed predictor and the
+peer competitors. Predictors are trained with 424 samples
+randomly selected from NAS-Bench-101.
+
+Method
+top-1 acc (%)
+top-5 acc (%)
+
+Peephole [8]
+73.58
+91.97
+E2EPP [37]
+75.49
+92.77
+RS
+77.47
+93.68
+Proposed
+78.56
+94.17
+
+top 0.02% performance among the search space using only
+0.1% dataset. The fact of achieving good performance with
+little training data is reasonable for two reasons. The ﬁrst
+is that the fundamental features of FLOPs and parameters
+can represent the architecture well and tensor like input is
+suitable for CNN. The second is that using pairwise loss ex-
+pand the training set to some extent. Given n individuals,
+there are actually n(n −1)/2 pairs and n(n −1)(n −2)/6
+triplets for training.
+Note that when using performance predictor in practice,
+
+We further extend our method to search space with un-
+known labels by searching for architecture in NAS-Bench-
+101 search space that performs well on CIFAR-100 dataset.
+Speciﬁcally, we randomly select 424 architectures and train
+them on CIFAR-100 from scratch and get the ground-truth
+labels. These samples are further used to train the predic-
+tor, and the best architecture is searched using the methods
+mentioned above. The results in Tab. 4 show the priority of
+the proposed method. Other experiments on NAS-Bench-
+101 dataset are given in the supplementary material.
+
+Table 5: Search results on NAS-Bench-201.
+
+Method
+Search
+CIFAR-10
+CIFAR-100
+ImageNet-16-120
+seconds
+validation
+test
+validation
+test
+validation
+test
+RSPS [22]
+7587.12
+84.16±1.69
+87.66±1.69
+59.00±4.60
+58.33±4.34
+31.56±3.28
+31.14±3.88
+DARTS-V1 [25]
+10889.87
+39.77±0.00
+54.30±0.00
+15.03±0.00
+15.61±0.00
+16.43±0.00
+16.32±0.00
+DARTS-V2 [25]
+29901.67
+39.77±0.00
+54.30±0.00
+15.03±0.00
+15.61±0.00
+16.43±0.00
+16.32±0.00
+GDAS [11]
+28925.91
+90.00±0.21
+93.51±0.13
+71.15±0.27
+70.61±0.26
+41.70±1.26
+41.84±0.90
+SETN [10]
+31009.81
+82.25±5.17
+86.19±4.63
+56.86±7.59
+56.87±7.77
+32.54±3.63
+31.90±4.07
+ENAS [30]
+13314.51
+39.77±0.00
+54.30±0.00
+15.03±0.00
+15.61±0.00
+16.43±0.00
+16.32±0.00
+NPENAS [40]
+-
+91.08±0.11
+91.52±0.16
+-
+-
+-
+-
+REA [31]
+0.02
+91.19±0.31
+93.92±0.30
+71.81±1.12
+71.84±0.99
+45.15±0.89
+45.54±1.03
+RS
+0.01
+90.03±0.36
+93.70±0.36
+70.93±1.09
+71.04±1.07
+44.45±1.10
+44.57±1.25
+NASBOT [41]
+-
+-
+93.64±0.23
+-
+71.38±0.82
+-
+45.88±0.37
+REINFORCE [42]
+0.12
+91.09±0.37
+93.85±0.37
+71.61±1.12
+71.71±1.09
+45.05±1.02
+45.24±1.18
+BOHB [13]
+3.59
+90.82±0.53
+93.61±0.52
+70.74±1.29
+70.85±1.28
+44.26±1.36
+44.42±1.49
+ReNAS(ours)
+86.31
+90.90±0.31
+93.99±0.25
+71.96±0.99
+72.12±0.79
+45.85±0.47
+45.97±0.49
+ResNet
+N/A
+90.83
+93.97
+70.42
+70.86
+44.53
+43.63
+optimal
+91.61
+94.37
+73.49
+73.51
+46.77
+47.31
+
+4.3. Compare with other NAS Search methods on
+NAS-Bench-201
+
+ished within milliseconds and is negligible compared to the
+training time. The search results show that the proposed Re-
+NAS method produces state-of-the-art searching accuracy
+on all three datasets based on the test set with an acceptable
+search cost within two minutes on a single GeForce GTX
+1080 Ti GPU, which indicate the superiority of the proposed
+method. Compared to the previous state-of-the-art method
+REA [31], NASBOT [41] and random search, ReNAS ﬁnds
+better architectures that is 0.07%, 0.35% and 0.29% better
+on CIFAR-10 test set, 0.28%, 0.74% and 1.08% better on
+CIFAR-100 test set, and 0.43%, 0.09% and 1.40% better on
+ImageNet-16-120 test set.
+
+In order to compare with other state-of-the-art NAS
+search methods, we further conduct experiments on NAS-
+Bench-201 [12], which is also a cell-based search space
+including 15625 different architectures and corresponding
+train, validation and test accuracies on CIFAR-10, CIFAR-
+100 and ImageNet-16-120 [7] datasets. During the exper-
+iment, 90 randomly selected architectures and the corre-
+sponding validation accuracies are used as the training set
+for the proposed predictor. After the predictor is trained,
+we traverse the search space with the predictor instead of
+using EA algorithm, since the number of architectures is
+small. Other settings are the same as the experiments on
+NAS-Bench-101 dataset. The best validation and test accu-
+racies among top-10 architectures selected by the predictor
+are reported. Experiments are repeated 20 times with dif-
+ferent training samples selected.
+The comparative methods include: (1) Random Search
+methods, such as random search (RS) and random search
+with parameter sharing (RSPS) [22]. (2) EA methods, such
+as REA [31] and NPENAS [40]. (3) RL methods, such as
+REINFORCE [42] and ENAS [30]. (4) Differentiable meth-
+ods, such as DARTS-V1/DARTS-V2 [25], GDAS [11] and
+SETN [10]. (5) HPO methods, such as BOHB [13]. (6)
+Predictor methods, such as NASBOT [41]. Experimental
+settings of the comparative methods are the same as in [12],
+and the search results on validation sets and test sets for
+each dataset are shown in Tab. 5.
+The search cost of ReNAS is the training time of the pre-
+dictor. Traversing the search space with the predictor is ﬁn-
+
+5. Conclusion
+
+We proposed a new method for predicting network per-
+formance based on its architecture before training. We en-
+code an architecture in cell-based search space into a feature
+tensor by leveraging the adjacency matrix of the cell and
+features that can well represent the computational power
+of a given architecture. The pairwise ranking based loss
+function is used for the performance predictor instead of
+the element-wise loss function, since the rankings between
+different architectures are more important than their abso-
+lute values in different searching methods. We also theo-
+retically proved the superiority of using pairwise ranking
+loss. Several experiments are conducted on NAS-Bench-
+101 dataset, and shows the priority of the proposed predic-
+tor on sorting the performance of different architectures and
+searching for an architecture with top performance among
+the search space using only 0.1% of the dataset. Exper-
+imental results on NAS-Bench-201 dataset shows that the
+
+proposed ReNAS outperform state-of-the-art NAS search-
+ing methods with a considerable search cost.
+
+[13] Stefan Falkner, Aaron Klein, and Frank Hutter.
+Bohb:
+Robust and efﬁcient hyperparameter optimization at scale.
+arXiv preprint arXiv:1807.01774, 2018. 8
+[14] Kai Han, Yunhe Wang, Qi Tian, Jianyuan Guo, Chunjing
+Xu, and Chang Xu. Ghostnet: More features from cheap
+operations.
+In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 1580–
+1589, 2020. 1
+[15] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proceed-
+ings of the IEEE conference on computer vision and pattern
+recognition, pages 770–778, 2016. 1
+[16] Andrew G Howard, Menglong Zhu, Bo Chen, Dmitry
+Kalenichenko, Weijun Wang, Tobias Weyand, Marco An-
+dreetto, and Hartwig Adam. Mobilenets: Efﬁcient convolu-
+tional neural networks for mobile vision applications. arXiv
+preprint arXiv:1704.04861, 2017. 1
+[17] Shoukang Hu, Sirui Xie, Hehui Zheng, Chunxiao Liu, Jian-
+ping Shi, Xunying Liu, and Dahua Lin. Dsnas: Direct neural
+architecture search without parameter retraining. In Proceed-
+ings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pages 12084–12092, 2020. 1
+[18] Frank Hutter, Holger H Hoos, and Kevin Leyton-Brown.
+Sequential model-based optimization for general algorithm
+conﬁguration. In International conference on learning and
+intelligent optimization, pages 507–523. Springer, 2011. 1
+[19] Roxana Istrate, Florian Scheidegger, Giovanni Mariani,
+Dimitrios Nikolopoulos, Costas Bekas, and A Cristiano I
+Malossi. Tapas: Train-less accuracy predictor for architec-
+ture search. arXiv preprint arXiv:1806.00250, 2018. 3
+[20] Aaron Klein, Stefan Falkner, Jost Tobias Springenberg, and
+Frank Hutter. Learning curve prediction with bayesian neural
+networks. 2016. 1
+[21] Lisha Li, Kevin Jamieson, Giulia DeSalvo, Afshin Ros-
+tamizadeh, and Ameet Talwalkar.
+Hyperband: A novel
+bandit-based approach to hyperparameter optimization.
+arXiv preprint arXiv:1603.06560, 2016. 1
+[22] Liam Li and Ameet Talwalkar.
+Random search and re-
+producibility for neural architecture search. arXiv preprint
+arXiv:1902.07638, 2019. 8
+[23] Liam Li and Ameet Talwalkar. Random search and repro-
+ducibility for neural architecture search. In Uncertainty in
+Artiﬁcial Intelligence, pages 367–377. PMLR, 2020. 2
+[24] Hanxiao Liu, Karen Simonyan, Oriol Vinyals, Chrisantha
+Fernando, and Koray Kavukcuoglu.
+Hierarchical repre-
+sentations for efﬁcient architecture search. arXiv preprint
+arXiv:1711.00436, 2017. 1
+[25] Hanxiao
+Liu,
+Karen
+Simonyan,
+and
+Yiming
+Yang.
+Darts: Differentiable architecture search.
+arXiv preprint
+arXiv:1806.09055, 2018. 1, 2, 3, 8
+[26] Jonathan Long, Evan Shelhamer, and Trevor Darrell. Fully
+convolutional networks for semantic segmentation. In Pro-
+ceedings of the IEEE conference on computer vision and pat-
+tern recognition, pages 3431–3440, 2015. 1
+[27] Zhichao Lu, Kalyanmoy Deb, Erik Goodman, Wolfgang
+Banzhaf, and Vishnu Naresh Boddeti. Nsganetv2: Evolu-
+tionary multi-objective surrogate-assisted neural architecture
+
+Acknowledgment
+
+We thank anonymous area chair and reviewers for their
+helpful comments. Chang Xu was supported by the Aus-
+tralian Research Council under Project DE180101438.
+
+References
+
+[1] Shivani Agarwal and Partha Niyogi. Generalization bounds
+for ranking algorithms via algorithmic stability. Journal of
+Machine Learning Research, 10(Feb):441–474, 2009. 4
+[2] Bowen Baker, Otkrist Gupta, Nikhil Naik, and Ramesh
+Raskar. Designing neural network architectures using rein-
+forcement learning. arXiv preprint arXiv:1611.02167, 2016.
+1
+[3] Bowen Baker, Otkrist Gupta, Ramesh Raskar, and Nikhil
+Naik. Accelerating neural architecture search using perfor-
+mance prediction. arXiv preprint arXiv:1705.10823, 2017.
+1
+[4] Han Cai, Ligeng Zhu, and Song Han. Proxylessnas: Direct
+neural architecture search on target task and hardware. arXiv
+preprint arXiv:1812.00332, 2018. 1
+[5] Hanting Chen, Yunhe Wang, Chang Xu, Chao Xu, and
+Dacheng Tao. Learning student networks via feature embed-
+ding. IEEE Transactions on Neural Networks and Learning
+Systems, 2020. 1
+[6] Hanting Chen, Yunhe Wang, Chang Xu, Zhaohui Yang,
+Chuanjian Liu, Boxin Shi, Chunjing Xu, Chao Xu, and Qi
+Tian. Data-free learning of student networks. In Proceedings
+of the IEEE/CVF International Conference on Computer Vi-
+sion, pages 3514–3522, 2019. 1
+[7] Patryk Chrabaszcz, Ilya Loshchilov, and Frank Hutter.
+A
+downsampled variant of imagenet as an alternative to the ci-
+far datasets. arXiv preprint arXiv:1707.08819, 2017. 8
+[8] Boyang Deng, Junjie Yan, and Dahua Lin. Peephole: Pre-
+dicting network performance before training. arXiv preprint
+arXiv:1712.03351, 2017. 1, 3, 5, 6, 7
+[9] Tobias Domhan, Jost Tobias Springenberg, and Frank Hut-
+ter. Speeding up automatic hyperparameter optimization of
+deep neural networks by extrapolation of learning curves. In
+Twenty-Fourth International Joint Conference on Artiﬁcial
+Intelligence, 2015. 1
+[10] Xuanyi Dong and Yi Yang.
+One-shot neural architecture
+search via self-evaluated template network. In Proceedings
+of the IEEE International Conference on Computer Vision,
+pages 3681–3690, 2019. 8
+[11] Xuanyi Dong and Yi Yang. Searching for a robust neural ar-
+chitecture in four gpu hours. In Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition,
+pages 1761–1770, 2019. 8
+[12] Xuanyi Dong and Yi Yang.
+Nas-bench-102: Extending
+the scope of reproducible neural architecture search. arXiv
+preprint arXiv:2001.00326, 2020. 2, 3, 8
+
+[42] Ronald J Williams. Simple statistical gradient-following al-
+gorithms for connectionist reinforcement learning. Machine
+learning, 8(3-4):229–256, 1992. 8
+[43] Antoine Yang, Pedro M Esperanc¸a, and Fabio M Car-
+lucci. Nas evaluation is frustratingly hard. arXiv preprint
+arXiv:1912.12522, 2019. 1, 2
+[44] Zhaohui Yang, Yunhe Wang, Xinghao Chen, Boxin Shi,
+Chao Xu, Chunjing Xu, Qi Tian, and Chang Xu. Cars: Con-
+tinuous evolution for efﬁcient neural architecture search. In
+Proceedings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition, pages 1829–1838, 2020. 1
+[45] Zhaohui Yang, Yunhe Wang, Kai Han, Chunjing Xu, Chao
+Xu, Dacheng Tao, and Chang Xu.
+Searching for low-bit
+weights in quantized neural networks. In Advances in Neural
+Information Processing Systems, volume 33, 2020. 1
+[46] Chris Ying, Aaron Klein, Esteban Real, Eric Christiansen,
+Kevin Murphy, and Frank Hutter.
+Nas-bench-101:
+To-
+wards reproducible neural architecture search. arXiv preprint
+arXiv:1902.09635, 2019. 2, 3
+[47] Kaicheng Yu, Christian Sciuto, Martin Jaggi, Claudiu Musat,
+and Mathieu Salzmann. Evaluating the search phase of neu-
+ral architecture search.
+arXiv preprint arXiv:1902.08142,
+2019. 2
+[48] Pan Zhou, Yunqing Hou, and Jiashi Feng. Deep adversarial
+subspace clustering. In Proceedings of the IEEE Conference
+on Computer Vision and Pattern Recognition, pages 1596–
+1604, 2018. 1
+[49] Barret Zoph and Quoc V Le. Neural architecture search with
+reinforcement learning.
+arXiv preprint arXiv:1611.01578,
+2016. 1
+[50] Barret Zoph, Vijay Vasudevan, Jonathon Shlens, and Quoc V
+Le. Learning transferable architectures for scalable image
+recognition.
+In Proceedings of the IEEE conference on
+computer vision and pattern recognition, pages 8697–8710,
+2018. 1
+
+search. In European Conference on Computer Vision, pages
+35–51. Springer, 2020. 1
+[28] Zhichao Lu, Gautam Sreekumar, Erik Goodman, Wolfgang
+Banzhaf, Kalyanmoy Deb, and Vishnu Naresh Boddeti. Neu-
+ral architecture transfer. IEEE Transactions on Pattern Anal-
+ysis and Machine Intelligence, 2021. 1
+[29] Risto Miikkulainen, Jason Liang, Elliot Meyerson, Aditya
+Rawal, Daniel Fink, Olivier Francon, Bala Raju, Hormoz
+Shahrzad, Arshak Navruzyan, Nigel Duffy, et al. Evolving
+deep neural networks. In Artiﬁcial Intelligence in the Age
+of Neural Networks and Brain Computing, pages 293–312.
+Elsevier, 2019. 1
+[30] Hieu Pham, Melody Y Guan, Barret Zoph, Quoc V Le, and
+Jeff Dean. Efﬁcient neural architecture search via parameter
+sharing. arXiv preprint arXiv:1802.03268, 2018. 1, 8
+[31] Esteban Real, Alok Aggarwal, Yanping Huang, and Quoc V
+Le. Regularized evolution for image classiﬁer architecture
+search. In Proceedings of the aaai conference on artiﬁcial
+intelligence, volume 33, pages 4780–4789, 2019. 1, 8
+[32] Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun.
+Faster r-cnn: Towards real-time object detection with region
+proposal networks. In Advances in neural information pro-
+cessing systems, pages 91–99, 2015. 1
+[33] Christian Sciuto, Kaicheng Yu, Martin Jaggi, Claudiu Musat,
+and Mathieu Salzmann. Evaluating the search phase of neu-
+ral architecture search.
+arXiv preprint arXiv:1902.08142,
+2019. 1, 3
+[34] Pranab Kumar Sen. Estimates of the regression coefﬁcient
+based on kendall’s tau. Journal of the American statistical
+association, 63(324):1379–1389, 1968. 5
+[35] Karen Simonyan and Andrew Zisserman. Very deep convo-
+lutional networks for large-scale image recognition. arXiv
+preprint arXiv:1409.1556, 2014. 1
+[36] Jasper Snoek, Oren Rippel, Kevin Swersky, Ryan Kiros, Na-
+dathur Satish, Narayanan Sundaram, Mostofa Patwary, Mr
+Prabhat, and Ryan Adams. Scalable bayesian optimization
+using deep neural networks. In International conference on
+machine learning, pages 2171–2180, 2015. 1
+[37] Yanan Sun, Handing Wang, Bing Xue, Yaochu Jin, Gary G
+Yen, and Mengjie Zhang.
+Surrogate-assisted evolutionary
+deep learning using an end-to-end random forest-based per-
+formance predictor.
+IEEE Transactions on Evolutionary
+Computation, 2019. 1, 3, 5, 6, 7
+[38] Yehui Tang, Yunhe Wang, Yixing Xu, Hanting Chen, Boxin
+Shi, Chao Xu, Chunjing Xu, Qi Tian, and Chang Xu. A semi-
+supervised assessor of neural architectures. In Proceedings
+of the IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition, pages 1810–1819, 2020. 1
+[39] Yehui Tang, Yunhe Wang, Yixing Xu, Dacheng Tao, Chun-
+jing Xu, Chao Xu, and Chang Xu. Scop: Scientiﬁc con-
+trol for reliable neural network pruning.
+arXiv preprint
+arXiv:2010.10732, 2020. 1
+[40] Chen Wei, Chuang Niu, Yiping Tang, and Jimin Liang. Npe-
+nas: Neural predictor guided evolution for neural architec-
+ture search. arXiv preprint arXiv:2003.12857, 2020. 8
+[41] Colin White, Willie Neiswanger, Sam Nolen, and Yash Sa-
+vani. A study on encodings for neural architecture search.
+arXiv preprint arXiv:2007.04965, 2020. 8
+
+Supplementary Material
+ReNAS: Relativistic Evaluation of Neural Architecture Search
+
+Yixing Xu1, Yunhe Wang1, Kai Han1, Yehui Tang14, Shangling Jui2, Chunjing Xu1, Chang Xu3
+
+1Noah’s Ark Lab, Huawei Technologies, 2Huawei Technologies
+3The University of Sydney, 4Peking University
+
+{yixing.xu,
+
+arXiv:1910.01523v7 [cs.LG] 23 Sep 2021
+
+denote ∥f∥2 =
+p
+
+1. Proof of Theorem 1
+
+∥W1∥2
+2 + ∥W2∥2
+2 as the ℓ2-norm of the
+parameters, we then have:
+
+We ﬁrst give the deﬁnition of σ-admissibility of the rank-
+ing loss function ℓ:
+
+|f(x)| = |W2η(W1 · x)|
+
+≤
+|W2|η(|W1 · x|)
+
+Deﬁnition 1. (σ-admissibility) Given F as a class of real-
+valued functions on X. Denote ℓas the ranking loss func-
+tion and σ > 0. Then ℓis σ-admissible with respect to F,
+if for all f1, f2 ∈F and all (x, y), (x′, y′) ∈(X × Y), we
+have:
+
+= |W2 · W1 · x|
+
+= |W2 · W1| · |x|
+
+≤1
+
+2(∥W1∥2
+2 + ∥W2∥2
+2)|x|
+
+≤1
+
+2cxcf∥f∥2.
+(4)
+
+|ℓ(f1, (x, y), (x′, y′)) −ℓ(f2, (x, y), (x′, y′))| ≤
+
+σ(|f1(x) −f2(x)| + |f1(x′) −f2(x′)|).
+(1)
+
+Thus, given Fcn. 4 mentioned above, and Theorem.8, Fcn.6
+and Theorem.11 in [1], we can successfully prove Lemma
+1.
+
+Then, we will get the following generalization error
+bound for a given ranking loss function ℓ:
+
+After that, we prove that a hinge ranking loss is 1-
+admissible with respect to F and an MSE loss is ( cxcf L
+
+Lemma 1. Given A as the symmetric ranking algorithm
+whose outputs of samples on a training dataset D ∈(X ×
+Y)n is fD = arg minf∈F ˆRλ
+ℓ(f), in which n ∈N is
+the number of training samples.
+Denote cx and cf as
+the upper bound of the inputs and weights such that for
+all x ∈X and f : X →R we have |x| ≤cx and
+∥f∥2 ≤cf. Also given ℓas the ranking loss function that
+satisfy 0 ≤ℓ(f, (x, y), (x′, y′)) ≤L for all f : X →R and
+(x, y), (x′, y′) ∈(X × Y)2. Then for any 0 < δ < 1, with
+probability at least 1 −δ we have:
+
+λ +
+1)-admissible with respect to F.
+
+2
+√
+
+Theorem 1. Given F as a class of real-valued functions on
+X. Denote ℓas the ranking loss function and σ > 0. Then
+ℓh(f, (x, y), (x′, y′)) = [(a−(f(x)−f(x′))·sign(y−y′))]+
+is 1-admissible with respect to F, e.g. for all f1, f2 ∈F and
+all (x, y), (x′, y′) ∈(X × Y), we have:
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))| ≤
+
+|f1(x) −f2(x)| + |f1(x′) −f2(x′)|.
+(5)
+
+r
+
+Rℓ(fD) < ˆRℓ(fD)+
+8σc2
+xc2
+f
+λn
++(
+4σc2
+xc2
+f
+λ
++L)
+
+2 ln(1/δ)
+
+Proof. Without
+loss
+of
+generality,
+we
+assume
+that
+ℓh(f1, (x, y), (x′, y′)) ≥ℓh(f2, (x, y), (x′, y′)). Note that
+when ℓh(f1, (x, y), (x′, y′)) = ℓh(f2, (x, y), (x′, y′)), we
+simply have:
+
+n
+.
+
+(2)
+
+Proof. Given the assumption of using a two layer neural
+network with ReLU activation function, we can denote the
+output of the neural network as:
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))| = 0 ≤
+
+|f1(x) −f2(x)| + |f1(x′) −f2(x′)|,
+(6)
+
+f(x) = W2η(W1 · x),
+(3)
+
+thus
+the
+following
+prove
+is
+based
+on
+ℓh(f1, (x, y), (x′, y′))
+>
+ℓh(f2, (x, y), (x′, y′)),
+and
+can be divided into following situations:
+
+in which W1 and W2 are the parameters of the given net-
+work, and η indicates the ReLU activation function. Also
+
+(1) (f1(x) −f1(x′)) · sign(y −y′) ≤a and (f2(x) −
+f2(x′)) · sign(y −y′) ≤a. Then we have:
+
+Proof.
+
+|ℓmse(f1, (x, y), (x′, y′)) −ℓmse(f2, (x, y), (x′, y′))|
+
+=1
+
+2|(f1(x) −y)2 + (f1(x′) −y′)2
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))|
+
++ (f2(x) −y)2 + (f2(x′) −y′)2|
+
+=|a −(f1(x) −f1(x′)) · sign(y −y′)
+
+=1
+
+−a + (f2(x) −f2(x′)) · sign(y −y′)|
+
+2|f 2
+1 (x) −2f1(x) + f 2
+1 (x′) −2f1(x′)
+
+=sign(y −y′)|f1(x) −f2(x) + f1(x′) −f2(x′)|
+
+−f 2
+2 (x) + 2f2(x) −f 2
+2 (x′) + 2f2(x′)|
+
+≤|f1(x) −f2(x) + f1(x′) −f2(x′)|
+
+=1
+
+2|f 2
+1 (x) −f 2
+2 (x) + f 2
+1 (x′) −f 2
+2 (x′)
+
+≤|f1(x) −f2(x)| + |f1(x′) −f2(x′)|.
+(7)
+
+−2(f1(x) −f2(x)) −2(f1(x′) −f2(x′))|
+
+≤1
+
+2(|f 2
+1 (x) −f 2
+2 (x)| + |f 2
+1 (x′) −f 2
+2 (x′)|
+
+(2) (f1(x)−f1(x′))·sign(y−y′) ≤a and (f2(x)−f2(x′))·
+sign(y −y′) > a. Then we have:
+
++ 2|(f1(x) −f2(x))| + 2|(f1(x′) −f2(x′))|)
+
+=1
+
+2(|f1(x) + f2(x)| + 2)|f1(x) −f2(x)|+
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))|
+
+1
+2(|f1(x′) + f2(x′)| + 2)|f1(x′) −f2(x′)|.
+(11)
+
+=|a −(f1(x) −f1(x′)) · sign(y −y′) −0|
+
+<|a −(f1(x) −f1(x′)) · sign(y −y′)
+
+Given Fcn. 4 mentioned above, we have:
+
+−(a −(f2(x) −f2(x′)) · sign(y −y′))|
+
+|f(x)| ≤1
+
+2cxcf∥f∥2.
+(12)
+
+≤|f1(x) −f2(x)| + |f1(x′) −f2(x′)|.
+(8)
+
+Also note that:
+
+Therefore, in all situations we have:
+
+ℓmse = ˆRℓmse + λ∥f∥2
+2 ≤L.
+(13)
+
+Since ˆRℓmse > 0, we have:
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))| ≤
+
+∥f∥2
+2 ≤L2
+
+|f1(x) −f2(x)| + |f1(x′) −f2(x′)|,
+(9)
+
+λ .
+(14)
+
+Applying Eq. 14 to Eq. 12, we have:
+
+and thus ℓh(f1, (x, y), (x′, y′)) is 1-admissible with respect
+to F.
+
+|f(x)| ≤1
+
+2cxcf∥f∥2 ≤cxcfL
+
+λ
+.
+(15)
+
+2
+√
+
+Finally, applying Eq. 15 to Eq. 11, we can derive the
+( cxcf L
+
+λ + 1)-admissibility of ℓmse:
+
+2
+√
+
+|ℓmse(f1, (x, y), (x′, y′)) −ℓmse(f2, (x, y), (x′, y′))|
+
+≤1
+
+2(|f1(x) + f2(x)| + 2)|f1(x) −f2(x)|
+
+Theorem 2. Given F as a class of real-valued functions on
+X. Denote ℓas the ranking loss function and σ > 0. Then
+ℓmse(f, (x, y), (x′, y′)) = 1
+
++ 1
+
+2(|f1(x′) + f2(x′)| + 2)|f1(x′) −f2(x′)|
+
+2((f(x) −y)2 + (f(x′) −y′)2)
+is ( cxcf L
+
+λ + 1)-admissible with respect to F, e.g. for all
+f1, f2 ∈F and all (x, y), (x′, y′) ∈(X × Y), we have:
+
+λ
++ 1)
+
+|f1(x) −f2(x)| + |f1(x′) −f2(x′)|
+
+,
+
+≤(cxcfL
+
+2
+√
+
+2
+√
+
+(16)
+
+and thus ﬁnish the proof.
+
+|ℓh(f1, (x, y), (x′, y′)) −ℓh(f2, (x, y), (x′, y′))| ≤
+
+Combining the above deﬁnition, lemma and theorems,
+we have proved Theorem 1 in the main paper.
+
+λ
++ 1)
+
+|f1(x) −f2(x)| + |f1(x′) −f2(x′)|
+
+. (10)
+
+(cxcfL
+
+2
+√
+
+2. An Example of Deriving Feature Tensor
+
+Table 1: Statistics on NAS-Bench-101 dataset.
+‘3 × 3’
+refers to whether the model uses this operation. ‘Distance’
+refers to the distance between input node and output node.
+‘#model’ refers to the number of models. ‘Best acc’ refers
+to the performance of the best architecture among ‘#model’
+number of models on CIFAR-10 dataset.
+‘Average acc’
+refers to the average performance of ‘#model’ number of
+models on CIFAR-10 dataset.
+
+In this section, we give an example of the process of
+deriving feature tensor from cell-based search space NAS-
+Bench-101. We use an architecture with 6 nodes in a cell,
+and the process is shown in Fig. 1.
+
+3. More Experiments on NAS-Bench-101
+
+In this section, we conduct more experiments on NAS-
+Bench-101 dataset to further demonstrate the usefulness of
+the proposed ReNAS method.
+In the following we give an intuitive representation of
+the best architectures selected by the performance predictor
+with different number of training samples as shown in Fig.
+2. The best cell architecture searched by EA algorithm us-
+ing proposed predictor trained with random selected train-
+ing samples is shown in column 2 of Fig. 2. Note that the
+rank-1 architecture in NAS-Bench-101 dataset cannot be se-
+lected by the predictor even when using 90% of the training
+data. This is because when using pairwise ranking based
+loss function, there are n(n −1)/2 training pairs and it is
+inefﬁcient to train them in a single batch. Thus, mini-batch
+updating method is used and a single architecture is com-
+pared with limited architectures in one epoch, which causes
+the lack of global information about this architecture espe-
+cially when the number of training samples is large. In fact,
+the mini-batch size b is set to 1024 in the experiment, and it
+is a compromise between effectiveness and efﬁciency.
+This is the same reason that the performance of the ar-
+chitecture found by the predictor trained with 90% dataset
+is marginally better than that trained with 0.1% dataset.
+Speciﬁcally, we divide the architectures into two parts. The
+ﬁrst part is the architectures trained with 0.1% and 1%
+dataset, and the second part is the rest. Note that in the
+ﬁrst part the number of training sample is on the same or-
+der of magnitude with the mini-batch size b, thus the global
+information of a single model is easy to obtain and the per-
+formance becomes better when there are more training data.
+In the second part, the number of training sample is signiﬁ-
+cantly larger than b. On one hand, increasing the number of
+samples helps training. On the other hand, the global rank-
+ing information is harder to get. Thus, the performance is
+marginally better when using more training samples.
+Finally, there are some common characteristics among
+these architectures. The ﬁrst is that the distance between
+input and output node is at most 2, which shows the signiﬁ-
+cance of skip-connection. The second is that 3×3 operation
+appears in each architecture. Based on these observations,
+we separate the NAS-Bench-101 dataset based on the dis-
+tance between input node and output node, and whether the
+3×3 operation is used. Some statistics are shown in Tab. 1.
+It shows that the shorter the distance between input
+node and output node, the better the performance is. Be-
+
+3 × 3
+Distance
+#model
+Best acc
+Average acc
+
+1
+68552
+94.32
+91.97
+2
+153056
+94.05
+91.02
+3
+110863
+93.68
+89.31
+4
+27227
+92.36
+87.40
+5
+2516
+90.54
+86.51
+6
+211
+88.87
+84.91
+
+yes
+
+1
+12468
+91.62
+88.40
+2
+26282
+90.81
+86.69
+3
+17735
+90.24
+83.53
+4
+4282
+88.95
+80.20
+5
+400
+88.16
+78.84
+6
+32
+86.71
+74.93
+
+no
+
+Table 2: Predictors trained and evaluated with the whole
+NAS-Bench-101 dataset and sub dataset. The experiments
+are repeated 20 times to alleviate the randomness of the re-
+sults.
+
+Datasets
+accuracy(%)
+ranking(%)
+
+whole dataset
+93.95 ± 0.11
+0.02
+sub dataset
+94.02 ± 0.14
+0.01
+
+sides, 3 × 3 operation helps the architecture to perform bet-
+ter. Based on the observation above, we may form a bet-
+ter search space of NAS-Bench-101 dataset by using only
+68552 models with 3 × 3 operation and skip-connect be-
+tween input node and output node. An experiment of train-
+ing and evaluating performance predictor is conducted on
+this sub search space and the results show that the predictor
+trained and evaluated within the sub search space performs
+better than the previous one as shown in Tab. 2. It shows
+that a better search space helps to produce a better perfor-
+mance predictor.
+
+References
+
+[1] Shivani Agarwal and Partha Niyogi. Generalization bounds
+for ranking algorithms via algorithmic stability. Journal of
+Machine Learning Research, 10(Feb):441–474, 2009. 1
+
+Figure 1: An example of encoding neural network architecture into feature tensor. (a): The skeleton of the neural network
+architecture. (b): A speciﬁc cell architecture with 6 nodes. (c): The corresponding adjacency matrix A, type vector t, FLOP
+vector f and parameter vector p of the cell. (d): Padding adjacency matrix A to 7 × 7 and vectors accordingly. Note that
+the zero-padding is added at penultimate row and column, since the last row and column represents the output node. (e):
+Vectors are broadcasted into matrix, and an element wise multiplication is made with the adjacency matrix to get the type
+matrix, FLOP matrix and parameter matrix. (f): There are 9 cells in the network, thus producing 9 different FLOP matrices
+and parameter matrices. All the cells share the same type matrix. We concatenate all the matrices to get the ﬁnal 19 × 7 × 7
+tensor.
+
+Figure 2: The best architectures found by the predictor with different ratio of training samples.

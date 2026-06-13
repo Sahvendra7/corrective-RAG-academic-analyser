@@ -1,0 +1,1934 @@
+Q-Diffusion: Quantizing Diffusion Models
+
+Xiuyu Li
+UC Berkeley
+Yijiang Liu
+Nanjing University
+Long Lian
+UC Berkeley
+Huanrui Yang
+UC Berkeley
+Zhen Dong
+UC Berkeley
+
+Daniel Kang
+UIUC
+Shanghang Zhang
+Peking University
+Kurt Keutzer
+UC Berkeley
+
+arXiv:2302.04304v3 [cs.CV] 8 Jun 2023
+
+Abstract
+
+strate their power in various applications such as image
+super-resolution [36, 17], inpainting [43], shape generation
+[3], graph generation [30], image-to-image translation [39],
+and molecular conformation generation [46].
+
+Diffusion models have achieved great success in image
+synthesis through iterative noise estimation using deep neu-
+ral networks. However, the slow inference, high memory
+consumption, and computation intensity of the noise estima-
+tion model hinder the efficient adoption of diffusion models.
+Although post-training quantization (PTQ) is considered a
+go-to compression method for other tasks, it does not work
+out-of-the-box on diffusion models. We propose a novel
+PTQ method specifically tailored towards the unique multi-
+timestep pipeline and model architecture of the diffusion
+models, which compresses the noise estimation network to
+accelerate the generation process. We identify the key diffi-
+culty of diffusion model quantization as the changing output
+distributions of noise estimation networks over multiple time
+steps and the bimodal activation distribution of the shortcut
+layers within the noise estimation network. We tackle these
+challenges with timestep-aware calibration and split short-
+cut quantization in this work. Experimental results show
+that our proposed method is able to quantize full-precision
+unconditional diffusion models into 4-bit while maintaining
+comparable performance (small FID change of at most 2.34
+compared to >100 for traditional PTQ) in a training-free
+manner. Our approach can also be applied to text-guided
+image generation, where we can run stable diffusion in 4-bit
+weights with high generation quality for the first time.
+
+However, the generation process for diffusion models can
+be slow due to the need for an iterative noise estimation of 50
+to 1,000 time steps [12, 41] using complex neural networks.
+While previous state-of-the-art approaches (e.g., GANs) are
+able to generate multiple images in under 1 second, it nor-
+mally takes several seconds for a diffusion model to sample
+a single image. Consequently, speeding up the image gener-
+ation process becomes an important step toward broadening
+the applications of diffusion models. Previous work has
+been solving this problem by finding shorter, more effective
+sampling trajectories [41, 29, 38, 21, 1, 23], which reduces
+the number of steps in the denoising process. However, they
+have largely ignored another important factor: the noise esti-
+mation model used in each iteration itself is compute- and
+memory-intensive. This is an orthogonal factor to the repet-
+itive sampling, which not only slows down the inference
+speed of diffusion models, but also poses crucial challenges
+in terms of high memory footprints.
+
+This work explores the compression of the noise esti-
+mation model used in the diffusion model to accelerate the
+denoising of all time steps. Specifically, we propose explor-
+ing post-training quantization (PTQ) on the diffusion model.
+PTQ has already been well studied in other learning do-
+mains like classification and object detection [4, 2, 19, 9, 22],
+and has been considered a go-to compression method given
+its minimal requirement for training data and the straight-
+forward deployment on real hardware devices. However,
+the iterative computation process of the diffusion model
+and the model architecture of the noise estimation network
+brings unique challenges to the PTQ of diffusion models.
+PTQ4DM [40] presents an inaugural application of PTQ to
+compress diffusion models down to 8-bit, but it primarily
+focuses on smaller datasets and lower resolutions.
+
+1. Introduction
+
+Diffusion models have shown great success in gener-
+ating images with both high diversity and high fidelity
+[42, 12, 43, 41, 7, 32, 35, 33].
+Recent work [15, 14]
+has demonstrated superior performance than state-of-the-
+art GAN models, which suffer from unstable training. As a
+class of flexible generative models, diffusion models demon-
+
+Preprint. Under review.
+
+(a) Calibration dataset creation
+
+(b) Model Inference
+
+Traditional PTQ
+Q-Diffusion (Ours)
+
+Training Dataset
+
+θq
+
+Random Sampling
+Synthesized by NN
+Sample from Training Data
+
+Input
+
+Output
+
+Calibration
+
+Dataset
+
+Quantization errors accumulate at each time step
+
+pθ(xt−1|xt)
+
+⋯
+⋯
+
+⋯
+
+θq
+
+θq
+θq
+
+xT
+xt
+xt−1
+
+xt−5
+
+x0
+
+⋯
+pθq(xT−1|xT)
+
+pθq(xT−2|xT−1)
+
+pθq(x1|x0)
+
+Time Step-aware
+Uniform Sampling
+
+x0
+xT
+xT−1
+
+Naive Linear Quantization incurs severe quality loss
+
+Calibration
+
+Dataset
+
+x0
+
+Figure 1: Conventional PTQ scenarios and Q-Diffusion differ in (a) calibration dataset creation and (b) model inference
+workflow. Traditional PTQ approaches sample data randomly [9], synthesize with statistics in model layers [4], or draw from
+the training set to create calibration dataset [27, 19], which either contains inconsistency with real inputs during the inference
+time or are not data-free. In contrast, Q-Diffusion constructed calibration datasets with inputs that are an accurate reflection
+of data seen during the production in a data-free manner. Traditional PTQ inference only needs to go through the quantized
+model θq one time, while Q-Diffusion needs to address the accumulated quantization errors in the multi-time step inference.
+
+and the quantization error accumulation across time
+steps via a thorough analysis.
+
+Our work, evolving concurrently with [40], offers a com-
+prehensive analysis of the novel challenges of performing
+PTQ on diffusion models. Specifically, as visualized in Fig-
+ure 1(a), we discover that the output distribution of the noise
+estimation network at each time step can be largely different,
+and naively applying previous PTQ calibration methods with
+an arbitrary time step leads to poor performance. Further-
+more, as illustrated in Figure 1(b), the iterative inference of
+the noise estimation network leads to an accumulation of
+quantization error, which poses higher demands on design-
+ing novel quantization schemes and calibration objectives
+for the noise estimation network.
+To address these challenges, we propose Q-Diffusion, a
+PTQ solution to compress the cumbersome noise estimation
+network in diffusion models in a data-free manner, while
+maintaining comparable performance to the full precision
+counterparts. We propose a time step-aware calibration data
+sampling mechanism from the pretrained diffusion model,
+which represents the activation distribution of all time steps.
+We further tailor the design of the calibration objective and
+the weight and activation quantizer to the commonly used
+noise estimation model architecture to reduce quantization
+error. We perform thorough ablation studies to verify our
+design choices, and demonstrate good generation results
+with diffusion models quantized to only 4 bits.
+In summary, our contributions are:
+
+3. We propose time step-aware calibration data sampling
+to improve calibration quality, and propose a special-
+ized quantizer for the noise estimation network.
+
+4. Extensive results show Q-Diffusion enables W4A8
+PTQ for both pixel-space and latent-space uncondi-
+tional diffusion models with an FID increment of only
+0.39-2.34 over full precision models. It can also pro-
+duce qualitatively comparable images when plugged
+into Stable Diffusion [33] for text-guided synthesis.
+
+2. Related work
+
+Diffusion Models.
+Diffusion models generate images
+through a Markov chain, as illustrated in Figure 2. A forward
+diffusion process adds Gaussian noise to data x0 ∼q(x) for
+T times, resulting in noisy samples x1, ..., xT :
+
+q(xt|xt−1) = N(xt;
+p
+
+1 −βtxt−1, βtI)
+(1)
+
+where βt ∈(0, 1) is the variance schedule that controls the
+strength of the Gaussian noise in each step. When T →∞,
+xT approaches an isotropic Gaussian distribution.
+The reverse process removes noise from a sample from
+the Gaussian noise input xT ∼N(0, I) to gradually gen-
+erate high-fidelity images. However, since the real reverse
+conditional distribution q(xt−1|xt) is unavailable, diffusion
+models sample from a learned conditional distribution:
+
+1. We propose Q-Diffusion, a data-free PTQ solution for
+the noise estimation network in diffusion models.
+
+2. We identify the novel challenge of performing PTQ on
+diffusion models as the activation distribution diversity
+
+pθ(xt−1|xt) = N(xt−1; ˜µθ,t(xt), ˜βtI).
+(2)
+
+q(xt|xt−1)
+
+Previous PTQ research in classification and detection
+tasks focused on the calibration objective and the acqui-
+sition of calibration data. For example, EasyQuant [45]
+determines appropriate cmin and cmax based on training data,
+and BRECQ [19] introduces Fisher information into the
+objective. ZeroQ [4] employs a distillation technique to
+generate proxy input images for PTQ, and SQuant [9] uses
+random samples with objectives based on sensitivity deter-
+mined through the Hessian spectrum. For diffusion model
+quantization, a training dataset is not needed as the calibra-
+tion data can be constructed by sampling the full-precision
+model with random inputs. However, the multi-time step in-
+ference of the noise estimation model brings new challenges
+in modeling the activation distribution. In parallel to our
+work, PTQ4DM [40] introduces the method of Normally
+Distributed Time-step Calibration, generating calibration
+data across all time steps with a specific distribution. Nev-
+ertheless, their explorations remain confined to lower reso-
+lutions, 8-bit precision, floating-point attention activation-
+to-activation matmuls, and with limited ablation study on
+other calibration schemes. This results in worse applicabil-
+ity of their method to lower precisions (see Appendix E).
+Our work delves into the implications of calibration dataset
+creation in a holistic manner, establishing an efficient cal-
+ibration objective for diffusion models. We fully quantize
+act-to-act matmuls, validated by experiments involving both
+pixel-space and latent-space diffusion models on large-scale
+datasets up to resolutions of 512 × 512.
+
+⋯
+⋯
+
+⋯
+
+xT
+xt
+xt−1
+x0
+
+xt−10
+
+(a) Forward diffusion process
+
+pθ(xt−1|xt)
+
+⋯
+⋯
+⋯
+
+xT
+xt
+xt−1
+x0
+
+xt−10
+
+(b) Reverse diffusion process
+
+Figure 2: The forward diffusion process (a) repeatedly adds
+Gaussian noise. The reverse diffusion process (b) uses a
+trained network to denoise from a standard Gaussian noise
+image in order to generate an image.
+
+With the reparameterization trick in [12], the mean ˜µθ,t(xt)
+and variance ˜βt could be derived as follows:
+
+˜µθ,t(xt) =
+1
+√αt
+(xt −1 −αt
+√1 −¯αt
+ϵθ,t)
+(3)
+
+˜βt = 1 −¯αt−1
+
+1 −¯αt
+· βt
+(4)
+
+where αt = 1 −βt, ¯αt = Qt
+i=1 αi. We refer readers to [25]
+for a more detailed introduction.
+In practice, the noise at each time step t are computed
+from xt by a noise estimation model, with the same weights
+for all time steps. The UNet [34] dominates the design of the
+noise estimation model in diffusion models [41, 33, 32, 35],
+with some recent exploration on Transformer [31]. This
+work designs the PTQ method for the acceleration of the
+noise estimation model, especially for the common UNet.
+Accelerated diffusion process. Related methods include
+simulating the diffusion process in fewer steps by gener-
+alizing it to a non-Markovian process [41], adjusting the
+variance schedule [29], and the use of high-order solvers
+to approximate diffusion generation [21, 1, 23, 24]. Others
+have employed the technique of caching and reusing feature
+maps [18]. Efforts to distill the diffusion model into fewer
+time steps have also been undertaken [38, 26], which have
+achieved notable success but involve an extremely expen-
+sive retraining process. Our work focuses on accelerating
+the noise estimation model inference in each step, with a
+training-free PTQ process.
+Post-training Quantization.
+Post-training quantization
+(PTQ) compresses deep neural networks by rounding el-
+ements w to a discrete set of values, where the quantization
+and de-quantization can be formulated as:
+
+3. Method
+
+We present our method for post-training quantization of
+diffusion models in this section. Different from convention-
+ally studied deep learning models and tasks such as CNNs
+and VITs for classification and detection, diffusion models
+are trained and evaluated in a distinctive multi-step man-
+ner with a unique UNet architecture. This presents notable
+challenges to the PTQ process. We analyze the challenges
+brought by the multi-step inference process and the UNet
+architecture in Section 3.1 and 3.2 respectively and describe
+the full Q-Diffusion PTQ pipeline in Section 3.3.
+
+3.1. Challenges under the Multi-step Denoising
+
+We identify two major challenges in quantizing mod-
+els that employ multi-step inference process. Namely, we
+investigate the accumulation of quantization error across
+time steps and the difficulty of sampling a small calibration
+dataset to reduce the quantization error at each time step.
+
+ˆw = s · clip(round(w
+
+s ), cmin, cmax),
+(5)
+
+where s denotes the quantization scale parameters, cmin and
+cmax are the lower and upper bounds for the clipping function
+clip(·). These parameters can be calibrated with the weight
+and activation distribution estimated in the PTQ process.
+The operator round(·) represents rounding, which can be
+either rounding-to-nearest [45, 4] or adaptive rounding [19].
+
+Challenge 1: Quantization errors accumulate across time
+steps.
+Performing quantization on a neural network model
+introduces noise on the weight and activation of the well-
+trained model, leading to quantization errors in each layer’s
+output. Previous research has identified that quantization
+
+as possible.
+
+100
+
+MSE with xt (FP32)
+
+Challenge 2: Activation distributions vary across time
+steps.
+To reduce the quantization errors at each time step,
+previous PTQ research [27, 19] calibrates the clipping range
+and scaling factors of the quantized model with a small set of
+calibration data. The calibration data should be sampled to
+resemble the true input distribution so that the activation dis-
+tribution of the model can be estimated correctly for proper
+calibration. Given that the Diffusion model uses the same
+noise estimation network to take inputs from all time steps,
+determining the data sampling policy across different time
+steps becomes an outstanding challenge. Here we start by an-
+alyzing the output activation distribution of the UNet model
+across different time steps. We conduct the same CIFAR-10
+experiment using DDIM with 100 denoising steps, and draw
+the activations ranges of 1000 random samples among all
+time steps. As Figure 5 shows, the activation distributions
+gradually change, with neighboring time steps being similar
+and distant ones being distinctive. This is also echoed by the
+visualized xt in Figure 2.
+The fact that the output activations distribution varies
+across time steps further brings challenges to quantization.
+Calibrating the noise estimation model using only a few time
+steps that do not reflect the full range of activations seen
+among all time steps by the noise estimation model during
+the denoising process can cause overfitting to the activation
+distribution described by those specific time steps, while
+not generalizing to other time steps, which hurts the overall
+performance. For instance, here we try to calibrate the quan-
+tized DDIM on the CIFAR-10 dataset with data sampled
+from different parts of the denoising process. As shown in
+Figure 4, if we simply take 5120 samples from time steps
+that fall into a certain stage of the denoising process, signifi-
+cant performance drops will be induced under 4-bit weights
+quantization. Note that the case with samples taken from
+the middle 50 time steps caused smaller drops compared to
+cases with samples taken from either the first or the last n
+time steps, and with n increases, the drops are also alleviated.
+These results illustrate the gradual “denoising” process as
+depicted in Figure 5: the activations distribution changes
+gradually throughout time steps, with the middle part captur-
+ing the full range to some degree, while parts of the distant
+endpoints differing the most. To recover the performance of
+the quantized diffusion models, we need to select calibration
+data in a way that comprehensively takes into account the
+distributions of the output of different time steps.
+
+10
+1
+
+10
+2
+
+10
+3
+
+xt (INT8)
+xt (INT5)
+xt (INT4)
+xt (INT4 Q-Diffusion)
+
+10
+4
+
+10
+5
+
+10
+6
+
+100
+90
+80
+70
+60
+50
+40
+30
+20
+10
+Time Step (t)
+
+Figure 3: MSE between FP32 outputs and weight-quantized
+outputs of different precisions with Linear Quantization and
+our approach across time steps. Here the data is obtained by
+passing a batch with 64 samples through a model trained on
+CIFAR-10 [16] with DDIM sampling steps 100.
+
+98.56
+
+100.00
+
+Q-Diffusion
+(cover full process)
+
+31.98
+45.36
+
+14.29
+
+FID↓
+
+10.00
+
+6.07
+
+1.00
+
+First 25
+First 50
+Mid 50
+Last 50
+Last 25
+
+Calibration data from part of denoising process
+
+Figure 4: Effects of time steps in calibration dataset creation
+on 4-bit weights quantization results with DDIM on CIFAR-
+10. First n, Mid n, Last n denotes that 5120 samples are
+selected uniformly from the first, middle, last n time steps.
+
+errors are likely to accumulate across layers [6], making
+deeper neural networks harder to quantize. In the case of
+diffusion models, at any time step t, the input of the denois-
+ing model (denoted as xt) is derived by xt+1, the output of
+the model at the previous time step t + 1 (as depicted by
+Equation 2). This process effectively multiplies the number
+of layers involved in the computation by the number of de-
+noising steps for the input xt at time step t, leading to an
+accumulation of quantization errors towards later steps in
+the denoising process.
+We run the denoising process of DDIM [41] on CIFAR-
+10 [16] with a sampling batch size of 64, and compare the
+MSE differences between the full-precision model and the
+model quantized to INT8, INT5, and INT4 at each time step.
+As shown in Figure 3, there is a dramatic increase in the
+quantization errors when the model is quantized to 4-bit, and
+the errors accumulate quickly through iterative denoising.
+This brings difficulty in preserving the performance after
+quantizing the model down to low precision, which requires
+the reduction of quantization errors at all time steps as much
+
+3.2. Challenges on Noise Estimation Model Quan-
+tization
+
+Most diffusion models (Imagen [35], Stable Diffu-
+sion [33], VDMs [13]) adopt UNets as denoising backbones
+that downsample and upsample latent features. Although
+recent studies show that transformer architectures are also
+
+4
+
+Activation Range
+
+2
+
+0
+
+2
+
+4
+
+100
+95
+90
+85
+80
+75
+70
+65
+60
+55
+50
+45
+40
+35
+30
+25
+20
+15
+10
+5
+Time Step
+
+Figure 5: Activation ranges of xt across all 100 time steps of FP32 DDIM model on CIFAR-10.
+
+capable of serving as the noise estimation backbone [31],
+convolutional UNets are still the de facto choice of archi-
+tecture today. UNets utilize shortcut layers to merge con-
+catenated deep and shallow features and transmit them to
+subsequent layers. Through our analysis presented in Fig-
+ure 6, we observe that input activations in shortcut layers
+exhibit abnormal value ranges in comparison to other layers.
+Notably, the input activations in DDIM’s shortcut layers can
+be up to 200 times larger than other neighboring layers.
+To analyze the reason for this, we visualize the weight and
+activation tensor of a DDIM shortcut layer. As demonstrated
+in the dashed box in Figure 6, the ranges of activations from
+the deep feature channels (X1) and shallow feature channels
+(X2) being concatenated together vary significantly, which
+also resulted in a bimodal weight distribution in the corre-
+sponding channels (see also Figure 7). Naively quantizing
+the entire weight and activation distribution with the same
+quantizer will inevitably lead to large quantization errors.
+
+component that contains residual connections in the diffu-
+sion model UNet as a block, such as a Residual Bottleneck
+Block or a Transformer Block. Other parts of the model
+that do not satisfy this condition are calibrated in a per-layer
+manner. This technique has been shown to improve the per-
+formance compared to fully layer-by-layer calibration since
+it address the inter-layer dependencies and generalization
+better [19]. For activation quantization, since activations
+are constantly changing during inference, doing adaptive
+rounding is infeasible. Therefore, we only adjust the step
+sizes of activation quantizers according to to [8]. The overall
+calibration workflow is described in Alg. 2.
+
+Algorithm 1 Q-Diffusion Calibration
+Require: Pretrained full precision diffusion model and the
+quantized diffusion model [Wθ, ˆWθ]
+Require: Empty calibration dataset D
+Require: Number of denoising sampling steps T
+Require: Calibration sampling interval c, amount of calibra-
+tion data per sampling step n
+
+3.3. Post-Training Quantization of Diffusion model
+
+for t = 1, . . . , T time step do
+
+We propose two techniques: time step-aware calibration
+data sampling and shortcut-splitting quantization to tackle
+the challenges identified in the previous sections respectively.
+
+if t % c = 0 then
+
+Sample n intermediate inputs x(1)
+t , . . . , x(n)
+t
+ran-
+domly at t from Wθ and add them to D
+end if
+end for
+for all i = 1, . . . , N blocks do
+
+3.3.1
+Time step-aware calibration
+
+Since the output distributions of consecutive time steps are
+often very similar, we propose to randomly sample interme-
+diate inputs uniformly in a fixed interval across all time steps
+to generate a small calibration set. This effectively balances
+the size of the calibration set and its representation ability of
+the distribution across all time steps. Empirically, we have
+found that the sampled calibration data can recover most of
+the INT4 quantized models’ performance after the calibra-
+tion, making it an effective sampling scheme for calibration
+data collection for quantization error correction.
+To calibrate the quantized model, we divide the model
+into several reconstruction blocks [19], and iteratively re-
+construct outputs and tune the clipping range and scaling
+factors of weight quantizers in each block with adaptive
+rounding [27] to minimize the mean squared errors between
+the quantized and full precision outputs. We define a core
+
+Update the weight quantizers of the i-th block in ˆWθ
+with D and Wθ
+end for
+if do activation quantization then
+
+for all i = 1, . . . , N blocks do
+
+Update the activation quantizers step sizes of the i-th
+block with ˆWθ, Wθ, D.
+end for
+end if
+
+3.3.2
+Shortcut-splitting quantization
+
+To address the abnormal activation and weight distributions
+in shortcut layers, we propose a “split” quantization tech-
+
+Input value
+
+Input value
+
+Activation range
+
+Channel
+Channel
+
+three shortcuts with
+
+abnormal input
+activation ranges
+
+Input value
+
+Channel number
+
+~
+~
+Layer number
+
+Figure 6: Activation ranges of DDIM’s FP32 outputs across layers averaging among all time steps. We point out three shortcuts
+with the largest input activation ranges compared to other neighboring layers. Figures in the dashed box illustrate concatenation
+along channels. ⊕denotes the concatenation operation.
+
+X2
+X1
+
+UNet encoder
+UNet decoder
+Pooling
+Upsampling
+Others
+
+Figure 7: (Left) The typical UNet architecture with shortcut layers that concatenate features from the deep and shallow layers.
+(Right) The ranges of activations from the deep (X1) and shallow (X2) feature channels vary significantly, which also results
+in a bimodal weight distribution in the corresponding channels.
+
+latent-space diffusion model Latent Diffusion [33] for un-
+conditional image generation. We also visualize the images
+generated by Q-Diffusion on Stable Diffusion. To the best of
+our knowledge, there is currently no published work done on
+diffusion model quantization. Therefore, we report the ba-
+sic channel-wise Linear Quantization (i.e., Equation 5) as a
+baseline. We also re-implement the state-of-the-art data-free
+PTQ method SQuant [9] and include the results for compar-
+ison. Furthermore, we apply our approach to text-guided
+image synthesis with Stable Diffusion [33]. Experiments
+show that our approach can achieve competitive generation
+quality to the full-precision scenario on all tasks, even under
+INT4 quantization for weights.
+
+nique that performs quantization prior to concatenation, re-
+quiring negligible additional memory or computational re-
+sources. This strategy can be employed for both activation
+and weight quantization in shortcut layers, and is expressed
+mathematically as follows:
+
+QX(X) = QX1(X1) ⊕QX2(X2)
+(6)
+
+QW (W) = QW1(W1) ⊕QW2(W2)
+(7)
+
+QX(X)QW (W) =QX1(X1)QW1(W1)
+
++ QX2(X2)QW2(W2)
+(8)
+
+where X ∈Rw×h×cin and W ∈Rcin×cout are the input
+activation and layer weight, which can be naturally split
+into X1 ∈Rw×h×c1, X2 ∈Rw×h×c2, W1 ∈Rc1×cout, and
+W2 ∈Rc2×cout, respectively. c1 and c2 are determined by
+the concatenation operation. Q(·) denotes the quantization
+operator and ⊕denotes the concatenation operator.
+
+4.2. Unconditional Generation
+
+We conducted evaluations using the 32 × 32 CIFAR-10
+[16], 256 × 256 LSUN Bedrooms, and 256 × 256 LSUN
+Church-Outdoor [47]. We use the pretrained DDIM sampler
+[41] with 100 denoising time steps for CIFAR-10 experi-
+ments and Latent Diffusion (LDM) [33] for the higher reso-
+lution LSUN experiments. We evaluated the performance in
+terms of Frechet Inception Distance (FID) [11] and addition-
+
+4. Experiments
+
+4.1. Experiments Setup
+
+In this section, we evaluate the proposed Q-Diffusion
+framework on pixel-space diffusion model DDPM [12] and
+
+Bedroom Q-Diffusion
+(W4A8)
+
+Bedroom Linear Quantization
+(W4A8)
+
+Church Q-Diffusion
+(W4A8)
+
+Church Linear Quantization
+(W4A8)
+
+Figure 8: 256 × 256 unconditional image generation results using Q-Diffusion and Linear Quantization under W4A8 precision.
+
+Table 1: Quantization results for unconditional image gener-
+ation with DDIM on CIFAR-10 (32 × 32).
+
+Table 2: Quantization results for unconditional image gener-
+ation with LDM-4 on LSUN-Bedrooms (256 × 256). The
+downsampling factor for the latent space is 4.
+
+Method
+Bits (W/A) Size (Mb) GBops
+FID↓
+IS↑
+
+Method
+Bits (W/A)
+Size (Mb)
+TBops
+FID↓
+
+Full Precision
+32/32
+143.2
+6597
+4.22
+9.12
+
+Full Precision
+32/32
+1096.2
+107.17
+2.98
+
+Linear Quant
+8/32
+35.8
+2294
+4.71
+8.93
+SQuant
+8/32
+35.8
+2294
+4.61
+8.99
+Q-Diffusion
+8/32
+35.8
+2294
+4.27
+9.15
+
+Linear Quant
+8/32
+274.1
+37.28
+3.02
+SQuant
+8/32
+274.1
+37.28
+2.94
+Q-Diffusion
+8/32
+274.1
+37.28
+2.97
+
+Linear Quant
+4/32
+17.9
+1147 141.47
+4.20
+SQuant
+4/32
+17.9
+1147 160.40
+2.91
+Q-Diffusion
+4/32
+17.9
+1147
+5.09
+8.78
+
+Linear Quant
+4/32
+137.0
+18.64
+82.69
+SQuant
+4/32
+137.0
+18.64
+149.97
+Q-Diffusion
+4/32
+137.0
+18.64
+4.86
+
+Linear Quant
+8/8
+35.8
+798 118.26
+5.23
+SQuant
+8/8
+35.8
+798 464.69
+1.17
+Q-Diffusion
+8/8
+35.8
+798
+3.75
+9.48
+
+Linear Quant
+8/8
+274.1
+12.97
+6.69
+SQuant
+8/8
+274.1
+12.97
+4.92
+Q-Diffusion
+8/8
+274.1
+12.97
+4.40
+
+Linear Quant
+4/8
+17.9
+399 188.11
+2.45
+SQuant
+4/8
+17.9
+399 456.21
+1.16
+Q-Diffusion
+4/8
+17.9
+399
+4.93
+9.12
+
+Linear Quant
+4/8
+137.0
+6.48
+24.86
+SQuant
+4/8
+137.0
+6.48
+95.92
+Q-Diffusion
+4/8
+137.0
+6.48
+5.32
+
+ally evaluated the Inception Score (IS) [37] for CIFAR-10
+results, since IS is not an accurate reference for datasets that
+differ significantly from ImageNet’s domain and categories.
+The results are reported in Table 1- 3 and Figure 8, where
+Bops is calculated for one denoising step without consider-
+ing the decoder compute cost for latent diffusion.
+The experiments show that Q-Diffusion significantly pre-
+serves the image generation quality and outperforms Linear
+Quantization by a large margin for all resolutions and types
+of diffusion models tested when the number of bits is low.
+Although 8-bit weight quantization has almost no perfor-
+mance loss compared to FP32 for both Linear Quantization
+and our approach, the generation quality with Linear Quanti-
+zation drops drastically under 4-bit weight quantization. In
+contrast, Q-Diffusion still preserves most of the perceptual
+quality with at most 2.34 increase in FID and imperceptible
+distortions in produced samples.
+
+Table 3: Quantization results for unconditional image gen-
+eration with LDM-8 on LSUN-Churches (256 × 256). The
+downsampling factor for the latent space is 8.
+
+Method
+Bits (W/A)
+Size (Mb)
+TBops
+FID↓
+
+Full Precision
+32/32
+1179.9
+22.17
+4.06
+
+Linear Quant
+8/32
+295.0
+10.73
+3.84
+SQuant
+8/32
+295.0
+10.73
+4.01
+Q-Diffusion
+8/32
+295.0
+10.73
+4.03
+
+Linear Quant
+4/32
+147.5
+5.36
+32.54
+SQuant
+4/32
+147.5
+5.36
+33.77
+Q-Diffusion
+4/32
+147.5
+5.36
+4.45
+
+Linear Quant
+8/8
+295.0
+2.68
+14.62
+SQuant
+8/8
+295.0
+2.68
+54.15
+Q-Diffusion
+8/8
+295.0
+2.68
+3.65
+
+Linear Quant
+4/8
+147.5
+1.34
+14.92
+SQuant
+4/8
+147.5
+1.34
+24.50
+Q-Diffusion
+4/8
+147.5
+1.34
+4.12
+
+4.3. Text-guided Image Generation
+
+We evaluate Q-Diffusion on Stable Diffusion pretrained
+on subsets of 512 × 512 LAION-5B for text-guided image
+generation. Following [33], we sample text prompts from
+
+Figure 9: Stable Diffusion 512 × 512 text-guided image synthesis results using Q-Diffusion and Linear Quantization under
+W4A8 precision with prompt A puppy wearing a hat.
+
+ent sampling strategies. We then evaluated the quality of
+the models quantized by each variant. We experimented
+with varying numbers of time steps used for sampling and
+samples used for calibration. In addition to calibration sets
+from uniform timestep intervals, we also employed sampling
+at the first 50 and last 50 steps. As in Figure 10, uniform
+sampling that spans all time steps results in superior perfor-
+mance compared to sampling from only partial time steps.
+Furthermore, adjusting the sampling hyperparams, includ-
+ing using more calibration samples, does not significantly
+improve the performance. Therefore, we simply choose to
+sample uniformly every 20 steps for a total of 5,120 samples
+for calibration, resulting in a high-quality quantized model
+with low computational costs during quantization.
+
+the MS-COCO [20] dataset to generate a calibration dataset
+with texts condition using Algorithm 1. In this work, we
+fix the guidance strength to the default 7.5 in Stable Diffu-
+sion as the trade-off between sample quality and diversity.
+Qualitative results are shown in Figure 9. Compared to Lin-
+ear Quantization, our Q-Diffusion provides higher-quality
+images with more realistic details and better demonstration
+of the semantic information. Similar performance gain is
+also observed in other random samples showcased in Ap-
+pendix G, and quantitatively reported in Appendix C. The
+output of the W4A8 Q-Diffusion model largely resembles
+the output of the full precision model. Interestingly, we find
+some diversity in the lower-level semantics between the Q-
+Diffusion model and the FP models, like the heading of the
+horse or the shape of the hat. We leave it to future work to
+understand how quantization contributes to the diversity.
+
+Effects of Split
+Previous linear quantization approaches
+suffer from severe performance degradation as shown in
+Figure 11, where 4-bit weight quantization achieves a high
+FID of 141.47 in DDIM CIFAR-10 generation. Employing
+additional 8-bit activation quantization further degrades the
+performance (FID: 188.11). By splitting shortcuts in quanti-
+zation, we significantly improve the generation performance,
+achieving an FID of 4.93 on W4A8 quantization.
+
+4.4. Ablation Study
+
+First 50 steps
+
+Last 50 steps
+
+5. Conclusion
+
+Every 20 steps
+
+Every 20 steps
+
+This work studies the use of quantization to accelerate
+diffusion models. We propose Q-Diffusion, a novel post-
+training quantization scheme that conducts calibration with
+multiple time steps in the denoising process and achieves
+significant improvements in the performance of the quan-
+tized model. Q-Diffusion models under 4-bit quantization
+achieve comparable results to the full precision models.
+
+Every 100/10/50 steps
+
+Every 20 steps
+Every 20 steps
+
+Figure 10: Uniform sampling strategies which cover all time
+steps are better than strategies that cover only a part of the
+time steps, as in Fig. 4. Furthermore, adjusting the sampling
+techniques within uniform sampling, such as tuning the sam-
+pling interval and the number of samples, has a marginal
+effect on the performance of the quantized model.
+
+Acknowledgement
+
+We thank Berkeley Deep Drive, Intel Corporation, Pana-
+sonic, and NVIDIA for supporting this research. We also
+thank Sehoon Kim, Muyang Li, and Minkai Xu for their
+valuable feedback.
+
+Effects of Sampling Strategies
+To analyze the effect of
+different sampling strategies for calibration in detail, we
+implemented multiple variants of our method using differ-
+
+ence on Computer Vision and Pattern Recognition (CVPR),
+pages 13166–13175, 2020. 1, 2, 3
+[5] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christo-
+pher R´e. Flashattention: Fast and memory-efficient exact
+attention with io-awareness. Advances in Neural Information
+Processing Systems, 35:16344–16359, 2022. 13
+[6] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettle-
+moyer. Llm. int8 (): 8-bit matrix multiplication for trans-
+formers at scale. arXiv preprint arXiv:2208.07339, 2022.
+4
+[7] Prafulla Dhariwal and Alexander Nichol. Diffusion models
+beat gans on image synthesis. Advances in Neural Information
+Processing Systems, 34, 2021. 1
+[8] Steven K. Esser, Jeffrey L. McKinstry, Deepika Bablani,
+Rathinakumar Appuswamy, and Dharmendra S. Modha.
+Learned step size quantization. In International Conference
+on Learning Representations, 2020. 5
+[9] Cong Guo, Yuxian Qiu, Jingwen Leng, Xiaotian Gao, Chen
+Zhang, Yunxin Liu, Fan Yang, Yuhao Zhu, and Minyi Guo.
+Squant: On-the-fly data-free quantization via diagonal hessian
+approximation. ArXiv, abs/2202.07471, 2022. 1, 2, 3, 6
+[10] Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras,
+and Yejin Choi. Clipscore: A reference-free evaluation metric
+for image captioning. EMNLP, 2021. 12
+[11] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bern-
+hard Nessler, and Sepp Hochreiter. Gans trained by a two
+time-scale update rule converge to a local nash equilibrium.
+Advances in neural information processing systems, 30, 2017.
+
+Linear Quantization
++ Calibration
++ Split shortcuts
+
+188.11
+141.47
+
+100.00
+
+54.22
+
+FID↓
+
+10.00
+
+6.58
+
+4.93
+5.09
+
+1.00
+
+W4A32
+W4A8
+
+Linear Quant Q-Diffusion
+
+Figure 11: Splitting the shortcut convolution is crucial for
+both weight and activation quantization. Comparisons on
+CIFAR-10 show that Q-Diffusion could achieve comparable
+image generation quality to the model with full precision
+(dashed line) with shortcut splitting.
+
+6, 12
+[12] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-
+sion probabilistic models. Advances in Neural Information
+Processing Systems, 33:6840–6851, 2020. 1, 3, 6
+[13] Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan,
+Mohammad Norouzi, and David J Fleet. Video diffusion
+models. arXiv preprint arXiv:2204.03458, 2022. 4
+[14] Tero Karras, Miika Aittala, Janne Hellsten, Samuli Laine,
+Jaakko Lehtinen, and Timo Aila. Training generative ad-
+versarial networks with limited data. Advances in Neural
+Information Processing Systems, 33:12104–12114, 2020. 1
+[15] Tero Karras, Samuli Laine, Miika Aittala, Janne Hellsten,
+Jaakko Lehtinen, and Timo Aila. Analyzing and improv-
+ing the image quality of stylegan. In Proceedings of the
+IEEE/CVF conference on computer vision and pattern recog-
+nition, pages 8110–8119, 2020. 1
+[16] Alex Krizhevsky et al. Learning multiple layers of features
+from tiny images. 2009. 4, 6
+[17] Haoying Li, Yifan Yang, Meng Chang, Huajun Feng, Zhi
+hai Xu, Qi Li, and Yue ting Chen. Srdiff: Single image
+super-resolution with diffusion probabilistic models. Neuro-
+computing, 479:47–59, 2021. 1
+[18] Muyang Li, Ji Lin, Chenlin Meng, Stefano Ermon, Song Han,
+and Jun-Yan Zhu. Efficient spatially sparse inference for
+conditional gans and diffusion models. In Advances in Neural
+Information Processing Systems (NeurIPS), 2022. 3
+[19] Yuhang Li, Ruihao Gong, Xu Tan, Yang Yang, Peng Hu, Qi
+Zhang, Fengwei Yu, Wei Wang, and Shi Gu. {BRECQ}:
+
+W6A32
+
+W6A32
+
+W4A32
+Q-Diffusion
+
+W32A32
+
+Linear
+
+Split
+
+Figure 12: Examples of text-to-image generation with a
+quantized Stable Diffusion model. Naive linear quantiza-
+tion degrades the appearance of teeth, which gets fixed by
+shortcut splitting. Q-Diffusion further improves the semantic
+consistency of eyes through calibration.
+
+References
+
+[1] Fan Bao, Chongxuan Li, Jun Zhu, and Bo Zhang. Analytic-
+dpm: an analytic estimate of the optimal reverse variance in
+diffusion probabilistic models. ArXiv, abs/2201.06503, 2022.
+1, 3
+[2] Yash Bhalgat,
+Jinwon Lee,
+Markus Nagel,
+Tijmen
+Blankevoort, and Nojun Kwak. Lsq+: Improving low-bit
+quantization through learnable offsets and better initialization.
+2020 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition Workshops (CVPRW), pages 2978–2985, 2020.
+1
+[3] Ruojin Cai, Guandao Yang, Hadar Averbuch-Elor, Zekun
+Hao, Serge J. Belongie, Noah Snavely, and Bharath Hariharan.
+Learning gradient fields for shape generation. In European
+Conference on Computer Vision, 2020. 1
+[4] Yaohui Cai, Zhewei Yao, Zhen Dong, Amir Gholami,
+Michael W. Mahoney, and Kurt Keutzer. Zeroq: A novel
+zero shot quantization framework. 2020 IEEE/CVF Confer-
+
+Intervention–MICCAI 2015: 18th International Conference,
+Munich, Germany, October 5-9, 2015, Proceedings, Part III
+18, pages 234–241. Springer, 2015. 3
+[35] Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay
+Whang, Emily Denton, Seyed Kamyar Seyed Ghasemipour,
+Burcu Karagol Ayan, S Sara Mahdavi, Rapha Gontijo Lopes,
+et al. Photorealistic text-to-image diffusion models with deep
+language understanding. arXiv preprint arXiv:2205.11487,
+2022. 1, 3, 4
+[36] Chitwan Saharia, Jonathan Ho, William Chan, Tim Sali-
+mans, David J. Fleet, and Mohammad Norouzi. Image super-
+resolution via iterative refinement. IEEE transactions on
+pattern analysis and machine intelligence, PP, 2021. 1
+[37] Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki
+Cheung, Alec Radford, and Xi Chen. Improved techniques
+for training gans. Advances in neural information processing
+systems, 29, 2016. 7
+[38] Tim Salimans and Jonathan Ho. Progressive distillation for
+fast sampling of diffusion models. ArXiv, abs/2202.00512,
+2022. 1, 3
+[39] Hiroshi Sasaki, Chris G. Willcocks, and T. Breckon. Unit-
+ddpm: Unpaired image translation with denoising diffusion
+probabilistic models. ArXiv, abs/2104.05358, 2021. 1
+[40] Yuzhang Shang, Zhihang Yuan, Bin Xie, Bingzhe Wu, and
+Yan Yan. Post-training quantization on diffusion models.
+CVPR, 2023. 1, 2, 3, 13, 14, 15
+[41] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising
+diffusion implicit models. arXiv preprint arXiv:2010.02502,
+2020. 1, 3, 4, 6, 11
+[42] Yang Song and Stefano Ermon. Generative modeling by
+estimating gradients of the data distribution. Advances in
+Neural Information Processing Systems, 32, 2019. 1
+[43] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equations.
+arXiv preprint arXiv:2011.13456, 2020. 1
+[44] Xudong Wang, Long Lian, and Stella X Yu. Unsupervised
+selective labeling for more effective semi-supervised learning.
+In Computer Vision–ECCV 2022: 17th European Conference,
+Tel Aviv, Israel, October 23–27, 2022, Proceedings, Part XXX,
+pages 427–445. Springer, 2022. 16
+[45] Di Wu, Qingming Tang, Yongle Zhao, Ming Zhang, Ying Fu,
+and Debing Zhang. Easyquant: Post-training quantization via
+scale optimization. ArXiv, abs/2006.16669, 2020. 3
+[46] Minkai Xu, Lantao Yu, Yang Song, Chence Shi, Stefano Er-
+mon, and Jian Tang. Geodiff: a geometric diffusion model for
+molecular conformation generation. ArXiv, abs/2203.02923,
+2022. 1
+[47] Fisher Yu, Ari Seff, Yinda Zhang, Shuran Song, Thomas
+Funkhouser, and Jianxiong Xiao. Lsun: Construction of a
+large-scale image dataset using deep learning with humans in
+the loop. arXiv preprint arXiv:1506.03365, 2015. 6
+
+Pushing the limit of post-training quantization by block re-
+construction. In International Conference on Learning Rep-
+resentations, 2021. 1, 2, 3, 4, 5
+[20] Tsung-Yi Lin, Michael Maire, Serge J. Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll´ar, and C. Lawrence
+Zitnick. Microsoft coco: Common objects in context. In
+European Conference on Computer Vision, 2014. 8, 12
+[21] Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo
+numerical methods for diffusion models on manifolds. arXiv
+preprint arXiv:2202.09778, 2022. 1, 3
+[22] Yijiang Liu, Huanrui Yang, Zhen Dong, Kurt Keutzer, Li Du,
+and Shanghang Zhang. Noisyquant: Noisy bias-enhanced
+post-training activation quantization for vision transformers.
+arXiv preprint arXiv:2211.16056, 2022. 1
+[23] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan
+Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffu-
+sion probabilistic model sampling in around 10 steps. ArXiv,
+abs/2206.00927, 2022. 1, 3, 12
+[24] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongx-
+uan Li, and Jun Zhu.
+Dpm-solver++:
+Fast solver for
+guided sampling of diffusion probabilistic models. ArXiv,
+abs/2211.01095, 2022. 3, 12
+[25] Calvin Luo.
+Understanding diffusion models: A unified
+perspective. arXiv preprint arXiv:2208.11970, 2022. 3
+[26] Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik P.
+Kingma, Stefano Ermon, Jonathan Ho, and Tim Salimans.
+On distillation of guided diffusion models, 2022. 3
+[27] Markus Nagel, Rana Ali Amjad, Mart van Baalen, Chris-
+tos Louizos, and Tijmen Blankevoort.
+Up or down?
+adaptive rounding for post-training quantization.
+ArXiv,
+abs/2004.10568, 2020. 2, 4, 5
+[28] Charlie Nash, Jacob Menick, Sander Dieleman, and Peter W.
+Battaglia. Generating images with sparse representations.
+International Conference On Machine Learning, 2021. 13
+[29] Alexander Quinn Nichol and Prafulla Dhariwal. Improved
+denoising diffusion probabilistic models. In International
+Conference on Machine Learning, pages 8162–8171. PMLR,
+2021. 1, 3
+[30] Chenhao Niu, Yang Song, Jiaming Song, Shengjia Zhao,
+Aditya Grover, and Stefano Ermon. Permutation invariant
+graph generation via score-based generative modeling. In
+International Conference on Artificial Intelligence and Statis-
+tics, 2020. 1
+[31] William Peebles and Saining Xie. Scalable diffusion models
+with transformers. arXiv preprint arXiv:2212.09748, 2022. 3,
+5
+[32] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu,
+and Mark Chen. Hierarchical text-conditional image genera-
+tion with clip latents. arXiv preprint arXiv:2204.06125, 2022.
+1, 3
+[33] Robin Rombach, A. Blattmann, Dominik Lorenz, Patrick
+Esser, and Bj¨orn Ommer. High-resolution image synthesis
+with latent diffusion models. 2022 IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR), pages
+10674–10685, 2021. 1, 2, 3, 4, 6, 7, 11, 12, 14
+[34] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-
+net: Convolutional networks for biomedical image segmenta-
+tion. In Medical Image Computing and Computer-Assisted
+
+A. Extended Experimental Settings
+
+A.1. Implementation Details
+
+We describe the implementation and compute details of the experiments in this section. We adapt the official implementation
+for DDIM [41] 1 and Latent Diffusion [33] 2. For Stable Diffusion, we use the CompVis codebase 3 and its v1.4 checkpoint.
+We use the torch-fidelity library 4 to evaluate FID and IS scores as done in [33]. We use 100 denoising time steps for DDIM
+CIFAR-10. We select 200 and 500 denoising time steps for LSUN-Bedrooms and LSUN-Churches respectively, which are
+the configurations that achieve the best results provided by [33]. For text-guided image generation with Stable Diffusion, we
+choose the default PNDM sampler with 50 time steps.
+For quantization experiments, we quantize all weights and activations involved in matrix multiplications, but leave activation
+functions (e.g. SoftMax, SiLU) and normalization layers (e.g. GroupNorm) running with full precision. Additionally, for
+Linear Quantization and SQuant experiments, we dynamically update the activation quantizers throughout the image generation
+process to establish strongest possible baselines, which explains why sometimes their results are better than weight-only
+quantization cases. For text-guided image generation with Stable Diffusion, we find that attention matrices in cross attentions
+are difficult to quantize after the SoftMax and may have considerable influences on the generation quality, so we utilize
+INT16 mixed-precision for attention scores under W8A8 & W4A8 cases, while q, k, v matrices are still quantized down to
+8-bit. No special modifications or mixed precision are done for other experiments.
+
+A.2. Text-guided Image Generation Calibration Dataset Generation Details
+
+For text-guided image generation with Stable Diffusion, we need to also include text conditioning in the calibration dataset.
+We randomly sample text prompts from the MS-COCO dataset, and for each prompt we add a pair of data with both a
+conditional feature ct and an unconditional feature uct derived from the prompt. This updated calibration dataset creation
+process is described by Algorithm 2. Note that we ignore showing the corresponding time embedding tt for each time step t is
+also added with the sample in Algorithm 1 of the main paper.
+
+Algorithm 2 Q-Diffusion Calibration for Text-guided Image Generation
+
+Require: Pretrained full precision diffusion model and the quantized diffusion model [Wθ, ˆWθ]
+Require: Empty calibration dataset D
+Require: Number of denoising sampling steps T
+Require: Calibration sampling interval c, amount of calibration data per sampling step n
+
+for t = 1, . . . , T time step do
+
+if t % c = 0 then
+
+Sample 2n intermediate inputs (x(1)
+t , c(1)
+t , t(1)
+t ), (x(1)
+t , uc(1)
+t , t(1)
+t ), . . . , (x(n)
+t
+, c(n)
+t
+, t(n)
+t
+), (x(n)
+t
+, uc(n)
+t
+, t(n)
+t
+) ran-
+domly at t from Wθ and add them to D
+end if
+end for
+for all i = 1, . . . , N blocks do
+
+Update the weight quantizers of the i-th block in ˆWθ with D and Wθ
+end for
+if do activation quantization then
+
+for all i = 1, . . . , N blocks do
+
+Update the activation quantizers step sizes of the i-th block with ˆWθ, Wθ, D.
+end for
+end if
+
+A.3. Hyperparameters
+
+Here we provide the hyperparameters used for our Q-Diffusion calibration in Table 4.
+
+1
+2
+3
+4
+
+Experiment
+T
+c
+n
+N
+
+DDIM CIFAR-10
+100
+5
+256
+5120
+LDM-4 LSUN-Bedroom
+200
+10
+256
+5120
+LDM-8 LSUN-Church
+500
+25
+256
+5120
+Stable Diffusion (weights only)
+50
+2
+256 (128)
+6400
+Stable Diffusion (weights & activations)
+50
+1
+256 (128)
+12800
+
+Table 4: Hyperparameters for all experiments, including the number of denoising time steps T, intervals for sampling
+calibration data c, amount of calibration data per sampling step n, and the size of calibration dataset N. Note that for Stable
+Diffusion with classifier-free guidance, every text prompt (128 in total for each sampling step) will add a pair of two samples
+to the calibration dataset.
+
+For all unconditional generation experiments, we keep the total calibration dataset size as 5120 and the amount of calibration
+data per sampling step as 256. Q-Diffusion is able to obtain high-quality images with insignificant fidelity loss by uniformly
+sampling from 20 time steps without any hyperparameters tuning. For text-guided image generation with Stable Diffusion, the
+introduction of text conditioning makes activation quantization harder, thus we sample a larger calibration dataset using all
+time steps.
+
+B. Layer-wise Activations Distribution in DDIM and LDM
+
+We analyze the ranges of activation values across all time steps in DDIM on CIFAR-10, LDM on LSUN-Bedroom and
+LSUN-Church, and Stable Diffusion on the text-to-image task. Figure 13 shows that all Conv layers with residual connections
+in DDIM exhibit noticeably wider activation ranges. Specifically, the first Conv layer can reach up to 1200 and others with
+residual connections have ranges larger than 100, whereas the majority of the layers without residual connections have ranges
+less than 50. Similar results could be observed from Stable Diffusion with the text-to-image generation task with COCO
+captions as well as LSUN-Bedroom in latent diffusion. On the other hand, all layers in LDM on LSUN-Church share relatively
+uniform activation distributions, with ranges < 15.
+Furthermore, Figure 14 illustrates that the distribution of activation values of multiple layers in DDIM on CIFAR-10 varies
+significantly across different time steps.
+
+C. Quantitative Evaluation on Text-guided Image Generation
+
+To quantitatively evaluate the extent of the impacts on generation performance induced by quantization, we follow the
+practice in [33], Stable Diffusion v1-5 model card 5, and Diffusers library 6 to generate 10k images using prompts from the
+MS-COCO [20] 2017-val dataset. Subsequently, we compute the FID [11] and CLIP score [10] against the 2017-val dataset.
+The ViT-B/16 is used as the backbone when computing the CLIP score. Results are illustrated in Figure 15.
+Our Q-Diffusion has minimal quality degradation in generated images measured by these two metrics under all settings,
+while the direct Linear Quantization incurs significant quality drops, especially when the activations are also quantized. Note
+that FID and CLIP score on COCO may not be good metrics that align well with human preferences; we do observe that slight
+artifacts appear more often on images generated with models that have both weights and activations quantized by Q-Diffusion,
+while these are not reflected by the FID results.
+
+D. Study of Combining with Fast Samplers
+
+Another line of work to speed-up diffusion models is to find shorter and more effective sampling trajectories in order
+to reduce the number of steps in the denoising process. These approaches tackle an orthogonal factor that Q-Diffusion is
+addressing, indicating that there’s great potential to design a method to take advantage of both directions. Here we investigate
+if Q-Diffusion can be combined with DPM-Solver [23, 24], a fast high-order solver for diffusion ODEs that can greatly
+bring down the number of steps required for generation. For unconditional generation, we use a 3rd-order DPM-Solver++ as
+suggested by the authors, and sample for 50 time steps, which is the number of steps required to get a converged sample. For
+
+5
+6
+
+DDIM (CIFAR-10)
+1200
+1000
+
+Activation range
+
+800
+600
+400
+200
+
+0
+
+1 5 9 13 17 21 25 29 33 37 41 45 49 53 57 61 65 69 73 77 81 85 89 93 97 101 105 109 113
+
+Layer number
+
+Stable Diffusion (T2I)
+300
+250
+200
+150
+100
+
+Activation range
+
+50
+
+0
+
+0 10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200 210 220 230 240 250 260 270 280
+
+Layer number
+
+LDM (LSUN-Bedroom)
+100
+
+80
+
+Activation range
+
+60
+
+40
+
+20
+
+0
+
+1 5 10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100 105 110 115 120
+
+Layer number
+
+LDM (LSUN-Church)
+20
+
+Activation range
+
+15
+
+10
+
+5
+
+0
+
+1 9 17 25 33 41 49 57 65 73 81 89 97 105 113 121 129 137 145 153 161
+
+Layer number
+
+Figure 13: Activation ranges of FP32 outputs across layers averaging among all time steps. The figures, from top to bottom,
+are respectively DDIM, Stable Diffusion, LDM-Bedroom, and LDM-Church.
+
+text-guided image generation with Stable Diffusion, we use 2nd-order DPM-Solver++ with 20 time steps. We directly apply
+this DPM-Solver++ sampler to our INT4 quantized model. Results are shown in Table 6 and Figure 16.
+Q-Diffusion only has a minor performance drop when only weights are quantized. The generation quality degrades under
+W4A8 precision, but all Q-Diffusion results still outperform Linear Quant and SQuant with 100, 200, and 500 steps for
+CIFAR-10, LSUN-Bedrooms, and LSUN-Churches respectively. The reason is likely due to the distribution of activations
+becoming inconsistent with how Q-Diffusion is calibrated when the sampling trajectories change. We leave the design for a
+systematic pipeline that can effectively combine these two directions in diffusion model acceleration as future work.
+
+E. Comparing with PTQ4DM [40]
+
+We evaluated Q-Diffusion on the settings employed in [40], which computed Inception Score (IS), Frechet Inception
+Distance (FID), and sFID [28] over only 10k generated samples. Although [40] did not specify details in the paper, their official
+implementation computed activation-to-activation matrix multiplications in the attention (q ∗k and attn ∗v) in FP16/327,
+while we conducted them in full-integer. These matmuls account for a substantial portion of FLOPs (e.g. 9.8% of the model in
+SD) and can induce considerable memory overheads [5], which subsequently increase the inference costs. Contrarily, our
+work reduces the memory & compute in this part by 2x/4x theoretically.
+The evaluation results are demonstrated in Table 5, where numbers inside the parentheses of PTQ4DM are its results
+
+7 (05/31/2023)
+
+down.3.block.0.conv1
+
+up.1.upsample.conv
+
+up.2.upsample.conv
+
+up.0.block.0.shortcut
+
+Figure 14: The distribution of activation values of multiple layers in DDIM on CIFAR-10 varies significantly across different
+time steps.
+
+reproduced with integer attention matmuls. Q-Diffusion consistently outperforms PTQ4DM [40], which achieves better results
+with attention matmuls in INT8 than PTQ4DM with them computed in FP16/32. Note that directly applying [40] to quantize
+attention matmuls in 8-bit would even further degrade generation quality, as shown by the numbers inside parentheses.
+
+F. Limitations of this work
+
+This work focuses on providing a PTQ solution for the noise estimation network of the diffusion models on the unconditional
+image generation task. Meanwhile, we notice the recent advancement of text-guided image generation [33] and other multi-
+modality conditional generation tasks. As we have demonstrated the possibility of directly applying Q-Diffusion to the noise
+estimation network of Stable Diffusion, we believe it is important to provide a systematic analysis of the quantization’s impact
+on the text encoder and the cross-attention mechanism for the classifier-free guidance conditioning, to enable a fully quantized
+conditional generation framework. For unconditional generation, this work discovers the need to sample calibration data
+across all time steps, and apply specialized split quantizers for the concatenation layers in the noise estimation model. The
+
+Linear Quantization
+Q-Diﬀusion
+
+Linear Quantization
+Q-Diﬀusion
+
+60.00
+
+0.3000
+
+57.90
+
+0.2865
+0.2865
+
+45.00
+
+0.2850
+
+0.2836
+0.2845
+0.2858
+0.2863
+
+CLIP Score↑
+
+37.16
+
+0.2752
+
+FID↓
+
+30.00
+
+0.2700
+
+28.69
+
+0.2687
+
+20.32
+20.00
+
+18.46
+18.69
+20.13
+20.23
+
+0.2589
+
+0.2550
+
+15.00
+
+0.2400
+
+0.00
+
+W8A32
+W4A32
+W8A8
+W4A8
+
+W8A32
+W4A32
+W8A8
+W4A8
+
+(b) Q-Diffusion maintains similar CLIP score
+
+(a) Q-Diffusion has negligible increases in FID
+
+Figure 15: Stable Diffusion (cfg scale = 7.5) 512 × 512 text-guided image synthesis FID and CLIP score results quantized
+using Q-Diffusion and Linear Quantization under different precisions. The dotted lines values are obtained under full precision.
+
+Table 5: Q-Diffusion and PTQ4DM [40] results. The numbers inside the PTQ4DM parentheses refer to [40] results with INT8
+attention act-to-act matmuls.
+
+Task
+Method
+IS↑
+FID↓
+sFID↓
+
+FP
+9.18
+10.05
+19.71
+PTQ4DM (W8A8)
+9.31 (9.02)
+14.18 (19.59)
+22.59 (20.89)
+Q-Diffusion (W8A8)
+9.47
+7.82
+17.96
+Q-Diffusion (W4A8)
+9.19
+8.85
+19.64
+
+CIFAR-10
+DDIM 100 steps
+
+FP
+9.19
+8.83
+18.31
+PTQ4DM (W8A8)
+9.70 (9.30)
+11.66 (16.54)
+19.71 (20.08)
+Q-Diffusion (W8A8)
+9.60
+8.00
+18.13
+Q-Diffusion (W4A8)
+9.18
+8.54
+18.58
+
+CIFAR-10
+DDIM 250 steps
+
+Table 6: Q-Diffusion results when directly applying 3rd-order DPM-Solver++ with 50 denoising time steps.
+
+Task
+Bits (W/A)
+FID↓
+
+DDIM CIFAR-10
+32/32
+3.57
+DDIM CIFAR-10
+4/32
+5.38
+DDIM CIFAR-10
+4/8
+10.27
+
+LDM-4 LSUN-Bedrooms
+32/32
+4.27
+LDM-4 LSUN-Bedrooms
+4/32
+4.88
+LDM-4 LSUN-Bedrooms
+4/8
+10.77
+
+LDM-8 LSUN-Churches
+32/32
+5.40
+LDM-8 LSUN-Churches
+4/32
+5.74
+LDM-8 LSUN-Churches
+4/8
+8.19
+
+combination of these techniques demonstrates good performance for quantized diffusion models. Meanwhile, there exist other
+interesting design choices, like non-uniform sampling across different time steps, and additional quantizer design for attention
+softmax output, etc., that can be explored. We leave further investigation of these points as future work.
+
+F.1. Non-uniform sampling methods that Did Not Work
+
+As a preliminary exploration of non-uniform calibration data sampling across time steps, we explore the following 3
+sampling methods. Yet none of those achieves better performance than Uniform sampling as proposed in this paper under the
+same amount of calibration data (5120), as shown in Table 7.
+
+Q-Diffusion (W4A32)
+
+Q-Diffusion DPM-Solver++ (W4A32)
+
+Figure 16: Text-guided image generation results on 512 × 512 resolution from our INT4 weights-quantized Stable Diffusion
+with default PNDM 50 time steps and DPM-Solver++ 20 time steps.
+
+Std
+Since we observe the diverse activation range across time steps in Fig. 5, we would like to sample more data from the
+time step with a larger variance in its distribution, so as to better represent the overall output distribution across all time steps.
+To this end, we propose to sample calibration data from each time step in proportion to the pixel-wise standard deviation (Std)
+of each time step. Specifically, we randomly sample 256 xt among all time steps and compute the Std of all pixel values in xt
+at each time step, which we denote as st. Then for calibration data, we sample
+st
+P
+
+t st N examples out of the total N calibration
+data from time step t.
+
+Norm Std
+Similar to Std, we also consider modeling the variance of each time step’s distribution with the standard deviation
+of ||xt||2, instead of the Std of all pixel values. We expect the Norm Std can better capture the diversity across different
+samples instead of capturing the pixel-wise diversity within each sample compared to pixel-wise Std.
+
+Unsupervised Selective Labeling (USL)
+We also try to use Unsupervised Selecting Labeling [44] to select both represen-
+tative and diverse samples as the calibration samples. The intuition is that samples that are both representative and diverse
+could provide a wide range of activations that we will encounter at inference time, focusing on which could bring us good
+performance on generation most of the time. We select 5120 samples in total for CIFAR-10 by combining the samples for all
+time steps. We adopt the training-free version of Unsupervised Selective Labeling for sample selection, with the pooled latent
+space feature from the noise estimation UNet as the selection feature.
+
+Table 7: Quantization results for unconditional image generation with DDIM on CIFAR-10 (32 × 32). We compare different
+calibration data sampling schemes under W4A32 quantization.
+
+Method
+Std
+Norm Std
+USL
+Uniform (ours)
+
+FID↓
+5.66
+5.58
+5.54
+5.09
+
+G. Additional Random Samples
+
+In this section, we provide more random samples from our weight-only quantized and fully quantized diffusion models
+obtained using Q-Diffusion and Linear Quantization under 4-bit quantization. Results are shown in the figures below.
+
+Q-Diffusion (W4A32)
+Q-Diffusion (W4A8)
+Linear Quant (W4A32)
+Linear Quant (W4A8)
+
+Figure 17: Random samples from our INT4 quantized 256 ×256 LSUN-Bedroom models with a fixed random seed.
+
+Q-Diffusion (W4A32)
+Q-Diffusion (W4A8)
+Linear Quant (W4A32)
+Linear Quant (W4A8)
+
+Figure 18: Random samples from our INT4 quantized 256 ×256 LSUN-Church models with a fixed random seed.
+
+Full Precision
+Q-Diffusion (W4A32)
+Q-Diffusion (W4A8)
+Linear Quant (W4A32)
+
+Prompt: “A puppy wearing a hat.”
+
+Full Precision
+Q-Diffusion (W4A32)
+Q-Diffusion (W4A8)
+Linear Quant (W4A32)
+
+Prompt: “A photograph of an astronaut riding a horse.”
+
+Figure 19: Text-guided image generation on 512 × 512 LAION-5B from our INT4 quantized Stable Diffusion model with a
+fixed random seed.

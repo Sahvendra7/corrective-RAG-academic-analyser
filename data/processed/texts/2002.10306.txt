@@ -1,0 +1,948 @@
+Indro Spinelli, Graduate Student Member, IEEE, Simone Scardapane, and Aurelio Uncini, Member, IEEE
+
+(i) how to design more effective communication protocols, able to
+improve the accuracy of the GCN and potentially better leverage
+the structure of the graph [15]–[17]; and (ii) how to trade-off the
+amount of local (vertex-wise) operations with the communication
+steps [18]. While we defer a complete overview of related works
+to Section II, we brieﬂy mention two key results here. Firstly, [19]
+showed that the use of the Laplacian (a smoothing operator) has
+as consequence that repeated application of standard GCN layers
+tend to over-smooth the data, disallowing the possibility of naively
+stacking GCN layer to obtain extremely deep networks. Secondly,
+[18] showed that state-of-the-art results can be obtained by replacing
+the Laplacian communication step with a PageRank variation, as
+long as completely separating communication between nodes from
+the vertex-wise operations. We exploit both of these key results later
+on.
+
+Abstract—Graph convolutional networks (GCNs) are a family of neural
+network models that perform inference on graph data by interleaving
+vertex-wise operations and message-passing exchanges across nodes.
+Concerning the latter, two key questions arise: (i) how to design a
+differentiable exchange protocol (e.g., a 1-hop Laplacian smoothing in the
+original GCN), and (ii) how to characterize the trade-off in complexity
+with respect to the local updates. In this paper, we show that state-of-the-
+art results can be achieved by adapting the number of communication
+steps independently at every node. In particular, we endow each node
+with a halting unit (inspired by Graves’ adaptive computation time [1])
+that after every exchange decides whether to continue communicating or
+not. We show that the proposed adaptive propagation GCN (AP-GCN)
+achieves superior or similar results to the best proposed models so far
+on a number of benchmarks, while requiring a small overhead in terms
+of additional parameters. We also investigate a regularization term to
+enforce an explicit trade-off between communication and accuracy. The
+code for the AP-GCN experiments is released as an open-source library.
+
+arXiv:2002.10306v3 [cs.LG] 28 Sep 2020
+
+Index Terms—Graph neural network, Graph data, Convolutional
+network, Node classiﬁcation
+
+A. Contributions of the paper
+
+We note that the vast majority of proposals to improve point (i)
+mentioned before consists in selecting a certain maximum number of
+communication steps T, and iterating a simple protocol for T steps
+in order to diffuse the information across T-hop neighbors. In this
+paper, we ask the following research question: can the performance
+of GCN layers be improved, if the number of communication steps
+is allowed to vary independently for each vertex?
+To answer this question, we propose a variation of GCN that we
+call adaptive propagation GCN (AP-GCN). In the AP-GCN (see Fig.
+1) every vertex is endowed with an additional unit that outputs a value
+controlling whether communication should continue for another step
+(hence combining the information from neighbors farther away), or
+should stop, and the ﬁnal value be kept for further processing. In
+order to implement this adaptive unit, we leverage previous work on
+adaptive computation time in recurrent neural networks [1] to design
+a differentiable method to learn this propagation strategy. On an
+extensive set of comparisons and benchmarks, we show that AP-GCN
+can reach state-of-the-art results, while the number of communication
+steps can vary signiﬁcantly not only across datasets but also across in-
+dividual vertexes. This is achieved with an extremely small overhead
+in terms of computational time and additional trainable parameters.
+In addition, we perform an large hyper-parameter analysis, showing
+that our method can provide a simple way to balance accuracy of the
+GCN with the number of propagation steps.
+
+I. INTRODUCTION
+D
+EEP learning has achieved remarkable success on a number
+of high-dimensional inputs, by properly designing architectural
+biases that can exploit their properties. This includes images (through
+convolutional ﬁlters) [2], text [3], biomedical sequences [4], and
+videos [5]. A major research question, then, is how to replicate
+this success on other types of data, through the implementation of
+novel differentiable blocks adequate to them. Among the possibilities,
+graphs represent one of the largest sources of data in the world,
+ranging from recommender systems [6] to biomedical applications
+[7], social networks [8], computer programs [9], knowledge bases
+[10], and many others.
+In its most general form, a graph is composed by a set of vertices
+connected by a series of edges representing, e.g., social connections,
+citations, or any form of relation. Graph neural networks (GNNs)
+[11]–[13], then, can be designed by interleaving local operations (de-
+ﬁned on either individual nodes or edges) with communication steps,
+exploiting the graph topology to combine the local outputs. These
+architectures can then be exploited for a variety of tasks, ranging
+from node classiﬁcation to edge prediction and path computation.
+Among the different families of GNN models proposed over the
+last years, graph convolutional networks (GCN) [14] have become
+a sort of de facto standard for node and graph classiﬁcation, rep-
+resenting one of the simplest (yet efﬁcient) building blocks in the
+context of graph processing. GCN are built by interleaving vertex-
+wise operations, implemented via a single fully-connected layer, with
+a communication step exploiting the so-called Laplacian matrix of
+the graph. In practice, a single GCN layer provides a weighted
+combination of information across neighbors, representing a localized
+1-hop exchange of information.1
+
+B. Outline of the paper
+
+The rest of the paper is structured as follows. In Section II we
+describe more in-depth related works from the ﬁeld of GCNs and
+GNNs, focusing in particular on several proposals describing how
+to design more complex propagation steps. Then, in Section III we
+introduce the GCN model and the way a deep network can be
+composed and trained from GCN blocks. Our proposed AP-GCN
+is ﬁrst introduced in Section IV and then tested in Section V. We
+conclude with some general remarks in Section VI.
+
+Taking the GCN layer as a fundamental building block, several
+research questions have received vast attention lately, most notably:
+
+II. RELATED WORKS
+
+The basic idea of GCNs is to combine local (node-wise) updates
+with suitable message passing across the graph, following the graph
+topology. In particular, consider the n×d matrix X collecting all node
+features for the entire graph. A generic GCN layer can be written as
+[14]:
+H = φ
+
+bLXW + b
+
+,
+(1)
+
+where φ is an element-wise nonlinearity (such as the ReLU φ(·) =
+max (0, ·)), bL is the normalized Laplacian deﬁned above, and W
+and b are the learnable parameters of the layer. More in general, the
+Laplacian matrix can be renormalized in different ways (see [14]) or
+substituted with any appropriate shift operator deﬁned on the graph.
+The name GCN derives from an interpretation of Equation (1)
+in terms of GSP [20], as described in Section II. A graph Fourier
+transform can be deﬁned for the graph by considering the eigen-
+decomposition of the Laplacian matrix [23]. In this context, Equation
+(1) can be shown to be equivalent to a graph convolution implemented
+with a linear ﬁlter [14]. Because its implementation requires only 1-
+hop exhanges across neighbours, the GCN is also an example of a
+message-passing neural network (MPNN) [13].
+These two interpretations bring forth two classes of extensions
+for the basic model in Equation (1), which we comment on to
+the extent that they relate to our proposed method. Firstly, under a
+GSP interpretation, it makes sense to substitute the linear ﬁltering
+operation with a more complex ﬁlter.2 In particular, polynomial
+ﬁlters can be implemented by combining information from higher-
+order neighborhoods of each node, depending on the degree of the
+polynomial [32]. For example, Chebyshev ﬁlters [25] result in the
+following layer (omitting biases for simplicity):
+
+The authors of [19], formally analyzed the properties of the GCN,
+showing that the difﬁculty of building deeper networks could depend
+from the over-smoothing of the data due to a repeated application
+of the Laplacian operator. Further analyses and the need to consider
+higher-order structures in GNNs were provided by [26], showing that
+GCNs are equivalent to the so-called 1-dimensional Weisfeiler-Leman
+graph isomorphism heuristic. Several recent papers have proposed
+to avoid some of these shortcomings by using different types of
+propagation methods, most notably PageRank variations [17], [18].
+In this paper we explore an orthogonal idea, where we hypothesize
+that performance can be improved not only by modifying the existing
+propagation method, but by allowing each node to vary the amount of
+communication independently from the others, in an adaptive fashion.
+Jumping knowledge (JK) networks [27] and GeniePath [28] achieve
+something similar by exploiting an additional network aggregation
+component (e.g., an LSTM network) after multiple diffusion steps,
+however, they fail to reach state-of-the-art results [17].
+Finally, we underline that we focus on GCN in this paper, but
+alternative models for graph neural networks have been devised,
+including those from [29], graph attention networks [30], graph
+embeddings, and others. We refer to multiple recent surveys on the
+topic for more information [12], [13].
+
+K
+X
+
+!
+
+H = φ
+
+k=1
+Tk(bL)XWk
+
+,
+(2)
+
+where Tk(s) is deﬁned recursively as Tk(s) = 2sTk−1(s)−Tk−2(s),
+and the layer has a number of adaptable matrices {Wk}K
+k=1 that
+depend on the user-deﬁned hyper-parameter K. Setting K corre-
+sponds to selecting a ‘depth’ for the information being propagated.
+For example, setting K = 2 propagates information across 2-hop
+neighbors, while K = 1 is (almost) equivalent to the GCN described
+above. This decision, however, must be made beforehand by the user,
+or the parameter must be ﬁne-tuned accordingly.
+Under the more general interpretation of Equation (1) as a MPNN,
+however, we are not restricted to considering ﬁltering operations. In
+fact, the most general extension of Equation (1) becomes (expressed
+for simplicity for a single node i) [13]:
+
+III. GRAPH CONVOLUTIONAL NEURAL NETWORKS
+
+A. Graph deﬁnitions
+
+Consider a generic undirected graph G = (V, E), where V =
+{1, . . . , n} is the set of node indexes, and V = {(i, j) | i, j ∈V}
+is the set of arcs (edges) connecting pairs of nodes. The meaning of
+a single node or edge depends on the application. For example, a
+classic setup in text classiﬁcation encodes each text as a node [14],
+and a citation among two texts as an arc in the corresponding graph.
+Connectivity in the graph can be summarized in the adjacency
+matrix A ∈{0, 1}n×n. From this, we can deﬁne the diagonal degree
+matrix D where Dii = P
+
+hi = Ψ ({ψ(xj) | j ∈Ni}) ,
+(3)
+
+where Ψ is a permutation-invariant function, ψ a node-wise update,
+and Ni is the neighborhood of node i (where in general i ∈Ni).
+Selecting ψ(x) = WT x and Ψ({ψ(xi)}) = P
+
+j bLijψ(xj) recovers
+the previous GCN formulation. More in general, both Ψ and ψ can be
+implemented as generic neural networks or any other differentiable
+mechanism. Most notably, [18] proposes the use of (approximate)
+PageRank protocols for the propagation step to counteract the over-
+smoothing effect of repeated applications of the Laplacian matrix
+[19], although the maximum number of propagation steps must still
+be selected a priori by the user.
+
+Interestingly, PageRank propagation [18] and the closely-related
+ARMA models [16], can be understood as approximating rational
+
+Local Prediction
+Adaptive Propagation
+
+STOP
+
+Fig. 1. Schematics of the proposed framework.
+
+Our AP-GCN framework is summarized in Fig. 1. Considering
+the notation in Equation (3), we separate the node-wise operations
+ψ from the propagation step Ψ. The former is implemented with a
+generic NN applied on a single node zj = ψ(xj), described on the
+left part of Fig. 1. This embedding is then used as the starting seed
+for a propagation step Ψ which is done iteratively:
+
+ﬁlters on the graph [33], that are in general more expressive than
+linear or polynomial ﬁlters.
+
+C. Designing and training deep GCNs
+
+In the spirit of classical deep networks, the basic building blocks
+described in the previous section can be composed to design deeper
+architectures. For example, a network for binary classiﬁcation with a
+single hidden layer and one output layer, both implemented according
+to Equation (1), is deﬁned by:
+
+z0
+i = zi
+z1
+i = propagate(
+
+z0
+j | j ∈Ni
+
+)
+
+z2
+i = propagate(
+
+z1
+j | j ∈Ni
+
+)
+
+y = σ
+
+bL · φ
+
+bLXW + b
+
+v + c
+
+,
+(4)
+
+. . .
+
+where the adaptable weights are W, v, b and c. A more recent
+line of reasoning, popularized by [17], is to implement architectures
+in the form Equation (3), making both ψ, Ψ deeper networks, but
+without interleaving multiple node-wise and propagation steps. We
+follow this design principle here, as we have found it to perform
+better empirically.
+Once a speciﬁc network f has been designed, its optimization
+follows the same strategies as for other deep networks. For example,
+for node classiﬁcation (as described in Section III-A), we optimize
+the network with a cross-entropy loss on the known node labels:
+
+Key to our proposal, the number of propagation steps depends on the
+index of node i and it is computed adaptively while propagating. The
+mechanism to implement this is inspired by the adaptive computation
+time in RNNs [1].
+First, we endow each node with a linear binary classiﬁer acting as
+a ‘halting unit’ for the propagation process. After the generic iteration
+k of propagation, we compute node-wise:
+
+hk
+i = σ
+
+Qzk
+i + q
+
+,
+(6)
+
+where Q and q are trainable parameters. The value hk
+i describes
+the probability that the node should stop after the current iteration.
+In order to ensure that the number of propagation steps remains
+reasonable, following [1] we adopt two techniques. Firstly, we ﬁx a
+maximum number of iterations T. Secondly, we use the running sum
+of the halting values to deﬁne a budget for the propagation process:
+
+(X
+
+)
+
+f ∗= arg min
+
+i∈T
+yi · log (f(xi))
+
+.
+(5)
+
+Note, however, that differently from standard neural networks, the
+output of f(xi) will depend on several other nodes, depending on
+the speciﬁc architecture. For this reason, Equation (5) is harder to
+solve efﬁciently in a stochastic fashion [34].
+
+
+
+
+
+
+
+k′
+X
+
+k′ :
+
+k=1
+hk
+i >= 1 −ϵ
+
+Ki = min
+
+,
+(7)
+
+IV. PROPOSED ADAPTIVE PROPAGATION PROTOCOL
+
+where ϵ is a hyper-parameter, generally set to a small value, that
+ensures that the process can terminate also after a single update.
+Whenever k = Ki, the budget is reached and the propagation stops
+for node i at iteration k. We combine the halting probabilities as
+follows:
+
+(
+Ri = 1 −PKi−1
+k=1
+hk
+i
+if k = Ki or k = T
+PKi
+k=1 hk
+i
+otherwise
+,
+(8)
+
+pk
+i =
+
+3.0
+
+Dataset
+Classes
+Features
+Nodes
+Edges
+Avg. Degree
+Citeseer
+6
+3703
+2110
+3668
+6.95
+Cora-ML
+7
+2879
+2810
+7981
+11.36
+PubMed
+3
+500
+19717
+44324
+8.99
+MS-Academic
+15
+6805
+18333
+81894
+17.86
+A. Computers
+10
+767
+13381
+245778
+73.47
+A. Photos
+8
+745
+7487
+119043
+63.59
+
+2.5
+
+Density
+
+2.0
+
+1.5
+
+1.0
+
+0.5
+
+the latest value in the propagation, we can adaptively combine the
+information at every step for free:
+
+0.0
+
+0
+2
+4
+6
+8
+10
+Number of Steps
+
+Ki
+X
+
+bzi = 1
+
+k=1
+pk
+i zk
+i + (1 −pk
+i )zk−1
+i
+.
+(9)
+
+Fig. 2. Average density distribution of the maximum number of propagations
+K selected by AP-GCN in the evaluation associated to Table II.
+
+Ki
+
+bzi is now the ﬁnal output for node i.
+The number of propagation steps can be controlled by the deﬁnition
+of a propagation cost Si, similarly to [1], which represents the amount
+of propagation steps needed for the update of the i-th node:
+
+of propagation T = 10. For the evaluation on Amazon’s dataset
+we removed the ℓ2 regularization keeping the same learning rate for
+all the algorithms involved. We adapted the propagation penalty α,
+controlling the distribution of the propagation steps, to each dataset.
+The code to test our proposed AP-GCN and replicate our experiments
+is available on the web.3 The evaluation in [18] together with their
+proposed methods PPNP and APPNP included: GCN [14], both
+optimized and as originally proposed (V.GCN), network of GCNs
+(N-GCN) [37], graph attention networks (GAT) [30], bootstrapped
+feature propagation (bt.FP) [38] and jumping knowledge networks
+with concatenation (JK) [27]. We included in our comparison ARMA
+[16], with a conﬁguration compatible with the experimental setup.
+
+Si = Ki + Ri .
+(10)
+
+Denoting by L the loss term in Equation (5), this term is added to
+be minimized, weighed by a propagation penalty α:
+
+bL = L + α
+X
+
+i∈V
+Si .
+(11)
+
+The propagation penalty is responsible for the trade-off between
+computation time and accuracy. Moreover, it regulates how ‘easily’
+the information spreads on the graph. In practice, the optimization
+of the halting unit is performed in an alternate fashion once every L
+steps of the main network (in our experiments, L = 5).
+
+B. Results and comparisons
+
+In Tables II we report the average accuracy when using a training
+set of 20 nodes per class, with uncertainties showing the 95%
+conﬁdence level calculated by bootstrapping. In Table III we use (∗)
+and (∗∗) to indicate statistical signiﬁcance for a cutoff value of 0.05
+and 0.01 respectively, when comparing the result to the second-best
+result using an aligned Friedman-rank test. In Fig. 2 we show the
+distribution of the steps selected by AP-GCN. Fine-tuned values of
+α for each dataset are provided in Table IV. For Amazon’s datasets,
+setting the APPNP restart probability to 0.2 led to the best results.
+
+V. EXPERIMENTAL RESULTS
+
+A. Experimental setup
+
+We used the same experimental setup proposed in [18] which
+aims to reduce experimental bias. This setup has shown that many
+advantages reported by recent works vanish under this statistically
+rigorous evaluation. The ﬁrst step in this process is the subdivision
+in visible and invisible sets. The invisible set will serve as a test
+set and will be used only once to report the ﬁnal performance. The
+visible set is subdivided in a training set with N nodes per class and
+an early stopping set for model selection. A validation set containing
+the remaining nodes of the visible set is used for hyper-parameters
+tuning. These splits are determined using the same 20 seeds used in
+[18] and each experiment is run with 5 different initialization of the
+weights leading to a total of 100 experiments per dataset.
+
+AP-GCN outperforms its competitors over the citation graphs,
+meanwhile on the co-autorship graph APPNP remains the state-of-
+the-art. On the two Amazon datasets, which have very different char-
+acteristics, the improvements of AP-GCN are even more pronounced,
+and ARMA represents the second-best alternative. Furthermore, AP-
+GCN shows a low variance, which ensures robustness to the choice
+of the splits and random initializations.
+In Table V we report the average training time per epoch of
+our implementation of a subset of algorithms of Table II using
+the framework introduced in [39]. Due to the higher number of
+propagation steps, and the presence of an additional (small) layer, AP-
+GCN is among the slowest methods for smaller datasets. However,
+it scales better to bigger datasets with respect to GAT [30].
+
+C. Sensitivity to hyper-parameters
+
+Model
+Citeseer
+Cora-ML
+PubMed
+MS-Academic
+V. GCN
+73.51 ± 0.48
+82.30 ± 0.34
+77.65 ± 0.40
+91.65 ± 0.09
+GCN
+75.40 ± 0.30
+83.41 ± 0.34
+78.68 ± 0.38
+92.10 ± 0.08
+N-GCN
+74.25 ± 0.40
+82.25 ± 0.30
+77.43 ± 0.42
+92.86 ± 0.11
+GAT
+75.39 ± 0.47
+84.37 ± 0.24
+77.46 ± 0.44
+91.22 ± 0.11
+JK
+73.03 ± 0.47
+82.69 ± 0.35
+77.88 ± 0.38
+91.71 ± 0.07
+Bt.FP
+73.55± 0.57
+80.84 ± 0.97
+72.94 ± 1.00
+91.61 ± 0.24
+PPNP
+75.83 ± 0.27
+85.29 ± 0.25
+-
+-
+APPNP
+75.73 ± 0.30
+85.09 ± 0.25
+79.73 ± 0.31
+93.27** ± 0.08
+ARMA
+73.56 ± 0.36
+82.58 ± 0.28
+76.31 ± 0.41
+92.41 ± 0.07
+AP-GCN
+76.12** ± 0.24
+85.71** ± 0.22
+79.80* ± 0.34
+92.62 ± 0.07
+
+TABLE III
+AVERAGE ACCURACY WITH UNCERTAINTIES SHOWING THE 95%
+CONFIDENCE LEVEL CALCULATED BY BOOT-STRAPPING.
+
+TABLE V
+AVERAGE TRAINING TIME PER EPOCH (MILLISECONDS).
+
+Dataset
+AP-GCN
+ARMA
+APPNP
+GCN
+GAT
+Citeseer
+32.4
+25.2
+19.6
+8.6
+11.1
+Cora-ML
+36.2
+27.6
+22.1
+7.9
+13.4
+PubMed
+42.0
+51.1
+23.3
+16.1
+45.4
+MS-Academic
+100.3
+121.2
+86.1
+56.0
+110.5
+A.Computer
+76.7
+80.0
+76.7
+50.2
+222.6
+A.Photo
+50.0
+34.7
+38.3
+25.9
+111.8
+
+Model
+A.Computer
+A.Photo
+GCN
+78.62 ± 0.30
+84.20 ± 0.41
+GAT
+76.08 ± 0.47
+88.21 ± 0.65
+APPNP
+80.17 ± 0.31
+89.30 ± 0.24
+ARMA
+80.75 ± 0.37
+89.48 ± 0.33
+AP-GCN
+85.18** ± 0.23
+92.05** ± 0.22
+
+TABLE IV
+SELECTED α FOR EACH DATASET, AND CORRESPONDING AVERAGE
+NUMBER OF PROPAGATION STEPS. IN THE LAST COLUMN, WE SHOW THE
+DROP IN ACCURACY ACROSS THE RANGE USED FOR FINE-TUNING (SEE
+THE TEXT).
+
+3.0
+
+3.0
+
+α = 0.1
+α = 0.05
+α = 0.01
+α = 0.005
+α = 0.001
+α = 0.0005
+α = 0.0001
+
+α = 0.1
+α = 0.05
+α = 0.01
+α = 0.005
+α = 0.001
+α = 0.0005
+α = 0.0001
+
+2.5
+
+2.5
+
+2.0
+
+2.0
+
+Density
+
+Density
+
+1.5
+
+1.5
+
+Dataset
+Best α
+Avg. K (Best α)
+∆Acc. (α)
+Citeseer
+0.001
+8.85 ± 0.31
+1.51
+Cora-ML
+0.005
+9.31 ± 0.35
+4.65
+PubMed
+0.001
+9.62 ± 0.17
+2.44
+MS-Academic
+0.05
+2.51 ± 0.08
+0.51
+A.Computer
+0.05
+1.71 ± 0.06
+0.19
+A.Photo
+0.05
+2.13 ± 0.05
+0.13
+
+1.0
+
+1.0
+
+0.5
+
+0.5
+
+0.0
+
+0.0
+
+0
+2
+4
+6
+8
+10
+Number of Steps
+
+0
+2
+4
+6
+8
+10
+Number of Steps
+
+(a) Avg. Density Cora-ML
+
+(b) Avg. Density A. Computer
+
+Classiﬁcation Accuracy
+
+0.88
+
+0.88
+
+Classiﬁcation Accuracy
+
+datasets. In any case, decreasing the value of the propagation penalty
+has the effect of augmenting the receptive ﬁeld of AP-GCN. This is
+particularly useful in the case of nodes that are far away from labeled
+samples. A receptive ﬁeld too big could lead to an over smoothing
+problem and a consequent drop in performance. The ﬁrst dataset
+is Cora-ML (Figure 3 (a,c)), a relatively small dataset with average
+degree once pre-processed of 11.36. The variation of the propagation
+penalty in the range [0.1, 0.0001] lead to a selection of different
+optimal number of steps in the entire range (0, 10). For higher values
+like α = 0.05, AP-GCN performs mostly less than two propagation
+steps and the performances are comparable to the GCN reported in
+Table II. The best value for AP-GCN is found for α = 0.005. The
+second dataset is Amazon Computer (Figure 3 (b,d)), a larger graph
+with an average degree of 73.47. The variation of α in this case has a
+limited effect over the range of selected propagation steps. In fact, all
+the average densities lie in the range (0, 4) and the variation of the
+accuracy is less pronounced. This is most likely due to large degree,
+that translates into a greater amount of information transmitted at
+every propagation step. This could lead to an over-smoothing effect
+but AP-GCN, robustly with respect to the choice of α, adapts itself
+to the characteristics of the graph to avoid this issue.
+
+0.86
+
+0.86
+
+0.84
+
+0.82
+
+0.84
+
+0.80
+
+0.82
+
+0.78
+
+0.1
+
+0.05
+
+0.01
+
+0.001
+
+0.005
+
+0.0005
+
+0.0001
+
+0.1
+
+0.05
+
+0.01
+
+0.005
+
+0.001
+
+0.0005
+
+0.0001
+
+Propagation Penalty (α)
+
+Propagation Penalty (α)
+
+(c) Accuracy Cora-ML
+
+(d) Accuracy A. Computer
+
+Fig. 3.
+(a)(b) Average density distribution of the maximum number of
+propagations K and (c)(d) accuracy of AP-GCN on Cora-ML and Amazon
+Computer varying the propagation penalty α in the range [0.1, 0.0001].
+
+nclass = 5
+nclass = 10
+nclass = 20
+nclass = 40
+nclass = 60
+
+2.5
+
+Classiﬁcation Accuracy
+
+0.85
+
+2.0
+
+Density
+
+0.80
+
+1.5
+
+0.75
+
+GCN
+APPNP
+AP-GCN
+
+1.0
+
+0.70
+
+0.5
+
+0.65
+
+0.0
+
+0.0
+2.5
+5.0
+7.5
+10.0
+Number of Steps
+
+5
+10
+20
+40
+60
+Nodes per class
+
+(a) Accuracy
+
+(b) Avg. Density
+
+Fig. 4. (a) Accuracy of GCN, APPNP and AP-GCN for different numbers
+of labeled nodes per class on Cora-ML. (b) AP-GCN relative average density
+distribution of the maximum number of propagations K.
+
+VI. CONCLUSION
+
+In this paper we introduced the adaptive propagation graph con-
+volutional network (AP-GCN), a variation of GCN wherein each
+node selects automatically the number of propagation steps performed
+across the graph. We showed experimentally that the method performs
+favourably or better than the state-of-the-art, that it is robust to the
+training set size and, in most cases, it can adapt its behaviour to the
+dataset more or less robustly depending on the hyper-parameter’s
+choice. Future work will consider extending the ideas presented
+here to different types of GNNs and to tasks going beyond node
+classiﬁcation. Our update is similar to the PageRank and ARMA
+models proposed in [16], [18], which are known to approximate a
+rational ﬁlter on the graph [33]. Future work will also explore in-
+depth the spectral properties of our model.
+
+REFERENCES

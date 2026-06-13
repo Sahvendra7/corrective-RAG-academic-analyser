@@ -1,0 +1,1017 @@
+Temporal Cross-attention for Action Recognition
+
+Ryota Hashiguchi and Toru Tamaki[0000−0001−9712−7777]
+
+Nagoya Institute of Technology, Nagoya, Japan
+
+
+arXiv:2204.00452v2 [cs.CV] 14 Nov 2022
+
+Abstract. Feature shifts have been shown to be useful for action recog-
+nition with CNN-based models since Temporal Shift Module (TSM) was
+proposed. It is based on frame-wise feature extraction with late fusion,
+and layer features are shifted along the time direction for the temporal in-
+teraction. TokenShift, a recent model based on Vision Transformer (ViT),
+also uses the temporal feature shift mechanism, which, however, does not
+fully exploit the structure of Multi-head Self-Attention (MSA) in ViT. In
+this paper, we propose Multi-head Self/Cross-Attention (MSCA), which
+fully utilizes the attention structure. TokenShift is based on a frame-wise
+ViT with features temporally shifted with successive frames (at time t+1
+and t −1). In contrast, the proposed MSCA replaces MSA in the frame-
+wise ViT, and some MSA heads attend to successive frames instead of
+the current frame. The computation cost is the same as the frame-wise
+ViT and TokenShift as it simply changes the target to which the atten-
+tion is taken. There is a choice about which of key, query, and value
+are taken from the successive frames, then we experimentally compared
+these variants with Kinetics400. We also investigate other variants in
+which the proposed MSCA is used along the patch dimension of ViT,
+instead of the head dimension. Experimental results show that a variant,
+MSCA-KV, shows the best performance and is better than TokenShift
+by 0.1% and then ViT by 1.2%.
+
+1
+Introduction
+
+Recognizing the actions of people in videos is an important topic in computer
+vision. After the emergence of Vision Transformer (ViT) [1] which has been
+shown to be eﬀective for various image recognition tasks [2,3], research extending
+ViT to video has become active [4,5,6,7,8].
+In recognition of video, unlike images, it is necessary to model the temporal
+information across frames of a given video clip. While most early works of ac-
+tion recognition were frame-wise CNN models followed by temporal aggregation
+[9,10], 3D CNN models [11,12,13] were shown to be eﬀective and well generalized
+when they were trained on large-scale datasets [14] and transferred to smaller
+datasets [15].
+However, the computational cost of 3D convolution is usually high. To miti-
+gate the issue of the trade-oﬀbetween the ability of temporal modeling and the
+high computational cost, Temporal Shift Module (TSM) [16] was proposed by
+extending spatial feature shifting [17,18] to the temporal dimension. TSM uses
+
+2
+Temporal Cross-attention for Action Recognition
+
+late fusion by applying 2D ResNet [19] to each frame, while it exploits the tem-
+poral interaction between adjacent frames by shifting the features in each layer
+of ResNet. The feature shift operation is computationally inexpensive, neverthe-
+less it has been shown to perform as well as 3D CNN. Therefore, many related
+CNN models [20,21,22] have been proposed. TokenShift [23] is a TSM-like 2D
+ViT-based model that shifts a fraction of ViT features, showing that shifting
+only the class tokens is enough to achieve a good performance.
+However, TokenShift doesn’t fully exploit the advantage of the architecture
+of the attention mechanism of ViT, instead it simply shifts features like as in
+TSM. We propose a method that seamlessly utilizes the ViT structure to in-
+teract with features across adjacent frames. The original TSM or TokenShift
+uses a 2D model applied to each frame, while the output features of layers of
+the 2D model are then shifted from the current time t to one time step for-
+ward t + 1 and backward t −1. In the encoder architecture of ViT, Multi-head
+Self-Attention (MSA) computes attentions between patches at a given frame
+t. The proposed method utilizes and modiﬁes it for the temporal interaction;
+some patches at frame t attends to not only patches at the current frame t but
+also patches at the neighbor frames t + 1 and t −1. We call this mechanisms
+Multi-head Self/Cross-Attention (MSCA). This allows the temporal interaction
+to be computed within the Transformer block without additional shift modules.
+Furthermore, the computational cost remains the same because some parts of
+self-attention computation is simply replaced with the temporal cross-attention.
+The contributions of this paper are as follows:
+
+– We propose a new action recognition model with the proposed MSCA, which
+seamlessly combines the concepts of ViT and TSM. This avoids computing
+spatio-temporal attention directly in the 3D video volume.
+– MSCA uses cross-attention to perform temporal interactions inside the Trans-
+former block, unlike TokenShift that uses additional shifting modules. This
+allows for temporal interaction without increasing computational complexity
+nor changing model architecture.
+– Experiments on Kinetics400 show that the proposed method improves per-
+formance compared to ViT and TokenShift.
+
+2
+Related Work
+
+2.1
+2D/3D CNN, and TSM
+
+Early approaches of deep learning to action recognition are 2D-based methods
+[9,10] that apply 2D CNN to videos frame by frame, or Two-Stream methods [24]
+that use RGB frames and optical ﬂow stacks. However, it is diﬃcult to model
+long-term temporal information beyond several time steps, and this is where 3D-
+based methods [11,12,13] came in. These models simultaneously consider spatial
+and temporal information, but their computational cost is relatively high com-
+pared to 2D-based methods. Therefore, mixed models of 2D and 3D convolution
+
+Temporal Cross-attention for Action Recognition
+3
+
+[25,26,27] have been proposed by separating convolution in the spatial and tem-
+poral dimensions.
+TSM [16] is an attempt to model temporal information for action recognition
+without increasing parameters and computational complexity while maintaining
+the architecture of 2D CNN-based methods. TSM shifts intermediate features
+between neighbor frames, allowing 2D CNNs of each frame to interact with other
+frames in the temporal direction. Many CNN-based variants have followed, such
+as Gated-Shift Network [20] that learns temporal features using only 2D CNN
+with the gate shift module, and RubiksNet [22] which uses three learnable shifts
+(spatial, vertical, and temporal) for end-to-end learning.
+
+2.2
+ViT-based video models
+
+ViT [1] performs very well in image recognition tasks, and its application to ac-
+tion recognition tasks has been actively studied [4,5,6,7,8,28,29]. It is known that
+the computational cost of self-attention in Transformer is O(N 2) where N is the
+number of tokens, or the number of patches N for ViT. For videos, the number
+of frames T also contributes to the computational cost of spatio-temporal self-
+attention. A simple extension of ViT with full spatio-temporal attention gives a
+computational cost of O(N 2T 2), since the number of tokens increases in propor-
+tion to the temporal extent. To alleviate this computational issue, TimeSformer
+[7] reduces the computational complexity to O(T 2N +TN 2) by applying tempo-
+ral and spatial attention separately, TokenLeaner [28] to O(S2T 2) by selecting
+S(< N) patches that are important for the representation, and Space-time Mix-
+ing Attention [29] to O(TN 2) by attending tokens in neighbor frames only.
+TokenShift [23] is a TSM-like model that shifts a fraction of ViT features in
+each Transformer block. It computes the attention only in the current frame,
+hence the complexity is O(TN 2) with fewer FLOPs than [29]. TokenShift shifts
+the class token only based on experimental results, however it doesn’t fully ex-
+ploit the attention mechanism. In contrast, the proposed method makes use of
+the attention mechanism for feature shift; we replace some of the self-attention
+modules with the proposed cross-attention modules that shift key, query, and
+value to neighbor frames, instead of naively shifting features.
+
+3
+Method
+
+Figure 1(a) shows the original ViT encoder block that has the Multi-head Self-
+Attention (MSA) module. Fig.1(b) shows the encoder block of TokenShift. Two
+modules for shifting intermediate features are added to the original ViT block.
+These modules shift a portion of the class tokens in the temporal direction by
+one time step forward and backward, similar to TSM. Fig.1(c) shows the encoder
+block of the proposed MSCA. The diﬀerence is that MSA is replaced with the
+Multi-head Self/Cross-Attention (MSCA) module, and no additional modules
+exist.
+
+4
+Temporal Cross-attention for Action Recognition
+
++
+!"#
+
++
+!"#
+
++
+!"#
+
+MLP
+
+MLP
+
+MLP
+
+Norm
+
+Norm
+
+Norm
+
+shift
+
++
+
++
+
++
+
+MHA
+
+MHA
+
+MSCA
+
+Norm
+
+Norm
+
+Norm
+
+shift
+
+Embedded
+
+Embedded
+
+Embedded
+
+(a)
+
+(c)
+
+(b)
+
+Fig. 1: Encoder blocks of (a) ViT, (b) TokenShift with two shift modules (in
+blue), and (c) the proposed method with MSCA (in green).
+
+3.1
+TokenShift and ViT
+
+In this section, we brieﬂy review TokenShift [23] which is based on ViT [1].
+
+Input Patch Embedding Let an input video be x ∈RT ×3×H×W , where T is
+the number of frames in the video clip, and H, W are the height and width of the
+frame. Each frame is divided into patches of size P × P pixels and transformed
+into a tensor ˆx = [x1
+0, . . . , xN
+0 ] ∈RT ×N×d, where xi
+0 ∈RT ×d denotes the i-th
+patch, N = HW
+
+P 2 is the number of patches of dimension d = 3P 2.
+The input patch xi
+0 is then transformed by the embedding matrix E ∈Rd×D
+
+and the positional encoding Epos as follows:
+
+z0 = [c0, x1
+0E, x2
+0E, . . . , xN
+0 E] + Epos,
+(1)
+
+where c0 ∈RT ×D is the class token. This patch embedding z0 ∈RT ×(N+1)×D is
+the input to the ﬁrst encoder block.
+
+Encoder Block Let zℓbe the input to the ℓ-th encoder block. The output zℓ
+of the block can be expressed as follows:
+
+z′
+ℓ= MSA(LN(zℓ−1)) + zℓ−1
+(2)
+
+zℓ= MLP(LN(z′
+ℓ)) + z′
+ℓ,
+(3)
+
+where LN is the layer normalization, MSA is the multi-head self-attention, and
+MLP is the multi-layer perceptron. In the following, zℓ,t,n,d denotes the element
+at (t, n, d) in zℓ.
+
+Temporal Cross-attention for Action Recognition
+5
+
+Shift Modules TokenShift inserts two shift modules in the block as follows;
+
+z′
+ℓ−1 = Shift(zℓ−1)
+(4)
+
+z′′
+ℓ= MSA(LN(z′
+ℓ−1)) + z′
+ℓ−1
+(5)
+
+z′′′
+ℓ= Shift(z′′
+ℓ)
+(6)
+
+zℓ= MLP(LN(z′′′
+ℓ)) + z′′′
+ℓ.
+(7)
+
+The shift modules take the input zin ∈RT ×(N+1)×D and compute the output
+zout of the same size by shifting the part of zin corresponding to the class tokens
+(zin,t,0,d, the ﬁrst elements of the second dimension of zin) while leaving the other
+parts untouched. This is implemented by the following assignments;
+
+
+
+
+
+zin,t−1,0,d,
+1 < t ≤T, 1 ≤d < Db
+zin,t+1,0,d,
+1 ≤t < T, Db ≤d < Db + Df
+zin,t,0,d,
+∀t, Db + Df ≤d ≤D
+(8)
+
+zout,t,0,d =
+
+
+
+
+zout,t,n,d = zin,t,n,d,
+∀t, 1 ≤n < N, ∀d
+(9)
+
+The ﬁrst equation shifts the class tokens; along the channel dimension D, the
+backward shift to t−1 is done for the ﬁrst Db channels, the forward shift to t+1
+is done for the next Df, and no shift for the rest channels. The second equation
+passes through features other than the class tokens.
+
+3.2
+MSCA
+
+The proposed method replaces MSA with MSCA in the original block;
+
+z′
+ℓ= MSCA(LN(zℓ−1)) + zℓ−1
+(10)
+
+zℓ= MLP(LN(z′
+ℓ)) + z′
+ℓ.
+(11)
+
+In the following, we ﬁrst describe MSA, and then deﬁne MSCA.
+
+MSA The original MSA computes the key K(t), query Q(t), and value V (t) for
+the portion z(t) ∈R(N+1)×D of the input feature z ∈RT ×(N+1)×D at time t, as
+follows;
+
+K(t), Q(t), V (t) = z(t)[Wk, Wq, Wv],
+(12)
+
+where Wk, Wq, Wv ∈RD×D are embedding matrices, and z = [z(1), . . . , z(T )].
+These are used to compute the i-th attention head;
+
+head(t)
+i
+= a(Q(t)
+i , K(t)
+i )V (t)
+i
+∈R(N+1)×D/h,
+(13)
+
+at time t for i = 1, . . . , h, where the attention a is
+
+a(Q, K) = softmax(QKT /
+√
+
+D),
+(14)
+
+6
+Temporal Cross-attention for Action Recognition
+
+X
+)((*+(&,+
+
+X
+
+$%&'(
+
+!
+"
+#
+!
+"
+#
+
+!
+"
+#
+
+t
+t + 1
+t −1
+
+Fig. 2: Shit operation at T = t in the MSCA-KV model
+
+X
+&%%'(%#)(
+
+X
+&%%'(%#)(
+
+X
+&%%'(%#)(
+
+X
+
+X
+
+X
+
+!"#$%
+
+!"#$%
+
+!"#$%
+
+*
++
+,
+*
++
+,
+*
++
+,
+
+*
++
+,
+*
++
+,
+*
++
+,
+
+*
++
+,
+*
++
+,
+*
++
+,
+
+moRkWqjFHxC36sKVgoj4GW78ARf9AhGXFdy48CYNiIp6h5k5c+aeO2dmdNcyfUlUiylNzS2tbfH2REdnV3dPsrdvzXdKniHyhmM53oau+cIybZGXprTEhusJrahbYl0/WAz218vC803HXpUV2wXtT3bLJiGJpnKycROMkVpCmP0J1AjkEIUWSd5gy3swoGBEoQsCEZW9Dgc9uECoL3DaqzHmMzHBf4AgJ1pY4S3CGxuwBj3u82oxYm9dBT9UG3yKxd1j5SjG6ZFuqU4PdEfP9P5rWpYI/BS4VlvaIW703M8tPL2r6rIs8T+p+pPzxIFzIVeTfbuhkxwC6OhLx+e1fmc+PVCbqiF/Z/STW65xvY5VfjelnkLhB8gPr9uX+Ctam0OpOeXp5OZRair4hjGOY5PeRQZLyCLP5xZwglOcxZ6ULmVAGWykKrFI048voYx8ACsdihE=</latexit>t
+t + 1
+t −1
+
+ybZGXprTEhusJrahbYl0/WAz218vC803HXpUV2wXtT3bLJiGJpnKycROMkVpCmP0J1AjkEIUWSd5gy3swoGBEoQsCEZW9Dgc9uECoL3DaqzHmMzHBf4AgJ1pY4S3CGxuwBj3u82oxYm9dBT9UG3yKxd1j5SjG6ZFuqU4PdEfP9P5rWpYI/BS4VlvaIW703M8tPL2r6rIs8T+p+pPzxIFzIVeTfbuhkxwC6OhLx+e1fmc+PVCbqiF/Z/STW65xvY5VfjelnkLhB8gPr9uX+Ctam0OpOeXp5OZRair4hjGOY5PeRQZLyCLP5xZwglOcxZ6ULmVAGWykKrFI048voYx8ACsdihE=</latexit>t
+t + 1
+t −1
+
+ybZGXprTEhusJrahbYl0/WAz218vC803HXpUV2wXtT3bLJiGJpnKycROMkVpCmP0J1AjkEIUWSd5gy3swoGBEoQsCEZW9Dgc9uECoL3DaqzHmMzHBf4AgJ1pY4S3CGxuwBj3u82oxYm9dBT9UG3yKxd1j5SjG6ZFuqU4PdEfP9P5rWpYI/BS4VlvaIW703M8tPL2r6rIs8T+p+pPzxIFzIVeTfbuhkxwC6OhLx+e1fmc+PVCbqiF/Z/STW65xvY5VfjelnkLhB8gPr9uX+Ctam0OpOeXp5OZRair4hjGOY5PeRQZLyCLP5xZwglOcxZ6ULmVAGWykKrFI048voYx8ACsdihE=</latexit>t
+t + 1
+t −1
+
+(a)
+
+(b)
+
+(c)
+
+Fig. 3: Shit operations of (a) MSCA-V, (b) MSCA-pKV, and (c) MSCA-pV.
+
+and Q(t)
+i
+∈R(N+1)×D/h is the part of Q(t) corresponding to i-th head
+
+Q(t) = [Q(t)
+1 , . . . , Q(t)
+i , . . . , Q(t)
+h ],
+(15)
+
+and K(t)
+i , V (t)
+i
+are the same. These heads are ﬁnally stacked to form
+
+MSA(z(t)) = [head(t)
+1 , . . . , head(t)
+h ].
+(16)
+
+In MSA, patches in t-th frame are attended from other patches of the same
+frame at time t, which means that there are no temporal interactions between
+frames.
+
+MSCA-KV The proposed MSCA computes the attention across frames, that
+is, patches in t-th frame are also attended from patches in frames at time t + 1
+and t −1. This can be done with shift operations; after generating Q, K, V at
+each frame, these are exchanged with the neighbor frames.
+There are choices of which of Q, K, or V to be shifted. A possible choice is
+to shift K and V , and the query in the current frame is attended by key-value
+pairs in other frames. This is expressed as follows;
+
+a(Q(t)
+i , K(t−1)
+i
+)V (t−1)
+i
+1 ≤i < hb
+a(Q(t)
+i , K(t+1)
+i
+)V (t+1)
+i
+hb ≤i < hb + hf
+a(Q(t)
+i , K(t)
+i )V (t)
+i
+hb + hf ≤i ≤h.
+
+
+
+
+
+head(t)
+i
+=
+
+(17)
+
+
+
+
+Here, we have the ﬁrst hb heads with the backward shift, the next hf heads
+with the forward shift, and the rest heads with no shift. We call this MSCA-KV,
+
+Temporal Cross-attention for Action Recognition
+7
+
+and Figure 2 shows the diagram of the shift operation. First, queries, keys and
+values are computed at each frame, and then some of them are shifted before
+computing the attention. The solid arrows indicate the key-value shift from time
+t −1 and t + 1. As in the same way, the key-value shift from the current frame t
+to t−1 and t+1 are shown in dotted arrows. There are shifts in all other frames
+at the same time in the same manner.
+
+MSCA-V Another choice of shift is shown in Fig. 3(a). Here, Q and K are not
+shifted, but only V is shifted as follows;
+
+a(Q(t)
+i , K(t)
+i )V (t−1)
+i
+1 ≤i < hb
+a(Q(t)
+i , K(t)
+i )V (t+1)
+i
+hb ≤i < hb + hf
+a(Q(t)
+i , K(t)
+i )V (t)
+i
+hb + hf ≤i ≤h.
+
+
+
+
+
+head(t)
+i
+=
+
+(18)
+
+
+
+
+This might not be common because the key and value are now separated and
+taken from diﬀerent frames. However, this makes sense for modeling temporal
+interactions because the values (which are mixed by the attention weights) come
+from diﬀerent frames while the attention is computed in the current frame. We
+call this version MSCA-V. Therefore, in addition to shifting V in this way, there
+are seven possible combinations; Q, K, V, QK, KV, QV, and QKV. We compared
+these variants in the experiments. Note that MSCA-QKV is equivalent to a
+simple feature shifting because attended features are computed in each frame
+and then shifted.
+
+MSCA-pKV All of the above seven variants perform shift operations along
+the head (or channel) dimension D, but similar variants of shift are also possible
+for the patch dimension N + 1.
+The shapes of K(t), Q(t), V (t) are R(N+1)×D, and the ﬁrst dimension is for
+patches while the second is for heads. As in the same way the the shift along
+the head dimension, we have a variation of shift operations along the patch
+dimension as shown in Fig. 3(b).
+First, K and V are expressed as stacks of keys and values of patches at
+diﬀerent frames as follows;
+
+K(t) = [K(t)
+0 , K(t)
+1 , . . . , K(t)
+N ]
+(19)
+
+V (t) = [V (t)
+0
+, V (t)
+1
+, . . . , V (t)
+N ],
+(20)
+
+where K(t)
+n , V (t)
+n
+∈RD are the key and value of patch n at time t.
+Then, keys of some patches in the current frame are shifted to form K′;
+
+K(t−1)
+n
+0 ≤n < Nb
+K(t+1)
+n
+Nb ≤n < Nb + Nf
+K(t)
+n
+Nb + Nf ≤n ≤N,
+
+
+
+
+
+K′(t)
+n
+=
+
+(21)
+
+
+
+
+8
+Temporal Cross-attention for Action Recognition
+
+and also V ′ in the same way. Finally, the i-th head is computed as follows
+
+head(t)
+i
+= a(Q(t)
+i , K′(t)
+i
+)V ′(t)
+i
+.
+(22)
+
+We refer to this version as MSCA-pKV.
+
+MSCA-pV Like as MSCA-V, a variant of the shift in the patch direction with
+V only can be also considered as shown in Fig. 3(c), by the following shift;
+
+head(t)
+i
+= a(Q(t)
+i , K(t)
+i )V ′(t)
+i
+.
+(23)
+
+As before, there are seven variants, and we call these MSCA-pV, and so on.
+
+4
+Experimental results
+
+4.1
+Setup
+
+Kinetics400 [14] was used to train and evaluate the proposed method. This
+dataset consists of a training set of 22k videos, a validation set of 18k videos,
+with 400 categories of human actions. Each video was collected from Youtube,
+and the portion corresponding to each category was cropped to a length of 10
+seconds.
+We used a 2D ViT pre-trained on ImageNet21k [30] with h = 12 heads, 12
+encoder blocks, and patches of size P = 16 and D = 768 = 3 × 16 × 16 (these
+parameters are the same for TokenShift and MSCA models). For action recog-
+nition, ViT was applied to each frame and resulting frame-wise features were
+aggregated by temporal averaging (this is referred to as ViT in the experiment
+and in [23]). We compared this ViT, TokenShift and the proposed method. Note
+that we report the performance of TokenShift based on our reproduction using
+the author’s code.1
+
+For training, we used the same settings as in [23]. Input clips were of 8 frames
+with stride of 32 frames (starting frames were randomly chosen). Frames were
+ﬂipped horizontally at a probability of 50%, and the short side was randomly
+resized in the range of [244, 330] pixels while maintaining the aspect ratio, then a
+random 224 × 224 pixel rectangle was cropped (therefore the number of patches
+is N = 196 = 14×14). In addition, brightness change, saturation change, gamma
+correction, and hue correction were applied to frames, each at the probability of
+10%. The number of epochs was set to 12, the optimizer to SDG with momentum
+of 0.9 and no weight decay. The initial learning rate was set to 0.1, and decayed
+by a factor of 10 at 10th epoch. The batch size was set to 42, and 21 batches
+were trained on each of two GPUs. Gradient updates were performed once every
+10 iterations, so the eﬀective batch size was 420.
+We used the multi-view test [31]. From a validation video, one clip was sam-
+pled as in training, and this was repeated 10 times to sample 10 clips. Each clip
+
+1
+
+Temporal Cross-attention for Action Recognition
+9
+
+Table 1: The performance of MSCA-KV for the validation sets of Kinetics400.
+Note that the zero shift means a naive frame-wise ViT. The column “shift”
+means the percentage of the shifted dimensions to the total dimensions D.
+
+model
+heads hb, hf shift % top-1 top-5
+ViT
+0
+0
+0 (ViT) 75.65 92.19
+MSCA-KV
+2
+1
+16.7
+76.47 92.88
+4
+2
+33.3
+76.07 92.61
+6
+3
+50.0
+75.66 92.30
+8
+4
+66.7
+74.72 91.91
+
+was resized to 224 pixels on its short side while maintaining the aspect ratio,
+and cropped to 224 × 224 at the right, center, and left. The results of these 30
+clips (views) were averaged to compute a single prediction score.
+
+4.2
+The amount of shift of MSCA-KV
+
+We ﬁrst investigate the eﬀect of the number of heads to be shifted. Table 1 shows
+the performance of MSCA-KV. The best performance was obtained when only
+two heads (each for forward and backward) which corresponds to shifting 2/12 =
+16.7% of the channels. As the number of shifted heads increased, the performance
+decreased, suggesting that shifting a few heads is suﬃcient while most heads need
+not to be shifted. This observation coincides with the conclusions of TokenShift
+[23], which shows that the shift of the class token only is enough, and also TSM
+[16], which used the shift of 1/4 = 25% of the channels (each 1/8 for forward
+and backward).
+In the following experiments, we used shifting two heads for all MSCA vari-
+ations.
+
+4.3
+Comparison of MSCA variations shifting in the head direction
+
+Table 2 shows the performance of the MSCA model variants with shift operations
+in the head direction. Among them, MSCA-KV performed the best, outperform-
+ing others by at least 0.5%. Other variants performed as same as the baseline
+ViT, indicating that the shift operation is not working eﬀectively in such varia-
+tions.
+
+4.4
+The number of encoder blocks with MSCA
+
+The proposed method replaces MSA modules in 12 encoder blocks in ViT with
+MSCA modules. However, it is not obvious that modules of all blocks need to
+be replaced. Table 3 shows the results when we replaced MSA modules with
+MSCA in some blocks near the end (or top) of the network. All 12 replacements
+correspond to MSCA-KV, and 0 (no MCSA) is ViT. Using four MSCA modules
+showed no improvement, while using 8 MSCA modules performed almost the
+
+10
+Temporal Cross-attention for Action Recognition
+
+Table 2: The performance of
+MSCA variants shifting in the
+head direction.
+
+Table 3: The performance with diﬀerent
+numbers of blocks with MSCA modules of
+KV shift.
+
+model
+top-1 top-5
+TokenShift
+76.37 92.82
+ViT
+75.65 92.19
+MSCA-Q
+75.84 92.57
+MSCA-K
+75.76 92.13
+MSCA-V
+75.58 92.39
+MSCA-QK
+75.47 92.32
+MSCA-KV 76.47 92.88
+MSCA-QV
+75.57 92.43
+MSCA-QKV 75.78 92.37
+
+model
+# MSCA# MSA top-1 top-5
+ViT
+0
+12
+75.65 92.19
+4
+8
+75.67 92.19
+8
+4
+76.40 92.77
+MSCA-KV
+12
+0
+76.47 92.88
+
+Table 4: The performance of MSCA-
+pKV. The column “shift” means the
+percentage of the shifted patches to
+the total patches N + 1.
+
+Table 5: The performance of MSCA
+models shifting in the patch direc-
+tion.
+
+model
+top-1 top-5
+TokenShift
+76.37 92.82
+ViT
+75.65 92.19
+MSCA-pQ
+75.75 92.10
+MSCA-pK
+75.69 92.24
+MSCA-pV
+75.84 92.43
+MSCA-pQK
+75.50 91.99
+MSCA-pKV
+76.35 92.91
+MSCA-pQV
+75.83 92.35
+MSCA-pQKV 75.73 92.21
+
+patches Nb, Nb shift % top-1 top-5
+
+0
+0
+0 (ViT) 75.65 92.19
+8
+4
+4.1
+76.28 92.49
+16
+8
+8.1
+76.35 92.91
+32
+16
+16.2
+76.07 92.77
+48
+24
+24.4
+75.84 92.49
+64
+32
+32.5
+75.29 92.04
+
+same as MSCA-KV with all 12 MSCA modules. This is because the input video
+clip consists of 8 frames, and shifting more than 8 times with MSCA modules
+ensures that the temporal information from all frames is available for the entire
+network. Therefore, it would be necessary to use at least as many MSCA modules
+as the number of frames in the input clip.
+
+4.5
+Comparison of MSCA variations shifting in the patch direction
+
+Table 4 shows the performance of MSCA-pKV with diﬀerent amount of shift.
+The results indicate that, again, a small amount of shift is enough for a bet-
+ter performance and the best performance was obtained when 16 patches were
+shifted. The performance decreases for a smaller amount of shift, approaching
+the performance of ViT with no shift. In the experiments below, we used the
+shift of 16 patches.
+Table 5 shows the performance of MSCA variants with shifting in the patch
+direction. Just like as MSCA-KV was the best for shifting in the head direction,
+
+Temporal Cross-attention for Action Recognition
+11
+
+MSCA-pKV has the best performance here, while it is just comparable to To-
+kenShift. An obvious drawback of this approach is the ﬁrst layer; the patches to
+be shifted were ﬁxed to the ﬁrst Nb and Nf patches in the order of the patch
+index, which is irrelevant to the content of the frame. This might be mitigated
+by not using MSCA modules in the ﬁrst several layers.
+
+5
+Conclusions
+
+In this paper, we proposed MSCA, a ViT-based action recognition model that
+replaces MSA modules in the encoder blocks. The MSCA modules compute the
+attention by shifting of the key, query, and value for temporal interaction be-
+tween frames. Experimental results using Kinetics400 showed that the proposed
+method is eﬀective for modeling spatio-temporal features and performs better
+than a naive ViT and TokenShift. Future work includes evaluations on other
+datasets and comparisons with similar methods such as Space-time Mixing At-
+tention [29].
+
+Acknowledgements. This work was supported in part by JSPS KAKENHI
+Grant Number JP22K12090.
+
+References
+
+1. Dosovitskiy, A., Beyer, L., Kolesnikov, A., Weissenborn, D., Zhai, X., Unterthiner,
+T., Dehghani, M., Minderer, M., Heigold, G., Gelly, S., Uszkoreit, J., Houlsby, N.:
+An image is worth 16x16 words: Transformers for image recognition at scale. In:
+International Conference on Learning Representations. (2021)
+2. Radford, A., Kim, J.W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G.,
+Askell, A., Mishkin, P., Clark, J., Krueger, G., Sutskever, I.: Learning transferable
+visual models from natural language supervision. CoRR abs/2103.00020 (2021)
+3. Ramesh, A., Pavlov, M., Goh, G., Gray, S., Voss, C., Radford, A., Chen, M.,
+Sutskever, I.: Zero-shot text-to-image generation. In Meila, M., Zhang, T., eds.:
+Proceedings of the 38th International Conference on Machine Learning. Volume
+139 of Proceedings of Machine Learning Research., PMLR (2021) 8821–8831
+4. Arnab, A., Dehghani, M., Heigold, G., Sun, C., Luˇci´c, M., Schmid, C.: Vivit: A
+video vision transformer. In: Proceedings of the IEEE/CVF International Confer-
+ence on Computer Vision (ICCV). (2021) 6836–6846
+5. Li, X., Zhang, Y., Liu, C., Shuai, B., Zhu, Y., Brattoli, B., Chen, H., Marsic, I.,
+Tighe, J.: Vidtr: Video transformer without convolutions. CoRR abs/2104.11746
+(2021)
+6. Girdhar, R., Carreira, J., Doersch, C., Zisserman, A.: Video action transformer
+network. In: Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR). (2019)
+7. Bertasius, G., Wang, H., Torresani, L.: Is space-time attention all you need for
+video understanding? In: Proceedings of the International Conference on Machine
+Learning (ICML). (2021)
+8. Sharir, G., Noy, A., Zelnik-Manor, L.: An image is worth 16x16 words, what is a
+video worth? CoRR abs/2103.13915 (2021)
+
+12
+Temporal Cross-attention for Action Recognition
+
+9. Karpathy, A., Toderici, G., Shetty, S., Leung, T., Sukthankar, R., Fei-Fei, L.: Large-
+scale video classiﬁcation with convolutional neural networks. In: Proceedings of the
+IEEE Conference on Computer Vision and Pattern Recognition (CVPR). (2014)
+10. Donahue, J., Anne Hendricks, L., Guadarrama, S., Rohrbach, M., Venugopalan,
+S., Saenko, K., Darrell, T.: Long-term recurrent convolutional networks for visual
+recognition and description. In: Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR). (2015)
+11. Tran, D., Bourdev, L., Fergus, R., Torresani, L., Paluri, M.: Learning spatiotem-
+poral features with 3d convolutional networks. In: Proceedings of the IEEE Inter-
+national Conference on Computer Vision (ICCV). (2015)
+12. Carreira, J., Zisserman, A.: Quo vadis, action recognition? a new model and the
+kinetics dataset. In: Proceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR). (2017)
+13. Hara, K., Kataoka, H., Satoh, Y.: Can spatiotemporal 3d cnns retrace the history
+of 2d cnns and imagenet? In: Proceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR). (2018) 6546–6555
+14. Kay, W., Carreira, J., Simonyan, K., Zhang, B., Hillier, C., Vijayanarasimhan, S.,
+Viola, F., Green, T., Back, T., Natsev, P., Suleyman, M., Zisserman, A.:
+The
+kinetics human action video dataset. CoRR abs/1705.06950 (2017)
+15. Soomro, K., Zamir, A.R., Shah, M.: Ucf101: A dataset of 101 human actions classes
+from videos in the wild. CoRR abs/1212.0402 (2012)
+16. Lin, J., Gan, C., Han, S.: Tsm: Temporal shift module for eﬃcient video under-
+standing. In: Proceedings of the IEEE/CVF International Conference on Computer
+Vision (ICCV). (2019)
+17. Chen, W., Xie, D., Zhang, Y., Pu, S.:
+All you need is a few shifts: Designing
+eﬃcient convolutional neural networks for image classiﬁcation. In: Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR).
+(2019)
+18. Wu, B., Wan, A., Yue, X., Jin, P., Zhao, S., Golmant, N., Gholaminejad, A.,
+Gonzalez, J., Keutzer, K.: Shift: A zero ﬂop, zero parameter alternative to spatial
+convolutions. In: Proceedings of the IEEE Conference on Computer Vision and
+Pattern Recognition (CVPR). (2018)
+19. He, K., Zhang, X., Ren, S., Sun, J.: Deep residual learning for image recognition. In:
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR). (2016)
+20. Sudhakaran, S., Escalera, S., Lanz, O.:
+Gate-Shift Networks for Video Action
+Recognition. In: IEEE/CVF Conference on Computer Vision and Pattern Recog-
+nition (CVPR). (2020)
+21. Chang, Y.L., Liu, Z.Y., Lee, K.Y., Hsu, W.: Learnable gated temporal shift module
+for deep video inpainting”. BMVC (2019)
+22. Fan, L., Buch, S., Wang, G., Cao, R., Zhu, Y., Niebles, J.C., Fei-Fei, L.: Rubiksnet:
+Learnable 3d-shift for eﬃcient video action recognition. In Vedaldi, A., Bischof,
+H., Brox, T., Frahm, J.M., eds.: Computer Vision – ECCV 2020, Cham, Springer
+International Publishing (2020)
+23. Zhang, H., Hao, Y., Ngo, C.W. In: Token Shift Transformer for Video Classiﬁca-
+tion. Association for Computing Machinery, New York, NY, USA (2021) 917–925
+24. Simonyan, K., Zisserman, A.: Two-stream convolutional networks for action recog-
+nition in videos.
+In Ghahramani, Z., Welling, M., Cortes, C., Lawrence, N.,
+Weinberger, K.Q., eds.: Advances in Neural Information Processing Systems. Vol-
+ume 27., Curran Associates, Inc. (2014)
+
+Temporal Cross-attention for Action Recognition
+13
+
+25. Qiu, Z., Yao, T., Mei, T.: Learning spatio-temporal representation with pseudo-
+3d residual networks. In: Proceedings of the IEEE International Conference on
+Computer Vision (ICCV). (2017)
+26. Zhang, D., Dai, X., Wang, X., Wang, Y.F.: S3d: Single shot multi-span detector
+via fully 3d convolutional network. In: Proceedings of the British Machine Vision
+Conference (BMVC). (2018)
+27. Tran, D., Wang, H., Torresani, L., Ray, J., LeCun, Y., Paluri, M.: A closer look at
+spatiotemporal convolutions for action recognition. In: Proceedings of the IEEE
+Conference on Computer Vision and Pattern Recognition (CVPR). (2018)
+28. Ryoo, M.S., Piergiovanni, A., Arnab, A., Dehghani, M., Angelova, A.:
+Token-
+learner: Adaptive space-time tokenization for videos. In: Advances in Neural In-
+formation Processing Systems (NeurIPS). (2021)
+29. Bulat, A., Perez-Rua, J.M., Sudhakaran, S., Martinez, B., Tzimiropoulos, G.:
+Space-time mixing attention for video transformer. In Beygelzimer, A., Dauphin,
+Y., Liang, P., Vaughan, J.W., eds.: Advances in Neural Information Processing
+Systems. (2021)
+30. Deng, J., Dong, W., Socher, R., Li, L.J., Li, K., Fei-Fei, L.: Imagenet: A large-scale
+hierarchical image database. In: 2009 IEEE Conference on Computer Vision and
+Pattern Recognition. (2009) 248–255
+31. Wang, X., Girshick, R., Gupta, A., He, K.: Non-local neural networks. In: Pro-
+ceedings of the IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR). (2018)

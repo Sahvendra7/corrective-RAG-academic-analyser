@@ -1,0 +1,2223 @@
+CONCEPTUAL BELIEF-INFORMED REINFORCEMENT
+LEARNING
+
+Xingrui Gu
+University of California, Berkeley
+xingrui
+
+Chuyi Jiang
+Columbia University
+
+Laixi Shi
+Johns Hopkins University
+
+arXiv:2410.01739v4 [cs.AI] 8 Nov 2025
+
+ABSTRACT
+
+Reinforcement learning (RL) has achieved significant success but is hindered by
+inefficiency and instability, relying on large amounts of trial-and-error data and
+failing to efficiently use past experiences to guide decisions. However, humans
+achieve remarkably efficient learning from experience, attributed to abstracting
+concepts and updating associated probabilistic beliefs by integrating both uncer-
+tainty and prior knowledge, as observed by cognitive science. Inspired by this,
+we introduce Conceptual Belief-Informed Reinforcement Learning to emulate hu-
+man intelligence (HI-RL), an efficient experience utilization paradigm that can
+be directly integrated into existing RL frameworks. HI-RL forms concepts by
+extracting high-level categories of critical environmental information and then
+constructs adaptive concept-associated probabilistic beliefs as experience priors
+to guide value or policy updates. We evaluate HI-RL by integrating it into var-
+ious existing value- and policy-based algorithms (DQN, PPO, SAC, and TD3)
+and demonstrate consistent improvements in sample efficiency and performance
+across both discrete and continuous control benchmarks.
+
+1
+INTRODUCTION
+
+Reinforcement Learning (RL) has achieved remarkable success in various exciting areas, including
+aligning and enabling efficient inference of large language models Ouyang et al. (2022); Hao et al.
+(2025), game playing (Mnih et al., 2015), robotics (Singh et al., 2022), autonomous driving (Kiran
+et al., 2021), and etc. Despite these achievements, RL remains fundamentally limited by its signifi-
+cant sample inefficiency compared to human learning (Chiu et al., 2023; Ye et al., 2021; Joshi et al.,
+2025), typically relying on vast amounts of trial-and-error interactions and often struggling to gener-
+alize to unseen or sparsely observed space (states) (Mnih et al., 2015; Lake et al., 2017). In contrast,
+humans can quickly learn and adapt to new spaces using only a handful of experiences, highlighting
+a substantial gap in data efficiency between RL and human cognition (Tenenbaum et al., 2006; Lake
+et al., 2015; Tenenbaum et al., 2011; Griffiths et al., 2010).
+
+Figure 1: Standard RL (left) replays raw transitions, while HI-RL (right) organizes them into con-
+ceptual categories with adaptive beliefs, enabling abstraction and belief-guided learning.
+
+Various RL studies leveraged either conceptual abstraction or probabilistic priors from experience
+independently. However, a systematic approach to combining both experience utilization mecha-
+nisms - experience-based priors grounded in extracted conceptual formations, the very mechanism
+underlying humans’ efficient generalization—remains underexplored (Gerstenberg & Tenenbaum,
+2017). Specifically, abstraction in RL has focused on representation learning approaches such as
+contrastive learning and bisimulation metrics to compress or align observations into compact latent
+spaces to improve downstream task efficiency (Patil et al., 2024; Ferns et al., 2004; Castro, 2020;
+Peng et al., 2023). However, these methods typically do not further exploit the abstracted latent space
+to aggregate past experience, limiting its utility for improving RL learning efficiency. In parallel,
+Bayesian approaches, such as Thompson sampling, Bayesian model-based, and model-free algo-
+rithms Dearden et al. (1998) are widely used to address uncertainty and the exploration-exploitation
+tradeoff in RL (Dearden et al., 1998; Ghavamzadeh et al., 2015; Ross & Pineau, 2008; Thompson,
+1933; Dearden et al., 1998). However, these methods are rarely integrated with conceptual abstrac-
+tion.
+
+To efficiently leverage experience, we introduce Conceptual Belief-Informed RL, named HI-
+RL (Human Intelligence-RL), a framework that combines conceptual abstraction and concept-based
+probabilistic prior, illustrated in Figure 1. HI-RL provides an algorithm-agnostic interface that inte-
+grates seamlessly with existing RL frameworks, accelerating learning by leveraging experience effi-
+ciently. It extracts concepts from large state spaces and reformulates experience into priors grounded
+in these abstractions, mimicking human-like conceptualization for learning efficiency. Our main
+contributions are summarized as below:
+
+• We present HI-RL , an experience-utilization framework that efficiently leverages past ex-
+periences to emulate human-like learning efficiency. HI-RL reformulates the set of past
+experiences into probabilistic belief priors grounded in conceptual abstractions. These
+concept-based priors are adaptively updated over time and incorporated as auxiliary knowl-
+edge into RL value or policy updates.
+• HI-RL is algorithm-agnostic and functions as a flexible module that can be seamlessly inte-
+grated into existing RL frameworks. To demonstrate its versatility, we integrate HI-RL into
+several popular RL algorithms (Q-learning, PPO, SAC, and TD3) and evaluate performance
+across both discrete and continuous tasks, achieving consistent improvements in learning
+efficiency and overall performance.
+
+2
+RELATED WORKS
+
+2.1
+COGNITIVE SCIENCE FOR CONCEPTUAL LEARNING
+
+& Griffiths, 2001; Griffiths & Tenenbaum, 2005; Tenenbaum et al., 2006). This supports concep-
+tual abstraction—extracting high-level structure from sparse data—and enables causal reasoning
+and cross-domain transfer (Tenenbaum et al., 2011; Kemp & Tenenbaum, 2008). Recent work for-
+malizes how learners reorganize internal knowledge via probabilistic reasoning (Lake et al., 2015;
+2017), motivating the integration of such principles into machine learning for scalability, adapt-
+ability, and sample efficiency (Ma et al., 2022). Studies further show that uncovering latent causal
+structures enhances interpretability and abstraction, even in complex domains such as joint behavior
+analysis (Gu et al., 2025; 2024). Yet, despite these advances, reinforcement learning remains domi-
+nated by replay, metric-based similarity, or policy integration, with little use of structured conceptual
+abstraction from cognitive science.
+
+2.2
+EXPERIENCE-INFORMED REINFORCEMENT LEARNING
+
+Experience has long been exploited to improve efficiency in RL. Habit-based RL models long-term
+regularities as habitual priors that accelerate action selection but lack flexibility for abstraction and
+transfer (Daw et al., 2005; Collins & Cockburn; Keramati et al., 2011). Replay-based techniques
+such as PER (Schaul et al., 2015), HER and its prioritized variants (Andrychowicz et al., 2017; Sun
+et al., 2025; Kim et al., 2025) enhance sample efficiency by weighting or relabeling transitions, while
+refinements like FoDA (Chen et al., 2024) and EDER (Zhao et al., 2024) adapt distributions or pro-
+mote diversity to improve generalization. Beyond replay, episodic memory models (NEC) (Pritzel
+et al., 2017) enable rapid value retrieval, and hybrid gradients (Q-Prop, IPG) (Gu et al., 2016; 2017)
+fuse on- and off-policy signals for variance reduction. Collectively, these methods leverage past in-
+teractions via sampling or memory mechanisms, yet remain confined to buffer-level operations and
+lack pathways for higher-order conceptual abstraction and belief-structured generalization.
+
+2.3
+ABSTRACTION IN REINFORCEMENT LEARNING
+
+State abstraction has long been studied as a means to compress state spaces and enable generalization
+in RL (Bertsekas et al., 1988; Givan et al., 2003; Ravindran, 2004; 2003; Li et al., 2006; Kulkarni
+et al., 2016). Classical bisimulation and Kantorovich metrics provide strong theoretical guarantees
+but are computationally expensive and highly sensitive to perturbations (Ferns et al., 2004; 2011).
+Task-specific metrics improve offline evaluation (Pavse & Hanna, 2023) but lack adaptability, while
+scalable relaxations (Castro, 2020) trade rigor for tractability. Trajectory-chain and pseudometric
+methods (Girgin et al., 2007; Dadashi et al., 2021) offer finer granularity but incur high storage or
+auxiliary costs. More recent work, such as (Patil et al., 2024), leverages contrastive objectives and
+modern Hopfield networks to compress large state spaces into abstract nodes, thereby facilitating
+downstream RL. These approaches primarily focus on constructing a new, compressed state space
+or representation for downstream algorithms. In contrast, our framework preserves the original
+state and exploration space while introducing an abstraction-based belief layer on top. We focus on
+utilizing conceptual abstraction as a basis to update its probabilistic priors, efficiently aggregating
+and using past experience to improve toward human-like efficient learning.
+
+3
+PROBLEM FORMULATION
+
+Markov Decision Process (MDP) Considering reinforcement learing problems formalized as MDP
+(Bellman, 1957; Sutton & Barto, 2018) M = (S, A, T , r, µ0, γ, T). Here T is the horizon length.
+S denotes states space (s ∈S) and A denotes the action spaces (a ∈A). T (st+1 | st, at) represents
+the transition dynamics, specifying the probability distribution over the next state st+1 conditioned
+on the current state st ∈S and action at ∈A at tth time step (1 ≤t ≤T). r(s, a) represents the
+reward function given the state s and action a. The initial state follows µ0, γ ∈(0, 1) is the discount
+factor. The goal of this MDP problem is to identify an optimal policy π that achieves the maximum
+expected discounted return:
+
+max
+π
+Eπ,T ,µ0
+h
+T
+X
+
+t=0
+γtr(st, at)
+i
+.
+(1)
+
+Value-function (Watkins et al., 1992) by expected cumulative rewards from initial state µ0, defined
+as:
+
+Qπ(s, a) = Eπ,T ,µ0
+h
+T
+X
+
+t=0
+γtr(st, at)
+s0 = s, a0 = a
+i
+, V π(s) = Eπ,T ,µ0
+h
+T
+X
+
+t=0
+γtr(st, at)
+s0 = s
+i
+
+(2)
+
+4
+CONCEPTUAL BELIEF-INFORMED REINFORCEMENT LEARNING
+
+In this section, we present Conceptual Belief-Informed Reinforcement Learning (HI-RL ), enhanc-
+ing experience to emulate human intelligence learning efficiency. HI-RL consists of two core mod-
+ules: (i) Concept Formation, which clusters state–based experiences into semantically coherent cat-
+egories, and (ii) a belief representing probabilistic prior grounded on different concepts, defining
+probabilistic action experience prior over these categories. By coupling conceptual abstraction with
+belief-guided reasoning, HI-RL provides a structured and uncertainty-aware foundation for policy
+learning, supporting stable updates, efficient generalization, and reuse of past experiences.
+
+4.1
+CONCEPT FORMATION
+
+The foundation for abstracting concepts can vary, as long as it represents the current situation and
+critical information about the environment and the agent. In this work, HI-RL focuses on state
+spaces, as states encapsulate essential information for decision-making and directly influence the
+agent’s behavior and learning process, enabling pattern recognition and generalization. Specifi-
+cally, we partition the states into disjoint subsets, with each subset representing a distinct concept
+formed by grouping states with shared characteristics and properties, thereby facilitating effective
+knowledge transfer within each concept. In the following, we mathematically define a conceptual
+abstraction as:
+Definition 4.1 (Concept Formation in State Space). A concept formation in the state space is defined
+as a collection of subsets CK = {C1, . . . , CK} that satisfy S = SK
+k=1 Ck, meaning the subsets are
+disjoint and collectively cover the entire state space. Here, K denotes a finite, prescribed number of
+concept categories.
+
+In practice, conceptual abstractions can be obtained with various clustering methods. In this work,
+we adopt K-means (Lloyd, 1982) for its simplicity and scalability, though alternatives (e.g., spectral
+or hierarchical clustering) are equally applicable.
+
+4.2
+CONCEPTUAL ADAPTIVE BELIEF FOR RL
+
+With abstract concepts in mind, where each concept groups states that share similar features and
+actions, we aggregate observed information within a concept into a unified container, a concept-
+based belief. Philosophically, a belief is an internal representation of how an agent interprets and
+anticipates the world, serving as a guide for inference and decision-making under uncertainty rather
+than as absolute truth (Dennett, 1988). In this work, each concept Ck is paired with a time-adaptive
+belief bt(· | k) ∈∆(A), derived from the accumulation of past decisions and outcomes within
+that concept. Formally, for a conceptual abstraction CK = {C1, . . . , CK}, we define the mapping
+bt : [K] →∆(A), where bt(· | k) encodes the integrated action preferences of all states belonging
+to Ck.
+
+We leverage the aggregated experience within each concept to accelerate learning by using concept-
+based beliefs as priors in RL updates. These beliefs can be seamlessly integrated into any existing
+RL algorithm. At each timestep t, we combine two signals: (i) instant feedback Zt : S →A,
+defined by the base algorithm (e.g., Q-values in DQN, Gaussian policy in SAC, clipped surrogate
+in PPO, or deterministic actor in TD3), and (ii) the prior bt, aggregated from past experience within
+the corresponding concept. For a given state s ∈S, we first identify its concept index c(s) such that
+s ∈Cc(s), and then fuse the signals as:
+
+bt(· | c(s)) is the empirical concept-based prior aggregated from experience, while Bt(· | s) is
+the fused distribution actually used for decision-making by combining bt with the instant feedback
+Zt.
+
+This formulation ensures that the decision-making solutions for every state st are influenced by both
+immediate feedback from the environment and the prior experience derived from the conceptual
+abstraction Cc(s) to which it belongs.
+
+Algorithm 1 Conceptual Belief-Informed RL (HI-RL)
+
+1: Initialize concept priors b(· | c(s))
+2: for t = 1, 2, . . . do
+3:
+Observe st; form Zt(· | st); fuse Bt(· | st) = (1 −βt)Zt(· | st) + βtbt(· | c(st))
+4:
+Sample at ∼Bt; step env (rt, st+1)
+5:
+Update policy with Bt and prior experience bt
+6: end for
+
+5
+ALGORITHM IMPLEMENTATION
+
+We apply HI-RL framework into multiple RL paradigms by developing HI-Q, HI-PPO and HI-SAC
+(For HI-TD3, see Appendix A.1).
+
+5.1
+CONCEPTUAL BELIEF-INFORMED Q-LEARNING (HI-Q)
+
+The classical Deep Q-learning (DQN) algorithm (Mnih et al., 2015) relies on updating the Q-
+function network using the greedy Bellman operator. Namely, in any iteration t, with the sam-
+pled batch Dt and any sample (si, ai, ri, s′
+i) ∈Dt within it, the learning target of the Q-network
+Qθt+1(si, ai) would be
+ri + γ max
+a∈A Qθt(s′
+i, ai),
+(4)
+
+where θt represent the Q-network parameter at time t. With DQN in mind, we propose HI-Q to
+replace the learning target to a new one combining both the current Q-network information Qθt and
+the conceptual abstraction experience prior bt.
+
+Specifically, we first introduce the construction of the concept-based belief prior bt(· | k) at each
+time step t. Here, bt(· | k) will be defined as the action visiting frequency summarzied over all state
+within the concept set Ck. For the discrete finite action space A, we denote the number of visiting
+time over each state-action pair at time step t as Nt(s, a). Then the experience prior bt of any k-th
+concept will be constructed as
+
+P
+
+s∈Ck Nt(s, a)
+P
+
+∀(a, k) ∈A × [K] :
+bt(a | k) =
+
+s∈Ck Nt(s, a′).
+(5)
+
+a′∈A
+P
+
+The update of bt is typically computational easily, since upon executing an sample tuple
+(si, ai, ri, s′
+i), only the (si, ai)-associated concept bt(ai | c(si)) will be updated.
+
+Therefore, the combined information for any sample tuple (si, ai, ri, s′
+i) associated with state s′
+i at
+time t is defined as
+
+Bt(· | s′
+i) = (1 −βt)qt(· | s′
+i) + βtbt(· | c(s′
+i)),
+(6)
+
+where βt is a dynamic coefficient and qt(· | s′
+i) denotes the task-driven action-preference distribu-
+tion, typically instantiated as a smoothing distribution over Q-values (e.g., softmax with temperature
+τt or clipped-max with exploration mass δt) that gradually concentrates on the greedy action as t
+increases (Barber, 2023), computed via a softmax over the top-k Q-values of state s′
+i, effectively
+assigning higher probabilities to the most promising actions:
+
+qt(a | s′
+i) =
+exp(Q(s′
+i, a)/τ)
+P
+
+a′∈top-k(s′
+i) exp(Q(s′
+i, a′)/τ),
+a ∈top-k(s′
+i)
+(7)
+
+smoothed surrogate one combining both the smoothed-greedy operator of the current Q-function
+and the conceptual-based belief. Therefore, the new target in HI-Q for the Q-network to learn is
+defined as
+
+ri + γ
+X
+
+a∈A
+Bt(a | s′
+i)Qt(s′
+i, a).
+(8)
+
+The entire algorithm is specified in Appendix A.2.1. Our conceptual-abstraction belief enables HI-Q
+to leverage both immediate task feedback and accumulated conceptual structures, facilitating faster
+learning by borrowing experience from other similar concepts.
+
+5.2
+CONCEPTUAL BELIEF-INFORMED PROXIMAL POLICY OPTIMIZATION (HI-PPO)
+
+The standard PPO (Schulman et al., 2017) is a policy gradient algorithm which updates the policy
+by performing stochastic gradient ascent on a surrogate objective function. For any time step t, let
+Dt be a sampled batch and (si, ai, ri, s′
+i) ∈Dt any individual sample within it. The objective is to
+update the policy πθ(a | s) via the following loss function:
+
+h
+min
+
+πθ(ai|si)
+πθold(ai|si)At, clip
+πθ(ai|si)
+
+πθold(ai|si), 1 −ϵ, 1 + ϵ
+
+At
+i
+.
+(9)
+
+LPPO = E(si,ai)∼πθold
+
+where θ denotes the policy parameters, At is the advantage estimate at time step t, and ϵ controls
+the trust region. While PPO updates the policy via an advantage-weighted likelihood ratio within
+this trust region, it depends only on immediate feedback, limiting its ability to exploit structural
+regularities. To overcome this, HI-PPO integrates the current policy πθ(a | s) with the conceptual
+abstraction prior bt.
+
+In this paper, we focus on applying PPO in discrete action-space environments, with modifications
+analogous to those in HI-Q. At each time step t, we compute a concept-based belief prior bt(· | k),
+defined as the action visitation frequency aggregated over all states in concept set Ck. Its computa-
+tion and update follow Eq. 5, and it is combined with the policy πθ(· | si) for state si ∈Dt at time
+t as:
+Bt(· | si) = (1 −βt)πθ(· | si) + βtbt(· | ck(si)),
+(10)
+where the scheduling parameter βt ∈[0, 1] controls the influence of concept priors and increases
+gradually throughout training. The clipped surrogate objective of HI-PPO is:
+
+h
+min
+
+Bt(ai|si)
+πθold(ai|si)At, clip
+Bt(ai|si)
+
+πθold(ai|si), 1 −ϵ, 1 + ϵ
+
+At
+i
+.
+(11)
+
+LHI-PPO = E(si,ai)∼πθold
+
+The critic and entropy terms follow the original PPO formulation; gradients are propagated through
+Bt, allowing concept priors to steer policy updates while the clip operator guarantees trust-region
+stability. More implementation details and pseudocode are provided in Appendix A.2.3.
+
+5.3
+CONCEPTUAL BELIEF-INFORMED SOFT ACTOR-CRITIC (HI-SAC)
+
+Traditional Soft Actor-Critic (SAC) is a maximum entropy reinforcement learning algorithm that
+integrates both an actor and a critic network (Haarnoja et al., 2018). Given a sampled batch Dt at
+time step t, containing tuples (si, ai, ri, s′
+i), the updates of the actor and critic networks parameters
+θ , ϕ from πθ and Qϕ respectively are defined as follows:
+
+Lcritic(ϕi) = E
+h
+Qϕi(si, ai) −yt
+2i
+,
+i = 1, 2,
+
+(12)
+
+where
+yt = ri + γ Ea′
+i∼πθ
+
+Qmin(s′
+i, a′
+i) −α log πθ(a′
+i | s′
+i)
+
+,
+
+Lactor(θ) = Esi∼Dt, ai∼πθ
+
+α log πθ(ai | si) −min{Qϕ1(si, ai), Qϕ2(si, ai)}
+
+.
+
+where α is entropy temperature coefficient, yt is the TD target, computed by the next state s′
+i at
+time step t + 1 and the corresponding action a′
+i sampled from the policy πθ. In SAC, the Q value
+is computed as the minimum of the estimates from two critic networks Qϕi and the actor network
+produces a Gaussian policy in this paper:
+
+πθ(· | s) = N(µπθ(s), σ2
+πθ(s)),
+(13)
+
+to integrate current actor network πθt and the conceptual experience prior bt. Unlike HI-Q and HI-
+PPO, the concept-based belief prior bt(k) constructed at each time step t is defined over the actor
+network parameters corresponding to the states s within the concept set Ck:
+
+∀(µ, σ2, k) ∈{µ, σ2} × [K] :
+bt(k) = {µπθ(s), σ2
+πθ(s)},
+s ∈Ck
+(14)
+
+During training, we update bt using a Bayesian posterior update. Let µc and σ2
+c be the parameters
+of the current policy πθt(s) and µe and σ2
+e be the experience stored in bt−1(k):
+
+bt(k) = {σ2
+c µe + σ2
+e µc
+σ2c + σ2e
+,
+1
+1
+σ2c +
+1
+σ2e
+},
+(µc, σ2
+c) ∼πθt(s),
+(µe, σ2
+e) ∼bt−1(k),
+s ∈Ck (15)
+
+At the same time, for any sample tuple (si, ai, ri, s′
+i) at time step t, we use both si and s′
+i to obtain
+the corresponding (µπθt(si), σ2
+πθt(si)) and (µπθt(s′
+i), σ2
+πθt(s′
+i)) for the actor and critic, respectively.
+This fusion method can then be formally defined as:
+
+µactor(si) = (1 −βt)µπθt(si) + βtµb,
+σ2
+actor(si) = (1 −βt)σ2
+πθt(si) + βtσ2
+b,
+
+µcritic(s′
+i) = (1 −βt)µπθt(s′
+i) + βtµb,
+σ2
+critic(s′
+i) = (1 −βt)σ2
+πθt(s′
+i) + βtσ2
+b,
+
+(16)
+
+where
+(µb, σ2
+b) ∼bt(k),
+si, s′
+i ∈Ck
+
+where βt ∈[0, 1] adaptively controls the relative weighting between task-driven and concept-
+informed signals, and µb, σ2
+b denote the currently stored conceptual experience in bt(k). This results
+in the conceptual belief-informed distribution for both the actor and critic:
+
+Bt(· | si = N(µactor(si), σ2
+actor(si)),
+Bt(· | s′
+i) = N(µcritic(s′
+i), σ2
+critic(s′
+i)).
+(17)
+
+Finally, we replace the policy πθ in Eq.12 with the integrated Bt and perform the updates accord-
+ingly:
+
+LHI-SACcritic(ϕi) = E
+h
+Qϕi(si, ai) −yt
+2i
+,
+i = 1, 2,
+
+(18)
+
+where
+yt = ri + γ Ea′
+i∼Bt
+
+Qmin(s′
+i, a′
+i) −α log Bt(a′
+i | s′
+i)
+
+,
+
+LHI-SACactor(θ) = Esi∼Dt, ai∼Bt
+
+α log Bt(ai | si) −min{Qϕ1(si, ai), Qϕ2(si, ai)}
+
+.
+
+By integrating policy learning with semantically grounded beliefs, HI-SAC enables agents to gener-
+alize across conceptually coherent behaviors. This fusion facilitates better sample reuse, long-term
+coherence, and more human-like decision-making. The pseudocodes are provided in Appendix
+A.2.2.
+
+6
+EXPERIMENT
+
+Experimental setup: Evaluation is based on Feasible Cumulative Rewards, where higher values
+indicate better performance, averaged over three seeds (123, 321, 666). The evaluation spans a wide
+range of environments, including Classic Control, Box2D (Catto, 2005), MetaDrive (Li et al., 2022),
+MuJoCo (Todorov et al., 2012), and Atari (Bellemare et al., 2013) domains. Conceptual clustering is
+simulated using clustering algorithms that group similar state-action pairs into latent categories. All
+methods employ identical hyperparameters and are implemented on the XuanCe benchmark suite
+(Liu et al., 2023).
+
+Evaluated methods: For discrete action spaces, we compare HI-Q and HI-PPO with the following
+baselines: DQN (Mnih et al., 2013), DDQN (Van Hasselt et al., 2016), DuelDQN (Wang et al.,
+2016), and PPO(Schulman et al., 2017), covering standard Q-value approximations, decoupled ac-
+tion evaluation, state-action advantage estimation, and clipped policy optimization. For continuous
+action spaces, HI-SAC is compared with A2C (Mnih, 2016), PPO, SAC (Haarnoja et al., 2018),
+and DDPG (Lillicrap, 2015), representing common policy-gradient and actor-critic methods with
+entropy regularization or deterministic gradients.
+
+6.1
+COMPARATIVE PERFORMANCE OF HI-RL AND BASELINES
+
+Table 1: Average cumulative rewards of HI-RL variants and baselines across discrete and continuous
+action environments.
+
+HI-RL for DQN Variants
+
+Environment/Method
+HI-DQN
+PPO
+DQN
+Duel DQN
+DDQN
+
+Classic Control - CartPole
+499.78 ± 0.22
+499.17 ± 0.83
+478.44 ± 21.56
+440.69 ± 59.31
+396.51 ± 103.49
+Classic Control - Acrobot
+-80.57 ± 17.48
+-500.00 ± 0.00
+-87.19 ± 18.55
+-104.53 ± 54.19
+-100.77 ± 24.79
+Box2d - CarRacing
+854.66 ± 45.35
+189.05 ± 56.48
+830.78 ± 51.61
+-13.05 ± 24.66
+766.16 ± 88.22
+Box2d - LunarLander
+232.73 ± 40.20
+204.95 ± 48.77
+52.67 ± 192.08
+-58.97 ± 4.08
+191.79 ± 69.16
+MetaDrive - rXTSC
+189.22 ± 63.71
+156.74 ± 31.44
+82.05 ± 82.84
+39.50 ± 7.27
+185.55 ± 107.80
+MetaDrive - TOrSX
+159.39 ± 38.40
+149.97 ± 26.28
+101.60 ± 13.72
+69.16 ± 14.07
+83.77 ± 22.37
+MetaDrive - XTOC
+303.15 ± 50.89
+293.72 ± 66.42
+170.73 ± 31.60
+67.42 ± 6.29
+170.73 ± 31.60
+MetaDrive - XTSC
+233.91 ± 64.92
+191.50 ± 39.31
+215.94 ± 205.74
+63.47 ± 4.96
+147.71 ± 92.55
+MetaDrive - CYrXT
+97.99 ± 25.43
+97.83 ± -38.66
+77.23 ± 47.94
+9.12 ± 39.53
+75.39 ± 49.99
+MetaDrive - COrXSrT
+117.90 ± 24.56
+89.27 ± 23.52
+117.18 ± 30.28
+53.01 ± 4.91
+29.15 ± 16.26
+MetaDrive - SrOYCtryS
+130.27 ± 117.07
+75.38 ± 8.12
+105.01 ± 88.37
+38.90 ± 0.39
+100.72 ± 81.92
+
+HI-RL for SAC Variants
+
+Environment/Method
+HI-SAC
+SAC
+PPO
+DDPG
+A2C
+
+Box2d - BipedalWalker
+295.16 ± 99.64
+285.71 ± 11.43
+-17.21 ± 45.45
+-34.58 ± 8.92
+-115.66 ± 1.95
+Mujoco - Ant
+2862.15 ± 606.91
+2386.54 ± 489.76
+108.47 ± 14.97
+2351.56 ± 147.15
+1566.19 ± 346.25
+Mujoco - Humanoid
+3248.46 ± 812.84
+2090.07 ± 2233.68
+52.35 ± 0.08
+401.39 ± 84.60
+179.26 ± 74.62
+Mujoco - HumanoidStandup
+132391.49 ± 606.23
+121643.72 ± 25.53
+112603.41 ± 65.06
+69209.17 ± 14951.33
+80250.37 ± 46.46
+Mujoco - Reacher
+-3.96 ± 0.71
+-4.65 ± 1.77
+-6.88 ± 0.08
+-5.73 ± 0.96
+-10.88 ± 0.12
+Mujoco - HalfCheetah
+10276.66 ± 2448.76
+9678.01 ± 810.58
+7378.66 ± 1951.02
+3574.82 ± 2267.63
+3043.32 ± 388.69
+Mujoco - Hopper
+3121.56 ± 573.84
+2246.74 ± 657.82
+1530.17 ± 1869.52
+2338.46 ± 1075.83
+520.53 ± 25.98
+Mujoco - Walker2d
+4444.48 ± 292.20
+3382.66 ± 1177.36
+992.81 ± 1799.20
+3756.60 ± 840.68
+733.50 ± 755.30
+Mujoco - Pusher
+-25.44 ± 6.16
+-31.76 ± 4.15
+-36.36 ± 0.82
+-45.50 ± 3.14
+-55.29 ± 1.65
+Mujoco - InvertedPendulum
+998.13 ± 1.87
+860.78 ± 590.78
+609.51 ± 4.51
+973.82 ± 26.18
+991.25 ± 116.64
+Mujoco - InvertedDoublePendulum
+9247.71 ± 103.30
+8703.18 ± 644.18
+126.87 ± 56.87
+6444.11 ± 3857.15
+7981.28 ± 1365.03
+
+Table 2: Average cumulative rewards of HI-PPO, HI-TD3 and baselines across discrete and contin-
+uous action environments.
+
+HI-RL for PPO Variants
+
+Method/Environment
+Atari - AirRaid
+Atari - Amidar
+Atari - Asteroids
+Atari - Centipede
+Atari - Zaxxon
+
+PPO
+7210.01 ± 1594.32
+917.56± 65.08
+4190.79± 928.38
+4792.76± 1244.33
+15690.27± 3486.71
+HI-PPO
+9659.79 ± 2333.36
+2302.55 ± 627.01
+4419.23± 1404.85
+6002.09± 1495.15
+16663.71±5093.18
+
+HI-RL for TD3 Variants
+
+Method/Environment
+Box2d - BipedalWalker
+Mujoco - Ant
+Mujoco - Swimmer
+Mujoco - HalfCheetah
+Mujoco - Walker2d
+
+TD3
+276.03 ± 42.42
+5634.15± 620.63
+50.50± 1.45
+13194.89± 755.84
+4565.46± 147.63
+HI-TD3
+291.86 ± 23.45
+6358.90± 420.75
+132.89± 1.99
+13706.98±399.64
+6194.91± 319.83
+
+range from low-dimensional control (Classic Control, Box2D) to high-dimensional, perceptually
+rich domains (MetaDrive, MuJoCo), enabling a systematic assessment of generalization and sample
+efficiency under varying levels of complexity.
+
+Discrete Action Space: As shown in Table 1, HI-DQN (HI-Q) consistently outperforms baselines
+(DQN, DDQN, Dueling DQN, PPO) across diverse discrete-action tasks. In simple settings such
+as CartPole, HI-DQN nearly reaches the performance ceiling with lower variance. In more com-
+plex tasks like Box2D-CarRacing and MetaDrive, HI-DQN achieves the highest rewards across all
+sub-tasks, demonstrating robustness and adaptability. Even in intermediate (TOrSX) and highly
+challenging scenarios (XTOC), HI-DQN maintains clear advantages, highlighting the effectiveness
+of belief-guided abstraction for stable learning under increasing complexity.
+
+Continuous Action Space: A similar trend is observed in continuous-control benchmarks (Ta-
+ble 1). HI-SAC consistently outperforms SAC, PPO, and DDPG across both medium- and high-
+dimensional MuJoCo and Box2D tasks. In challenging domains such as Humanoid and Humanoid-
+Standup, HI-SAC achieves substantially higher rewards with improved stability, while in locomo-
+tion tasks (HalfCheetah, Walker2d), it converges faster and produces more resilient policies. Over-
+all, these results demonstrate that HI-SAC leverages belief-guided generalization to deliver reliable
+gains in environments requiring both precise control and long-horizon reasoning.
+
+6.2
+LEARNING DYNAMICS WITH EXPERIENCE-DRIVEN ABSTRACTION
+
+Figure 2: Learning curves comparing HI-PPO and PPO (Atari tasks) as well as HI-TD3 and TD3
+(Mujoco and Box2D tasks). HI-RL variants demonstrate faster convergence, higher sample effi-
+ciency, and reduced variance across diverse environments.
+
+settings. To this end, we analyze the learning dynamics of HI-PPO vs. PPO and HI-TD3 vs. TD3
+on Atari and MuJoCo (Fig. 2, Table 2), illustrating how HI-RL leverages cognitive belief priors for
+faster exploration and structured abstraction for more stable optimization.
+
+In high-dimensional visual environments such as Atari, HI-PPO consistently improves both con-
+vergence speed and final performance. For example, in Amidar, HI-PPO surpasses 2000 reward at
+40M steps, whereas PPO converges around ∼900. In more challenging tasks such as Asteroids and
+Centipede, HI-PPO not only learns faster but also exhibits reduced variance, indicating more stable
+policy updates. The progressive increase of βt enables HI-PPO to exploit conceptual priors early on
+and transition smoothly to task-specific fine-tuning, resulting in efficient and robust learning.
+
+Similarly, in continuous control tasks, HI-TD3 achieves faster convergence, higher rewards, and
+greater stability compared to TD3. In simpler tasks such as BipedalWalker, HI-TD3 converges more
+rapidly and attains comparable or better final performance. In more complex locomotion tasks in-
+cluding Ant, Swimmer, HalfCheetah, and Walker2d, HI-TD3 not only reaches higher asymptotic
+rewards but also produces smoother learning curves with lower variance. By contrast, TD3 often
+suffers from slower convergence and mid-training stagnation, underscoring the efficiency and ro-
+bustness advantages of HI-TD3.
+
+7
+CONCLUSION
+
+We introduce Conceptual Belief-Informed Reinforcement Learning (HI-RL ), a representation-level
+framework that organizes experiences into conceptual categories and integrates belief-guided fusion
+into policy learning. Moving beyond buffer replay and static policy libraries, HI-RL establishes a
+structured memory that supports abstraction, reuse, and generalization. Across Q-learning, PPO,
+TD3, and SAC, it consistently improves sample efficiency, final returns, and stability in both dis-
+crete and continuous domains. By achieving higher returns with fewer interactions and stabiliz-
+ing updates, HI-RL also reduces computational cost, underscoring its potential for sustainable and
+resource-efficient training. More broadly, HI-RL illustrates how cognitive principles—conceptual
+abstraction and belief—can be operationalized to advance reinforcement learning, shifting the field
+from raw data manipulation toward structured, human-aligned inference. We view this as a step
+toward an “Era of Experience,” in which intelligence is grounded in the active organization of inter-
+action history rather than rote prediction from data.
+
+REFERENCES
+
+Marcin Andrychowicz, Filip Wolski, Alex Ray, Jonas Schneider, Rachel Fong, Peter Welinder, Bob
+McGrew, Josh Tobin, OpenAI Pieter Abbeel, and Wojciech Zaremba. Hindsight experience re-
+play. Advances in neural information processing systems, 30, 2017.
+
+David Barber. Smoothed q-learning. arXiv preprint arXiv:2303.08631, 2023.
+
+Marc G Bellemare, Yavar Naddaf, Joel Veness, and Michael Bowling. The arcade learning environ-
+ment: An evaluation platform for general agents. Journal of artificial intelligence research, 47:
+253–279, 2013.
+
+Richard Bellman. A markovian decision process. Journal of mathematics and mechanics, pp. 679–
+684, 1957.
+
+Dimitri P Bertsekas, David A Castanon, et al. Adaptive aggregation methods for infinite horizon
+dynamic programming. 1988.
+
+Pablo Samuel Castro.
+Scalable methods for computing state similarity in deterministic markov
+decision processes. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 34,
+pp. 10069–10076, 2020.
+
+Erin Catto. Iterative dynamics with temporal coherence. In Game developer conference, volume 2,
+2005.
+
+Ruifeng Chen, Xu-Hui Liu, Tian-Shuo Liu, Shengyi Jiang, Feng Xu, and Yang Yu. Foresight distri-
+bution adjustment for off-policy reinforcement learning. In Proceedings of the 23rd International
+Conference on Autonomous Agents and Multiagent Systems, pp. 317–325, 2024.
+
+Zih-Yun Chiu, Yi-Lin Tuan, William Yang Wang, and Michael Yip. Flexible attention-based multi-
+policy fusion for efficient deep reinforcement learning. Advances in Neural Information Process-
+ing Systems, 36:13590–13612, 2023.
+
+Anne GE Collins and Jeffrey Cockburn. Beyond simple dichotomies in reinforcement learning.
+
+Robert Dadashi, Shideh Rezaeifar, Nino Vieillard, L´eonard Hussenot, Olivier Pietquin, and Matthieu
+Geist. Offline reinforcement learning with pseudometric learning. In International Conference
+on Machine Learning, pp. 2307–2318. PMLR, 2021.
+
+Nathaniel D Daw, Yael Niv, and Peter Dayan. Uncertainty-based competition between prefrontal
+and dorsolateral striatal systems for behavioral control. Nature neuroscience, 8(12):1704–1711,
+2005.
+
+Richard Dearden, Nir Friedman, Stuart Russell, et al. Bayesian Q-learning. Aaai/iaai, 1998:761–
+768, 1998.
+
+Daniel C Dennett. Pr´ecis of the intentional stance. Behavioral and brain sciences, 11(3):495–505,
+1988.
+
+Norm Ferns, Prakash Panangaden, and Doina Precup. Metrics for finite markov decision processes.
+In UAI, volume 4, pp. 162–169, 2004.
+
+Norm Ferns, Prakash Panangaden, and Doina Precup. Bisimulation metrics for continuous markov
+decision processes. SIAM Journal on Computing, 40(6):1662–1714, 2011.
+
+Scott Fujimoto, Herke Hoof, and David Meger. Addressing function approximation error in actor-
+critic methods. In International conference on machine learning, pp. 1587–1596. PMLR, 2018.
+
+Tobias Gerstenberg and Joshua B Tenenbaum. Intuitive theories. 2017.
+
+Mohammad Ghavamzadeh, Shie Mannor, Joelle Pineau, Aviv Tamar, et al. Bayesian reinforcement
+learning: A survey. Foundations and Trends® in Machine Learning, 8(5-6):359–483, 2015.
+
+Robert Givan, Thomas Dean, and Matthew Greig. Equivalence notions and model minimization in
+markov decision processes. Artificial intelligence, 147(1-2):163–223, 2003.
+
+Thomas L Griffiths and Joshua B Tenenbaum. Structure and strength in causal induction. Cognitive
+psychology, 51(4):334–384, 2005.
+
+Thomas L Griffiths, Nick Chater, Charles Kemp, Amy Perfors, and Joshua B Tenenbaum. Proba-
+bilistic models of cognition: Exploring representations and inductive biases. Trends in cognitive
+sciences, 14(8):357–364, 2010.
+
+Shixiang Gu, Timothy Lillicrap, Zoubin Ghahramani, Richard E Turner, and Sergey Levine. Q-prop:
+Sample-efficient policy gradient with an off-policy critic. arXiv preprint arXiv:1611.02247, 2016.
+
+Shixiang Shane Gu, Timothy Lillicrap, Richard E Turner, Zoubin Ghahramani, Bernhard Sch¨olkopf,
+and Sergey Levine. Interpolated policy gradient: Merging on-policy and off-policy gradient esti-
+mation for deep reinforcement learning. Advances in neural information processing systems, 30,
+2017.
+
+Xingrui Gu, Zhixuan Wang, Irisa Jin, and Zekun Wu. Advancing pain recognition through sta-
+tistical correlation-driven multimodal fusion. In 2024 12th International Conference on Affective
+Computing and Intelligent Interaction Workshops and Demos (ACIIW), pp. 281–289. IEEE, 2024.
+
+Xingrui Gu, Chuyi Jiang, Erte Wang, Zekun Wu, Qiang Cui, Leimin Tian, Lianlong Wu, Siyang
+Song, and Chuang Yu. Causkelnet: Causal representation learning for human behaviour analysis.
+In 2025 IEEE 19th International Conference on Automatic Face and Gesture Recognition (FG),
+pp. 1–13. IEEE, 2025.
+
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy
+maximum entropy deep reinforcement learning with a stochastic actor. In International confer-
+ence on machine learning, pp. 1861–1870. PMLR, 2018.
+
+Qianyue Hao, Sibo Li, Jian Yuan, and Yong Li. Rl of thoughts: Navigating llm reasoning with
+inference-time reinforcement learning. arXiv preprint arXiv:2505.14140, 2025.
+
+Amogh Joshi, Adarsh Kosta, and Kaushik Roy. Shire: Enhancing sample efficiency using human
+intuition in reinforcement learning. In 2025 IEEE International Conference on Robotics and
+Automation (ICRA), pp. 13399–13405. IEEE, 2025.
+
+Charles Kemp and Joshua B Tenenbaum. The discovery of structural form. Proceedings of the
+National Academy of Sciences, 105(31):10687–10692, 2008.
+
+Mehdi Keramati, Amir Dezfouli, and Payam Piray. Speed/accuracy trade-off between the habitual
+and the goal-directed processes. PLoS computational biology, 7(5):e1002055, 2011.
+
+Jung-Hyun Kim, Yong-Hoon Choi, You-Rak Choi, Jae-Hyeok Jeong, and Min-Suk Kim. Extended
+maximum actor–critic framework based on policy gradient reinforcement for system optimization.
+Applied Sciences, 15(4):1828, 2025.
+
+B Ravi Kiran, Ibrahim Sobh, Victor Talpaert, Patrick Mannion, Ahmad A Al Sallab, Senthil Yoga-
+mani, and Patrick P´erez. Deep reinforcement learning for autonomous driving: A survey. IEEE
+transactions on intelligent transportation systems, 23(6):4909–4926, 2021.
+
+Tejas D Kulkarni, Karthik Narasimhan, Ardavan Saeedi, and Josh Tenenbaum. Hierarchical deep
+reinforcement learning: Integrating temporal abstraction and intrinsic motivation. Advances in
+neural information processing systems, 29, 2016.
+
+Brenden M Lake, Ruslan Salakhutdinov, and Joshua B Tenenbaum. Human-level concept learning
+through probabilistic program induction. Science, 350(6266):1332–1338, 2015.
+
+Brenden M Lake, Tomer D Ullman, Joshua B Tenenbaum, and Samuel J Gershman.
+Building
+machines that learn and think like people. Behavioral and brain sciences, 40:e253, 2017.
+
+Quanyi Li, Zhenghao Peng, Lan Feng, Qihang Zhang, Zhenghai Xue, and Bolei Zhou. Metadrive:
+Composing diverse driving scenarios for generalizable reinforcement learning. IEEE Transactions
+on Pattern Analysis and Machine Intelligence, 2022.
+
+TP Lillicrap.
+Continuous control with deep reinforcement learning.
+arXiv preprint
+arXiv:1509.02971, 2015.
+
+Wenzhang Liu, Wenzhe Cai, Kun Jiang, Guangran Cheng, Yuanda Wang, Jiawei Wang, Jingyu
+Cao, Lele Xu, Chaoxu Mu, and Changyin Sun. Xuance: A comprehensive and unified deep
+reinforcement learning library. arXiv preprint arXiv:2312.16248, 2023.
+
+Stuart Lloyd. Least squares quantization in pcm. IEEE transactions on information theory, 28(2):
+129–137, 1982.
+
+Mingwei Ma, Jizhou Liu, Samuel Sokota, Max Kleiman-Weiner, and Jakob Nicolaus Foerster.
+Learning to coordinate with humans using action features. CoRR, abs/2201.12658, 2022.
+
+Francisco S Melo. Convergence of q-learning: A simple proof. Institute Of Systems and Robotics,
+Tech. Rep, pp. 1–4, 2001.
+
+Volodymyr Mnih.
+Asynchronous methods for deep reinforcement learning.
+arXiv preprint
+arXiv:1602.01783, 2016.
+
+Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Alex Graves, Ioannis Antonoglou, Daan Wier-
+stra, and Martin Riedmiller.
+Playing atari with deep reinforcement learning.
+arXiv preprint
+arXiv:1312.5602, 2013.
+
+Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G Belle-
+mare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al. Human-level
+control through deep reinforcement learning. nature, 518(7540):529–533, 2015.
+
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong
+Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to fol-
+low instructions with human feedback. Advances in neural information processing systems, 35:
+27730–27744, 2022.
+
+Vihang Patil, Markus Hofmarcher, Elisabeth Rumetshofer, and Sepp Hochreiter. Contrastive ab-
+straction for reinforcement learning. arXiv preprint arXiv:2410.00704, 2024.
+
+Brahma Pavse and Josiah Hanna. State-action similarity-based representations for off-policy evalu-
+ation. Advances in Neural Information Processing Systems, 36:42298–42329, 2023.
+
+Shaohui Peng, Xing Hu, Rui Zhang, Jiaming Guo, Qi Yi, Ruizhi Chen, Zidong Du, Ling Li, Qi Guo,
+and Yunji Chen. Conceptual reinforcement learning for language-conditioned tasks. In Proceed-
+ings of the AAAI Conference on Artificial Intelligence, volume 37, pp. 9426–9434, 2023.
+
+Cameron R Peterson and Lee Roy Beach. Man as an intuitive statistician. Psychological bulletin,
+68(1):29, 1967.
+
+Alexander Pritzel, Benigno Uria, Sriram Srinivasan, Adria Puigdomenech Badia, Oriol Vinyals,
+Demis Hassabis, Daan Wierstra, and Charles Blundell. Neural episodic control. In International
+conference on machine learning, pp. 2827–2836. PMLR, 2017.
+
+Balaraman Ravindran. Smdp homomorphisms: An algebraic approach to abstraction in semi markov
+decision processes. 2003.
+
+Balaraman Ravindran. An algebraic approach to abstraction in reinforcement learning. 2004.
+
+Eleanor Rosch. Principles of categorization. Cognition and categorization/Erlbaum, 1978.
+
+Tom Schaul, John Quan, Ioannis Antonoglou, and David Silver. Prioritized experience replay. arXiv
+preprint arXiv:1511.05952, 2015.
+
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms. arXiv preprint arXiv:1707.06347, 2017.
+
+David Silver and Richard S Sutton. Welcome to the era of experience. Google AI, 1, 2025.
+
+David Silver, Guy Lever, Nicolas Heess, Thomas Degris, Daan Wierstra, and Martin Riedmiller.
+Deterministic policy gradient algorithms. In International conference on machine learning, pp.
+387–395. Pmlr, 2014.
+
+Bharat Singh, Rajesh Kumar, and Vinay Pratap Singh. Reinforcement learning in robotic applica-
+tions: a comprehensive survey. Artificial Intelligence Review, 55(2):945–990, 2022.
+
+Satinder Singh, Tommi Jaakkola, Michael L Littman, and Csaba Szepesv´ari. Convergence results for
+single-step on-policy reinforcement-learning algorithms. Machine learning, 38:287–308, 2000.
+
+Zihao Sun, Bao Pang, Xianfeng Yuan, Xiaolong Xu, Yong Song, Rui Song, and Yibin Li. Hi-
+erarchical reinforcement learning with curriculum demonstrations and goal-guided policies for
+sequential robotic manipulation. Engineering Applications of Artificial Intelligence, 153:110866,
+2025.
+
+Richard S Sutton and Andrew G Barto. Reinforcement learning: An introduction. MIT press, 2018.
+
+Joshua B Tenenbaum and Thomas L Griffiths. Generalization, similarity, and bayesian inference.
+Behavioral and brain sciences, 24(4):629–640, 2001.
+
+Joshua B Tenenbaum, Thomas L Griffiths, and Charles Kemp. Theory-based bayesian models of
+inductive learning and reasoning. Trends in cognitive sciences, 10(7):309–318, 2006.
+
+Joshua B Tenenbaum, Charles Kemp, Thomas L Griffiths, and Noah D Goodman. How to grow a
+mind: Statistics, structure, and abstraction. science, 331(6022):1279–1285, 2011.
+
+William R Thompson. On the likelihood that one unknown probability exceeds another in view of
+the evidence of two samples. Biometrika, 25(3/4):285–294, 1933.
+
+Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control.
+In 2012 IEEE/RSJ International Conference on Intelligent Robots and Systems, pp. 5026–5033.
+IEEE, 2012. doi: 10.1109/IROS.2012.6386109.
+
+Hado Van Hasselt, Arthur Guez, and David Silver. Deep reinforcement learning with double q-
+learning. In Proceedings of the AAAI conference on artificial intelligence, volume 30, 2016.
+
+Ziyu Wang, Tom Schaul, Matteo Hessel, Hado Hasselt, Marc Lanctot, and Nando Freitas. Dueling
+network architectures for deep reinforcement learning. In International conference on machine
+learning, pp. 1995–2003. PMLR, 2016.
+
+Watkins, Christopher JCH, Dayan, and Peter. Q-learning. Machine learning, 8:279–292, 1992.
+
+Weirui Ye, Shaohuai Liu, Thanard Kurutach, Pieter Abbeel, and Yang Gao. Mastering atari games
+with limited data. Advances in neural information processing systems, 34:25476–25488, 2021.
+
+Kaiyan Zhao, Yiming Wang, Yuyang Chen, Yan Li, Xiaoguang Niu, et al. Efficient diversity-based
+experience replay for deep reinforcement learning. arXiv preprint arXiv:2410.20487, 2024.
+
+A
+APPENDIX
+
+A.1
+CONCEPTUAL BELIEF-INFORMED TWIN DELAYED DEEP DETERMINISTIC POLICY
+GRADIENT (HI-TD3)
+
+TD3 (Twin Delayed Deep Deterministic Policy Gradient)(Fujimoto et al., 2018), built upon
+DDPG(Silver et al., 2014), mitigates Q-value overestimation and improves stability via twin Q-
+networks, delayed updates, and target policy smoothing. Here, we focus only on the actor update.
+Considering a sample batch Dt = (si, ai, ri, s′
+i) at time step t, the actor policy update is defined as:
+
+Esi∼Dt
+
+Qϕmin(si, πθ(si))
+
+(19)
+
+where Qϕmin takes the smaller value of the two Q-networks, while πθ denotes the policy that gen-
+erates actions, with ai = πθ(si). Conceptual Belief-Informed TD3 (HI-TD3) applies the HI-RL
+fusion rule to deterministic policy gradients, refining the concept-based belief prior bt(k) for each
+conceptual category Ck at time step t as:
+
+∀(∇, k) ∈∇× [K] :
+bt(k) ≃∇aQϕmin(s, a)
+(20)
+
+where bt(k), a directional belief, denotes as ∇aQmin(s, a), where the smaller Q-value in TD3 is
+employed to approximate the gradient serving as its representation. The recorded belief direction is
+updated using an exponential moving average with normalization:
+
+bt(k) =
+(1 −η)bt−1(k) + η∇aQmin(s, a)
+∥(1 −η)bt−1(k) + η∇aQmin(s, a)∥,
+a ∼πθ(s),
+s ∈Ck
+(21)
+
+where η is an exponential moving average constant and bt−1(k) denotes the previously stored direc-
+tional belief.
+
+In the policy update of HI-TD3, we perform belief fusion updates only on the actor network. At each
+time step t with sampled tuple (si, ai, ri, s′
+i), the integrated directional belief information Bt(k) is
+denotes as:
+
+Bt(k) = c (1 −β)∇aiQmin(si, ai) + βbt(k)
+
+∥(1 −β)∇aiQmin(si, ai) + βbt(k)∥,
+si ∈Ck
+(22)
+
+where c is a constant used to prevent excessive oscillations if Bt(k) becomes too large. Differing
+from previous usage, β is determined by directional similarity, computed as a dot product, and serves
+as the fusion coefficient:
+
+β = clamp
+X
+
+k
+bt(k) · ∇aiQϕmin(si, ai), 0, 1
+
+(23)
+
+The directional fusion is performed by combining Bt(k) as a perturbation with ai:
+
+ablend = clamp
+
+ai + Bt(k), −1, 1
+
+(24)
+
+The actor minimizes to update policy:
+
+Esi∼Dt
+
+Qϕmin(si, ablend)
+
+(25)
+
+Thus, HI-TD3 preserves the HI-RL fusion principle through the actor by blending task-driven gra-
+dients with conceptual priors, while the critic remains the standard TD3 update for stability. This
+makes HI-TD3 a deterministic yet framework-consistent instantiation of HI-RL. The pseudocodes
+are provided in Appendix A.2.4.
+
+A.2
+PSEUDO CODE
+
+A.2.1
+CONCEPTUAL BELIEF-INFORMED Q-LEARNING (HI-Q) ALGORITHM
+
+Algorithm 2 Conceptual Belief-Informed Q-learning (HI-Q) Algorithm
+
+1: Initialization: learning rate α, discount factor γ, running steps T, episodes E, replay buffer B
+and a set of K conceptual categories, denoted as {Ck}K
+k=1
+2: for each episode do
+3:
+Get initial state s0 from the environment
+4:
+for each timestep t do
+5:
+Choose a random action at with probability ϵ otherwise take at = arg maxa Q(st, a; θ)
+6:
+Execute at to get reward r(st, at), next state st+1
+7:
+Store (st, at, r(st, at), st+1) into B
+8:
+Identify the conceptual category Ck of st through Nearest Neighbor
+9:
+Update the count of at in Ck (cf. 5);
+10:
+Sample N tuples from B to update Q function:
+11:
+Extract bt(a | Ck(st)) and integrate with rewards to estimate Bt(a | st+1) (cf.6)
+12:
+yi
+st,at = EB [r(st, at) + γ P
+a Bt(a | st+1)Q(st+1, a; θ−)|st, at] (cf.8)
+13:
+Loss = EB
+
+(yi
+st,at −Q(st, at; θ))2
+
+14:
+Reset target network after a few updates: align target Q parameters: θ−= θ;
+15:
+end for
+16: end for
+
+A.2.2
+CONCEPTUAL BELIEF-INFORMED SOFT ACTOR-CRITIC (HI-SAC) ALGORITHM
+
+Algorithm 3 Conceptual Belief-Informed Soft Actor-Critic
+
+1: Initialize two critic parameters ϕ1, ϕ2 and actor parameters θ, Conceptual categories {Ck}N
+k=1,
+category belief parameters bt=0(k) = {µk, σ2
+k}N
+k=1
+2: for each time step t do
+3:
+Sample at ∼πθ(· | st)
+4:
+Transition to st+1 ∼p(st+1 | st, at)
+5:
+Store transition in replay buffer: B ←B ∪{(st, at, r(st, at), st+1)}
+6:
+for training step do
+7:
+Sampled {si, ai, ri, s′
+i} ←B
+8:
+Identify category Ck for si through Euclidean distance
+9:
+Compute Bt(si) and Bt(si′), si, s′
+i ∈CK (cf. 17)
+10:
+Update category belief parameters bt(k) (cf. 15)
+11:
+end for
+12:
+for each gradient step (cf.18) do
+13:
+Compute target:
+
+yi = ri + γ Ea′
+i∼Bt(·|s′
+i)
+h
+Qmin(s′
+i, a′
+i) −α log Bt(a′
+i|s′
+i)
+i
+.
+
+14:
+Update critics (i = 1, 2):
+
+Lcritic
+CBISAC(ϕi) = E(si,ai)∼Dt
+h
+Qϕi(si, ai) −yi
+2i
+,
+
+ϕi ←ϕi −ηϕ∇ϕiLcritic
+CBISAC(ϕi).
+
+15:
+Update actor:
+
+Lactor
+CBISAC(θ) = Esi∼Dt, ai∼Bt
+h
+α log Bt(ai|si) −Qmin(si, ai)
+i
+,
+
+θ ←θ −ηθ∇θLactor
+CBISAC(θ).
+
+16:
+Update temperature:
+
+L(α) = Esi,ai∼Bt
+
+−α (log Bt(ai|si) + Htarget)
+
+,
+
+α ←α −ηα∇αL(α).
+
+17:
+Soft update target network:
+
+¯ϕ ←τϕ + (1 −τ)¯ϕ.
+
+18:
+Update bt(k) (cf.15)
+19:
+end for
+20: end for
+
+A.2.3
+CONCEPTUAL BELIEF-INFORMED PROXIMAL POLICY OPTIMIZATION (HIPPO)
+ALGORITHM
+
+Algorithm 4 Conceptual Belief-Informed Proximal Policy Optimization
+
+1: Initialize policy parameters θ and value function parameters ϕ, conceptual categories {Ck}N
+k=1
+2: for each iteration do
+3:
+for each environment step t do
+4:
+Collect set of trajectories Dk = {τi} by running πk = π(θk)
+5:
+Sample at and Transition to get st+1
+6:
+Compute rewards-to-go r(st, at).
+7:
+Compute advantage estimation At based on current value function Vϕk
+8:
+Store transition in replay buffer: B ←B ∪{(st, at, r(st, at), st+1, At)}
+9:
+end for
+10:
+for each gradient step do
+11:
+Sampled {si, ai, ri, s′
+i} ←B
+12:
+Identify category Ck for si through Euclidean distance
+13:
+Compute Bt(k) = (1 −βt)πθ(ai | si) + βtbt(k),
+si ∈Ck (cf.10)
+14:
+Update the policy by maximizing the PPO-Clip objective (cf.11):
+15:
+
+Bt(ai | si)
+πθold(ai | si) Ai, clip
+Bt(ai | si)
+
+"
+
+!#
+
+πθold(ai | si), 1−ϵ, 1+ϵ
+
+Ai
+
+θk+1 = arg max
+θ
+E(si,ai)∼πθold
+
+min
+
+.
+
+16:
+Fit value function by regression on mean-squared error:
+17:
+
+h
+Vϕ(si) −r(si, ai)
+2i
+.
+
+ϕk+1 = arg min
+ϕ
+E(si,ai)∼πθold
+
+18:
+Update bt(k) (cf.5)
+19:
+end for
+20: end for
+
+A.2.4
+CONCEPTUAL BELIEF-INFORMED TWIN DELAYED DEEP DETERMINISTIC (HI-TD3)
+ALGORITHM
+
+Algorithm 5 Conceptual Belief-Informed Twin Delayed Deep Deterministic
+
+1: Initialize actor πθ(s), critics Qϕ1(s, a), Qϕ2(s, a), target networks θ′ ←θ, ϕ′
+1 ←ϕ1, ϕ′
+2 ←ϕ2,
+Conceptual categories {Ck}N
+k=1, discount factor γ
+2: for each iteration do
+3:
+for each environment step t do
+4:
+Sample at = πθ(st) + ϵ,
+ϵ ∼N(0, σ2I)
+5:
+Transition to st+1 ∼p(st+1 | st, at)
+6:
+Store transition in replay buffer: B ←B ∪{(st, at, r(st, at), st+1)}
+7:
+end for
+8:
+for each gradient step do
+9:
+Sample minibatch Dt = {(si, ai, ri, s′
+i)} from replay buffer
+10:
+Critic update (TD3)
+11:
+Compute target action with smoothing: a′
+i = πθ′(s′
+i) + ϵ,
+ϵ ∼N(0, σ2I)
+12:
+Compute temporal difference target: yi = ri + γ · min
+
+Qϕ′
+1(s′
+i, a′
+i), Qϕ′
+2(s′
+i, a′
+i)
+
+
+i
+
+yi −Qϕj(si, ai)
+2,
+j = 1, 2
+14:
+Actor update with fusion
+15:
+Compute gradient direction: gt = ∇aQmin(si, ai)
+16:
+Compute fusion coefficient β (cf.23)
+17:
+Integrate belief: Bt = c ·
+(1−β)gt+βbt(k)
+∥(1−β)gt+βbt(k)∥(cf.25)
+
+13:
+Update critics by minimizing loss: L = 1
+
+N
+P
+
+18:
+Blend action: ablend = clamp(πθ(si) + Bt, −1, 1)(cf.24)
+19:
+Update actor by minimizing: J(θ) = −1
+
+N
+P
+
+i Qmin(si, ablend)(cf.21)
+20:
+Target network updates
+
+ϕ′ ←τϕ + (1 −τ)ϕ′,
+θ′ ←τθ + (1 −τ)θ′
+
+21:
+Update bt(k) (cf.22)
+22:
+end for
+23: end for
+
+A.3
+SMOOTHED BELLMAN OPERATOR
+
+To reflect cognitive properties of uncertainty-aware decision-making in reinforcement learning, we
+revise the classical Bellman operator, which updates values deterministically:
+
+T Q(st, at) = rt + γ max
+a∈A Qt(st+1, a).
+(26)
+
+Here, T is the classical Bellman operator, st ∈S denotes the current state, at ∈A the chosen
+action, rt ∈R the immediate reward, γ ∈(0, 1) the discount factor, A the action space, and Qt(s, a)
+the action–value function at iteration t. The maxa∈A term represents greedy action selection, i.e.,
+propagating value based on the action with the highest estimated return.
+
+TSmoothedQ(st, at) = rt + γ
+X
+
+a∈A
+qt(a | st+1)Qt(st+1, a),
+(27)
+
+where TSmoothed denotes the Smoothed Bellman Operator, which replaces the hard maximization
+with a belief-weighted expectation. Here, qt(a | st+1) is the action-preference distribution at state
+st+1, e.g., a softmax distribution over Qt(st+1, a) or the belief-preference distribution in HI-RL.
+Unlike the deterministic max, this formulation propagates value in a probabilistic, uncertainty-aware
+manner, balancing task-driven estimates with belief-informed priors.
+
+Bellman Operator integrates with different policy learning paradigms (Q-learning, SAC, PPO). For-
+mal instantiations such as softmax smoothing, clipped interpolation, and Bayesian fusion are pro-
+vided in next, along with a convergence proof and a Jensen-type inequality.
+
+Lemma A.1 (Jensen’s Inequality for Q-values). Consider an MDP with state st+1 and actions a,
+along with Q-value estimates Qt(st+1, a). Let qt(a | st+1) denote the probability of selecting action
+a in state st+1. By Jensen’s inequality:
+
+st+1
+P(st+1 | st, at)
+X
+
+γ
+X
+
+a′
+qt(a | st+1)Qt(st+1, a) ≤
+
+st+1
+P(st+1 | st, at) max
+a
+Qt(st+1, a),
+(28)
+
+γ
+X
+
+Lemma A.1 establishes that the Smoothed Bellman Operator provides a conservative backup: re-
+placing the hard maximization with a belief-weighted expectation yields an update that forms a lower
+bound on the classical Bellman backup, thereby stabilizing value propagation under uncertainty.
+
+Lemma A.2 (Convergence of Smoothed Bellman Operator). Let {Qt} be the sequence generated
+by iteratively applying TSmoothed. Under the condition:
+
+lim
+t→∞max
+a
+qt(a | st+1) = 1,
+(29)
+
+for the optimal action, Qt converges to the optimal Q∗as t →∞. See Appendix D for a detailed
+proof.
+
+Lemma A.2 complements this by showing that if the action-preference distribution qt(· | st+1)
+asymptotically collapses onto the optimal action, then iterative application of the Smoothed Bellman
+Operator converges to the optimal value function Q∗. Together, these results establish that the
+Smoothed Bellman Operator not only smooths value backups for improved robustness, but also
+preserves the fundamental convergence guarantees of classical reinforcement learning. The full
+proof of Lemma A.2 is provided in next subsection.
+
+To instantiate the Smoothed Bellman Operator in practice, different smoothing strategies can be
+employed to construct the action-preference distribution bt. These strategies determine how strongly
+the update deviates from hard maximization and how uncertainty is incorporated. Representative
+examples are summarized in Table 3.
+
+Strategy
+Formula
+Softmax
+qt =
+eQ(s,a)
+P
+
+b eQ(s,b)
+
+(
+1 −τ,
+if a = a∗
+
+Clipped Max
+qt =
+
+τ
+A−1,
+if a ̸= a∗
+
+(
+eβQ(s,a)
+P
+
+b∈I eβQ(s,b) ,
+if a ∈I
+
+Clipped Softmax
+qt =
+
+0,
+if a /∈I
+
+Table 3: Smoothing strategies with respective formulas
+
+A.3.1
+CONVERGENCE PROOF
+
+We outline a proof that builds upon the following result (Singh et al., 2000; Barber, 2023) and
+follows the framework provided in (Melo, 2001):
+
+Theorem A.3. The random process {∆t} taking value in R and defined as
+
+∆t+1(x) = (1 −αt(x))∆t(x) + αt(x)Ft(x)
+(30)
+
+converges to 0 with probability 1 under the following assumptions:
+
+• E[∥Ft(x)∥W ] ≤κ∥∆t∥W + ct, κ ∈[0, 1) and ct →0 with probability 1;
+
+• var(Ft(x)) ≤C(1 + ∥∆t∥W )2, C > 0
+
+where ∥∆t∥W denotes a weighted max norm.
+
+We are interested in the convergence of Qt towards the optimal value Q∗and therefore define
+
+∆t = Qt(st, at) −Q∗(st, at)
+(31)
+
+It is convenient to write the smoothed update as
+
+Qt+1(st, at) = Qt(st, at) + αt(st, at) (rt + γ ⟨Q(st+1, a)⟩a −Qt(st, at))
+(32)
+
+where ⟨f(x)⟩x means the expectation of the function f(x) with respect to the distribution of x.
+Using the smoothed update, we can write
+
+∆t+1(st, at) = Qt+1(st, at) −Q∗(st, at)
+(33)
+
+= (1 −αt)∆t + αt (rt + γ⟨Q(st+1, a)⟩a −Q∗(st, at))
+(34)
+In terms of Theorem 1, we therefore define
+
+Ft = rt + γ
+X
+
+a
+qt(a|st+1)Qt(st+1, a) −Q∗(st, at)
+(35)
+
+Proof. For convergence, we need to verify the conditions of Theorem 1.
+
+Step 1: Verify Step-Size Conditions
+
+We assume that the learning rates αt(st, at) satisfy:
+
+• 0 < αt(st, at) ≤1,
+
+• P
+
+t αt(st, at) = ∞,
+
+• P
+t α2
+t(st, at) < ∞.
+
+An example is αt(st, at) =
+1
+Nt(st,at), where Nt(st, at) is the visitation count of (st, at).
+
+Step 2: Establish Boundedness of Qt
+
+Since the rewards rt are bounded (|rt| ≤Rmax) and the discount factor 0 < γ < 1, we can show
+that Qt remains bounded independently of the convergence of ∆t.
+
+Define the Bound Qmax:
+
+We define
+Qmax = Rmax
+
+1 −γ .
+(36)
+
+This is the maximum possible value of the Q-function given the bounded rewards and discount
+factor.
+
+Derivation of Qmax:
+
+The Q-function Q(s, a) represents the expected cumulative discounted reward when starting from
+state s and taking action a:
+
+" ∞
+X
+
+#
+
+k=0
+γkrt+k
+st = s, at = a
+
+Q(s, a) = E
+
+,
+(37)
+
+where rt+k is the reward received at time t + k, and γ is the discount factor.
+
+Assuming that at each time step, the agent receives the maximum possible reward Rmax, the maxi-
+mum possible Q-value is:
+
+∞
+X
+
+∞
+X
+
+Qmax =
+
+Since 0 < γ < 1, the infinite sum P∞
+k=0 γk is a geometric series that sums to:
+
+∞
+X
+
+k=0
+γk =
+1
+1 −γ .
+(39)
+
+Therefore, we have:
+
+Qmax = Rmax ×
+1
+1 −γ = Rmax
+
+1 −γ .
+(40)
+
+Thus, Qmax = Rmax
+
+1 −γ is the maximum possible value of the Q-function in any state-action pair.
+
+Base Case: Let Q0(s, a) be initialized such that |Q0(s, a)| ≤Qmax for all s, a.
+
+Inductive Step: Assume |Qt(s, a)| ≤Qmax for all s, a. We need to show that |Qt+1(st, at)| ≤Qmax.
+
+From the update equation:
+
+Qt+1(st, at) = Qt(st, at) + αt(st, at) (rt + γ ⟨Qt(st+1, a)⟩a −Qt(st, at)) .
+(41)
+
+Simplifying:
+
+Qt+1(st, at) = (1 −αt(st, at))Qt(st, at) + αt(st, at) (rt + γ ⟨Qt(st+1, a)⟩a) .
+(42)
+
+Taking absolute values:
+
+|Qt+1(st, at)| ≤(1 −αt)|Qt(st, at)| + αt (|rt| + γ |⟨Qt(st+1, a)⟩a|) .
+(43)
+
+Using the inductive hypothesis and boundedness:
+
+|Qt(st, at)| ≤Qmax,
+|⟨Qt(st+1, a)⟩a| ≤Qmax,
+(44)
+
+and |rt| ≤Rmax. Therefore:
+
+|Qt+1(st, at)| ≤(1 −αt)Qmax + αt (Rmax + γQmax) .
+(45)
+
+Simplify:
+
+|Qt+1(st, at)| ≤Qmax −αtQmax + αt (Rmax + γQmax)
+(46)
+= Qmax + αt (Rmax −(1 −γ)Qmax) .
+(47)
+
+Since Qmax = Rmax
+
+1 −γ , we have (1 −γ)Qmax = Rmax. Substituting back:
+
+|Qt+1(st, at)| ≤Qmax + αt (Rmax −Rmax) = Qmax.
+(48)
+
+Thus,
+|Qt+1(st, at)| ≤Qmax.
+(49)
+
+Therefore, by induction, Qt remains bounded for all t, independently of ∆t.
+
+Step 3: Verify Mean Condition
+
+We can write
+1
+γ E[Ft] = EpT [Gt],
+(50)
+
+where
+Gt =
+X
+
+a
+qt(a|st+1)Qt(st+1, a) −max
+a
+Q∗(st+1, a).
+(51)
+
+which means that if we can bound ∥Gt∥∞appropriately, the mean criterion will be satisfied.
+
+Assuming that bt places (1 −δt) mass on the maximal action a∗= arg maxa Qt(st+1, a), we can
+write
+
+Gt =
+X
+
+a
+qt(a|st+1)Qt(st+1, a) −max
+a
+Q∗(st+1, a)
+(53)
+
+= (1 −δt)Qt(st+1, a∗) + δt
+X
+
+c̸=a∗
+˜qt(c|st+1)Qt(st+1, c) −max
+a
+Q∗(st+1, a),
+(54)
+
+where ˜bt(c|st+1) = bt(c|st+1)
+
+δt
+for c ̸= a∗.
+
+We can then write
+
+
+
+
+
+c̸=a∗
+˜bt(c|st+1)[Qt(st+1, c) −Qt(st+1, a∗)]
+
+X
+
+Gt = Qt(st+1, a∗) −max
+a
+Q∗(st+1, a) + δt
+
+.
+
+(55)
+
+Since Qt(st+1, a∗) ≥Qt(st+1, c) for all c, the terms inside the brackets are non-positive. Therefore,
+
+Gt ≤Qt(st+1, a∗) −max
+a
+Q∗(st+1, a).
+(56)
+
+Now, we have
+
+Qt(st+1, a∗) −max
+a
+Q∗(st+1, a) = [Qt(st+1, a∗) −Q∗(st+1, a∗)] + [Q∗(st+1, a∗) −max
+a
+Q∗(st+1, a)]
+
+(57)
+
+≤∆t(st+1, a∗).
+(58)
+
+Thus,
+Gt ≤∆t(st+1, a∗).
+(59)
+Therefore,
+∥Gt∥∞≤∥∆t∥∞.
+(60)
+Additionally, the term involving δt contributes an additional ct, which is bounded due to the bound-
+edness of Qt and δt →0. Thus, the mean condition becomes
+
+∥E[Ft]∥∞≤γ∥∆t∥∞+ ct,
+(61)
+
+with ct →0 as δt →0.
+
+Since γ < 1, the mean condition is satisfied with κ = γ and ct →0.
+
+Step 4: Verify Variance Condition
+
+Since the rewards rt are bounded and we have established that Qt is bounded independently, Ft is
+also bounded.
+
+We can write:
+
+∆Ft = Ft −E[Ft]
+(62)
+
+"X
+
+#!
+
+X
+
+= (rt −E[rt|st, at]) + γ
+
+a
+qt(a|st+1)Qt(st+1, a) −Est+1
+
+a
+qt(a|st+1)Qt(st+1, a)
+
+.
+
+(63)
+
+We can bound the variance using
+
+Var(Ft) = E
+
+(∆Ft)2 | Ft
+
+≤∥∆Ft∥2
+∞.
+(64)
+
+Using the triangle inequality,
+
+#
+
+
+
+
+∞
+(65)
+
+"X
+
+X
+
+a
+qt(a|st+1)Qt(st+1, a) −Est+1
+
+∥∆Ft∥∞≤∥∆rt∥∞+ γ
+
+a
+qt(a|st+1)Qt(st+1, a)
+
+Since Qt is bounded, there exists a constant B such that
+
+∥Qt(st+1, a) −Est+1[Qt(st+1, a)]∥∞≤2Qmax = B.
+(67)
+
+Therefore,
+∥∆Ft∥∞≤∥∆rt∥∞+ γB.
+(68)
+
+Since rt is bounded, ∥∆rt∥∞≤2Rmax.
+
+Thus,
+∥∆Ft∥∞≤2Rmax + γB.
+(69)
+
+Therefore, the variance is bounded, and there exists a constant C > 0 such that
+
+Var(Ft) ≤C(1 + ∥∆t∥∞)2.
+(70)
+
+Step 5: Conclusion
+
+All the conditions of Theorem 1 are satisfied:
+
+• Step-Size Conditions: Verified in Step 1.
+
+• Mean Condition: Verified in Step 3, with κ = γ < 1 and ct →0.
+
+• Variance Condition: Verified in Step 4.
+
+Therefore, ∆t →0 with probability 1, implying that Qt →Q∗with probability 1.
+
+A.4
+EXPERIMENT SETTING
+
+A.4.1
+CLASSIC CONTROL AND BOX 2D ENVIRONMENT
+
+Figure 3: Cartpole, Acrobot, CarRacing, Lunar Lander and Bipedal Walker .
+
+1. Cartpole: a pole is attached by an unactuated joint to a cart, which moves along a friction-
+less track. The pendulum is placed upright on the cart and the goal is to balance the pole
+by applying forces in the left and right direction on the cart.
+
+2. Acrobot: a two-link pendulum system with only the second joint actuated. The task is to
+swing the lower link to a sufficient height in order to raise the tip of the pendulum above
+a target height. The environment challenges the agent’s ability to apply precise control for
+coordinating multiple linked joints.
+
+3. CarRacing: The easiest control task to learn from pixels - a top-down racing environment.
+The generated track is random in every episode.
+
+4. Lunar Lander: It is a classic rocket trajectory optimization problem. According to Pontrya-
+gin’s maximum principle, it is optimal to fire the engine at full throttle or turn off. This is
+why this environment has discrete actions: engine on or off.
+
+5. Bipedal Walker: a two-legged robot attempting to walk across varied terrain. The goal is
+for the agent to learn how to navigate efficiently and avoid falling.
+
+A.4.2
+METADRIVE BLOCK TYPE DESCRIPTION
+
+Table 4: Block Types Used in Experiments
+
+ID
+Block Type
+S
+Straight
+C
+Circular
+r
+InRamp
+R
+OutRamp
+O
+Roundabout
+X
+Intersection
+y
+Merge
+Y
+Split
+T
+T-Intersection
+
+Figure 4: Various block types used in the MetaDrive environment. These blocks represent common
+road structures such as straight roads, ramps, forks, roundabouts, curves, T-intersections, and inter-
+sections, used for evaluating the vehicle’s path planning and decision-making capabilities.
+
+A.4.3
+MAP DESIGN AND TESTING OBJECTIVES
+
+Map 1:
+SrOYCTRyS
+This map consists of straight roads, roundabouts, intersections, T-
+intersections, splits, and ramps. The environment presents a highly complex combination of multiple
+intersections, dynamic traffic flow, and varying road structures.
+
+Testing Objective: The focus of this environment is to evaluate the algorithm’s smooth decision-
+making and multi-intersection handling, mimicking human driving behavior. The challenges include
+adjusting vehicle paths in real-time and ensuring smooth lane transitions in the presence of complex
+road structures such as roundabouts and ramps.
+
+Map 2: COrXSrT
+This map combines circular roads, roundabouts, straight roads, intersections,
+ramps, and T-intersections. The environment is designed to assess the vehicle’s decision-making
+capabilities when dealing with continuous changes in road grades and multiple intersection types.
+
+Testing Objective: This environment tests the algorithm’s ability to dynamically adjust to grade
+changes and multi-intersection interactions, replicating human-like behavior. The goal is to ob-
+serve how well the algorithm adjusts vehicle speed and direction, ensuring stability in scenarios
+involving ramps and complex road networks.
+
+Map 3: rXTSC
+This map consists of ramps, intersections, T-intersections, straight roads, and
+circular roads. The environment simulates multiple road interactions, testing the vehicle’s path
+selection and stability, particularly at intersections and ramps.
+
+Testing Objective: This environment evaluates the algorithm’s performance in handling intersec-
+tions and T-junctions with real-time path selection. The challenge is to ensure human-like adaptabil-
+ity when encountering multiple directional options, maintaining decision stability in dynamic traffic
+situations.
+
+Testing Objective: The map focuses on testing the vehicle’s ability to handle high-speed lane
+merging and dynamic path planning. The algorithm must mimic human drivers by making real-
+time adjustments in a high-speed environment, choosing optimal paths while maintaining speed
+control and safety through complex intersections and roundabouts.
+
+Map 5: XTOC
+This map features circular roads, T-intersections, and straight roads, creating
+a unique combination of continuous curves and abrupt directional changes.
+The environment
+presents the challenge of maintaining speed while negotiating tight turns and quick transitions at
+T-intersections.
+
+Testing Objective: The focus is on testing the vehicle’s ability to handle sharp directional changes
+and maintain control during high-speed maneuvers. The algorithm needs to balance speed with
+precision, ensuring safe navigation through tight turns and abrupt intersections.
+
+Map 6: XTSC
+This map features a T-shaped intersection with traffic signals controlling vehicle
+flow from three directions. It tests advanced driving skills including traffic light compliance, turn
+management, and interaction with vehicles from cross directions.
+
+Testing Objective: The main challenge is to evaluate the vehicle’s ability to maintain lane stability
+and make appropriate speed adjustments while navigating long straight roads and transitioning into
+a circular roundabout. The algorithm must ensure smooth control and decision-making, simulating
+human-like behavior in handling both high-speed straight roads and slower, more controlled turns
+in the roundabout.
+
+Map 7: TOrXS
+This map consists of T-intersections, roundabouts, straight roads, and splits,
+forming a compact yet intricate structure. The layout challenges the algorithm to manage dynamic
+path selection and adapt to sudden directional changes within a moderately complex road network.
+
+Testing Objective: The primary objective is to evaluate the algorithm’s ability to manage split paths
+and handle sudden directional changes. The map focuses on the vehicle’s adaptability in navigating
+roundabouts and maintaining stability while making real-time path decisions at T-intersections.
+
+Map 8: CYrXT
+This map integrates circular roads, Y-intersections, ramps, T-intersections, and
+straight roads, creating a dynamic and highly interconnected network. The layout introduces varying
+road geometries and frequent directional changes, requiring seamless decision-making and adapt-
+ability.
+
+Testing Objective: The map is designed to test the algorithm’s ability to adapt to sudden directional
+shifts at Y-intersections and T-junctions, maintain stability on ramps, and execute precise maneuvers
+on circular roads. The emphasis is on smooth transitions between road types, effective navigation
+through interconnected pathways, and robust handling of diverse traffic scenarios.
+
+A.4.4
+MUJOCO ENVIRONMENTS
+
+Figure 5: Ant, Humanoid, Reacher and Half Cheetah.
+
+1. Ant: a 3D robot with a single central torso and four articulated legs is designed to navigate
+in the forward direction. The robot’s movement depends on coordinating the torque applied
+to the hinges that connect the legs to the torso and the segments within each leg.
+
+2. Humanoid: a 3D bipedal robot simulates human gait, with a torso, a pair of legs, and arms.
+Each leg and arm consists of two segments, representing the knees and elbows respectively;
+the legs are used for walking, while the arms assist with balance. The robot’s goal is to walk
+forward as quickly as possible without falling.
+
+3. Humanoid Standup: The environment starts with the humanoid laying on the ground, and
+then the goal of the environment is to make the humanoid stand up and then keep it standing
+by applying torques to the various hinges.
+
+4. Reacher: a two-jointed robot arm. The goal is to move the robot’s end effector close to a
+target that is spawned at a random position.
+
+5. Half Cheetah: a 2-dimensional robot consisting of 9 body parts and 8 joints connecting
+them (including two paws). The goal is to apply torque to the joints to make the cheetah
+run forward (right) as fast as possible, with a positive reward based on the distance moved
+forward and a negative reward for moving backward.
+
+6. Hopper: a two-dimensional one-legged figure consisting of four main body parts - the torso
+at the top, the thigh in the middle, the leg at the bottom, and a single foot on which the entire
+body rests. The goal is to make hops that move in the forward (right) direction by applying
+torque to the three hinges that connect the four body parts.
+
+7. Walker-2d: a two-dimensional bipedal robot consisting of seven main body parts - a single
+torso at the top (with the two legs splitting after the torso), two thighs in the middle below
+the torso, two legs below the thighs, and two feet attached to the legs on which the entire
+body rests. The goal is to walk in the forward (right) direction by applying torque to the six
+hinges connecting the seven body parts.
+
+8. Pusher: a multi-jointed robot arm that is very similar to a human arm. The goal is to move
+a target cylinder (called object) to a goal position using the robot’s end effector (called
+fingertip).
+
+9. Inverted Pendulum: The environment consists of a cart that can be moved linearly, with a
+pole attached to one end and having another end free. The cart can be pushed left or right,
+and the goal is to balance the pole on top of the cart by applying forces to the cart.
+
+10. Inverted Double Pendulum: The environment involves a cart that can be moved linearly,
+with one pole attached to it and a second pole attached to the other end of the first pole
+(leaving the second pole as the only one with a free end). The cart can be pushed left or
+right, and the goal is to balance the second pole on top of the first pole, which is in turn on
+top of the cart, by applying continuous forces to the cart.
+
+A.4.5
+ATARI ENVIRONMENTS
+
+Figure 6: Air Raid, Alien, Amidar, Asteroids, Breakout, Centipede, Fishing Derby, Zaxxon.
+
+1. Air Raid: You control a ship that can move sideways and protect two buildings (one on
+the right and one on the left side of the screen) from flying saucers that are trying to drop
+bombs on them.
+
+2. Alien: You are stuck in a maze-like space ship with three aliens. You goal is to destroy
+their eggs that are scattered all over the ship while simultaneously avoiding the aliens (they
+are trying to kill you).
+
+3. Admidar: You are trying to visit all places on a 2-dimensional grid while simultaneously
+avoiding your enemies. You can turn the tables at one point in the game: Your enemies turn
+into chickens and you can catch them.
+
+4. Asteroids: You control a spaceship in an asteroid field and must break up asteroids by
+shooting them. Once all asteroids are destroyed, you enter a new level and new asteroids
+will appear. You will occasionally be attacked by a flying saucer.
+
+5. Breakout: You move a paddle and hit the ball in a brick wall at the top of the screen. Your
+goal is to destroy the brick wall. You can try to break through the wall and let the ball
+wreak havoc on the other side, all on its own! You have five lives.
+
+6. Centipede: You are an elf and must use your magic wands to fend off spiders, fleas and
+centipedes. Your goal is to protect mushrooms in an enchanted forest.
+7. Fishing Derby: Your objective is to catch more sunfish than your opponent.
+
+8. Zaxxon: Your goal is to stop the evil robot Zaxxon and its armies from enslaving the galaxy
+by piloting your fighter and shooting enemies.

@@ -1,0 +1,2343 @@
+Exploring the Limitations of Mamba in COPY and CoT Reasoning
+
+Ruifeng Ren
+Zhicong Li
+Yong Liu*
+Gaoling School of Artificial Intelligence
+Renmin University of China
+Beijing, China
+{renruifeng920, zhicongli,
+
+Abstract
+
+arXiv:2410.03810v3 [cs.LG] 29 May 2025
+
+Transformers have become the backbone of
+modern Large Language Models (LLMs); how-
+ever, their inference overhead grows linearly
+with the sequence length, posing challenges
+for modeling long sequences. In light of this,
+Mamba has attracted attention for maintain-
+ing a constant inference size, with empiri-
+cal evidence demonstrating that it can match
+Transformer performance in sequence model-
+ing while significantly reducing computational
+costs. However, an open question remains: can
+Mamba always bring savings while achieving
+performance comparable to Transformers? In
+this paper, we focus on analyzing the expres-
+sive ability of Mamba to perform our defined
+COPY operation and Chain of Thought (CoT)
+reasoning. First, inspired by the connection
+between Mamba and linear attention, we show
+that constant-sized Mamba may struggle to per-
+form COPY operations while Transformers can
+handle them more easily. However, when the
+size of Mamba grows linearly with the input se-
+quence length, it can accurately perform COPY,
+but in this case, Mamba no longer provides
+overhead savings. Based on this observation,
+we further analyze Mamba’s ability to tackle
+CoT tasks, which can be described by the Dy-
+namic Programming (DP) problems. Our find-
+ings suggest that to solve arbitrary DP prob-
+lems, the total cost of Mamba is still compara-
+ble to standard Transformers. However, similar
+to efficient Transformers, when facing DP prob-
+lems with favorable properties such as locality,
+Mamba can provide savings in overhead. Our
+experiments on the copy and CoT tasks further
+demonstrate Mamba’s limitations compared to
+Transformers in learning these tasks.
+
+1
+Introduction
+
+Reccently, Transformer-based large language mod-
+els (LLMs) have become the mainstream of mod-
+ern neural network architectures due to their out-
+
+effectively?
+More recent results have revealed
+Mamba’s shortcomings in certain tasks, especially
+those involving model’s retrieval ability (Arora
+et al., 2023; Hendrycks et al., 2020; Jelassi et al.,
+2024). Specifically, Akyürek et al. (2024) study
+the in-context language learning capabilities of
+different models and find that Transformers out-
+performed other models, including Mamba, due
+to the specialized attention heads. Jelassi et al.
+(2024) also discover that Transformers are supe-
+rior to Mamba on tasks that require copying from
+the input context. Park et al. (2024) point out
+that Mamba struggles to retrieve vectors from the
+context of multi-query associative recall (MQAR)
+(Arora et al., 2023), while Transformers can easily
+handle it well. Furthermore, Waleffe et al. (2024)
+conduct experiments on larger models (up to 8B
+parameters) with a broader range of tasks, discov-
+ering that when it comes to in-context learning and
+recalling information from text, although Mambas
+can contain the same knowledge as Transformers,
+it will be more difficult for them to directly copy
+useful information from history.
+Although there has been some empirical explo-
+ration, the theoretical investigation concerning the
+above "free lunch" question still remains open to
+explore. In this paper, inspired by the comparison
+between Mamba and linear attention mechanism,
+we first focus on Mamba’s ability to perform our
+defined COPY operation, which is closely related
+to the ability to retrieve information from context.
+Our theoretical results suggest that constant-sized
+Mamba may struggle with the COPY operation
+due to its fixed inference cost that does not scale
+with sequence length, whereas Transformers han-
+dle it more easily. However, if Mamba’s model
+size scales linearly with the sequence length, it
+becomes capable of performing the COPY opera-
+tion. Further, following the framework established
+by Feng et al. (2024); Yang et al. (2024), we ex-
+plore Mamba’s capability to reason via Chain-of-
+Thought (CoT), which can be formulated as dy-
+namic programming (DP) problems. We find that
+to solve arbitrary DP problems, Mamba and Trans-
+formers seem to be on equal footing in terms of
+inference cost; however, Mamba may offer sav-
+ings when dealing with m-locality DP problems
+like efficient Transformers (Yang et al., 2024). Our
+results can be concluded as follows:
+
+Mamba’s ability to perform the COPY opera-
+tion, showing that constant-sized SSM mod-
+ules are less effective than attention in this
+task, unless the model size scales linearly with
+the sequence length (in Section 3);
+
+• When equipped with CoT, the total cost re-
+quired by Mamba to solve arbitrary DP prob-
+lems is comparable to that of standard and
+efficient Transformers. However, when the
+DP problems have locality properties, Mamba
+can bring savings in overhead compared to
+standard Transformers (in Section 4);
+
+• We conduct experiments on both the copy
+and CoT tasks, demonstrating Mamba’s limi-
+tations compared to Transformers in learning
+these tasks (in Section 5).
+
+2
+Preliminaries
+
+In this section, we introduce the Mamba structure
+that we focus on and its reformulated form firstly
+introduced by Han et al. (2024), which facilitates
+a better understanding of the connection between
+Mamba and linear attention.
+State Space Model: The state space model
+(SSM) is inspired by the continuous system that
+maps a scalar input x(t) ∈R to its output y(t) ∈R
+through a high-dimensional hidden state h ∈Rdh
+(Gu and Dao, 2023; Han et al., 2024; Zhu et al.,
+2024). Specifically, this system can be written as:
+
+h′(t) = Ah(t) + bx(t), y(t) = cT h(t) + dx(t),
+
+where A ∈Rdh×dh denotes the evolution parame-
+ters, b, c ∈Rdh are projection parameters and d is
+a scalar parameter. This continuous system can be
+discretized using zero-order hold (ZOH), resulting
+in a discrete version that can be used for neural
+networks. In this process, A, b will be transformed
+as A, b. The discrete version can be written as:
+
+hi = Ahi−1 + bxi,
+yi = cT hi + dxi,
+
+Figure 1: The illustration of the simplified Mamba layer we focus on. Left Part: A Mamba layer can be composed
+of a Mamba block with the residual connection; The Mamba block uses a gated MLP to control the output of the
+SSM module, where we call the branch with the SSM module as “the SSM branch" while the other as “the gated
+branch"; Right Part: The SSM module used in Mamba can be rewritten in a form similar to linear attention, where
+∆i, bi, and ci in SSM are all derived from the current xi, similar to vi, ki, and qi in linear attention respectively.
+
+where Zl
+1 = W l
+1Xl + bl
+1, Zl
+2 = W l
+2Xl + bl
+2 and
+σ(·) denotes SiLU activation function. A Mamba
+block combines the output of the SSM module1
+
+diagonal resulting in that Aihi−1 = ˜ai ⊙hi−1
+where ˜ai = exp(∆ia), a = diag(A) and ⊙
+denotes the element-wise product.
+In addition,
+bixi = ∆ibixi = bi(∆i ⊙xi). Thus, this transfor-
+mation ultimately results in:
+
+Here we call the branch with the SSM module
+as "the SSM branch" and the other as "the gated
+branch". To facilitate a clearer analysis, we restrict
+our attention to the core components of Mamba,
+namely the SSM module and the gated MLP, and
+leave out other architectural details, as illustrated
+in Figure 1.
+
+hi = ˜ai ⊙hi−1 + bi(∆i ⊙xi),
+
+yi = cT
+i hi + d ⊙xi.
+
+Furthermore, to extend the case of processing scalar
+inputs xi to vectors xi ∈Rd, Mamba performs the
+above operations on each dimension independently,
+which can be formalized as:
+
+3
+Can Mamba always Perform COPY
+Perfectly?
+
+In this section, we begin by interpreting the refor-
+mulated SSM module as in Section 2 as a special
+case of linear attention, and then explore Mamba’s
+ability to perform COPY operations during infer-
+ence, which is crucial to retrieving contextual in-
+formation during model’s reasoning.
+
+Hi = e
+Ai ⊙Hi−1 + bi(∆i ⊙xi)T ,
+
+yi = HT
+i ci + d ⊙xi,
+(1)
+
+where we have e
+Ai = [˜a(j)
+i ]d
+j=1 ∈Rdh×d , bi =
+Wbxi ∈Rdh, ci = Wcxi ∈Rdh and ∆i =
+Softplus(W 2
+∆W 1
+∆xi) ∈Rd. Thus, given the in-
+put X = [xi]N
+i=1 ∈Rd×N, we denote the output
+of the SSM module in Mamba as Y = SSM(X)
+where Y = [yi]N
+i=1 and yi follows Eq (1). This for-
+malization was introduced by Han et al. (2024) to
+build a bridge between Mamba and linear attention
+and here we follow this form.
+Mamba Layer: Given an input sequence X =
+[xi]N
+i=1 ∈Rd×N, it will be processed by stacked
+Mamba layers, each comprising a residual connec-
+tion and a Mamba block f (l) : Rd →Rd. The
+output of the l-th layer can be formulated as
+
+3.1
+Viewing Mamba as linear attention
+
+The attention mechanism is the key to the success
+of Transformers. Recent works has explored the
+relationship between Mamba and attention mecha-
+nisms particularly the linear attention (Han et al.,
+2024; Dao and Gu, 2024; Sieber et al., 2024). The
+linear causal attention can be formalized as:
+
+i
+X
+
+i
+X
+
+i
+X
+
+j=1
+vjkT
+j qi =
+
+j=1
+(qT
+i kj)vj =
+
+j=1
+aijvj,
+
+yi =
+
+(4)
+
+Xl+1 = Xl + f (l)(Xl),
+(2)
+
+f (l)(Xl) = W l
+3 · SSM(Zl
+1) ⊙σ(Zl
+2),
+(3)
+
+where qi, ki, vi are usually interpreted as query,
+key, value respectively and aij denotes the attention
+scores of the i-th token to the j-th one. In attention
+mechanisms in Transformers, there exists aij > 0
+for all j ≤i and Pj
+i=1 aij = 1, which can be
+implemented by Softmax function.
+On the other hand, given the input sequence
+[xi]N
+i=1, the output of the SSM module formulated
+as Eq (1) will have the following form when we set
+H0 and d to be zeros:
+
+Figure 2: An example for COPY operation and (L, δ)-
+matching set. We expect the output at position i to
+be the historical record (value) corresponding to “dog".
+The historical records belonging to the (L, δ)-matching
+set are labeled in blue, which are more relevant to the
+output oi based on the attention scores |cT
+i bj| ≥δ.
+
+i−1
+X
+
+
+Πj ⊙(∆j ⊙xj)bT
+j
+
+ci,
+
+yi = (∆i⊙xi)bT
+i ci+
+
+Definition 1 (COPY Operation). For a given SSM
+module and input sequence x1, x2, . . . , xN, we de-
+note vi = ∆i ⊙xi as historical records. Then the
+output of COPY operation is a sequence of vectors
+o1, o2, ..., oN with oi = vpos(i) where pos(i) is
+the position we want to copy.
+
+j=1
+
+(5)
+where Πj = e
+Ai ⊙e
+Ai−1 ⊙· · · ⊙e
+Aj+1. We notice
+that since in practice all elements of ∆are positive
+and A is set to be negative (Gu and Dao, 2023;
+Dao and Gu, 2024; Han et al., 2024), the elements
+of e
+Ai in Eq (1) will belong to the interval [0, 1]
+as ˜a = diag(exp(∆A)). To simplify our analysis,
+we replace the matrix e
+Ai with a forgetting coeffi-
+cient ai ∈[0, 1] (i.e., considering the case where
+all elements of e
+Ai are the same as ai (Dao and
+Gu, 2024)). In fact, the subsequent analysis can be
+easily extended to the non-simplified case. Then,
+Eq (5) can be rewritten as
+
+As stated earlier, for a given SSM module,
+(∆j ⊙xj), bj, ci corresponds to value, key and
+query respectively. Thus from the perspective of
+linear attention, the COPY operation for position
+i aims to retrieve the interested value located at
+pos(i). Intuitively, there exists some historical
+records vj that are more relevant to the current
+query ci than others, which can be described as:
+
+Definition 2 ((L, δ)-Matching Set). For a given
+SSM module and input sequence x1, x2, . . . , xN,
+the (L, δ)-matching set for xi is defined as
+Si(L, δ) = {j | |cT
+i bj| ≥δ, i −L < j ≤i}.
+
+i
+X
+
+j=1
+αj(cT
+i bj)(∆j ⊙xj),
+(6)
+
+yi =
+
+where αj = Πi
+k=j+1ak for j ≤i −1 and αi = 1.
+We call αj as the cumulative forgetting coefficient.
+In this form, we can observe that it bears similar-
+ities to linear attention without normalization in
+Eq (4), where (∆j ⊙xj), bj, ci corresponds to vj,
+kj and qi respectively and cT
+i bj acts like attention
+scores aij. Considering αj−1 ≤αj and αj ∈[0, 1]
+for all j ≤i, the main difference is that each term
+in Eq (6) is weighted by a coefficient αj to achieve
+the forgetting of inputs at longer distances while
+the attention mechanism in Transformers uses the
+constraints for attention scores imposed by Soft-
+max to make sure the scaling of outputs.
+
+The (L, δ)-local matching set describes the po-
+sitions of historical keys bj that is highly relevant
+to the current query ci within a local window of
+length L, that is, the "attention scores" |cT
+i bj| is
+lower-bounded by δ. An illustration for COPY
+operation and (L, δ)-matching set is shown in Fig-
+ure 2. We then make the following assumption:
+
+Assumption 1. For a given SSM module and some
+input sequence x1, x2, . . . , xN, the following con-
+ditions holds:
+
+• There is some L ∈N and δ ∈R such that
+for any i ∈[N], Si(L, δ) exists and pos(i) ∈
+Si(L, δ). In addition, for any j /∈Si(L, δ),
+|cT
+i bj| < δ.
+
+3.2
+Limitation of Mamba to Perform COPY
+
+• For any i ∈[N], P
+j∈Si(L,δ) αj|cT
+i bj| < 1.
+
+module still maintains O(N) cost when inference,
+allowing it sufficient capacity to store historical
+records and retrieve the desired one. In contrast,
+the SSM module with a constant size (thus O(1) in-
+ference cost) can easily have the interested records
+overwhelmed by related but irrelevant information,
+making COPY more difficult to achieve. This nat-
+urally leads to the question: can we make COPY
+easier by increasing the size of the SSM module?
+In the following, we show that when its size scales
+linearly with the sequence length N, it is always
+possible for the SSM module to perform COPY.
+
+Theorem 3 (Perform COPY operation with
+linear-scaling size). Given the input sequence
+x1, x2, . . . , xN ∈[−M, M]d, there exists a SSM
+module with size O(N) that can perform the COPY
+operation, that is, yi = oi for any i ∈[N].
+
+The proof can be found in Appendix A.3. The-
+orem 3 is based on a simple intuition: when the
+model size grows linearly with the length of in-
+put sequence, the model will have enough space
+to store these historical records and therefore can
+retrieve them. However, it should be noted that
+such a linear-size SSM module will have the same
+cost as attention module in Transformers when in-
+ference, that is, O(N) at each step. Thus from this
+perspective, Mamba does not offer savings when
+facing the COPY operation. Based on this observa-
+tion, we will elaborate in Section 4 that when faced
+with CoT reasoning tasks modeled by dynamic pro-
+gramming problems, Mamba incurs the same order
+of overhead as Transformers.
+
+4
+Mamba equipped with CoT to Solve DP
+
+
+|s(1)|, |s(2)|, . . . , |s(N)|
+T to describe the size of
+the problem, where |s(i)| denotes the length of the
+i-th sequence.
+• State Space: A DP problem can be decomposed
+into a series of sub-states to solve, forming a state
+space In whose size depends on the problem size
+n. Each state i ∈In represents an intermediate
+value dp(i) to compute, and i ≺j means that state
+i needs to be solved before state j. The function
+fI : In →In defines the next state if j is the next
+state to solve after state i.
+• Transition function:
+The intermediate DP
+values can be calculated by a transition function fT
+as dp(i) = fT (n, s, {(j, dp(j)) : j ≺i}) where
+s denotes the concatenation of all tokens from the
+input sequences2. This can be rewritten as dp(i) =
+fT
+
+n, {sj : j ∈Ii}, {dp(k) : k ∈Vdp(i)}
+
+
+formulation, we present the following result show-
+casing Mamba’s ability to solve DP problems when
+equipped with CoT:
+
+Theorem 4 (Solve DP problems with CoT). Con-
+sidering any DP problem and given input se-
+quences that satisfies Assumption 3, for any integer
+T ∈N, there exists several Mamba layers with
+size O(T), such that the answer generated by the
+Mamba layers will be correct when the length of
+the answer is no more than T.
+
+More details can be seen in Appendix A.6. The
+intuition behind Theorem 4 is that when the size of
+the Mamba layers scales linearly with T, the model
+gains sufficient capacity to retrieve useful interme-
+diate states from the reasoning chain for the next
+inference step, similar to the behavior described in
+Theorem 3. In this case, each CoT step in Mamba
+incurs an O(T) cost, resulting in a total inference
+cost of O(T 2). Similarly, as shown by Feng et al.
+(2024), a constant-sized Transformer can also solve
+any DP problem with CoT, but due to the per-step
+attention cost scaling linearly with T, the total in-
+ference cost remains O(T 2). While for efficient
+Transformers, Yang et al. (2024) reached similar
+conclusions. Thus, from this prespective, Mamba
+also does not offer additional savings: Due to the
+limitation of constant inference capacity, Mamba
+may need to increase its model size to achieve per-
+formance comparable to that of a constant-sized
+Transformer, which in turn leads to higher infer-
+ence cost.
+It seems disappointing that, like efficient Trans-
+formers, Mamba does not reduce overhead for
+general DP problems. However, we argue that
+when DP problems exhibit favorable local prop-
+erties(Yang et al., 2024), Mamba has the poten-
+tial to achieve efficiency. Assuming that the out-
+put of CoT can be written as o1, o2, . . . , oT , if
+oi = f({oj : i −m ≤j < i}) for any i ∈[T],
+that is, oi only depends on at most m preceding
+intermediate results, then we call the DP problem
+is m-locality DP problem. As illustrated in Ap-
+pendix A.5, the common arithmetic task can be
+viewed as such m-locality DP problem. Then we
+present the following result:
+
+where Ii and Vdp(i) are the sets of input tokens
+indices and DP values to solve state i respectively.
+• Aggregation function: To produce the final an-
+swer, the aggregation function collects the required
+intermediate DP values and calculate the final result
+as A = fA({dp(i) : i ∈An}) where A denotes
+answer and An is the set of DP values needed in
+the aggregation according to the problem size n.
+We consider how Mamba layers, as defined in
+Eq. (2), incrementally generate solutions to DP
+problems using CoT. The generated sequence fol-
+lows the format:
+
+s(1) | s(2) | . . . | s(N) | (i1, dp(i1)) (i2, dp(i2))
+
+(i3, dp(i3)) . . .
+
+i|In|, dp(i|In|)
+
+| A
+
+where the input sequence is separated using the
+symbol | as a delimiter. An classic example of DP
+problems is the Longest Increasing Subsequence
+(LIS) problem, whose goal is to find the length
+of the longest increasing subsequence of a given
+integer sequence. Following the above form, an
+example of the CoT output sequence can be
+
+13 32 12 39 84
+|
+{z
+}
+input sequence s(1)
+|
+1 2 1 3 4
+|
+{z
+}
+DP values
+|
+4
+|{z}
+final answer A
+,
+
+where there is only one input sequence s(1) for
+this problem. More examples for DP problems can
+be seen in Appendix A.4. The reasoning process
+of LLMs in real scenarios can generally be mod-
+eled in the form described above. Based on this
+
+Figure 3: Left: Accuracy during training of models
+with different sizes on the copy task. Right: The perfor-
+mance of Mamba when the length of the input sequence
+to be copied is changed.
+
+Figure 4: Accuracy during training when the task length
+L = 30/70 and d = 256 (TF denotes Transformer).
+
+length of the answer is no more than T.
+
+The proof can be seen in Appendix A.7. The-
+orem 5 shows that when handling m-locality DP
+problem with CoT, the needed size of Mamba de-
+pends on the problem’s locality. The cost for each
+step becomes a constant O(m) and the total cost
+becomes O(mT) rather than O(T 2) leading to sav-
+ings in cost when T is much larger than m.
+
+Figure 5: Accuracy of Mamba and Transformer under
+different task lengths and model sizes.
+
+5
+Experimental Results
+
+even worse under the CoT setting than in the direct
+setting. This is because Mamba’s constant-sized in-
+ference capacity limits its ability to handle long rea-
+soning chains, whereas Transformers—with over-
+head that grows with sequence length—are better
+equipped to process such information.
+Furthermore, in Figure 5, we present results of
+Mamba and Transformer under different CoT set-
+tings. It can be seen that when the two models have
+comparable sizes, Mamba consistently underper-
+forms Transformer, which supports our analysis in
+Section 4: while a constant-sized Transformer can
+effectively solve DP problems with CoT, Mamba
+with comparable size may struggle to do so unless
+given greater capacity. These findings indicate that
+Mamba can not always get a free lunch: the infer-
+ence cost that does not scale with sequence length
+may limit Mamba’s ability to solve certain tasks.
+
+6
+Related work
+
+required to solve DP.
+
+Rewon Child,
+Scott Gray,
+Alec Radford,
+and
+Ilya
+Sutskever.
+2019.
+Generating
+long
+se-
+quences with sparse transformers. arXiv preprint
+arXiv:1904.10509.
+
+7
+Limitations
+
+In this paper, inspired by the similarity between
+the SSM module in Mamba and linear attention,
+we explore Mamba’s ability to perform the COPY
+operation. Furthermore, we analyze Mamba’s capa-
+bility in handling CoT tasks, which are modeled as
+DP problems. Our findings contribute to a deeper
+understanding of Mamba. However, we would like
+to illustrate that while Mamba may slightly under-
+perform Transformers in certain tasks, it offers ad-
+vantages in others like sparse parity learning (Park
+et al., 2024) and can achieve comparable perfor-
+mance with lower costs (Gu and Dao, 2023). The
+theoretical mechanisms behind these advantages re-
+main to be further explored. Additionally, as shown
+in Park et al. (2024); Waleffe et al. (2024); Wen
+et al. (2024), exploring hybrid architectures that
+combine the strengths of Mamba and Transformers
+also merits further investigation. We leave these
+aspects for future work.
+
+Krzysztof Choromanski, Valerii Likhosherstov, David
+Dohan, Xingyou Song, Andreea Gane, Tamas Sar-
+los, Peter Hawkins, Jared Davis, Afroz Mohiud-
+din, Lukasz Kaiser, and 1 others. 2020.
+Re-
+thinking attention with performers. arXiv preprint
+arXiv:2009.14794.
+
+Tri Dao and Albert Gu. 2024.
+Transformers are
+ssms: Generalized models and efficient algorithms
+through structured state space duality. arXiv preprint
+arXiv:2405.21060.
+
+Alexey
+Dosovitskiy,
+Lucas
+Beyer,
+Alexander
+Kolesnikov,
+Dirk Weissenborn,
+Xiaohua Zhai,
+Thomas Unterthiner, Mostafa Dehghani, Matthias
+Minderer, Georg Heigold, Sylvain Gelly, and 1
+others. 2020.
+An image is worth 16x16 words:
+Transformers for image recognition at scale. arXiv
+preprint arXiv:2010.11929.
+
+Guhao Feng, Bohang Zhang, Yuntian Gu, Haotian Ye,
+Di He, and Liwei Wang. 2024. Towards revealing the
+mystery behind chain of thought: a theoretical per-
+spective. Advances in Neural Information Processing
+Systems, 36.
+
+References
+
+Albert Gu and Tri Dao. 2023. Mamba: Linear-time
+sequence modeling with selective state spaces. arXiv
+preprint arXiv:2312.00752.
+
+Ekin Akyürek, Bailin Wang, Yoon Kim, and Jacob An-
+dreas. 2024. In-context language learning: Architec-
+tures and algorithms. In Proceedings of the 41st Inter-
+national Conference on Machine Learning, volume
+235 of Proceedings of Machine Learning Research,
+pages 787–812. PMLR.
+
+Albert Gu, Karan Goel, Ankit Gupta, and Christopher
+Ré. 2022. On the parameterization and initialization
+of diagonal state space models. Advances in Neural
+Information Processing Systems, 35:35971–35983.
+
+Alex Andonian, Quentin Anthony, Stella Biderman, Sid
+Black, Preetham Gali, Leo Gao, Eric Hallahan, Josh
+Levy-Kramer, Connor Leahy, Lucas Nestler, Kip
+Parker, Michael Pieler, Jason Phang, Shivanshu Puro-
+hit, Hailey Schoelkopf, Dashiell Stander, Tri Songz,
+Curt Tigges, Benjamin Thérien, and 2 others. 2023.
+GPT-NeoX: Large Scale Autoregressive Language
+Modeling in PyTorch.
+
+Albert Gu, Karan Goel, and Christopher Ré. 2021. Effi-
+ciently modeling long sequences with structured state
+spaces. arXiv preprint arXiv:2111.00396.
+
+Ankit Gupta, Albert Gu, and Jonathan Berant. 2022. Di-
+agonal state spaces are as effective as structured state
+spaces. Advances in Neural Information Processing
+Systems, 35:22982–22994.
+
+Simran Arora, Sabri Eyuboglu, Aman Timalsina, Isys
+Johnson, Michael Poli, James Zou, Atri Rudra, and
+Christopher Ré. 2023. Zoology: Measuring and im-
+proving recall in efficient language models. arXiv
+preprint arXiv:2312.04927.
+
+Dongchen Han, Ziyi Wang, Zhuofan Xia, Yizeng Han,
+Yifan Pu, Chunjiang Ge, Jun Song, Shiji Song,
+Bo Zheng, and Gao Huang. 2024. Demystify mamba
+in vision: A linear attention perspective.
+arXiv
+preprint arXiv:2405.16605.
+
+Iz Beltagy, Matthew E Peters, and Arman Cohan. 2020.
+Longformer: The long-document transformer. arXiv
+preprint arXiv:2004.05150.
+
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+2020. Measuring massive multitask language under-
+standing. arXiv preprint arXiv:2009.03300.
+
+Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pap-
+pas, and François Fleuret. 2020. Transformers are
+rnns: Fast autoregressive transformers with linear
+attention. In International conference on machine
+learning, pages 5156–5165. PMLR.
+
+Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma,
+Yuqing Xia, Jilong Xue, Jianyong Wang, and Furu
+Wei. 2023. Retentive network: A successor to trans-
+former for large language models. arXiv preprint
+arXiv:2307.08621.
+
+Yi Tay, Mostafa Dehghani, Dara Bahri, and Donald Met-
+zler. 2023. Efficient transformers: A survey. ACM
+Comput. Surv., 55(6):109:1–109:28.
+
+Jacob Devlin Ming-Wei Chang Kenton and Lee Kristina
+Toutanova. 2019. Bert: Pre-training of deep bidirec-
+tional transformers for language understanding. In
+Proceedings of naacL-HLT, volume 1, page 2.
+
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing
+systems, 30.
+
+Zhiyuan Li, Hong Liu, Denny Zhou, and Tengyu Ma.
+2024. Chain of thought empowers transformers to
+solve inherently serial problems.
+arXiv preprint
+arXiv:2402.12875.
+
+Roger Waleffe, Wonmin Byeon, Duncan Riach, Bran-
+don Norick, Vijay Korthikanti, Tri Dao, Albert
+Gu, Ali Hatamizadeh, Sudhakar Singh, Deepak
+Narayanan, and 1 others. 2024. An empirical study
+of mamba-based language models. arXiv preprint
+arXiv:2406.07887.
+
+I Loshchilov. 2017. Decoupled weight decay regulariza-
+tion. arXiv preprint arXiv:1711.05101.
+
+William Merrill, Jackson Petty, and Ashish Sabharwal.
+2024. The illusion of state in state-space models.
+arXiv preprint arXiv:2404.08819.
+
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+and 1 others. 2022. Chain-of-thought prompting elic-
+its reasoning in large language models. Advances
+in neural information processing systems, 35:24824–
+24837.
+
+William Merrill and Ashish Sabharwal. 2023a. The
+expresssive power of transformers with chain of
+thought. arXiv preprint arXiv:2310.07923.
+
+William Merrill and Ashish Sabharwal. 2023b. The
+parallelism tradeoff: Limitations of log-precision
+transformers. Transactions of the Association for
+Computational Linguistics, 11:531–545.
+
+Kaiyue Wen, Xingyu Dang, and Kaifeng Lyu. 2024.
+Rnns are not transformers (yet):
+The key bot-
+tleneck on in-context retrieval.
+arXiv preprint
+arXiv:2402.18510.
+
+Erxue Min, Runfa Chen, Yatao Bian, Tingyang Xu,
+Kangfei Zhao, Wenbing Huang, Peilin Zhao, Jun-
+zhou Huang, Sophia Ananiadou, and Yu Rong. 2022.
+Transformer for graphs: An overview from architec-
+ture perspective. arXiv preprint arXiv:2202.08455.
+
+Rui Xu, Shu Yang, Yihui Wang, Bo Du, and Hao
+Chen. 2024.
+A survey on vision mamba: Mod-
+els, applications and challenges.
+arXiv preprint
+arXiv:2404.18861.
+
+Kai Yang, Jan Ackermann, Zhenyu He, Guhao Feng,
+Bohang Zhang, Yunzhen Feng, Qiwei Ye, Di He,
+and Liwei Wang. 2024.
+Do efficient transform-
+ers really save computation?
+arXiv preprint
+arXiv:2402.13934.
+
+Jongho Park, Jaeseung Park, Zheyang Xiong, Nayoung
+Lee, Jaewoong Cho, Samet Oymak, Kangwook Lee,
+and Dimitris Papailiopoulos. 2024. Can mamba learn
+how to learn? A comparative study on in-context
+learning tasks. In Proceedings of the 41st Interna-
+tional Conference on Machine Learning, volume 235
+of Proceedings of Machine Learning Research, pages
+39793–39812. PMLR.
+
+Songlin Yang, Bailin Wang, Yikang Shen, Rameswar
+Panda, and Yoon Kim. 2023. Gated linear attention
+transformers with hardware-efficient training. arXiv
+preprint arXiv:2312.06635.
+
+Bo Peng, Eric Alcaide, Quentin Anthony, Alon Albalak,
+Samuel Arcadinho, Stella Biderman, Huanqi Cao,
+Xin Cheng, Michael Chung, Matteo Grella, and 1
+others. 2023. Rwkv: Reinventing rnns for the trans-
+former era. arXiv preprint arXiv:2305.13048.
+
+Lianghui Zhu, Bencheng Liao, Qian Zhang, Xinlong
+Wang, Wenyu Liu, and Xinggang Wang. 2024. Vi-
+sion mamba: Efficient visual representation learning
+with bidirectional state space model. arXiv preprint
+arXiv:2401.09417.
+
+Jerome Sieber, Carmen Amo Alonso, Alexandre Di-
+dier, Melanie N Zeilinger, and Antonio Orvieto. 2024.
+Understanding the differences in foundation models:
+Attention, state space models, and recurrent neural
+networks. arXiv preprint arXiv:2405.15731.
+
+A
+Appendix
+
+A.1
+Proof of Theorem 1
+
+Theorem 6 (Approximate COPY operation with constant-size SSM module). Given a SSM module with
+constant size and input sequence x1, x2, . . . , xN ∈[−M, M]d such that Assumption 1 holds, then for any
+ϵ > 0, the SSM module can approximate the COPY operation at some position i, that is, ∥yi −oi∥∞≤ϵ
+if there is cT
+i bpos(i) ≥c(
+1
+amin )L−1 + d where amin = minpos(i)<j≤i aj and c, d are constants related to ϵ,
+δ.
+
+Proof. We firstly show that given the i-th input xi, a SSM module can retrieve the most relevant historical
+record vpos(i) from the hidden state and perform the defined COPY operation under the condition
+illustrated in our theorem. To achieve this, recalling that vj = ∆j ⊙xj in Eq (6) and denoting
+∥∆∥∞= maxi∈[N] ∥∆i∥∞, we have that
+
+∞
+
+∞
+
+i
+X
+
+i
+X
+
+j=1
+αj(cT
+i bj)vj −vpos(i)
+
+j=1
+αj(∆j ⊙xj)bT
+j ci −vpos(i)
+
+yi −vpos(i)
+
+
+∞=
+
+=
+
+(7)
+
+∞
+
+X
+
+j̸=pos(i)
+αj(cT
+i bj)vj + αpos(i)(cT
+i bpos(i))vpos(i) −vpos(i)
+
+=
+
+(8)
+
+∞
+
+X
+
+j̸=pos(i)
+αj(cT
+i bj)vj +
+
+αpos(i)(cT
+i bpos(i)) −1
+
+vpos(i)
+
+=
+
+(9)
+
+
+
+
+
+X
+
+j̸=pos(i)
+αj|cT
+i bj| + 1 −αpos(i)cT
+i bpos(i)
+
+≤M∥∆∥∞
+
+,
+(10)
+
+where in (10) we use the fact that ∥xi∥∞≤M and αpos(i)|cT
+i bpos(i)| ≤1 (from the second condition in
+Assumption 1). Thus, to prove
+
+
+yi −vpos(i)
+
+
+∞≤ϵ, we can show that
+
+cT
+i bpos(i) ≥
+
+1 −
+ϵ
+M∥∆∥∞
+
+
+1
+αpos(i)
++
+X
+
+αj
+αpos(i)
+
+cT
+i bj
+.
+(11)
+
+j̸=pos(i)
+
+Recalling that αj = Qi
+k=j+1 ak, we have
+
+Qpos(i)
+k=j+1 ak = apos(i)apos(i)−1 . . . aj+1,
+when j < pos(i)
+
+
+
+
+
+αj
+αpos(i)
+=
+
+Qj
+k=pos(i)+1
+1
+ak =
+1
+ajaj−1...apos(i)+1 ,
+when j > pos(i).
+(12)
+
+
+
+
+Then we can consider the second term on the right side of Inequality (11) as
+
+αj
+αpos(i)
+
+αj
+αpos(i)
+
+αj
+αpos(i)
+
+cT
+i bj
+=
+X
+
+cT
+i bj
++
+X
+
+X
+
+cT
+i bj
+
+(13)
+
+j /∈Si
+
+j∈Si,j̸=pos(i)
+
+j̸=pos(i)
+
+For the first term on the right side, we have
+
+
+
+
+
+αj
+αpos(i)
+
+αj
+αpos(i)
++
+X
+
+αj
+αpos(i)
+
+cT
+i bj
+≤δ
+
+X
+
+
+X
+
+
+(14)
+
+j /∈Si,j>pos(i)
+
+j /∈Si
+
+j /∈Si,j<pos(i)
+
+
+
+
+
+pos(i)−1
+X
+
+i
+X
+
+αj
+αpos(i)
+
+αj
+αpos(i)
++
+
+≤δ
+
+
+(15)
+
+
+
+j=1
+
+j=pos(i)+1
+
+1
+
+
+
+k
+
+
+i−pos(i)
+X
+
+pos(i)−1
+X
+
+k=1
+(amax)k +
+
+≤δ
+
+
+(16)
+
+
+
+amin
+
+k=1
+
+i−pos(i)
+−1
+
+
+
+
+
+
+1
+amin
+
+
+amax(1 −apos(i)−1
+max
+)
+1 −amax
++
+
+≤δ
+
+
+
+(17)
+
+1 −amin
+
+where amax = max1≤j<pos(i) aj and amin = minpos(i)<j≤i aj. In (14) we use the assumption that
+cT
+i bj
+leδ for j /∈Si; in (15) we use
+αj
+αpos(i) > 0 for all j ≤i; in (16), we use the fact that
+αj
+αpos(i) ≤
+
+j−pos(i)
+for j > pos(i); in (17), we use the formula
+for the sum of a geometric series.
+
+(amax)pos(i)−j for j < pos(i) and
+αj
+αpos(i) ≤
+
+1
+amin
+
+Furthermore, considering that the vector vpos(i) to be copied must exist in the L-local matching set Si
+so there is i −L + 1 ≤pos(i) ≤i, we have the following
+
+L−1
+−1
+
+
+
+
+
+
+1
+amin
+
+
+amax(1 −apos(i)−1
+max
+)
+1 −amax
++
+
+αj
+αpos(i)
+
+cT
+i bj
+≤δ
+
+X
+
+
+
+(18)
+
+1 −amin
+
+j /∈Si
+
+L−1
+
+
+
+
+
+
+1
+amin
+
+
+
+amax
+1 −amax
++
+
+≤δ
+
+
+.
+(19)
+
+1 −amin
+
+In (18), we use the fact that amax ∈(0, 1) while
+1
+amin > 1; in (19) we just ignore the term apos(i)−1
+max
+for
+simplicity (in fact, we can find that when i is sufficiently large, the effect of this term can be neglected).
+
+Meanwhile, with Assumption 1, we can consider the second term on the right side of Inequality (13) as
+
+αj
+αpos(i)
+
+cT
+i bj
+≤
+1
+αpos(i)
+−cT
+i bpos(i).
+(20)
+
+X
+
+j∈Si,j̸=pos(i)
+
+Thus, considering (11), (19) and (20), to show ∥yi −oi∥∞≤ϵ, the following condition should be satisfied
+
+L−1
+
+
+
+
+
+
+1
+amin
+
+cT
+i bpos(i) ≥
+
+1 −
+ϵ
+M∥∆∥∞
+
+
+1
+αpos(i)
++ δ
+
+
+
+amax
+1 −amax
++
+
+
+
+(21)
+
+1 −amin
+
++
+1
+αpos(i)
+−cT
+i bpos(i).
+(22)
+
+After reformulating, there exists
+
+L−1
+
+
+
+
+
+
+1
+amin
+
+cT
+i bpos(i) ≥
+
+1 −
+ϵ
+2M∥∆∥∞
+
+
+1
+αpos(i)
++ δ
+
+
+
+amax
+1 −amax
++
+
+
+
+(23)
+
+1 −amin
+
+2
+
+1
+
+L−1
++
+
+1 −
+ϵ
+2M∥∆∥∞
+
+
+α−1
+pos(i) +
+δamax
+2(1 −amax)
+(24)
+
+=
+δ
+2(1 −amin)
+
+amin
+
+=c
+1
+
+L−1
++ d,
+(25)
+
+amin
+
+where we let c =
+δ
+2(1−amin) and use d to denote the remaining terms. Thus, we complete our proof.
+
+A.2
+Proof of Theorem 2
+
+To provide the theorem, we first give the definitions and assumptions for the attention module in Trans-
+formers, which are really similar to those for the SSM module from the perspective of linear attention. For
+some input sequence x1, x2, . . . , xN, the output of the attention module we consider can be formulated
+as:
+
+eqT
+i kj
+P
+t≤i eqT
+i kt vj, i = 1, 2, . . . , N
+
+j≤i
+ai,jvj =
+X
+
+yi =
+X
+
+j≤i
+
+where ai,j the attention scores calculated by the Softmax(·) function and qi = Wqxi, ki = Wkxi,
+vi = Wvxi are the query, key and value vectors respectively. Then, we give the definition of COPY
+Operation for attention module.
+
+Definition 3 (COPY Operation for the attention module). For a given attention module and input sequence
+x1, x2, . . . , xN, the output of COPY operation is a sequence of vectors o1, o2, ..., oN with oi = vpos(i)
+where pos(i) ∈[N] is the position we want to copy.
+
+In fact, this definition is very similar to the COPY for the SSM module, except that the vector being
+copied is changed from the historical records vi = ∆i ⊙xi in the SSM module to the value vectors
+in the attention module directly. From the perspective of linear attention, the former is precisely the
+value vectors in attention, so the two definitions are closely related: Similarly, we define the definition of
+L, δ)-Matching Set for the attention module:
+
+Definition 4 ((L, δ)-Matching Set for the attention module). For a given attention module and input
+sequence x1, x2, . . . , xN, the (L, δ)-matching set for xi is defined as Si(L, δ) = {j | |qT
+i kj| ≥δ, i−L <
+j ≤i}.
+
+Next, we make the following assumption:
+
+Assumption 2. For a given attention module and input sequence x1, x2, . . . , xN, there exist some L ∈N
+and δ ∈R such that for any i ∈[N], Si(L, δ) exists and pos(i) ∈Si(L, δ). In addition, for any
+j /∈Si(L, δ), |qT
+i kj| < δ.
+
+Note that, since the attention scores in Transformers are naturally normalized by Softmax function
+such that P j ∈Si ≤1, we ignore the second condition as in Assumption 1 here, which would impose
+constraints on the stability of the output. Then, we give our theorem as following
+
+Proof. For some given i-th input xi, we have that
+
+∞
+
+∞
+
+X
+
+X
+
+yi −vpos(i)
+
+
+∞=
+
+j≤i,j̸=pos(i)
+ai,jvi −
+
+1 −ai,pos(i)
+
+vpos(i))
+
+j≤i
+ai,jvi −vpos(i)
+
+=
+
+(26)
+
+
+
+
+
+1 −ai,pos(i) +
+X
+
+M ∥WV ∥∞= 2
+
+1 −ai,pos(i)
+
+M ∥WV ∥∞.
+(27)
+
+≤
+
+j≤i
+ai,j
+
+To achieve ∥yi −oi∥≤ϵ, we can show that
+
+ai,pos(i) =
+eqT
+i kpos(i)
+P
+j̸=pos(i) eqT
+i kj + eqT
+i kpos(i) ≥1 −
+ϵ
+2M ∥WV ∥∞
+.
+(28)
+
+Here, we omit the condition j ≤i for simplicity of notation and this is equivalent to show that
+
+j̸=pos(i)
+eqT
+i kj−qT
+i kpos(i) + 1 ≤
+2M ∥WV ∥∞
+2M ∥WV ∥∞−ϵ.
+(29)
+
+X
+
+Further, we have
+
+
+
+
+
+
+
+
+
+2M ∥WV ∥∞−ϵ
+
+j∈Si,j̸=pos(i)
+eqT
+i kj +
+X
+
+j /∈Si
+eqT
+i kj
+
+
+X
+
+qT
+i kpos(i) ≥log
+
+,
+(30)
+
+
+
+ϵ
+
+where we use Si to denote Si(L, δ) for simplicity of notation. Then we just need to show that qT
+i kpos(i) is
+larger than the upper bound of the right side, that is,
+
+qT
+i kpos(i) ≥log
+2M ∥WV ∥∞
+
+
+Leρ + (i −|Si|)eδ
+,
+(31)
+
+ϵ
+
+where ρ = maxj∈Si,j̸=pos(i) qT
+i kj. Here we use the fact that there are at most L terms in the matching set
+Si and the assumption that qT
+i kj ≤δ for j /∈Si. By denoting ˜L = max{L, Si}, we can show that,
+
+qT
+i kpos(i) ≥log ˜L + log 2
+
+ϵ (eδ + eρ)M ∥WV ∥∞.
+(32)
+
+Thus we complete our proof.
+
+A.3
+Proof of Theorem 3
+
+Theorem 8 (Perform COPY operation with linear-scaling size). Given sequence x1, x2, . . . , xN ∈
+[−M, M]d, there exists a SSM module with size O(N) that can perform the defined COPY operation, that
+is, yi = oi for any i ∈[N].
+
+Proof. Recalling that the output of SSM module in Mamba can be rewritten in the form of Eq (6), where
+(∆j⊙xj), bj, ci corresponds to vj, kj and qi respectively. Our intuition is to store all the information of vi
+from our history in the hidden state space of size O(N) (similar to the KV cache in attention format), and
+then use the appropriate ci as the query for retrieval. We can set A = O so that Eq (6) further transforms
+in a way that does not forget historical information, that is, yi = Pi
+j=1(∆j ⊙xj)bT
+j ci = Pi
+j=1 vjbT
+j ci.
+Let ˜xi = [xi, ei, epos(i)] ∈Rd+2N where ei ∈RN denote the one-hot vector where only the i-th value
+is 1. We use ei, epos(i) to denote the current position and the position of historical token we want to
+copy respectively. Then, we construct Wb = [ON×d, IN, ON] ∈RN×(d+2N) so that ˜bi = Wb ˜xi = ei.
+Then, at the i-th step, the information newly recorded in the state space will be vi˜bT
+i = vieT
+i ∈Rd×N
+
+[v1, v2, . . . , vN]. Then, at the output process, we can construct Wc = [ON×d, ON, IN] ∈RN×(d+2N)
+
+so that ˜ci = Wc ˜xi = epos(i). Thus, the output will be yi = Hi˜ci = Pi
+j=1 vjbT
+j epos(i) = vpos(i).
+At the same time, we note that in the above process, the vectors ei, epos(i) to denote position in ˜xi are
+sparse. In fact, we only need to use two indices pi = i and ppos(i) = pos(i) to store them thus the total
+size to store all indices is O(N). Additionally, Wb, Wc are also sparse so we require at most O(N) space
+to store these two matrices. Therefore, the model size we need is O(Nd) that scales linearly with the
+length N. Thus, we complete our proof.
+
+Remark 1. It should be noted that we can also degenerate a linear-size Mamba block into the afore-
+mentioned SSM module by deactivating the gating branch to achieve the COPY operation. For example,
+we can set W1 = W3 = I, b1 = 0, W2 = O and b2 = k1 where the constant k satisfies σ(k) = 1.
+In addition, we note that xi ∈[−M, M]d and pi, ppos(i) ∈[1, N] thus the largest value involved in the
+aforementioned process will not exceed NM2 (the largest value in hidden states), which is upper bounded
+by O(poly(M, N)). All parameters being upper bounded by O(poly(M, N)) means that the problem
+can also be solved by the same Mamba block with log(N) precision, which has been also adopted in
+previous works (Merrill and Sabharwal, 2023b; Feng et al., 2024; Wen et al., 2024).
+
+A.4
+Examples for DP Problems
+
+We consider the problem of finding the minimum edit distance, where we aim to transform string s(1) into
+string s(2) with lengths n1 = |s(1)| and n2 = |s(2)|, respectively. The costs for insertion, deletion, and
+substitution are a, b, and c, respectively. Obviously, the input sequences for this problem are {s(1), s(2)}
+and the scale of the problem is n = [n1, n2]T . Further, the state space is In = {(i, j)|1 ≤i ≤n1, 1 ≤
+j ≤n2}. Let dp(j, k) represent the cost of transforming the first j characters of s1 into the first k
+characters of s2. The transition function can then be expressed as:
+
+
+
+
+
+
+
+
+ak
+if j = 0
+bj
+if k = 0
+min
+
+dp(j, k −1) + a, dp(j −1, k) + b,
+
+dp(j, k) =
+
+
+
+
+
+
+
+dp(j −1, k −1) + cI[s(1)
+j
+̸= s(2)
+k ]
+
+otherwise
+
+Finally, the aggregation function selects dp(n1, n2) as the final answer. In the example above, the size
+of the state space, all intermediate values, and the lengths of the input strings will all be upper-bounded
+by poly(n1, n2). Moreover, the operations required by the involved functions can be approximated with
+polynomial efficiency by a constant-size MLP, as shown in Lemmas in Appendix A.6. Therefore, such
+DP problems satisfy Assumption 3. It can be referenced from Section 4.1 of Feng et al. (2024) for more
+detailed examples for DP problems.
+
+A.5
+Explanation of m-locality:
+
+The most common arithmetic tasks satisfy the m-locality assumption, which are also frequently encoun-
+tered in current LLM applications. Consider an arithmetic expression of length n; the CoT reasoning
+required to compute it step by step may have a total output length of T = O(n2). However, the window
+size m required for computing each intermediate state does not exceed n. For example, consider the
+expression 7 ∗(7 + 5 + 10) =. The input length is n = 10, and its complete CoT output would be:
+7 ∗(7 + 5 + 10) = 7 ∗(1 + 10) = 7 ∗0 = 0. As we can see, aside from the input part, the generation of
+each subsequent token requires a context window no larger than the input length n. Therefore, this task
+satisfies the m-locality.
+Another example that satisfies the m-locality is the Edit Distance problem. When computing the 2D
+DP matrix, the number of entries (or tokens) required for each step does not exceed m ≤max{n1, n2}.
+For instance: x g v | x g o <p> 0 2 4 , 2 0 2 , 4 2 3 , <p> 3 where <p> denotes the separate token to enclose
+the DP matrix arranged row by row. If we copy the input sequence when computing each row of the DP
+matrix, such as:
+x g v | x g o <p> x g v | x g o 0 2 4 , x g v | x g o <p>
+
+then the entire process becomes strictly m-locality, where m ≤2n + 2 with n = |s1| + |s2| representing
+the input size. Meanwhile, the total CoT output length is roughly O(n2).
+However, for the LIS problem, computing each state might require revisiting the entire input string, and
+the corresponding CoT output length itself is T = O(n). This does not satisfy m-locality because m is at
+least n and cannot be significantly smaller than the output length T in terms of order.
+
+A.6
+Proof of Theorem 3
+
+In this part, we first present the necessary lemmas before completing the proof of Theorem 4. In fact,
+these lemmas are very similar to those presented by Feng et al. (2024) in Appendix C.1 regarding MLP.
+The main difference is that we need to degenerate Mamba blocks to MLP and consider different activation
+functions (SiLU for Mamba instead of GELU). Thus, we only provide detailed proofs of these relevant
+lemmas when necessary.
+
+Lemma 1 (Perform multiplication). For any ϵ > 0 and M > 0, there exists Mamba block parameters with
+l∞norm upper bounded by O(poly(M, 1/ϵ)) such that |f(a, b) −ab| ≤ϵ holds for all a, b ∈[−M, M].
+
+Proof. We first show that a two-layer MLP using the SiLU activation function can achieve the above
+operation. We use the same construction as in Lemma C.1. in Feng et al. (2024), except that we use the
+SiLU activation function instead of GELU. Specifically, let g : R2 →R be a two-layer MLP with SiLU
+activation, and the hidden dimension is 4, then we can construct f as
+
+g(a, b) = λ2
+
+
+σ
+a + b
+
+
++ σ
+−a −b
+
+
+−σ
+a −b
+
+
+−σ
+−a + b
+
+
+,
+(33)
+
+2
+
+λ
+
+λ
+
+λ
+
+λ
+
+where λ is a scaling factor. In addition, considering σ(x) =
+x
+1+e−x , σ′(x) = 1+(x+1)e−x
+
+(1+e−x)2 , σ′′(x) =
+
+e−x(2+2e−x+xe−x−x)
+
+(1+e−x)3
+, we have σ(0) = 0, σ′(0) = 1
+
+2, σ′′(0) = 1
+
+2. Then, using the Taylor expansion with
+the Lagrange remainder, we can obtain that
+
+σ
+a + b
+
+
++ σ
+−a −b
+
+
+−σ
+a −b
+
+
+−σ
+−a + b
+
+
+
+λ
+
+λ
+
+λ
+
+λ
+
+a + b
+
+2!
+
+2
++
+−a −b
+
+2
+−
+a −b
+
+2
+−
+−a + b
+
+= 1
+
+2!
+1
+2
+
++ R2 = 2ab
+
+λ2 + R2,
+
+λ
+
+λ
+
+λ
+
+λ
+
+where R2 is the second-order remainder term. Assuming that λ > 2M, we have |±a±b
+
+λ
+| < 2M
+
+λ < 1 and
+then
+
+2
+max
+x∈[−1,1] |σ′′′(x)|
+
+2M
+
+|R2| ≤4
+
+3!
+
+λ
+
+(x −3)e−x −4xe−2 + (x + 3)e−3x
+
+2
+max
+x∈[−1,1]
+
+2M
+
+= 4
+
+(1 + e−x)4
+
+3!
+
+λ
+
+2 4e + 4e2 + 4e3
+
+2M
+
+≤4
+
+(1 + e−1)4
+
+3!
+
+λ
+
+3!
+8M3
+
+≤4
+
+λ3
+81
+
+2
+
+= 216M3
+
+λ3
+.
+
+Thus if we set λ ≥216M3
+
+2ϵ
+we will have |g(a, b) −ab| ≤λ2
+
+2 |R2| ≤ϵ.
+Then, we note that a Mamba block f defined as Eq (3) can degenerate into the above MLP g by
+deactivating its SSM branch. Specifically, we only need to set W1 to be zeros and b = 1 so that the input
+of the SSM branch is a constant 1, that is,
+
+In the SSM module, we can set Wb to be zeros, that is, no new information will be retained in the hidden
+state. Following this, we set d = 1 resulting that given x = 1, we have SSM(1) = y = cT H + d ⊙x =
+cT 1 + 1 ⊙1 = 1. Thus the SSM branch can be deactivated and the Mamba block will degenerate into a
+two layer MLPs, that is,
+f(x) = W3σ(W2x + b2).
+(34)
+
+Furthermore, given x = [a, b], we can set W2 ∈R4×2 and W3 ∈R4×1 to meet the two-layer MLP g
+as Eq (33). Additionally, we note that all parameters of this Mamba block can be upper bounded by
+O(poly(M, 1/ϵ)) under the l∞norm. Thus, we complete our proof.
+
+Remark 2. It should be noted that here we have only provided one possible construction and this is
+not unique. For example, in the process of deactivating the SSM branch, we could also choose to make
+∆sufficiently large and correspondingly ˜
+A sufficently small with A ≤0 so that the hidden states
+approximates zeros. In fact, the expressive power of an Mamba block with two branches should be
+stronger than that of a two-layer MLP since it already encompasses the latter. Nevertheless, we still
+provide one possible construction here.
+
+Lemma 2 (Approximate two-layer MLPs with ReLU). Let g : Rd1 →Rd2 be a two-layer MLP with
+ReLU activation, and all parameters are upper bounded by M. Then, for any ϵ > 0 , there exists a Mamba
+block f and parameters upper bounded by O(poly(M, 1/ϵ)) in the l∞norm, such that for all x ∈Rd1,
+we have ∥f(x) −g(x)∥∞≤ϵ.
+
+Proof. Similar to Lemma 1, once again, we deactivate the SSM branch, causing a Mamba block to
+degenerate into the form of Eq 34. Considering a two-layer MLP with a ReLU activation function denoted
+as g(x) = W 3ReLU(W 2x) where W 2 ∈Rd×d1 and W 3 ∈Rd2×d, we can set similar parameters for
+the degenerated Mamba blcok, that is, we consider W2 = λW 2, W3 = 1
+
+λW 3 in Eq (34) where λ is
+some large constant. In order to prove the lemma, we need to show that ∥f(x) −g(x)∥∞≤ϵ with some
+λ upper bounded by O(poly(M, 1/ϵ)).
+Considering a scalar z ∈R, we firstly consider the upper bound of the following equation:
+ReLU(z) −1
+
+λSiLU(λz)
+=
+max(z, 0) −
+z
+1 + e−λz
+
+=
+|z|
+eλ|z| + 1 ≤1
+
+λ,
+
+where we use the fact that ex + 1 > x for any x ≥0. Then, let z = W 2x, we can show that for any
+z ∈Rd,
+
+
+
+
+W 3ReLU(z) −1
+
+λW 3SiLU(λz)
+
+
+
+
+∞
+≤∥W 3∥∞
+
+ReLU(z) −1
+
+λSiLU(λz)
+
+
+
+
+∞
+(35)
+
+≤Md
+
+
+
+
+ReLU(z) −1
+
+λSiLU(λz)
+
+
+
+
+∞
+(36)
+
+λSiLU(λz)
+
+(37)
+
+ReLU(z) −1
+
+≤Md max
+z∈R
+
+≤Md
+
+λ .
+(38)
+
+Then, if we set λ > Md
+
+ϵ , we will have ∥f(x) −g(x)∥∞≤ϵ and all parameters of the Mamba block is
+upper bounded by O(poly(M, 1/ϵ)). Thus, we complete our proof.
+
+Lemma 3 (Perform linear transformation, easily derived from Lemma 2 and Lemma C.3 in Feng et al.
+(2024)). Let W ∈Rd2×d1 be any matrix used for implementing linear transformations upper bounded by
+M and f : Rd1 →Rd2 be a Mamba block. Then, for any ϵ > 0, there exist Mamba block parameters
+with l∞norm bounded by O(poly(M, 1/ϵ)), such that for any x ∈Rd1, we have ∥f(x) −W x∥∞≤ϵ.
+
+Lemma 4 (Perform select operation, easily derived from Lemma 2 and Lemma C.4 in Feng et al. (2024)).
+Define the selection function g : Rd × Rd × R →Rd as follows:
+
+g(x, y, t) =
+x
+if t > 0
+y
+if t < 0
+(39)
+
+Let f : Rd × Rd × R →Rd be a Mamba block. Then, for any ϵ > 0, α > 0, and M > 0, there exist
+Mamba parameters with l∞norm bounded by O(poly(M, 1/α, 1/ϵ)), such that for all x ∈[−M, M]d,
+y ∈[−M, M]d, and t ∈[−∞, −α] ∪[α, +∞], we have ∥f(x, y, t) −g(x, y, t)∥∞≤ϵ.
+
+Next, we show that one Mamba layer or several Mamba layers can implement indicator functions
+through the select operation. We mainly focus on the usual indicator functions I[a ̸= b], I[a > b] and
+I[a < b].
+
+Lemma 5 (Perform indicator function). Define the indicator function I(a, b, ◦) : R2×{̸=, >, <} →{0, 1}
+where a, b ∈[−M, M]. The output of the function will be 1 if a ◦b is satisfied otherwise the output will
+be 0. Let f : R2 →R be a Mamba block. Then, for any ϵ > 0, there exist Mamba parameters with l∞
+norm upper bounded by O(poly(M, 1/ϵ)), such that for any a, b ∈[−M, M] and ◦∈{̸=, >, <}, we
+have ∥f(a, b) −I(a, b, ◦)∥∞≤ϵ.
+
+Proof. We first show that a Mamba block can implement I[a > b] and I[a < b]. For I[a > b], it is
+equivalent to consider g(1, 0, a −b) where g(·) defined in Lemma 4. So firstly we can use a linear layer
+with appropriate parameters W0, b0 to convert the input [a, b] into the vector [1, 0, a −b]. Then we can
+use Lemma 4 to implement I[a > b] by changing the parameters of the first linear layer from {W1, b1} to
+{W1W0, b1 + W1b0}. The proof for I[a < b] is similar as well.
+Noticing that I[a ̸= b] = 1 −(1 −I[a > b]) · (1 −I[a < b]), we can implement I[a ̸= b] through
+the following layers: Firstly, we can use one Mamba block to implement 1 −I[a > b] and 1 −I[a < b]
+simultaneously, where the hidden dimension will be 8 and the output is a vector [1−I[a > b], 1−I[a < b]].
+Then, another Mamba block is constructed to implement the multiplication (1 −I[a > b]) · (1 −I[a < b])
+according to Lemma 1 and the appropriate outermost linear layer parameters are chosen to simultaneously
+achieve multiplication by a negative sign and addition of a bias of 1, where the hidden dimension will be
+4 and the output will be I[a ̸= b]. Thus, we complete our proof.
+
+Furthermore, following the setting of Feng et al. (2024), we also make the following assumption:
+
+Assumption 3. Given input sequences s(1), s(2), . . . , s(N), we consider the following constraints for the
+DP problem:
+
+• For any i ∈In, there exists constants Ns, Ndp and NA such that |Ii| ≤Ns, |Vdp(i)| ≤Ndp and
+|An| ≤NA.
+
+• The size of the state space |In|, the embeddings of all tokens in the input sequence, all intermediate
+DP values (dp(i) for i ∈In), and the final answer A can all be polynomially upper bounded by the
+problem size n.
+
+• The functions used to solve the DP problem, including the function fI to determine the next state,
+the transition function fT , the aggregation function fA and A(n) can all be approximated with
+polynomial efficiency by a constant-size MLP (with the SiLU activation function).
+
+the number of inputs for solving each state in a DP problem should be finite. The second constraint is a
+restriction on the magnitude of the intermediate values, allows that all involved inputs and outputs used
+in functions can be represented by the log-precision model. The third constraint allows a constant-sized
+degenerated Mamba to implement functions required to solve the DP, which has been proved by above
+Lemmas 1-5. In fact, due to the first constraint, the sizes of inputs and outputs of these functions will be a
+constant related to {Ns, Ndp, NA}.
+In fact, Assumption 2 covers many dynamic programming (DP) problems commonly encountered in
+real-world scenarios, such as basic arithmetic operations, the Longest Increasing Subsequence (LIS),
+and Edit Distance (ED). The sizes of these tasks grow polynomially with respect to the input size. While
+the functions involved in solving subproblems of these tasks may be non-smooth, we have shown in
+Lemmas 1-5 that they can all be approximated by MLPs with polynomial efficiency. Therefore, Assumption
+2 is reasonable for DP problems.
+
+Now, based on the basic operations that can be implemented by the Mamba blocks as discussed above,
+we present the proof of Theorem 4:
+
+Theorem 9 (Perform DP problems with CoT). Considering any DP problem and given input sequences
+that satisfies Assumption 3, for any integer T ∈N, there exists several Mamba layers with size O(T),
+such that the answer generated by the Mamba layers will be correct when the length of the answer is no
+more than T.
+
+Proof. Firstly, we illustrate the input format for the DP problem. We follow the embedding format in the
+proof of Theorem 4.7 in Feng et al. (2024), that is, assuming that the input at any step of solving the DP
+problem using CoT is a sequence of tokens embedded as follows:
+
+x(0)
+t
+=
+h
+einput
+t
+, estate
+t
+, edp
+t , eanswer
+t
+, esep
+t
+, t, 1
+i
+,
+
+where the specific value of each part is depend on the content represented by the current token. More
+specifically, each part can be described as:
+
+• If the current position denotes a input token, then we set einput
+t
+as the embedding of the input and
+simultaneously set estate
+t
+= edp
+t
+= eanswer
+t
+= esep
+t
+= 0.
+
+• If the current position is the final answer, then eanwser
+t
+denotes the embedding of the answer and we
+set einput
+t
+= estate
+t
+= edp
+t
+= esep
+t
+= 0.
+
+• If the current position denotes the j-th separator | between input sequences , then we set esep
+t
+= ej
+and einput
+t
+= estate
+t
+= edp
+t
+= eanswer
+t
+= 0.
+
+• If the current position denotes an intermediate DP state, then we use estate
+t
+to denote the embedding
+of the DP state and edp
+t
+denotes the corresponding value. Similarly, other part will be set to be 0.
+
+• The scalar t denotes the current position in the whole sequence, which holds the value for all above
+cases.
+
+• Compute the problem size n:
+(i) First, we can replicate the position of the token
+tsep,1, tsep,2, . . . , tsep,N using the COPY operation. This can be achieved with a Mamba layer
+of size O(Ntd) according to Theorem 3; (ii) Then, we calculate the size of the problem as
+n = [tsep,1 −1, tsep,2 −tsep,1 −1, . . . , tsep,N −tsep,N−1 −1], which can be done by applying
+a linear transformation using one Mamba layer, as shown by Lemma 3.
+
+• Obtain the next state enext_state: According to Assumption 3, the function enext_state = f(n, estate)
+which determines the next state, can be approximated by constant-sized MLPs. Thus, this can also
+be implemented by having several Mamba layers degenerate into MLPs.
+
+The output after this step can be written as:
+
+x(1)
+t
+= [einput
+t
+, estate
+t
+, enext_state, edp
+t , eanswer
+t
+, esep
+t
+, n, t, 1]
+
+Block 2: The second block is mainly constructed to find the indices of input tokens and intermediate DP
+values that are needed to calculate the DP value corresponding to enext_state. Specifically, this can be
+described as follows:
+
+• Calculate the needed indices: We calculate the positions of the input token ps
+t = Is(n, estate) and
+the positions of tokens that correspond to needed DP values pdp
+t
+= Idp(n, estate). If Is(n, estate) =
+∅or Idp(n, estate) = ∅, we set the positions to be a special value γ. According to Assumption 3,
+these two functions can be done by constant-size MLPs thus can be approximated by degenerated
+Mamba layers.
+
+• Set the flag: (i) Set the flag fanswer
+t
+based on whether the DP value of the current state is needed in
+the final aggregation function. This can be achieved by several Mamba layers with Assumption 3
+that the function A = f(n, s) can be approximated by MLPs and additionally using Lemma 5 to
+implement I[estate
+t
+̸= estate
+j
+] where estate
+j
+∈A. (ii) Set the flag fstate
+t
+to denote whether the current
+state is the last state. This can be implemented by checking I[enext_state
+t
+̸= 0] with Mamba layers
+using Lemma 5.
+
+The output result after this step can be written as:
+
+x(2)
+t
+= [einput
+t
+, estate
+t
+, enext_state, edp
+t , eanswer
+t
+, esep
+t
+, n, ps
+t , pdp
+t , fanswer
+t
+, fstate
+t
+, t, 1]
+
+Block 3: This block is designed to calculate the DP value for the next state. In detail, the implementation
+involves the following steps:
+
+• Check the flag: We check the flag fstate
+t
+using several Mamba layers using 5 to implement I[fstate
+t
+̸=
+1] using Lemma 5. If fstate
+t
+= 1, the current denote is the last state and we just need to set pt = γ1
+where pt denotes ps
+t and pdp
+t , which implies Is(n, estate) = ∅and Idp(n, estate) = ∅, that is, no
+input tokens or DP values are needed.
+
+• Obtain the needed embeddings: If fstate
+t
+̸= 1 , then (i) We copy the input token embeddings einput
+
+at positions ps
+t . This COPY operation can be implemented by a Mamba layer of size O(Nstd) using
+Theorem 3; (ii) Simultaneously, we copy the embeddings of DP values at positions pdp
+t , which can
+be achieved by a Mamba layer of size O(Ndptd). If the position is empty, we just need to check
+I[pt ̸= γ1] and set the needed embeddings einput or edp to be some special token. Totally, the size
+of Mamba layers in this step is O((Ns + Ndp)td).
+
+• Calculate the DP value: We calculate the DP value enext_state
+t
+for the next state with the Assumption
+3 that the transition function can be approximated by several Mamba layers using Lemma 2.
+
+The output result after this step can be written as:
+
+x(2)
+t
+= [einput
+t
+, enext_state, enext_dp
+t
+, eanswer
+t
+, esep
+t
+, n, fanswer
+t
+, fstate
+t
+, t, 1]
+
+• Check the flag: We identify whether the current state is the last state by checking I[fstate
+t
+̸= 1] by
+using Lemma 5. If fstate
+t
+= 1, then all intermediate DP values have been solved and we need to
+compute the final answer.
+
+• Obtain the needed embeddings: We collect the DP value embeddings edp of these tokens whose
+fanswer = 1, which can be achieved by COPY operation according to Theorem 3 with one Mamba
+layer of size O(NAtd).
+
+• Generate the final answer: Finally, we compute the answer by implementing the aggregation
+function, which can be achieved by constant-size MLPs according to Assumption 3, thus can also be
+achieved by several degenerated Mamba layers.
+
+In summary, given a sequence length t and equipped with CoT, the parameter size required by the
+Mamba layers to generate the correct answer at each step is O( ˜Ntd), where ˜N = max{N, Ns+Ndp, NA}
+is a constant independent of t, that is, the size of the Mamba layer scales linearly with t. Thus, we complete
+our proof.
+
+A.7
+Proof of Theorem 5
+
+Theorem 10 (Perform m-locality DP problems with CoT). Consider any m-locality DP problem and
+given input sequences that satisfies Assumption 3, for any integer T ∈N, there exists several Mamba
+layers with size O(m), such that the answer generated by the Mamba layers will be correct when the
+length of the answer is no more than T.
+
+Proof. The overall proof construction approach is similar to that of Theorem 4, with the only difference
+being that under the assumption of m-locality, when performing the COPY operation, the constructed
+Mamba only needs to focus on at most m tokens preceding the current position. This results in the size of
+the Mamba layers only needing to be O( ˜Nmd).
+
+A.8
+More Details of Experiments
+
+Furthermore, our experiments were conducted on four 24GB NVIDIA GeForce RTX 3090 GPUs and
+were completed within five days. Additionally, more results on the LIS task are provided in Figures 6 and
+7, while additional results on arithmetic tasks are presented in Figures 8 and 9.
+
+A.9
+More experiment results
+
+Figure 6: Test accuracy on LIS tasks during training when the task length L = 10, 30, 50, 70 and d = 256 (TF
+denotes Transformer)
+
+Figure 7: Test accuracy on LIS tasks of Mamba and Transformer across different task lengths and model sizes
+(with/without CoT).)
+
+Figure 8: Test accuracy on Arithmetic tasks during training when the task length L = 4, 5, 6, 7 and d = 256 (TF
+denotes Transformer). Without CoT, the model’s accuracy is close to that of random guessing.
+
+Figure 9: Test accuracy on Arithmetic tasks of Mamba and Transformer across different task lengths and model
+sizes (with/without CoT).)

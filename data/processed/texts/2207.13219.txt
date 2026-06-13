@@ -1,0 +1,1782 @@
+Marcelo Orenes-Vera, Esin Tureci, David Wentzlaff and Margaret Martonosi
+Princeton University
+Princeton, New Jersey, USA
+Email: {movera, esin.tureci, wentzlaf,
+
+Traditional Shared-memory:
+
+Dalorex:
+Migrate compute to the data
+
+Abstract—Applications with low data reuse and frequent ir-
+regular memory accesses, such as graph or sparse linear algebra
+workloads, fail to scale well due to memory bottlenecks and poor
+core utilization. While prior work with prefetching, decoupling,
+or pipelining can mitigate memory latency and improve core
+utilization, memory bottlenecks persist due to limited off-chip
+bandwidth. Approaches doing processing in-memory (PIM) with
+Hybrid Memory Cube (HMC) overcome bandwidth limitations
+but fail to achieve high core utilization due to poor task
+scheduling and synchronization overheads. Moreover, the high
+memory-per-core ratio available with HMC limits strong scaling.
+We introduce Dalorex, a hardware-software co-design that
+achieves high parallelism and energy efﬁciency, demonstrating
+strong scaling with >16,000 cores when processing graph and
+sparse linear algebra workloads. Over the prior work in PIM,
+both using 256 cores, Dalorex improves performance and energy
+consumption by two orders of magnitude through (1) a tile-
+based distributed-memory architecture where each processing
+tile holds an equal amount of data, and all memory operations
+are local; (2) a task-based parallel programming model where
+tasks are executed by the processing unit that is co-located with
+the target data; (3) a network design optimized for irregular
+trafﬁc, where all communication is one-way, and messages do not
+contain routing metadata; (4) novel trafﬁc-aware task scheduling
+hardware that maintains high core utilization; and (5) a data-
+placement strategy that improves work balance.
+This work proposes architectural and software innovations
+to provide the greatest scalability to date for running graph
+algorithms while still being programmable for other domains.
+Index Terms—Distributed, scalable, parallel, data-local, near-
+memory, architecture, sparse, graph, NoC, network, bandwidth.
+
+Bring data to the compute
+
+arXiv:2207.13219v4 [cs.AR] 4 May 2023
+
+T1
+
+T3
+
+L1 hit
+
+T1
+
+Local
+access
+
+T2
+
+LLC hit
+
+Task
+invocation
+
+Data
+movement
+
+T2
+
+Local
+access
+
+LLC miss
+
+Core
+L1$
+
+Core
+
+T3
+
+Local
+access
+
+Private
+Scratchpad
+
+LLC Slice
+
+(SRAM)
+
+Main Memory (DRAM)
+
+Fig. 1.
+Program execution of three sequential graph-processing steps in a
+cache hierarchy (left), and Dalorex (right). Instead of moving data with little
+reuse, Dalorex invokes tasks where the data is local—reducing movement.
+
+atomic update serialization [43], but failed to avoid costly data
+movements and are eventually bottlenecked by memory band-
+width. The processing-in-memory (PIM) proposals enjoy a
+higher memory bandwidth by processing data near DRAM [2],
+[71], [76]. However, their memory integration constrains the
+storage-per-core ratio, limiting the level of parallelism—as
+we demonstrate in this paper. In addition, their parallelization
+suffers from load imbalance and synchronization overheads.
+Opportunities: We started our work by examining what
+features are necessary to execute graph workloads in a scalable
+manner. We observed that to maximize throughput (edges
+processed per second), the solution should: (1) minimize
+data movement, which is the performance bottleneck and the
+most signiﬁcant energy cost; (2) exploit the spatio-temporal
+parallelism of operations to improve work balance and re-
+source utilization; (3) avoid serializing features such as global
+synchronization barriers and read-modify-write atomic opera-
+tions; and (4) avoid frontier redundancy and data staleness to
+minimize the number of edges explored (work efﬁciency).
+Our Approach: We present Dalorex, a highly scalable
+and energy-efﬁcient hardware-software co-design that exploits
+these opportunities by optimizing across the computing stack
+without sacriﬁcing ISA programmability. Our architecture is
+a 2D array of homogeneous tiles, each containing an SRAM
+
+I. INTRODUCTION
+System designs are increasingly exploiting heterogeneous,
+accelerator-rich designs to scale performance due to the slow-
+ing of Moore’s Law [42] and the end of Dennard Scaling [21],
+[54]. While compute-bound workloads thrive in an accelerator-
+rich environment, memory-bound workloads, such as graph
+algorithms and sparse linear algebra, present the following
+challenges: (a) a low compute-per-data ratio, with little and
+unpredictable data reuse; (b) frequent ﬁne-grained irregular
+memory accesses that make memory hierarchies inefﬁcient;
+(c) atomic accesses, synchronization, and inherent load imbal-
+ance resulting in poor utilization of computing resources.
+Recent work proposed using accelerators that pipeline the
+different stages of graph processing in hardware [1], [14],
+[19], [45], [49], [53]. Other works have used general-purpose
+cores with decoupling and prefetching to mitigate memory
+latency [18], [39], [44], [47], [59], and coalescing to reduce
+
+T1
+
+T2
+
+T3
+
+Fig. 2. Pseudocode of the Single Source Shortest Path (SSSP) algorithm, and
+how it is split into Dalorex tasks based on indirect memory accesses. The
+colored variables determine the tile at which the next task is executed.
+
+We evaluate Dalorex and demonstrate that:
+
+• Our architecture and data layout improve performance
+by 6.2× over the best ISA-programmable prior work [2].
+On top of that, our task invocation scheme improves by
+4.7×, and our uniform data placement and trafﬁc-aware
+scheduling, 4.4× more. Finally, removing the barriers and
+upgrading the NoC provides an extra 1.8×, compounding
+a 221× geomean improvement across four key graph
+applications, using equal processor count (256).
+
+• Regarding energy, the improvements of using SRAM
+(16×), our parallelization and data placement (5.2×), and
+TSU (3.9×) compound 325×, in geomean.
+
+• Dalorex achieves strong scaling with over 16,000 pro-
+cessing tiles, not being limited by memory bandwidth.
+
+• Our data distribution and parallelization do not require
+pre-processing to improve work balance across tiles;
+Dalorex remains agnostic to the dataset characteristics.
+
+II. BACKGROUND AND MOTIVATION
+
+Dalorex is designed to accelerate applications that are
+memory-bound due to irregular access patterns caused by
+pointer indirection. Although this paper focuses on graph
+algorithms, Dalorex is applicable to other domains such as
+sparse linear algebra. We demonstrate this by evaluating sparse
+matrix-vector multiplication.
+
+A. Graph Algorithms and their Memory Access Patterns
+
+Graphs are represented using adjacency matrices where
+rows/columns represent vertices and values, weighted edges.
+Since columns contain mostly zero values (most vertices have
+few connections), these matrices are stored in formats like
+Compressed-Sparse-Row (CSR) using four arrays. The non-
+zero elements are accessed via pointer indirection.
+Fig. 2 shows the sequential code for Single Source Shortest
+Path (SSSP) and colors the code sections that would be split
+into Dalorex tasks. In a regular memory hierarchy, the accesses
+to neighbor vertex data in the innermost loop (line 8) result
+in many cache misses and thus, costly accesses to DRAM [39].
+Moreover, the source vertex data (lines 3 and 4) and the
+neighbor index (line 6) are also accessed indirectly, and
+the utility of the cache depends on the number of neighbors
+
+• A data-local execution model where each processing tile
+holds an equal amount of data—operating on local data
+makes all updates atomic and minimizes data movement.
+
+• A programming model that unleashes parallelism and
+improves work balance by splitting the code into tasks—
+based on data location—while preserving program order.
+
+• A tiled distributed-memory architecture connected by a
+NoC optimized for irregular communication (headerless
+task routing based on the index of the array they access).
+
+• A hardware unit (TSU) that removes task-invocation over-
+heads and schedules tasks to maximize core utilization
+and work efﬁciency by sensing the network trafﬁc.
+
+Another
+Interation
+
+Tile 1
+Tile 2
+Tile 3
+a
+
+c
+
+b
+a
+
+c
+a
+a
+a
+
+b
+b
+b
+
+c
+c
+c
+
+Explore
+next
+vertex
+iteration
+asynch.
+
+Global
+barrier
+to swap
+the new
+frontier
+
+b
+
+c
+cc
+
+c
+c
+b
+b
+b
+c
+c
+b
+
+Long latency
+
+a
+c
+
+b
+
+c
+
+Local
+Frontier
+New Frontier
+
+Local
+Frontier
+
+Local
+Frontier
+
+Time
+
+Fig. 3.
+Program order and synchronization for Bulk Synchronous Parallel
+(BSP), left, versus Dalorex. BSP parallelization leads to work imbalance as
+Task2 (orange) may generate several Task3 (blue). Columns show the tasks
+that are executed in each tile (arrows depict program order). Colors indicate
+task type based on the code of Fig. 2. Letters represent different vertex
+iterations. Dotted boxes depict that tasks from other iterations may interleave.
+
+and the workload distribution. In Dalorex, the code is split
+at each level of pointer indirection, leading to a series of
+tasks. For example, T1 accesses arrays dist and ptr (tuple
+of size #vertices), while T2 accesses arrays edge idx and
+edge values (tuple of size #edges), and T3 accesses dist.
+As Fig. 3 illustrates, Dalorex allows spatial interleav-
+ings within vertex iterations while preserving program order
+through sequential invocation of the tasks. The classical time-
+wise interleavings of parallel-loop iterations are also allowed.
+Finally, instead of using a centralized frontier, Dalorex uses
+local frontiers, which removes the synchronization overheads
+of frontier insertions and global barriers. As a result, our novel
+programming model maximizes program parallelization.
+
+B. Algorithmic variants
+
+There are two modes of processing graph data: pulling data
+for a vertex from its neighbors or pushing data to its neigh-
+bors [7]. While pull-based algorithms tend to require higher
+memory communication, push-based algorithms often require
+atomic operations. When atomic operations are mitigated,
+push-based algorithms have the advantage of reduced commu-
+nication overhead. A hybrid version, direction-optimized BFS
+[5], and its variants can offer faster convergence. However,
+they incur a storage overhead and need heuristics, as they may
+access either the source or the destination of an edge. Although
+pull-based algorithms can be executed on the Dalorex architec-
+ture, we focus on push-based algorithms due to their reduced
+communication and work efﬁciency since Dalorex eliminates
+the need for atomic operations.
+
+D. Manycore Architectures & Memory Bandwidth
+Large-scale parallel processing can use many small units.
+From Systolic arrays [25], [26], [33] and streaming architec-
+tures [23], [60], [61], to modern manycores [4], [15], [17],
+[69], supplying irregularly-accessed data remains challenging.
+Recently, some industry products have utilized large
+amounts of SRAM to achieve high on-chip bandwidth, and so,
+higher performance [9], [30]. Aside from energy consumption,
+there are architectural advantages to using a scratchpad mem-
+ory per core, e.g., low latency, dedicated access, and scalable
+memory bandwidth (more cores means more memory ports).
+
+C. Prior Work
+
+We describe pipelining and data-movement-reducing tech-
+niques and lay out what aspects limit their scalability.
+1) Hardware Techniques: Recent works have used decou-
+pling to overlap data fetch and computation by running ahead
+in the loop iterations to bring the data asynchronously [39],
+[44], [47], [59]. To accomplish this, they perform program
+slicing on each software thread, creating a software pipeline
+effect. Others have proposed accelerators to perform the graph
+search as a hardware pipeline [1], [19], [45], [49], [53]. Poly-
+graph [14] generalized prior accelerator designs to perform
+
+III. DALOREX: A HARDWARE-SOFTWARE CO-DESIGN
+Dalorex minimizes data movement and maximizes resource
+utilization with:
+(1) a data distribution that allows for only
+local memory operations;
+(2) a programming model that
+allows for intra-loop spatial and inter-loop timewise interleav-
+ings; (3) a homogeneous tile-based architecture that optimizes
+irregular data-access patterns, where each tile includes a local
+memory, a router, and a processing unit. Program execution is
+orchestrated by the task scheduling unit (TSU).
+
+Graphs and sparse matrices are often stored in formats
+like CSR using four data arrays. In Dalorex, these arrays
+are divided equally across all tiles and stored in their private
+memories, making each tile responsible for operations only on
+its local data. For example, the edge_values array has as
+many elements as edges (E) in a graph. This array is split as in
+Listing 1 so that each of the T tiles has EDGES_PER_CHUNK
+(E/T) adjacent elements, e.g., the ﬁrst tile contains elements
+from 0 to EDGES_PER_CHUNK-1.
+Ours is the ﬁrst work that distributes an adjacency matrix
+in this manner; the usual approach is to do a 2D distribution
+of the matrix [8], where each computing element gets a rect-
+angular subset of the matrix to compute. Although designed
+to minimize communication, 2D distribution presents some
+challenges: a subset of a sparse matrix is hyper-sparse (making
+row or column sparse formats storage-inefﬁcient), and the
+resulting chunks do not have an equal number of non-zeros
+(different storage needs). Because Dalorex has all memory
+equally distributed across tiles, it improves workload balance.
+
+const FRONTIER_LEN = NODES_PER_CHUNK/32
+const OQT2 = 1024
+## Bitmap frontier and memory-stored variables
+var frontier[FRONTIER_LEN] = [0,...,0]
+var blocks_in_frontier = 0
+var t1_new_vertex = True
+var neighbor_begin = 0;
+
+##Configure network channels between tasks and their queues
+CQ1 = channel(q_len=128, target=T2, encode=EDGES_PER_CHUNK)
+CQ2 = channel(q_len=OQT2,target=T3, encode=NODES_PER_CHUNK)
+
+## Declaring a task requires the length of its IQ and
+## whether its parameters are loaded before the invocation
+task T1 [32] ():
+
+#T1 params aren’t pre-loaded. We read from the IQ of T1
+vertex_id = peek(IQ1.head)
+if (t1_new_vertex):
+
+neighbor_begin = ptr[vertex_id]
+neighbor_end = ptr[vertex_id+1]
+while (!CQ1.full && (neighbor_begin < neighbor_end)):
+
+##Split msg if range crosses chunk limits or > OQT2
+
+tile = (neighbor_begin/EDGES_PER_CHUNK) + 1;
+partial_end = min(neighbor_end, tile*EDGES_PER_CHUNK)
+partial_end = min(partial_end, neighbor_begin + OQT2)
+CQ1 = neighbor_begin ## global idx for tile address
+CQ1 = (partial_end % NODES_PER_CHUNK) ## local idx
+CQ1 = dist[vertex_id]
+neighbor_begin = partial_end
+## We pop vertex_id if the whole range was pushed to CQ1
+t1_new_vertex = (neighbor_begin == partial_end)
+if (t1_new_vertex):
+
+B. Programming model
+
+The BSP model parallelizes graph algorithms either at the
+outer loop (processing vertices in the frontier) or the inner loop
+(processing the neighbors of the frontier vertices) since these
+can be processed in any order. We posit that if the iterations of
+the inner loop are performed in program order, the location of
+the execution can be altered. Dalorex preserves the instruction
+order within an iteration since subsequent tasks are invoked by
+the parent task at completion. Since only one tile has access
+to each data chunk, coherence is not an issue.
+Adapting a graph kernel to Dalorex involves splitting the
+inner-loop iteration into multiple tasks at each pointer indirec-
+tion. As we have seen in Fig. 2, this results in three tasks for
+SSSP, where each task produces the array index to be accessed
+by the next task. Additionally, graph algorithms require a
+fourth task to explore the frontier vertices (Listing 1). Every
+tile contains the same code and can perform any task.
+From the program execution timeline perspective, after a tile
+performs a task, it sends the output of the task (i.e., the input
+for the next task) to the tile containing the data to be operated
+next, thus preserving sequential order.
+From the point of view of an individual tile, inputs for
+any task may arrive in any order into their corresponding
+task-speciﬁc queues. The execution order of different tasks
+is determined by the TSU—described in Section III-E.
+Application programmers would not program Dalorex di-
+rectly. Instead, DSLs such as TACO [29] (sparse algebra) or
+GraphIt [72] (graph analytics) could invoke our kernel library.
+
+pop(IQ1.head)
+
+# Task parameters are loaded by TSU before the task begins
+task T2 [128] (neighbor_begin, neighbor_end, vertex_dist):
+
+for i in range(neighbor_begin,neighbor_end):
+##Writing to a Channel Queue sends data to the network
+
+CQ2 = edge_idx[i]
+CQ2 = edge_values[i] + vertex_dist
+
+task T3 [2048] (neigh_id, new_dist):
+
+curr_dist = dist[neigh_id]
+if (new_dist < curr_dist):
+
+dist[neigh_id] = new_dist
+
+## Insert vertex into Local Frontier
+blk_id = neigh_id >> 5;
+
+blk_bits = frontier[blk_id];
+frontier[blk_id] = mask_in_bit(blk_bits, neigh_id)
+if (blk_bits == 0): ##only add newly active blocks
+
+blocks_in_frontier++
+IQ4 = blk_id
+
+# T4 re-explores the local frontier queue
+task T4 [FRONTIER_LEN] ():
+
+frontier_block = peek(IQ4)
+while(blocks_in_frontier > 0 && !IQ1.full):
+
+blk_bits = frontier[frontier_block]
+block_base = frontier_block << 5;
+while(blk_bits > 0 && !IQ1.full):
+
+idx = search_msb(blk_bits)
+blk_bits = mask_out_bit(blk_bits, idx)
+vertex = block_base + idx
+IQ1 = vertex
+# If all the no pending vertices in the block we
+# remove the block from the frontier queue
+if (blk_bits == 0):
+
+C. Program Flow and Synchronization
+
+Dalorex programs do not have a main. Instead, tiles await
+the task parameters to arrive in the corresponding input queue,
+and PUs are invoked by TSU to process them. A task invokes
+the next task by placing the task parameters into an output
+queue (OQ). An OQ can be either another task’s input queue
+
+pop(IQ4)
+blocks_in_frontier--
+frontier_block = peek(IQ4)
+Listing 1.
+Pseudo-code of the SSSP algorithm adapted to use the Dalorex
+programming model. This programming model would be embedded in a high-
+level language via an API. The programmer or compiler would ﬁll tasks’ code.
+
+D. Graph size vs. Chip size
+
+Dalorex uses a homogeneous 2D layout of tiles. Because the
+size of a tile’s local memory is determined at fabrication time,
+the aggregated chip storage scales linearly with the computing
+capacity (see Section V-B for the storage-to-compute ratio).
+Dalorex could be deployed on a 151mm2 chip, with 16 × 16
+tiles and 512MB memory, or at wafer-scale, with 256 × 256
+tiles and 128GB memory.
+Processing Larger Graphs: Building on previous work on
+distributed graph processing [28], [63], we propose using
+graph partitioning to split larger graphs into multiple parts,
+where each part is computed on a separate Dalorex chip.
+The aggregated storage on-chip determines the maximum size
+of a graph partition. Smaller graphs can also be computed
+concurrently in rectangular subsets of tiles within a chip,
+uncontested, as they do not share hardware resources. The
+tiles that are not allocated to run programs are switched off.
+Selecting the number of tiles a program runs on has a lower
+bound: it should run a subset of Dalorex that is large enough
+to ﬁt the dataset into the aggregated memory capacity. It can
+also use a larger number of tiles to parallelize even further.
+Section V shows that Dalorex scales close to linearly until the
+parallelization limits are hit when a tile handles less than a
+thousand vertices.
+
+E. Dalorex Hardware
+
+Fig. 4 shows the structure of a tile in the Dalorex archi-
+tecture. The Processing Unit (PU) is a very power- and area-
+efﬁcient unit that resembles a single-issue in-order core but
+without a memory management unit or L1 cache, as the data
+is accessed directly from the scratchpad memory. The tile
+area is dominated by the scratchpad SRAM, which contains
+the data arrays, the code, and the input/output queue entries.
+The queues are implemented as circular FIFOs using the
+scratchpad. Queue sizes are conﬁgured at runtime based on
+the number of entries speciﬁed next to the task declaration
+(see Listing 1). A queue entry can be either 32 or 64 bits,
+depending on the chip’s target total memory size. (A 32-bit
+Dalorex can process graphs of up to 232 edges.)
+The Task Scheduling Unit (TSU) is the key hardware unit
+of Dalorex’s hardware-software co-design. It contains the task
+conﬁgurations and scheduling policy and handles the queues’
+
+ID
+
+ID
+
+32
+
+on while
+active tasks
+
+Read/Write Arrays
+
+CQ1
+
+../../32/0x..
+../../128/0x..
+../../2048/0x..
+
+../../128/0x..
+../../1024/0x..
+Edge
+Node
+
+3
+2
+
+0x10
+0x..
+0x..
+
+0
+3
+2
+
+Head
+Decod.
+
+Read from InputQ
+
+CQ2
+
+2
+
+Queues
+
+Write to OutputQ
+
+IQ4
+
+-
+
+-
+-
+-
+
+Scratchpad Memory
+(SRAM)
+
+4
+0x..
+0
+IQ1
+../../1024/0x..
+
+Occupancy
+
+Occupancy
+
++
+
+Full?
+
++
+
+InputQ push
+
+Full?
+
+Tasks Code
+
+Arbitration
+
+mem_addr to wr
+
+Instr. read/decode
+
+Queue push/pop
+
+Router-TSU
+
+Update PC
+
+bufffer_id
+
+N
+
+Completed  task
+Event signals from the PU
+
+Buffers
+
+to rd
+
+Task
+Control
+
+buffers
+
+Tile Configuration
+
+Task
+Scheduling
+
+Head
+Encoder
+X_ID, Y_ID
+Width, Height
+
+Logic
+
+Control signals
+
+Next task addr
+
+T buffers
+
+W
+buffers
+
+to/from TSU
+
+Unit
+
+OQ tail/head addr
+
+Router
+
+OutputQ pop
+
+E
+
+Arbitration
+
+mem_addr to read
+
+IQ tail/head addr
+
+buffers
+
+S
+
+buffers
+
+buffer_id to write
+
+Addr & control signals to the PU
+
+Processing Tile
+
+Task Scheduling Unit (TSU)
+
+Fig. 4.
+Organization of a processing tile. TSU feeds the PU the next task to execute based on the occupancy of the task queues. The router connects TSU
+with the network. TSU uses SRAM to write incoming network data (push) to the IQs and reads (pop) outgoing data from the channel queues (CQs).
+
+parameter of the task to be called. Network communication is
+composed of ﬂits traveling in different logical channels that
+share the same network-on-chip (NoC). In our experiments, a
+ﬂit has the same size as a queue entry, which is the width of
+the PU’s ALU and the memory addresses (32 bits).
+Router: It has bi-directional ports to north, south, east,
+west, and towards the tile’s TSU. Routing is determined by
+the router based on the data in the ﬁrst ﬂit of a message,
+which we call the head. Since the head ﬂit always contains a
+dataset-array index, and these arrays are statically distributed
+across the chip, this index is used to obtain the destination
+tile. The TSU’s channel table contains the sizes of the local
+chunks and the number of parameters (ﬂits) of each message
+type. The head encoder uses that information to calculate the
+destination tile and the local index (modulo the chunk size).
+The encoder also uses the width of the Dalorex grid to obtain
+the X/Y coordinates. Depending on the width and height of
+the chip, the upper bits of the head ﬂit encode the destination
+tile (log2(width) + log2(height)). Routers compare incoming
+head ﬂits with their local X/Y tile ID to determine where to
+route it next. If routed to the TSU, the head decoder removes
+the head ﬂit’s tile-index bits before pushing it to the IQ.
+The payload-based routing saves network trafﬁc as it does
+not use metadata. The length of messages at each channel
+is known, and its ﬂits are always routed back to back since
+a route (from input to output port) opens with the ﬁrst ﬂit
+and closes after the corresponding number of ﬂits has left the
+router. Interleaving ﬂits from two messages going to the same
+output port on the same channel is not allowed. The router
+can route to different output ports simultaneously. However, it
+arbitrates by doing a round-robin between the messages from
+inputs ports that want to route to the same output port.
+Channels buffers: In addition to identifying the task type,
+communicating tasks in different channels prevents deadlocks.
+Although channels might contend to use the NoC, the routers
+contain buffers per channel so that a clogged channel does
+not block others. Each router has a pool of buffer slots per
+outbound direction shared between the channels. The size of
+this pool is a tapeout parameter, but the number of buffer
+slots per channel is software-conﬁgurable, as are the sizes of
+the input/output queues.
+
+head and tail pointers. The TSU has a read-write port into
+the scratchpad for pushing data from the router buffers to the
+input queue (IQ).
+Queue-speciﬁc registers: The tail and head pointers of
+queues are exposed to software through dedicated registers.
+This allows the PU to read or write from its queues with a
+register operation, avoiding address calculation. A read from
+this register results in a load from the scratchpad using the
+corresponding queue’s head pointer provided by the TSU. This
+read also triggers the update of the head pointer in hardware
+at the Task Queue Status table.
+Scheduling: TSU is responsible for invoking tasks based on
+the status of the queues, resulting in a closed-loop feedback
+system. Tasks cannot block; they execute from beginning to
+end. TSU may only invoke a task if its IQ is not empty and
+its OQ has sufﬁcient free entries. When all IQs are empty,
+TSU disables the clock of the PU to save power. TSU needs
+to arbitrate when two or more tasks have non-empty IQs.
+Priority: The queues’ occupancy acts as a sensor for the
+TSU to decide which task to prioritize. A task has three
+priority modes based on queue occupancy: high priority if its
+IQ is nearly full, medium priority if its OQ is nearly empty,
+and low priority otherwise. When two or more tasks have
+high/medium priority, the one with a larger queue size takes
+precedence. Testing several static priorities and round-robin
+schemes, we found that the occupancy-based priority worked
+best because: (1) A large source of network contention is end-
+point back-pressure, so preventing full IQs eases contention;
+(2) Reaching high resource utilization relies on tiles giving
+each other work, so keeping OQs non-empty is beneﬁcial.
+Using an occupancy-based priority order results in a feedback
+loop for task scheduling achieving high core utilization and
+low network contention. These heuristics are micro-coded as
+event-condition-action rules based on the reaction time to
+prioritize a task and prevent the IQ from getting full.
+Channel queue: During program execution, when a task
+outputs the parameters for the next task to execute on another
+tile, a channel queue places the data into the network, which
+is delivered to its destination.
+Network channel: It connects a channel queue with a task’s
+IQ. Messages can be composed of several ﬂits, each being a
+
+Since Dalorex’s programming model uses task invocations
+that do not return a value, communication is one way only,
+resembling a software pipeline. Therefore, the communication
+latency between the sender and receiver tiles does not con-
+tribute to the execution time if the pipeline is full, i.e., task
+invocations are continuous. However, the throughput would
+suffer if bubbles were formed due to network contention.
+Graphs vertices have variable degrees. Some vertices—often
+referred to as hot vertices—have much higher vertex-degree
+than others. The channel buffers and queues mitigate the
+communication peaks caused by hot vertices and help keep
+the pipeline effect. Dalorex uses low-order bits of indices to
+distribute data randomly, so the number of hot vertices per
+tile is relatively uniform. Should the graph be sorted by vertex
+degree, we build the global CSR so that consecutive vertices
+fall into different tiles. This uniformity avoids excessive end-
+point contention at the TSU with messages from the router.
+We observed that the network topology could be another
+source of contention. Dalorex uses a 2D torus to avoid the
+contention towards the center we observed on a 2D mesh.
+Our 2D torus is a wormhole network with dimension-ordered
+routing. It also implements a local bubble routing to avoid
+the ring deadlock. This network can be fabricated with nearly
+equidistant wires by having consecutive logical tiles at a
+distance of two in the silicon. A 32-bit 2D torus is 50% bigger
+than a 2D mesh, but the torus provides twice the bisection
+bandwidth (BB) and 33% fewer hops [48].
+Since we target the design of Dalorex to be scalable even
+with hundreds of tiles per dimension (tens of thousands of
+tiles), scalability of network utilization is part of the design
+goal. Scaling Dalorex up to the next power-of-two tiles per
+dimension results in four times the total tile count, but BB
+only doubles. While latency is greatly hidden by the pipeline
+effect, BB is critical for scalability since the vertex updates are
+irregular and result in communication to any tile. This disparity
+increases the contention with network sizes. To overcome that,
+we also explore ruche networks [27], [48].
+Ruche networks are long physical wires that bypass routers.
+They increase the router radix and decrease the latency from
+source to destination. For example, in a network with a ruche
+factor of 2, a tile could route to its immediate neighbors or tiles
+at a distance of 2. A full ruche network of factor R increases
+the BB by a factor of (R−1)× over the underlying network, so
+increasing sizes of R with larger network sizes can compensate
+for the previously observed BB decrease. Section V provides
+a performance characterization of torus vs. mesh, with and
+without ruche networks.
+
+IV. EVALUATION METHODOLOGY
+
+In addition to four graph algorithms, we evaluated one
+sparse linear algebra kernel to demonstrate the generality of
+our approach for memory-bound applications.
+We adapted the following applications from the GAP
+benchmark [6] and GraphIt [72], splitting the program into
+tasks at each indirect memory access: Breadth-First Search
+(BFS) determines the number of hops from a root vertex to all
+vertices reachable from it; Single-Source Shortest Path (SSSP)
+ﬁnds the shortest path from the root to each reachable vertex;
+PageRank ranks websites based on the potential ﬂow of users
+to each page [34]; Weakly Connected Components (WCC)
+ﬁnds and labels each set of vertices reachable from one to
+all others in at least one direction (implemented using graph
+coloring [57]); Sparse Matrix-Vector Multiplication (SPMV)
+multiplies a sparse matrix with a dense vector.
+Datasets: We used real-world networks and synthetic
+datasets. We use several different sizes of synthetic RMAT
+graphs [35] of up to 67M vertices (V) and 1.3B edges (E),
+with up to 12GB of memory footprint, as well as real-world
+graphs: LiveJournal (V=5.3M, E=79M), Wikipedia (V=4.2M,
+E=101M) and Amazon (V=262K, E=1.2M).
+
+A. Simulation Approach
+
+We built a C++ cycle-level simulator to evaluate Dalorex
+due to the novelty of the execution model and the simplicity
+of the architecture. Task instructions are modeled at each
+clock cycle; the network ﬂits ﬂow from tile to tile, from
+source to destination, one cycle per hop. Our simulations are
+validated to provide correct program outputs over sequential
+x86 executions of the applications we evaluate [6].
+Current architectures pay an enormous energy cost asso-
+ciated with accessing off-chip memory [46]. Reading data
+locally consumes nearly two orders of magnitude less energy
+than moving an equivalent block of data across 15mm of on-
+chip wire [22] and three orders of magnitude less energy than
+bringing the data from off-chip DDR3 [62].
+Power and Area Model: With the latest technology, SRAM
+can achieve very high densities in FinFET, ranging from 29.2
+Mb/mm2 in 7nm [65] to 47.6 Mb/mm2 in 5nm [10]. New
+technologies like FinFET or CMOS-ULVR show that leakage
+power can get as low as 1.7nW per cell [32], 5µW per 8KB
+
+G. Scalable Memory Bandwidth
+
+Large scratchpads are more area-efﬁcient with modern,
+smaller, FinFET transistor nodes [10], [16], [65]. This allows
+packing more SRAM on-chip than ever before. A real-world
+example is the Wafer-Scale integration of Cerebras, which
+enables 40GB of on-chip SRAM storage [36].
+
+V. RESULTS
+
+A. Improvements over the HMC-based prior work
+
+This section demonstrates the gains in performance and
+energy efﬁciency of Dalorex over Tesseract [2], both using
+an equal number of cores (256). We break down the impact
+of the different optimizations of Dalorex by starting with
+Tesseract and then evaluating Dalorex by adding one feature
+at a time to gradually reach full Dalorex.
+
+BFS
+
+103
+WCC
+
+103
+PageRank
+
+103
+SSSP
+
+103
+
+Performance Improvement
+
+102
+
+102
+
+102
+
+102
+
+101
+
+101
+
+101
+
+101
+
+B. Comparison with the State-of-the-Art
+
+AZ WK LJ R22
+100
+
+100
+
+100
+
+100
+
+We looked at the literature on graph accelerators, i.e., those
+with a specialized hardware pipeline to process the different
+stages of graph traversing, and focused on Polygraph [14]—
+the latest work. We evaluated the code that the authors kindly
+provided and experimentally conﬁrmed that Polygraph’s per-
+formance plateaus with conﬁgurations larger than 16 cores
+while Dalorex continues to scale. This is expected since
+that conﬁguration already saturates the 512GB/s of DRAM
+bandwidth provided by their 8 memory controllers using High-
+Bandwidth Memory (HBM).
+However, PIM-based proposals have a memory system that
+scales with the number of computing resources. From these
+works, we compare ourselves with Tesseract [2]. We have sim-
+ulated a more recent PIM-based approach, GraphQ [76], which
+reported 3.3× performance and 1.8× energy improvements on
+average over Tesseract. However, despite communicating with
+the authors and using their methodology, we were unable to
+obtain the cycle and energy values from simulation outputs
+that matched their results. We do not include GraphQ in our
+discussion because we obtained 3.2× and 4.6× larger runtime
+and energy consumption (in geomean) than in [76].
+We evaluate Tesseract using a Hybrid Memory Cube (HMC)
+conﬁguration of 16 cores per cube (one per vault), aggregating
+a total of 256 cores among the 16 cubes. To match their core
+count, we use a 16×16 Dalorex grid with 4.2MB of memory
+per tile. To simulate Tesseract, we follow their methodology
+by using the Zsim simulator [55] with a 3D-memory power
+model [52].For the energy spent by the cores, we use the same
+power model as Dalorex—based on a 7nm transistor node. We
+
+AZ WK LJ R22
+
+AZ WK LJ R22
+
+AZ WK LJ R22
+
+Tesseract
+Tesseract-LC
+
+Data-Local
+Basic-TSU
+
+Uniform-Distr
+Traﬃc-Aware
+
+Torus-NoC
+Dalorex
+
+BFS
+
+103
+WCC
+
+103
+PageRank
+
+103
+SSSP
+
+103
+
+Energy Improvement
+
+102
+
+102
+
+102
+
+102
+
+101
+
+101
+
+101
+
+101
+
+AZ WK LJ R22
+100
+
+100
+
+100
+
+100
+
+AZ WK LJ R22
+
+AZ WK LJ R22
+
+AZ WK LJ R22
+
+Fig. 5.
+Improvements in performance and energy efﬁciency achieved with
+the addition of large caches (LC) to Tesseract, and six Dalorex optimizations
+normalized to Tesseract. All conﬁgurations use 256 processing cores. X-axis
+studies four datasets. Y-axis is logarithmic, higher is better. Note that since
+PageRank necessitates per-epoch synchronization, the last datapoint (Dalorex-
+full) still uses a global barrier; thus, the bars do not change.
+
+We provision Tesseract with a 2MB private cache per core
+(512 MB of aggregated cache) and remove DRAM background
+energy, to approximate the impact of using distributed SRAM
+on performance and energy (Tesseract −LC). We evaluate
+Dalorex without TSU by using the program ﬂow of Tesseract
+(with remote vertex updates interrupting) to study the impact
+of vertex-based (Tesseract) versus Dalorex’s array chunking
+and task splitting (Data −Local). We add a basic TSU to
+
+B. Dalorex Scales Beyond Thousands of Tiles
+
+Program runtime: BFS on RMAT datasets
+
+1010
+
+RMAT16
+RMAT22
+
+RMAT25
+RMAT26
+
+109
+
+Runtime (Cycles)
+
+108
+
+107
+
+106
+
+105
+
+104
+
+100
+101
+102
+103
+104
+Core count
+
+Energy usage: BFS on RMAT datasets
+
+102
+
+RMAT16
+RMAT22
+
+RMAT25
+RMAT26
+
+101
+
+5725
+1445
+
+Energy (Joules)
+
+100
+
+11398
+2863
+729
+
+10−1
+
+8578
+2159
+553
+152
+
+10−2
+
+10−3
+
+1109
+291
+86
+35
+23
+19
+
+10−4
+
+100
+101
+102
+103
+104
+Core count
+
+Fig. 6. Analysis of the runtime (cycles) and energy consumption (Joules) of
+BFS for four RMAT datasets and scaling core counts.
+
+Fig. 6 evaluates strong scaling for BFS with increasing sizes
+of Dalorex grids, and four RMAT datasets of size 216, 222, 225
+
+and 226 vertices (average ten edges per vertex).
+
+Performance Improvement
+
+8
+
+8
+
+8
+
+8
+
+8
+
+1013
+
+1013
+
+1013
+
+1013
+
+1013
+
+7
+
+7
+
+7
+
+7
+
+7
+
+6
+
+6
+
+6
+
+6
+
+6
+
+1012
+
+1012
+
+1012
+
+1012
+
+1012
+
+5
+
+5
+
+5
+
+5
+
+5
+
+4
+
+1011
+
+4
+
+4
+
+4
+
+4
+
+1011
+
+1011
+
+1011
+
+1011
+
+3
+
+3
+
+3
+
+3
+
+3
+
+1010
+
+2
+
+2
+
+2
+
+2
+
+2
+
+1010
+
+1010
+
+1010
+
+1010
+
+1
+
+1
+
+1
+
+1
+
+1
+
+28
+210 212 214
+109
+
+109
+
+109
+
+109
+
+109
+
+WK LJ R22R26
+0
+
+28
+210 212 214
+
+28
+210 212 214
+
+28
+210 212 214
+
+28
+210 212 214
+
+0
+
+0
+
+0
+
+0
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+Edges/s
+Operations/s
+Avg. Mem. BW (Bytes/s)
+
+Mesh
+Torus
+Torus-Ruche
+
+Fig. 7.
+Throughput in terms of executed instructions and edges per second,
+and the average on-chip memory bandwidth (MBW) used to achieve that. The
+X-axis is the size of the Dalorex grid used when analyzing strong scaling
+RMAT-26, ranging from 256 to 16,384 tiles. The Y-axis is logarithmic.
+
+Fig. 8. Performance improvement of Torus and Torus-Tuche over Mesh. The
+X-axis shows the datasets used for each of the applications evaluated. RMAT-
+26 runs on 64×64 tiles, and the rest 16×16.
+
+BFS
+
+100
+WCC
+
+100
+PageRank
+
+100
+SSSP
+
+100
+SPMV
+
+100
+
+Energy Breakdown (% of total)
+
+Performance Scaling: The upper plot of Fig. 6 shows the
+runtime (in cycles) of executing each dataset on Dalorex with
+an increasing number of tiles by multiples of four. The most
+exciting result of this analysis is that Dalorex has a close to
+linear scaling until it hits the parallelization limit. This occurs
+when the chunk of data per tile is ∼1,000 vertices, indicating
+that performance is not limited by MBW (as is the case for
+all previous work) but tiles starving for work.
+Energy Scaling: To understand the optimal scratchpad size
+for energy consumption, we analyzed energy as the number
+of tiles increases and the required scratchpad size decreases.
+Each scratchpad stores the dataset chunk, the program binary,
+and the queues. Fig. 6 (bottom) shows the total energy spent to
+run BFS for different numbers of tiles. Next to each datapoint
+is the memory used by each tile (in KB).
+As the tile count increases and the dataset chunk per tile
+becomes smaller, energy ﬁrst decreases to a minimum and then
+increases. This is mainly driven by leakage power. Since the
+aggregated memory capacity remains nearly constant in this
+experiment, the SRAM leakage power becomes less signiﬁcant
+with larger parallelizations. Total energy keeps decreasing
+while the cores are fully utilized. The deﬂection point, i.e.,
+minimal energy execution for each dataset, arrives when the
+amount of data per tile is ∼10,000 vertices. This optimal range
+is invariant with dataset size. The smallest dataset (RMAT-16)
+reaches this point very early, being already past that point with
+64 tiles, where each tile holds ∼1,000 vertices.
+Fig. 6 shows that the performance keeps scaling beyond
+the energy-optimal conﬁguration. Unlike clusters, where per-
+formance degrades with small messages between computing
+nodes, Dalorex communication is at a word granularity. Scal-
+ing is not limited by MBW but only when the workload per
+tile is so low that we lose the pipeline effect and the PUs
+starve for tasks. While approaching the parallelization limit of
+a dataset, energy increases because of the leakage energy of
+the additional PUs that are not fully utilized.
+Throughput: Fig. 7 shows the number of edges and opera-
+tions processed per second as a measure of the throughput
+and the average aggregated MBW by all tiles. We study
+this with doubling counts on X- and Y-dimensions for all
+benchmarks running our biggest RMAT dataset. We observe
+that both throughput and utilized MBW grow until the largest
+
+80
+
+80
+
+80
+
+80
+
+80
+
+60
+
+60
+
+60
+
+60
+
+60
+
+40
+
+40
+
+40
+
+40
+
+40
+
+20
+
+20
+
+20
+
+20
+
+20
+
+WK LJ R22R26
+0
+
+0
+
+0
+
+0
+
+0
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+WK LJ R22R26
+
+Logic
+Memory
+Network
+
+Fig. 9.
+Breakdown of the energy consumed by the computing logic, the
+SRAM cells, and the network communication (including routing and wire
+energy). The Y-axis is the percentage of total energy spent running the
+program. The X-axis shows the datasets used for each of the applications
+evaluated. RMAT-26 runs on 64×64 tiles, and the rest 16×16.
+
+conﬁguration we simulated: 128×128 (214, i.e., 16,384 tiles).
+This last conﬁguration reaches two teraoperations/s, using over
+ten terabytes/s of MBW. The throughput and MBW of Dalorex
+for graph applications are beyond the reach of prior work
+in hardware accelerators using HBM and the 3D-memory
+integration that Tesseract proposed. Dalorex MBW is possible
+by having all the memory storage distributed across tiles and
+linearly increasing the number of memory ports with the tile
+count. The fact that the MBW does not saturate allows the PUs
+to process vertices and edges at the very high rates shown in
+Fig. 7. Note that we reported the average MBW of the whole
+program and not the maximum utilized at a given time. The
+peak MBW available only increases with the number of tiles,
+which is 131TB/s on a 128×128 Dalorex.
+
+C. Characterizing the Network-on-Chip (NoC)
+
+We analyze Dalorex with the three NoC types we considered
+in Section III-F: 2D mesh, 2D torus, and combining the
+torus with ruche channels. Fig. 8 shows the performance
+improvement of both torus options over the mesh. Using a
+16 × 16 torus is nearly twice as fast as a mesh, on average,
+for the smaller datasets (Wikipedia, LiveJournal, and RMAT-
+22), which justiﬁes the area cost of an additional 0.2% of the
+total chip area (using 4MB tiles).
+For this 16×16 grid, we generated heatmaps of the utiliza-
+tion of PUs and routers to visually demonstrate the advantage
+of torus over mesh. Fig. 10 shows that the contention towards
+the center of the mesh (top) clogs the NoC and makes the
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+
+80
+
+80
+
+60
+
+60
+
+40
+
+40
+
+20
+
+20
+
+0 1 2 3 4 5 6 7 8 9101112131415
+
+0 1 2 3 4 5 6 7 8 9101112131415
+
+0
+
+0
+
+(a) 2D Mesh
+
+100
+
+100
+
+PU utilization (% of time)
+
+Router utilization (% of time)
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+
+80
+
+80
+
+60
+
+60
+
+40
+
+40
+
+20
+
+20
+
+0 1 2 3 4 5 6 7 8 9101112131415
+
+0 1 2 3 4 5 6 7 8 9101112131415
+
+0
+
+0
+
+VII. CONCLUSION
+
+(b) 2D Torus network
+
+Dalorex is designed to massively parallelize applications
+that are memory-bound due to the irregular memory accesses,
+for which prior work does not exhibit good strong scaling.
+Datasets larger than the aggregated memory capacity of a
+Dalorex chip could be partitioned across several chips, having
+each subproblem parallelized to the extreme.
+Since Dalorex is ISA-programmable, it is applicable to
+any application ﬁtting in the task-based programming model,
+although it is most advantageous for those bottlenecked by
+pointer indirection or atomic operations, e.g., SPMV.
+This paper demonstrates strong scaling on four graph algo-
+rithms and one sparse linear algebra kernel. We found that
+reaching the parallelization limits requires:
+(1) a uniform
+work balance, which we achieve with an equal amount of
+data per tile;
+(2) architectural and programming support to
+invoke remote tasks natively with no message overhead; (3)
+a trafﬁc-aware arbitration of tasks; (4) a NoC that minimizes
+contention, where a torus is superior to the mesh; and
+(5)
+a NoC that scales bisection bandwidth with very large tile
+counts on a 2D silicon by adding ruche channels to the
+torus. Together with the data partitioning scheme that allows
+barrierless frontiers, these optimizations make Dalorex two
+orders of magnitude faster and more energy-efﬁcient than the
+state-of-the-art in PIM-based graph processing.
+
+Fig. 10. Heatmaps of the utilization of PUs and routers as a percentage of
+runtime while running SSSP on RMAT-22. The 16×16 tiles are connected by
+a mesh (top) or torus (bottom).
+
+PUs starve for tasks, whereas the torus (bottom) has a uniform
+router utilization, unleashing the full potential of the PUs.
+As shown in Fig. 8, the improvement of the torus NoC
+becomes even greater for the 64 × 64 grid used to evaluate
+RMAT-26. We found ruche with torus to only improve per-
+formance on the large grid. Despite that the ruche-torus NoC
+uses more than twice the area of a regular torus (extra cost
+of 1.2% area) and higher power, the performance gains at the
+64×64 grid justify its use. Although not shown here, we have
+found ruche combined with mesh not to be as effective as torus
+alone, despite its larger area cost.
+Fig. 9 breaks down the energy consumed by Dalorex. We
+use a 16×16 grid to run WK, LJ, and RMAT-22, and 64×64
+to run RMAT-26. In Dalorex, the network consumes the most
+energy: the larger the network, the longer the average distance
+traveled to update a vertex, therefore, a greater share of the
+total energy consumption. This is expected because Dalorex
+uses energy-efﬁcient memories and very simple processing
+units (PU). PUs are also not actively waiting for messages
+to arrive but are powered off by the TSU when idle.
+
+ACKNOWLEDGMENTS
+
+VI. FURTHER RELATED WORK & DISCUSSION
+
+This material is based on research sponsored by the Air
+Force Research Laboratory (AFRL), Defense Advanced Re-
+search Projects Agency (DARPA) under agreement FA8650-
+18-2-7862, and National Science Foundation (NSF) award No.
+1763838. 1 We thank Tyler Sorensen for his useful feedback.
+
+Due to storage limitations, graph networks with trillions
+of edges inevitably need to be partitioned and processed by
+multiple systems. However, within each system (where each
+partition is processed), distributed graph processing frame-
+works [3], [38], [63], [74] are bottlenecked by the memory
+hierarchies in current computer architectures.
+Dalorex, and other HMC-based approaches for graph pro-
+cessing [2], [71], [76] behave as a large accelerator for the
+host CPU. Loosely-coupled accelerators for graph applications
+have been investigated before, e.g., [14], [19], [49]. However,
+
+1The U.S. Government is authorized to reproduce and distribute reprints
+for Governmental purposes notwithstanding any copyright notation thereon.
+The views and conclusions contained herein are those of the authors and
+should not be interpreted as necessarily representing the ofﬁcial policies or
+endorsements, either expressed or implied, of NSF, AFRL and DARPA or the
+U.S. Government.
+
+[1] M. Abeydeera and D. Sanchez, “Chronos: Efﬁcient speculative paral-
+lelism for accelerators,” in Proceedings of the Twenty-Fifth International
+Conference on Architectural Support for Programming Languages and
+Operating Systems, 2020, pp. 1247–1262.
+[2] J. Ahn, S. Hong, S. Yoo, O. Mutlu, and K. Choi, “A scalable processing-
+in-memory accelerator for parallel graph processing,” in Proceedings of
+the 42nd Annual International Symposium on Computer Architecture,
+2015, pp. 105–117.
+[3] “Apache Giraph,” The Apache Software Foundation,
+apache.org/.
+[4] J. Balkind, M. McKeown, Y. Fu, T. Nguyen, Y. Zhou, A. Lavrov,
+M. Shahrad, A. Fuchs, S. Payne, X. Liang, M. Matl, and D. Went-
+zlaff, “OpenPiton: An open source manycore research framework,” in
+ASPLOS.
+ACM, 2016, pp. 217–232.
+[5] S. Beamer, K. Asanovic, and D. Patterson, “Direction-optimizing
+breadth-ﬁrst search,” in SC ’12: Proceedings of the International Con-
+ference on High Performance Computing, Networking, Storage and
+Analysis, 2012, pp. 1–10.
+[6] S. Beamer, K. Asanovi´c, and D. Patterson, “The gap benchmark suite,”
+arXiv preprint arXiv:1508.03619, 2015.
+[7] M. Besta, M. Podstawski, L. Groner, E. Solomonik, and T. Hoeﬂer,
+“To push or to pull: On reducing communication and synchronization
+in graph computations,” CoRR, vol. abs/2010.16012, 2020. [Online].
+Available:
+[8] E. G. Boman, K. D. Devine, and S. Rajamanickam, “Scalable matrix
+computations on large scale-free graphs using 2d graph partitioning,”
+in Proceedings of the International Conference on High Performance
+Computing, Networking, Storage and Analysis, 2013, pp. 1–12.
+[9] Cerebras Systems Inc., “The second generation wafer scale en-
+gine,”
+Whitepaper.pdf.
+[10] T.-Y. J. Chang, Y.-H. Chen, W.-M. Chan, H. Cheng, P.-S. Wang, Y. Lin,
+H. Fujiwara, R. Lee, H.-J. Liao, P.-W. Wang, G. Yeap, and Q. Li, “A 5-
+nm 135-Mb SRAM in EUV and high-mobility channel ﬁnfet technology
+with metal coupling and charge-sharing write-assist circuitry schemes for
+high-density and low-vmin applications,” IEEE Journal of Solid-State
+Circuits, vol. 56, no. 1, pp. 179–187, 2021.
+[11] C. C. Chou, A. Jaleel, and M. K. Qureshi, “Cameo: A two-level memory
+organization with capacity of main memory and ﬂexibility of hardware-
+managed cache,” in 2014 47th Annual IEEE/ACM International Sympo-
+sium on Microarchitecture.
+IEEE, 2014, pp. 1–12.
+[12] E. Cota, G. D. Guglielmo, P. Mantovani, and L. Carloni, “An analysis
+of accelerator coupling in heterogeneous architectures,” in Proceedings
+of the 52nd Design Automation Conference (DAC), 2015.
+[13] E. G. Cota, P. Mantovani, and L. P. Carloni, “Exploiting private local
+memories to reduce the opportunity cost of accelerator integration,” in
+Proceedings of the 2016 International Conference on Supercomputing,
+2016, pp. 1–12.
+[14] V. Dadu, S. Liu, and T. Nowatzki, “Polygraph: Exposing the value
+of ﬂexibility for graph processing accelerators,” in 2021 ACM/IEEE
+48th Annual International Symposium on Computer Architecture (ISCA).
+IEEE, 2021, pp. 595–608.
+[15] S. Davidson, S. Xie, C. Torng, K. Al-Hawai, A. Rovinski, T. Ajayi,
+L. Vega, C. Zhao, R. Zhao, S. Dai, A. Amarnath, B. Veluri, P. Gao,
+A. Rao, G. Liu, R. K. Gupta, Z. Zhang, R. Dreslinski, C. Batten,
+and M. B. Taylor, “The celerity open-source 511-core risc-v tiered
+accelerator fabric: Fast architectures and design methodologies for fast
+chips,” IEEE Micro, vol. 38, no. 2, pp. 30–41, 2018.
+[16] S. Enjapuri, D. Gujjar, S. Sinha, R. Halli, and M. Trivedi, “A 5nm
+wide voltage range ultra high density sram design for l2/l3 cache
+applications,” in 2021 34th International Conference on VLSI Design
+and 2021 20th International Conference on Embedded Systems (VLSID),
+2021, pp. 151–156.
+[17] Esperanto Technologies, “Esperanto’s et-minion on-chip risc-v cores,”
+
+[18] T. J. Ham, J. L. Arag´on, and M. Martonosi, “DeSC: Decoupled supply-
+compute communication management for heterogeneous architectures,”
+in MICRO.
+ACM, 2015.
+[19] T. J. Ham, L. Wu, N. Sundaram, N. Satish, and M. Martonosi,
+“Graphicionado: A high-performance and energy-efﬁcient accelerator
+for graph analytics,” in Proceedings of the 49th Annual International
+Symposium
+on
+Microarchitecture,
+ser.
+MICRO,
+2016.
+[Online].
+Available:

@@ -1,0 +1,995 @@
+Memory-Efﬁcient Episodic Control Reinforcement
+Learning with Dynamic Online k-means
+
+Andrea Agostinelli
+Department of Bioengineering
+Imperial College London
+
+Kai Arulkumaran
+Department of Bioengineering
+Imperial College London
+
+arXiv:1911.09560v1 [cs.LG] 21 Nov 2019
+
+Marta Sarrico
+Department of Bioengineering
+Imperial College London
+
+Pierre Richemond
+Data Science Institute
+Imperial College London
+
+Anil A. Bharath
+Department of Bioengineering
+Imperial College London
+
+Abstract
+
+Recently, neuro-inspired episodic control (EC) methods have been developed to
+overcome the data-inefﬁciency of standard deep reinforcement learning approaches.
+Using non-/semi-parametric models to estimate the value function, they learn
+rapidly, retrieving cached values from similar past states. In realistic scenarios,
+with limited resources and noisy data, maintaining meaningful representations in
+memory is essential to speed up the learning and avoid catastrophic forgetting.
+Unfortunately, EC methods have a large space and time complexity. We investigate
+different solutions to these problems based on prioritising and ranking stored states,
+as well as online clustering techniques. We also propose a new dynamic online
+k-means algorithm that is both computationally-efﬁcient and yields signiﬁcantly
+better performance at smaller memory sizes; we validate this approach on classic
+reinforcement learning environments and Atari games.
+
+1
+Introduction
+
+Reinforcement learning (RL), using neural networks as function approximators, have surpassed
+human performance in a wide range of environments [18]. However, these approaches are sample-
+inefﬁcient: they can require hundreds of times the experience of a human to reach the same level
+of performance during the early stages of learning [13]. Recently, new neuro-inspired algorithms
+known as episodic control (EC) methods [5, 19], implementing non-/semi-parametric models, have
+outperformed the speed of learning of state-of-the-art deep RL algorithms. EC methods rely on
+looking up past transitions from memory, where novel states are evaluated based on their similarity
+to past states. The lookups use k-nearest neighbours (k-NN) search, which is demanding in terms
+of both space and time complexity, and as the lookup operation is performed every time the agent
+encounters a new state, this makes it very difﬁcult to scale up existing EC algorithms.
+
+The novel problem that we aim to address, with the online nature of the data distribution in RL,
+is how to reduce the size of the memory in EC methods. And while reducing the memory size,
+the memory structure still has to support the RL agent in learning from recently-observed states
+without catastrophically losing past knowledge, referred to as the stability-plasticity dilemma in
+memory retention [1]. In consideration of these problems, our aim is to investigate and design novel
+memory storage approaches for EC algorithms that retain performance while reducing the amount
+of memory needed. We make the following contributions: Firstly, we evaluate 5 different memory
+storage strategies, including a novel online clustering algorithm, applied to 2 EC algorithms, in both
+
+Figure 1: NEC inference and updating. (left) A state s is turned into an embedding/key h via a
+neural network, after which its Q-value is estimated through a weighted average among its nearest
+neighbours (NN). (right) New states are stored either by completely replacing another stored state, or
+merging it into an existing cluster of states.
+
+classic RL environments and Atari games. Secondly, we show that replacing least-recently-used
+states or using online clustering techniques achieves the best performance across a range of settings
+and environments. Finally, we propose a new online clustering algorithm, which outperforms the
+other memory storage strategies when using smaller memory sizes.
+
+2
+Background
+
+Reinforcement Learning: RL is the study of optimising the behaviour of an agent embodied in an
+environment. In the RL framework, the agent observes at timestep t the current state st, interacts
+with the environment using action at, thereby generating the transition to the successive state st+1
+and receiving a feedback signal (reward) rt+1. The behaviour of an agent is controlled by the policy
+π(at|st). The ﬁnal goal is to learn the optimal policy π∗that maximises the expected return in the
+environment; the optimal policy π∗is deﬁned as: π∗= argmaxπ E[R | π], where the return R is the
+cumulative, λ-discounted reward of its sequence of experiences: R = PT −1
+t=0 λtrt+1; λ ∈[0, 1].
+
+Episodic Control: Memory and learning are supported in the brain by two main systems, the
+hippocampus and the neocortex. In particular, neocortical changes are related to long-term memory
+and learning of statistical models of sensory experiences, while hippocampal activity seems to
+perform fast instance-based learning on recent experiences; the latter system is thought to be the
+main location of rapid learning in humans [17]. Recently the behaviour of the hippocampus has been
+translated into a novel EC RL algorithm, where Q-value estimation is performed as weighted k-NN
+regression, emulating the hippocampal instance-based retrieval of the past.
+
+In model-free EC (MFEC) [5] the agent is comprised of per-action tables QEC containing a list of the
+highest returns ever obtained by taking action a from state s: QEC(s, a). MFEC is non-parametric,
+and uses either Gaussian random projections [10] or variational autoencoders [12, 20] to reduce
+the dimensionality of the observations. A semi-parametric EC model was introduced as neural EC
+(NEC) [19], a deep RL agent that uses a combination of a gradient descent to slowly improve the
+representation of the state through a neural network, and a quickly-updated value function through
+“differentiable neural dictionaries”, similar to MFEC per-action tables. The complete state-value
+estimation process is shown in Figure 1, where the weights for the average in the Q-value calculation
+are determined by the inverse distance weighted kernel: wi = k (h, hi) =
+1
+∥h−hi∥2
+2+δ, where hi is a
+learned embedding of a state si. The parameters of NEC are updated through minimising the residual
+between the current Q-value and n-step episodic returns.
+
+Memory Storage Strategies: After ﬁlling a memory with ﬁnite storage, there are two main strategies
+to deal with new observations, as illustrated in Figure 1; prioritising the storage of states with speciﬁc
+characteristics and reducing the number of elements with clustering techniques.
+
+In MFEC and NEC the update of the memory is done by removing the least-recently-used entries.
+Outside of EC, Isele et al. [9] illustrated four selection strategies to manage the storage of past
+transitions {st, at, st+1, rt+1} in experience replay [15]: prioritising surprising states, favouring
+higher rewards, narrowing the set of experiences trying to match the global distribution of states, and
+maintaining a heterogeneous distribution of the state-space.
+
+Generally, when the agent operates in a streaming setting, using data that is not independent and
+identically distributed (i.i.d.), conventional ﬁrst-in-ﬁrst-out (FIFO) memory buffers will fail due to the
+
+non-i.i.d. data stream [8]. Clustering algorithms are an effective class of methods that can mitigate
+catastrophic forgetting, reducing the number of redundant datapoints. Classic clustering techniques
+have the disadvantage of being applicable only to static sets of data, but online clustering methods
+can be applied successfully in streaming settings [8].
+
+3
+Implemented Strategies
+
+3.1
+Prioritised Memories
+
+Using MFEC and NEC as baseline EC algorithms, we investigate the inﬂuence of different memory
+storage strategies. The following strategies apply when the memory is completely ﬁlled; a ranking
+rule prioritises the replacement of the states in the memory.
+
+Maximise Surprise (SUR) [9]: States with the highest prediction error (surprise) could be more
+useful to store, as compared to states that are well-predicted with the current memory. The surprise
+of a given state is calculated as the absolute value of the difference between the future discounted
+return and its predicted Q-value; therefore we drop the state s with the minimum surprise:
+
+argmin
+s∈memory |R −Q(s, a)|.
+
+Maximise Rewards (REW) [9]: States with the highest return may be the best to retain. With this
+strategy the state with the lowest return is replaced:
+
+argmin
+s∈memory R.
+
+Least Recent Used (LRU) [5]: The state that has been least recently used by the memory is replaced
+by the new state. This is the default strategy for MFEC and NEC, inspired by the behaviour of the
+brain in forgetting old experiences.
+
+3.2
+Clustering Techniques
+
+An alternative to ranking strategies is to reduce the number of states by merging them into clusters,
+with newly observed states merged with their nearest (Euclidean) neighbour.
+
+Online k-means (kM): There are several versions of the “online k-means“ algorithms [22, 14, 11],
+but we use the computationally-efﬁcient and simple version from [8]. After ﬁlling the memory, a
+separate vector n is used to store the number of elements of each cluster, and after observing a new
+state the memory is updated by:
+
+ci ←nici + s
+
+ni + 1 ,
+Qi ←niQi + R
+
+ni + 1
+,
+ni ←ni + 1,
+
+where ci is the closest neighbour to the new state s with associated Q-value Qi, and ni is the number
+of elements of ci, subsequently incremented by one.
+
+Dynamic online k-means (DkM): This is our novel clustering algorithm, based on online k-means.
+We use a new heuristic for the update, based on the memory size N:
+
+ci ←nici + s
+
+ni + 1 ,
+Qi ←niQi + R
+
+ni + 1
+,
+ni ←ni + 1,
+n ←n −1
+
+N .
+
+In comparison to online k-means, the “size” of the clusters is reduced over time. Once ni ≤0 the
+cluster is completely replaced by the new state s, with ni reset to 1. Our heuristic, inspired by LRU,
+aims to delete clusters that are not frequently encountered, and also prevents clusters from becoming
+static.
+
+Once the nearest neighbour is found for a memory of size N, kM has an additional complexity of
+O(1), and DkM has an additional complexity of O(N), which is negligible compared to the original
+lookup (O(N 2) for naive k-means or O(dNlog(N)) for k-d/cover trees [4], with d proportional to
+the state dimensionality).
+
+Table 1: Total rewards in the Cartpole domain, after 2 × 104 (NEC) and 1.5 × 104 (MFEC) steps;
+the MFEC agents typically converged within 0.5 × 104 steps, while the NEC agents continued to
+improve. The values indicate the mean of the last 10 evaluations, averaged over 5 random seeds.
+
+Memory Size
+MFEC
+NEC
+D3QN
+per Action
+LRU
+REW
+SUR
+kM
+DkM
+LRU
+REW
+SUR
+kM
+DkM
+50
+96 ± 21
+180 ± 47
+180 ± 47
+180 ± 47
+51 ± 24
+133 ± 66
+123 ± 13
+161 ± 15
+107 ± 29
+195 ± 88
+136 ± 72
+326 ± 31
+326 ± 31
+326 ± 31
+100
+110 ± 9
+134 ± 25
+57 ± 15
+108 ± 37
+153 ± 25
+153 ± 25
+153 ± 25
+235 ± 53
+132 ± 42
+215 ± 97
+216 ± 159
+339 ± 32
+339 ± 32
+339 ± 32
+150
+117 ± 13
+125 ± 30
+83 ± 15
+74 ± 21
+142 ± 26
+142 ± 26
+142 ± 26
+246 ± 22
+167 ± 51
+215 ± 36
+151 ± 56
+290 ± 24
+290 ± 24
+290 ± 24
+500
+142 ± 19
+61 ± 7
+102 ± 12
+244 ± 131
+244 ± 131
+244 ± 131
+174 ± 34
+247 ± 43
+117 ± 33
+218 ± 48
+211 ± 79
+271 ± 37
+271 ± 37
+271 ± 37
+249
+1000
+197 ± 37
+197 ± 37
+197 ± 37
+49 ± 13
+151 ± 36
+196 ± 26
+181 ± 18
+220 ± 46
+131 ± 39
+145 ± 44
+237 ± 65
+257 ± 46
+257 ± 46
+257 ± 46
+±143
+3000
+276 ± 31
+45 ± 8
+183 ± 18
+359 ± 81
+359 ± 81
+359 ± 81
+209 ± 13
+254 ± 42
+110 ± 44
+220 ± 15
+300 ± 61
+300 ± 61
+300 ± 61
+255 ± 50
+5000
+259 ± 43
+54 ± 13
+210 ± 23
+352 ± 86
+352 ± 86
+352 ± 86
+213 ± 34
+282 ± 38
+114 ± 14
+219 ± 32
+343 ± 97
+343 ± 97
+343 ± 97
+302 ± 53
+10000
+325 ± 55
+65 ± 11
+266 ± 28
+344 ± 30
+344 ± 30
+344 ± 30
+228 ± 15
+309 ± 23
+124 ± 42
+250 ± 27
+330 ± 27
+330 ± 27
+330 ± 27
+265 ± 25
+
+Figure 2: Learning on Cartpole using NEC and
+a small memory size of 50. DkM is the only
+method that reaches average total rewards > 200.
+
+Figure 3: Total rewards on Acrobot, using NEC
+and different memory sizes. Overall, DkM yields
+high return episodes with low variance.
+
+4
+Experiments
+
+We investigated the importance of using alternative memory strategies in both simple and complex
+RL domains, showing results for different memory capacities. We use the original conﬁgurations of
+MFEC and NEC as EC baselines, with the dueling double DQN (D3QN) as a baseline [18, 7, 21].
+We tested our implementations in three sets of environments: classic control [6], room domains
+(re-implemented from [16]), and Atari games [3]. For every environment we use a discount factor λ
+of 0.99; a full set of hyperparameters per environment are available in Section 10. Every agent is
+evaluated with an argmax policy over 10 different episodes every evaluation interval.
+
+Classic Control: We considered Acrobot and Cartpole, which have a continuous state space and 3
+and 2 actions respectively. Table 1 summarises results for Cartpole. Clustering techniques perform
+the best. In particular DkM applied to NEC consistently shows the best performance for low buffer
+sizes. Memory size 50, where DkM signiﬁcantly outperforms the other techniques, is illustrated in
+Figure 2. In Acrobot, DkM outperforms all the other methods, as shown in Table 2. Here our novel
+method achieves the best rewards in 10 out of 12 settings, and always when using memory sizes less
+than 5000. In the ﬁnal 2 settings (MFEC with memory sizes 5000 and 10000), DkM is second only
+to LRU. With NEC, DkM is always the best memory storage method (Figure 3).
+
+Gridworld: We recreated two room environments, OpenRoom and FourRoom. The agent can move
+in 4 directions and is given a reward of 1 only when the agent moves to the goal. OpenRoom is a
+10x10 open room, and FourRoom is a set of four interconnected rooms, totalling 11x11. Clustering
+techniques are particularly efﬁcient in the OpenRoom domain, with kM performing the best at
+
+Table 2: Total rewards in the Acrobot domain, after 2 × 104 steps. The values indicate the mean of
+the last 10 evaluations, averaged over 5 initial random seeds for all methods.
+
+Memory Size
+MFEC
+NEC
+D3QN
+per Action
+LRU
+REW
+SUR
+kM
+DkM
+LRU
+REW
+SUR
+kM
+DkM
+50
+−500
+−500
+−304 ± 28
+−500
+−298 ± 108
+−298 ± 108
+−298 ± 108
+−500
+−500
+−500
+−500
+−453 ± 79
+−453 ± 79
+−453 ± 79
+150
+−499 ± 2
+−500
+−431 ± 136
+−500
+−165 ± 45
+−165 ± 45
+−165 ± 45
+−492 ± 17
+−500
+−500
+−500
+−300 ± 91
+−300 ± 91
+−300 ± 91
+500
+−486 ± 19
+−500
+−493 ± 9
+−425 ± 149
+−164 ± 41
+−164 ± 41
+−164 ± 41
+−397 ± 121
+−495 ± 7
+−489 ± 19
+−354 ± 179
+−220 ± 108
+−220 ± 108
+−220 ± 108
+−336
+1000
+−387 ± 87
+−500
+−479 ± 42
+−430 ± 141
+−345 ± 190
+−345 ± 190
+−345 ± 190
+−317 ± 132
+−498 ± 2
+−482 ± 17
+−256 ± 164
+−179 ± 92
+−179 ± 92
+−179 ± 92
+±149
+5000
+−368 ± 167
+−368 ± 167
+−368 ± 167
+−500
+−499 ± 1
+−478 ± 44
+−397 ± 155
+−116.4 ± 14
+−500
+−489 ± 16
+−225 ± 138
+−115.8 ± 34
+−115.8 ± 34
+−115.8 ± 34
+10000
+−284 ± 173
+−284 ± 173
+−284 ± 173
+−500
+−497 ± 5
+−497 ± 4
+−395 ± 132
+−123 ± 20
+−500
+−483 ± 22
+−260 ± 134
+−120 ± 30
+−120 ± 30
+−120 ± 30
+
+Figure 4: Learning curves of 5 Atari games using MFEC, NEC and D3QN. EC methods with a
+memory size of 104 per action. DkM generally improves upon LRU.
+
+Table 3: Mean and standard deviations of ﬁnal scores calculated across 3 seeds on 5 Atari games,
+using a memory size of 104 (on the left) and 105 (on the right). Total rewards calculated after 5 × 106
+steps, and 3.5 × 106 for NEC when using a memory size of 105 per action.
+
+Atari
+MFEC 104 size
+NEC 104 size
+MFEC 105 size
+NEC 105 size
+D3QN
+Game
+LRU
+DkM
+LRU
+DkM
+LRU
+DkM
+LRU
+DkM
+Bowling
+51.1 ± 2.8
+53.8 ± 2.8
+53.8 ± 2.8
+53.8 ± 2.8
+23.9 ± 6
+48 ± 5
+48 ± 5
+48 ± 5
+62.8 ± 1.8
+62.8 ± 1.8
+62.8 ± 1.8
+61 ± 2.9
+21.6 ± 6.4
+43.8 ± 13.5
+43.8 ± 13.5
+43.8 ± 13.5
+30.5 ± 13.6
+Ms. Pac-Man
+2660 ± 252
+4143 ± 1153
+4143 ± 1153
+4143 ± 1153
+3556 ± 783
+4264 ± 1558
+4264 ± 1558
+4264 ± 1558
+5245 ± 456
+5245 ± 456
+5245 ± 456
+2862 ± 1388
+5225 ± 856
+5225 ± 856
+5225 ± 856
+4092 ± 856
+2090 ± 275
+Pong
+−5.3 ± 1.9
+0.63 ± 5.3
+0.63 ± 5.3
+0.63 ± 5.3
+−2.9 ± 6.3
+−0.35 ± 4.3
+−0.35 ± 4.3
+−0.35 ± 4.3
+18.6 ± 1.4
+18.6 ± 1.4
+18.6 ± 1.4
+15.3 ± 2.8
+11.1 ± 3
+15.9 ± 1.6
+15.9 ± 1.6
+15.9 ± 1.6
+6.1 ± 9.6
+Space Invaders
+472 ± 28
+472 ± 28
+472 ± 28
+408 ± 60
+694 ± 105
+694 ± 105
+694 ± 105
+549 ± 42
+806 ± 88
+806 ± 88
+806 ± 88
+430 ± 61
+854 ± 67
+854 ± 67
+854 ± 67
+526 ± 88
+767 ± 72
+Q*bert
+1724 ± 846
+1728 ± 942
+1728 ± 942
+1728 ± 942
+2168 ± 685
+2168 ± 685
+2168 ± 685
+1556 ± 342
+4930 ± 787
+4930 ± 787
+4930 ± 787
+1140 ± 241
+5093 ± 1480
+5093 ± 1480
+5093 ± 1480
+3389 ± 745
+4463 ± 460
+
+memory sizes 2 and 5, and DkM performing best overall across all settings. DkM performs well
+with a memory size of 10 (or greater), which is 5 times smaller than what is required for the LRU
+method. However, in FourRoom only LRU was capable of perfectly solving the environment using
+high memory sizes, bigger than 150 per action. Tables and learning curves are provided in Section 8.
+
+Atari: A set of ﬁve games with varied gameplay types are evaluated, namely: Ms. Pac-Man, Q*bert,
+Pong, Space Invaders and Bowling. As in prior work, we use standard preprocessing of the visual
+observations [18], and use Gaussian random projections for MFEC [5]. As preferring either highly
+rewarding (REW) or highly surprising states (SUR) as the memory storage strategy achieved poor
+performance in both Classic Control and Gridworld domains, we did not evaluate these methods
+on Atari games due to limited computational resources. For this reason we also did not evaluate
+kM, as it was generally outperformed by DkM. We ran experiments for 5 million steps, where every
+agent step represents 4 game frames (action repeat of 4). Due to limited computational resources
+we ran experiments with NEC for 3.5 million steps, when using 105 items per action. As in the
+original papers [5, 19], we use 11 nearest-neighbours and a ﬁnal ϵ of 0.005 for MFEC, and 50 nearest
+neighbours and a ﬁnal ϵ = 0.001 for NEC. We did, however, use a key size of 128 and the inverse
+distance weighted kernel for MFEC, as this performed the same or better than a simple average in our
+initial experiments, and makes these hyperparameters the same as for NEC.1
+
+Figure 4 shows the learning curve of 5 different Atari games, using a memory size of 104 items per
+action. DkM performed the best across the experiments, compared to LRU (Table 3). In Bowling.
+Ms. Pac-Man and Pong, DkM achieves the best results, for either MFEC and NEC. The performance
+of EC methods increases using a bigger memory size of 105 items per action, where they show much
+better sample efﬁciency in comparison to fully parametric approaches such as the D3QN (Table 3).
+EC methods are faster in achieving high rewards. LRU outperforms DkM for high memory size; it
+always achieves better rewards in Space Invaders and Q*Bert for both MFEC and NEC.
+
+1As a result we do not include the original results as hyperparameter changes mean they are not directly
+comparable.
+
+5
+Discussion
+
+We investigated various methods to improve the memory complexity of EC methods, and proposed a
+novel online clustering algorithm (DkM) that outperforms other methods for small memory sizes.
+In simple environments, it can require 10 to 20 times less memory to effectively train the agent,
+as compared to the original LRU strategy (Tables 1, 2). We speculate that DkM outperforms the
+alternative methods because of its ability to reduce redundant information through clustering, and
+concurrently the ability to adapt to changes in the state distributions, as investigated in Section 6. An
+interesting observation is that while LRU tends to improve monotonically with an increase in the
+buffer size (Tables 1, 2), the online clustering methods do not share that property—investigating this
+could be an interesting avenue for further understanding the role of clustering representations in EC.
+
+In Atari games, the improvements hold for smaller buffer sizes (104), but not for larger buffer sizes
+(105), where the original LRU strategy performs best. The operation of merging states into clusters
+could increase state aliasing, making it more difﬁcult for an agent to properly differentiate such
+situations (e.g., small pixel differences). Possible improvements could be to make the clustering
+process itself dependent on the Q-values.
+
+Overall, DkM allows the use of smaller memory sizes for EC methods, making them more memory-
+and computationally-efﬁcient. Combined with the sample-efﬁciency of EC methods, we believe that
+it is a promising technique to apply to real-world scenarios where resources can be limited and the
+acquisition of new data expensive.
+
+References
+
+[1] Wickliffe C Abraham and Anthony Robins. Memory retention–the synaptic stability versus
+plasticity dilemma. Trends in Neurosciences, 28(2):73–78, 2005.
+
+[2] Adelchi Azzalini and Antonella Capitanio. Statistical applications of the multivariate skew
+normal distribution. Journal of the Royal Statistical Society: Series B (Statistical Methodology),
+61(3):579–602, 1999.
+
+[3] Marc G Bellemare, Yavar Naddaf, Joel Veness, and Michael Bowling. The arcade learning
+environment: An evaluation platform for general agents. Journal of Artiﬁcial Intelligence
+Research, 47:253–279, 2013.
+
+[4] Alina Beygelzimer, Sham Kakade, and John Langford. Cover trees for nearest neighbor. In
+International Conference on Machine Learning, pages 97–104. ACM, 2006.
+
+[5] Charles Blundell, Benigno Uria, Alexander Pritzel, Yazhe Li, Avraham Ruderman, Joel Z Leibo,
+Jack Rae, Daan Wierstra, and Demis Hassabis. Model-free episodic control. arXiv preprint
+arXiv:1606.04460, 2016.
+
+[6] Greg Brockman, Vicki Cheung, Ludwig Pettersson, Jonas Schneider, John Schulman, Jie Tang,
+and Wojciech Zaremba. OpenAI Gym. arXiv preprint arXiv:1606.01540, 2016.
+
+[7] Hado V Hasselt. Double Q-learning. In Advances in Neural Information Processing Systems,
+pages 2613–2621, 2010.
+
+[8] Tyler L Hayes, Nathan D Cahill, and Christopher Kanan. Memory efﬁcient experience replay for
+streaming learning. In International Conference on Robotics and Automation, pages 9769–9776,
+2019.
+
+[9] David Isele and Akansel Cosgun. Selective experience replay for lifelong learning. In AAAI
+Conference on Artiﬁcial Intelligence, 2018.
+
+[10] William B Johnson and Joram Lindenstrauss. Extensions of Lipschitz mappings into a Hilbert
+space. Contemporary Mathematics, 26(189-206):1, 1984.
+
+[11] Angie King. Online k-means clustering of nonstationary data. Prediction Project Report, pages
+1–9, 2012.
+
+[12] Diederik P Kingma and Max Welling. Auto-encoding variational Bayes. In International
+Conference on Learning Representations, 2014.
+
+[13] Brenden M Lake, Tomer D Ullman, Joshua B Tenenbaum, and Samuel J Gershman. Building
+machines that learn and think like people. Behavioral and Brain Sciences, 40, 2017.
+
+[14] Edo Liberty, Ram Sriharsha, and Maxim Sviridenko. An algorithm for online k-means clustering.
+In Meeting on Algorithm Engineering and Experiments, pages 81–89. SIAM, 2016.
+
+[15] Long-Ji Lin. Self-improving reactive agents based on reinforcement learning, planning and
+teaching. Machine Learning, 8(3-4):293–321, 1992.
+
+[16] Marios C Machado, Marc G Bellemare, and Michael Bowling. A Laplacian framework for
+option discovery in reinforcement learning. In International Conference on Machine Learning,
+pages 2295–2304, 2017.
+
+[17] James L McClelland, Bruce L McNaughton, and Randall C O’Reilly. Why there are comple-
+mentary learning systems in the hippocampus and neocortex: insights from the successes and
+failures of connectionist models of learning and memory. Psychological Review, 102(3):419,
+1995.
+
+[18] Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G
+Bellemare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al.
+Human-level control through deep reinforcement learning. Nature, 518(7540):529, 2015.
+
+[19] Alexander Pritzel, Benigno Uria, Sriram Srinivasan, Adria Puigdomenech Badia, Oriol Vinyals,
+Demis Hassabis, Daan Wierstra, and Charles Blundell. Neural episodic control. In International
+Conference on Machine Learning, pages 2827–2836, 2017.
+
+[20] Danilo Jimenez Rezende, Shakir Mohamed, and Daan Wierstra. Stochastic backpropagation
+and approximate inference in deep generative models. In International Conference on Machine
+Learning, pages 1278–1286, 2014.
+
+[21] Ziyu Wang, Tom Schaul, Matteo Hessel, Hado Hasselt, Marc Lanctot, and Nando Freitas.
+Dueling network architectures for deep reinforcement learning. In International Conference on
+Machine Learning, pages 1995–2003, 2016.
+
+[22] Shi Zhong. Efﬁcient online spherical k-means clustering. In IEEE International Joint Conference
+on Neural Networks, volume 5, pages 3180–3185. IEEE, 2005.
+
+Appendix
+
+6
+Properties of Memory Storage Strategies
+
+To better understand the behaviour of our DkN algorithm with respect to the other strategies, we
+created a simple synthetic 2D dataset and and evaluated the k-means, online k-means, DkN and LRU
+methods on this data.
+
+For the online methods, we simulated an online data stream ﬁrst by a series of 2D points uniformly
+distributed on a grid, followed by a series of 2D points from a skew normal distribution [2], which
+represents random exploration of the state space, and then convergence. In order to qualitatively
+explore the properties of the different methods, we plotted a heatmap of the distribution of states
+using kernel density estimation.
+
+In Figure 5a we notice that different strategies cover different parts of the data distribution. k-means
+applied to the whole dataset distributes the clusters across the entire support of the data independently
+of when the data was ﬁrst observed. kM and LRU show completely different distributions; the former
+favours the ﬁrst data distribution (uniform) due to the static nature of clusters, while the latter favours
+the second data distribution (skew normal) after forgetting the least-frequently-visited states. In
+comparison, DkM is able to retain old states, while biasing clusters towards the new distribution.
+Figure 5b shows the evolution of the clusters in DkM after observing 25, 50, 75 and 100% of the
+dataset. DkM behaves like a mix between kM, where the estimated data distribution covers the
+support well, and LRU, which prioritises new observations.
+
+(a) Comparison between different methodologies
+
+(b) Evolution of the embedding with DkM during the data stream
+
+Figure 5: Comparison between state distributions generated from the different techniques. DkM
+shows the best approximation to the real dataset. Kernel density estimates have been ﬁt separately for
+each method.
+
+7
+Classic Control
+
+Figure 6: Learning curves of Cartpole for different memory sizes, using MFEC and D3QN
+
+Figure 7: Learning curves of Cartpole for different memory sizes, using NEC and D3QN
+
+Figure 8: Learning curves of Acrobot for different memory sizes, using MFEC and D3QN
+
+Figure 9: Learning curves of Acrobot for different memory sizes, using NEC and D3QN
+
+8
+Gridworld
+
+Figure 10: Learning curves of OpenRoom for different memory sizes, using MFEC and D3QN
+
+Figure 11: Learning curves of OpenRoom for different memory sizes, using NEC and D3QN
+
+Figure 12: Learning curves of FourRoom for different memory sizes, using MFEC and D3QN
+
+Figure 13: Learning curves of FourRoom for different memory sizes, using NEC and D3QN
+
+9
+Atari games
+
+Figure 14: Learning curves of 5 Atari games using MFEC, NEC and D3QN. EC methods with a
+memory size of 105 per action.
+
+10
+Hyperparameters
+
+Table 4: Hyperparameters used with MFEC across all the environments.
+
+Parameters name
+Classic Control
+Room Domains
+Atari Games
+Number of neighbours k
+11
+11
+11
+ϵ initial
+1
+1
+1
+ϵ ﬁnal
+5 × 10−3
+5 × 10−3
+5 × 10−3
+
+ϵ anneal start (steps)
+5 × 103
+5 × 103
+5 × 103
+
+ϵ anneal end (steps)
+25 × 103
+25 × 103
+25 × 103
+
+Discount factor λ
+0.99
+0.99
+0.99
+Reward clip
+None
+None
+None
+Kernel delta δ
+10−3
+10−3
+10−3
+
+Observation projection
+None
+None
+Gaussian
+Projection key size
+None
+None
+128
+
+Table 5: Hyperparameters used with NEC across all the environments.
+
+Parameters name
+Classic Control
+Room Domains
+Atari Games
+Number of neighbours k
+11
+11
+50
+Experience replay size
+105
+105
+105
+
+Memory learning rate α
+0.1
+0.1
+0.1
+RMSprop learning rate
+7.92 × 10−6
+7.92 × 10−6
+7.92 × 10−6
+
+RMSprop momentum
+0.95
+0.95
+0.95
+RMSprop ϵ
+10−2
+10−2
+10−2
+
+ϵ initial
+1
+1
+1
+ϵ ﬁnal
+5 × 10−3
+5 × 10−3
+10−3
+
+ϵ anneal start (steps)
+5 × 103
+5 × 103
+5 × 103
+
+ϵ anneal end (steps)
+25 × 103
+25 × 103
+25 × 103
+
+Discount factor λ
+0.99
+0.99
+0.99
+Reward clip
+None
+None
+None
+Kernel delta δ
+10−3
+10−3
+10−3
+
+Batch size
+32
+32
+32
+n-step return
+100
+100
+100
+Key size
+64
+64
+128
+Training start (steps)
+103
+103
+5 × 104
+
+Table 6: Hyperparameters used with D3QN across all the environments.
+
+Parameters name
+Classic Control
+Room Domains
+Atari Games
+Experience replay size
+105
+105
+106
+
+RMSprop learning rate
+25 × 10−5
+25 × 10−5
+25 × 10−5
+
+RMSprop momentum
+0.95
+0.95
+0.95
+RMSprop ϵ
+10−2
+10−2
+10−2
+
+ϵ initial
+1
+1
+1
+ϵ ﬁnal
+5 × 10−3
+5 × 10−3
+10−2
+
+ϵ anneal start (steps)
+1
+1
+1
+ϵ anneal end (steps)
+5 × 104
+5 × 104
+106
+
+Discount factor λ
+0.99
+0.99
+0.99
+Reward clip
+Yes
+Yes
+Yes
+Batch size
+32
+32
+32
+Training start (steps)
+5 × 103
+5 × 103
+12.5 × 103
+
+Target network update (steps)
+7.5 × 103
+103
+103

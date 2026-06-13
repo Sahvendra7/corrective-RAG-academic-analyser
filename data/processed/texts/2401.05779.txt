@@ -1,0 +1,1940 @@
+Erasing Undesirable Influence in Diffusion Models
+
+Jing Wu1, Trung Le1, Munawar Hayat2, Mehrtash Harandi1
+
+1Monash University, Melbourne, VIC, Australia, 2Qualcomm, San Deigo, CA, US
+
+{jing.wu1, trunglm,
+
+arXiv:2401.05779v4 [cs.CV] 20 Nov 2024
+
+I2P prompts
+COCO prompts
+
+Added by authors for publication
+
+Figure 1. Top to Bottom: generated samples by SD v1.4 and model scrubbed by our method, when erasing the concept of ‘nudity’. Our
+method can avoid NSFW (not safe for work) content while preserving model utility.
+
+Abstract
+
+WARNING: This paper contains sexually explicit im-
+agery that may be offensive in nature.
+
+Diffusion models are highly effective at generating high-
+quality images but pose risks, such as the unintentional gen-
+eration of NSFW (not safe for work) content. Although var-
+ious techniques have been proposed to mitigate unwanted
+influences in diffusion models while preserving overall per-
+formance, achieving a balance between these goals remains
+challenging. In this work, we introduce EraseDiff, an algo-
+rithm designed to preserve the utility of the diffusion model
+on retained data while removing the unwanted information
+associated with the data to be forgotten. Our approach for-
+mulates this task as a constrained optimization problem us-
+ing the value function, resulting in a natural first-order al-
+gorithm for solving the optimization problem. By altering
+the generative process to deviate away from the ground-
+truth denoising trajectory, we update parameters for preser-
+vation while controlling constraint reduction to ensure ef-
+fective erasure, striking an optimal trade-off. Extensive ex-
+periments and thorough comparisons with state-of-the-art
+algorithms demonstrate that EraseDiff effectively preserves
+the model’s utility, efficacy, and efficiency.
+
+1. Introduction
+
+Diffusion Models [30, 48, 59] are now the method of choice
+in deep generative models, owing to their high-quality out-
+put, stability, and ease of training procedure. This has fa-
+cilitated their successful integration into commercial ap-
+plications such as midjourney. Unfortunately, the ease of
+use associated with diffusion models brings forth signif-
+icant privacy risks. Studies have shown that these mod-
+els can memorize and regenerate individual images from
+their training datasets [10, 57, 58]. Beyond privacy, dif-
+fusion models are susceptible to misuse and can generate
+NSFW digital content [47, 51, 53]. In this context, indi-
+viduals whose images are used for training might request
+the removal of their private data. In particular, data pro-
+tection regulations like the European Union General Data
+Protection Regulation (GDPR) [63] and the California Con-
+sumer Privacy Act (CCPA) [24] grant users the right to be
+
+forgotten, obligating companies to expunge data pertaining
+to a user upon receiving a request for deletion. These le-
+gal provisions grant data owners the right to remove their
+data from trained models and eliminate its influence on said
+models [4, 11, 23, 25, 43, 55, 60, 61, 67].
+A straightforward solution is to retrain the model from
+scratch after excluding the data that needs to be forgotten.
+However, the removal of pertinent data followed by retrain-
+ing diffusion models from scratch demands substantial re-
+sources and is often deemed impractical. A version of the
+stable diffusion model trained on subsets of the LAION-
+5B dataset [54] costs approximately 150,000 GPU hours
+with 256 A100 GPUs1. Existing research on erasing un-
+wanted influence has primarily focused on classification
+tasks [4, 7, 11, 22, 23, 25, 33, 43, 55, 66]. Despite substan-
+tial progress, prior methods developed in classification are
+observed to be ineffective for generation tasks [16]. Con-
+sequently, there is a pressing need for the development of
+methods capable of scrubbing data from diffusion models
+without necessitating complete retraining.
+Recently, a handful of studies [6, 16, 20, 21, 27, 28,
+35, 40, 69] target unlearning in diffusion models, with a
+primary focus on the text-to-image models [20, 21, 69].
+Broadly, these methods aim to achieve two main objectives:
+erasing data influence and preserving overall model perfor-
+mance. However, as demonstrated by Bui et al. [5], balanc-
+ing this trade-off remains challenging.
+In this work, we propose EraseDiff, an algorithm tai-
+lored to balance the overall performance of diffusion mod-
+els with the erasure of undesirable information.
+Draw-
+ing inspiration from optimization-based meta-learning al-
+gorithms [18, 41] that enable fast adaptation to new learning
+tasks, we formulate this challenge as a bi-level optimiza-
+tion problem, where the “inner” optimization focus on eras-
+ing undesirable influence and the “outer” objective seeks to
+preserve model performance. The outer objective and inner
+optimization are interdependent, iterating between preser-
+vation and erasure to balance the trade-off effectively. How-
+ever, this nested optimization can be challenging to opti-
+mize efficiently. The inner optimization may converge to a
+saddle point or struggle with non-convex functions, making
+it difficult to achieve a stable solution [38]. Therefore, we
+further reformulate the problem as a constrained optimiza-
+tion problem using the value function [39, 45, 68], which
+facilitates a natural first-order solution [38], allows us to
+optimize preservation and erasure in a unified manner. This
+approach achieves a fine-tuned balance between preserva-
+tion and targeted erasure, yielding an optimal trade-off. We
+benchmark EraseDiff on various scenarios, encompassing
+unlearning of classes on CIFAR-10 [34] with Denoising
+Diffusion Probabilistic Models (DDPM) [30], classes on
+
+Imagenette [31] and concepts on the I2P dataset [53] with
+stable diffusion. Our empirical findings show that EraseD-
+iff is 11× faster than Heng and Soh’s method [28] and 2×
+faster than Fan’s method [16] when forgetting on DDPM
+while achieving better unlearning results across several met-
+rics. The results demonstrate that EraseDiff is capable of
+effectively erasing data influence in diffusion models, rang-
+ing from specific classes to the concept of nudity.
+
+2. Background
+
+In this section, we outline the components of the models
+we evaluate, including DDPM and latent diffusion mod-
+els [48]. Throughout the paper, we denote scalars, and vec-
+tors/matrices by lowercase and bold symbols, respectively
+(e.g., a, a, A).
+
+DDPM.
+(1) Diffusion: DDPM gradually diffuses the data
+distribution Rd ∋x0 ∼q(x) into the standard Gaussian
+distribution Rd ∋ϵ ∼N(0, Id) with T time steps, i.e.,
+q(xt|xt−1) = N(xt; √αtxt−1, (1 −αt)Id), where αt =
+1 −βt and {βt}T
+t=1 are the pre-defined variance schedule.
+The diffusion takes the form xt as xt = √¯αtx0+√1 −¯αtϵ,
+where ¯αt = Qt
+i=1 αi. (2) Training: A model ϵθ(·) with
+parameters θ ∈Rn is trained to learn the reverse process
+pθ(xt−1|xt) ≈q(xt−1|xt). Given x0 ∼q(x) and time
+step t ∈[1, T], the simplified training objective is to mini-
+mize the distance between ϵ and the predicted ϵt given x0 at
+time t, i.e., ∥ϵ −ϵθ(xt, t)∥. (3) Sampling: after training the
+model, we could obtain the learnable backward distribution
+pθ∗(xt−1|xt) = N(xt−1; µθ∗(xt, t), Σθ∗(xt, t)), where
+µθ∗(xt, t) =
+1
+√αt (xt −
+βt
+√1−αt ϵθ(xt, t)) and Σθ∗(xt, t) =
+
+(1−¯αt−1)βt
+
+1−¯αt
+. Then, given xT ∼N(0, Id), x0 could be ob-
+tained via sampling from pθ∗(xt−1|xt) from t = T to t = 1
+step by step.
+
+Latent diffusion models.
+Latent diffusion models apply
+the diffusion models in the latent space z of a pre-trained
+variational autoencoder. The noise would be added to z =
+ε(x), instead of the data x, and the denoised output would
+be transformed to image space with the decoder. Besides,
+text embeddings generated by models like CLIP are used as
+conditioning inputs.
+
+3. Diffusion Unlearning
+
+Let D = {xi, ci}N
+i
+be a dataset of images xi associated
+with label ci representing the class. C = {1, · · · , C} de-
+notes the label space where C is the total number of classes
+and ci ∈C. We split the training data D into the forget-
+ting data Df ⊂D and its complement, remaining data
+Dr = D \ Df. The forgetting data has label space Cf ⊆C,
+and the remaining label space is denoted as Cr = C \ Cf.
+
+1
+overview/technology/training-procedures
+
+3.1. Training objective
+
+we adopt a value function approach [39, 45, 68] that refor-
+mulates the problem as a single-constrained optimization:
+
+Our goal is to scrub the information about Df carried by the
+diffusion models while maintaining the model utility over
+the remaining data Dr. To achieve this, we adopt different
+training objectives for Dr and Df as follows.
+For the remaining data Dr, we fine-tune the diffusion
+models with the original objective:
+
+minθ Lr(θ; Dr)
+
+s.t.
+Lf(θ; Df) −minϕ Lf(ϕ; Df) ≤0,
+(5)
+
+where ϕ is initialized at θ, leverages the value function to
+encapsulate the influence of data erasure directly as a con-
+straint on Lf. This avoids the need for a nested loop by cap-
+turing the forgetting objective as a constraint and provides
+a natural first-order solution, as the constrained formulation
+allows us to optimize preservation and erasure in a unified
+manner.
+
+Lr(θ; Dr) = Et,ϵ∈N(0,Id),(x0,c)∼Dr×Cr[∥ϵ −ϵθ(xt|c)∥2
+2],
+(1)
+
+where xt = √¯αtx0 + √1 −¯αtϵ. For the forgetting data
+Df, we aim to let the models fail to generate meaningful
+images corresponding to Cf and thus propose:
+
+3.2. Solution
+
+Lf(θ; Df) = Et,ϵ∈N(0,Id),(x0,c)∼Df ×Cf [∥ϵf −ϵθ(xt|c)∥2
+2],
+(2)
+
+To solve Eq. (5), let us first denote g(θ) := Lf(θ; Df) −
+minϕ Lf(ϕ; Df). Our goal is to erase undesirable influence
+while preserving the overall model performance, hence the
+update vector δt for updating the model should aid in mini-
+mizing Lr(θ; Dr) and g(θ) simultaneously. In other words,
+suppose that the current solution for Eq. (5) is θt, we aim
+to update θt+1 = θt −ηδt where η is sufficiently small,
+so that Lr(θt+1; Dr) decreases (i.e., preserve model utility)
+and g(θt+1) decreases (i.e., erasure). To this end, we aim to
+find the update vector δt by:
+
+where ϵf = ϵθ(xt|cm) and cm ̸= c so that the denoised
+image x0 is not related to the forgetting class/concept
+c [16, 28]. With this, we hinder the approximator ϵθ to
+guide the denoising process to obtain meaningful examples
+for the forgetting data example x0 ∼Df.
+To erase the undesirable influence of Df and preserve
+the overall performance, it is common to form
+
+Lr(θ; Dr) + λLf(θ; Df),
+(3)
+
+δt ∈1
+
+2 argminδ
+
+
+∇θLr(θt; Dr) −δ
+
+
+2
+2,
+
+with λ > 0 as the optimization objective (see for exam-
+ple [16]). However, training could be hindered due to the
+conflicting gradients between the erasing and preservation
+objectives, preventing a balanced trade-off between erasure
+and preservation [37]. To address this, rather than scalar-
+izing the two objectives, we consider a framework based
+on optimization-based meta-learning algorithm [46] that al-
+lows iteratively updates to optimize each objective:
+
+s.t.
+∇θg(θt)⊤δ ≥at > 0.
+(6)
+
+This will ensure that the update δt is close to ∇θLr(θt; Dr)
+and decreases g(θt) until it reaches stationary.
+Because
+g (θt+1) −g (θt) ≈−η∇θg (θt)⊤δ ≤−ηat < 0 for some
+scalar at > 0, we can ensure that g (θt+1) < g (θt) for
+small step size η > 0. This means that the update δt can en-
+sure to minimize Lf(θ; Df) as long as it does not conflict
+with descent of Lr(θ; Dr).
+To find the solution to the optimization problem in
+Eq. (6), the following theorem is developed:
+
+minθ Lr(θ; Dr)
+
+s.t.
+θ ∈arg min
+ϕ
+Lf(ϕ; Df) ,
+(4)
+
+where the outer objective minimizes the remaining loss Lr
+(i.e., preserving model utility), the inner optimization min-
+imizes the forgetting loss Lf (i.e., erasing) with initializa-
+tion Rn ∋ϕinit = θ. Given θ, the inner optimization on
+ϕ aims to minimize the forgetting data influence, with the
+goal of achieving effective erasure while preserving model
+utility. The outer objective and inner optimization are in-
+terdependent, iterating between preservation and erasure to
+balance the trade-off effectively.
+While the above framework allows for iterative updates
+to address the conflicting objectives of erasure and preser-
+vation, it still relies on nested optimization, which can be
+challenging to optimize efficiently.
+The inner optimiza-
+tion may converge to a saddle point or struggle with non-
+convex functions, making it difficult to achieve a stable so-
+lution [38]. To further streamline the optimization process,
+
+Theorem 3.1. The optimal solution of the optimization
+problem in Eq. (6) is δ∗= ∇θLr(θt; Dr) + λt∇θg(θt)
+where λt = max{0, at−∇θg(θt)⊤∇θLr(θt;Dr)
+
+∥∇θg(θt)∥2
+2
+}.
+
+We provide the proof in §7 in the Appendix. This pro-
+vides the solution to the optimization problem by construct-
+ing the update vector δ to balance two competing objec-
+tives.
+The variable at adjusts the weight of the forget-
+ting objective, ensuring that the update vector δ decreases
+the remaining loss without violating the erasure goal, and
+achieves the dual goals of maintaining utility and achieving
+erasing. In practice, we can choose at = η∥∇θg(θt)∥2
+2,
+and we start from ϕ0 = θt and use gradient descend in K
+steps with the learning rate ξ > 0 to reach ϕK, namely
+ϕk+1 = ϕk −ξ∇ϕLf(ϕk; Df) and k = 0, · · · , K −1.
+
+Algorithm 1 EraseDiff: Erasing undesirable influence in
+diffusion models.
+Input: Well-trained model with parameters θ0, forgetting
+data Df and remaining data Dr, outer iteration number
+T and inner iteration number K, learning rate η.
+Output: Parameters θ∗for the scrubbed model.
+
+Cosine similarity Between and gr
+
+1.00
+
+0.75
+
+Cosine similarity
+
+0.50
+
+0.25
+
+1: for iteration t in T do
+2:
+ϕ0 = θt.
+3:
+Get ϕK
+by K
+steps of gradient descent on
+Lf(ϕ; Df) starting from ϕ0.
+4:
+Set g(θt) = Lf(θt; Df) −Lf(ϕK; Df).
+
+0.00
+
+0.25
+
+MOO
+EraseDiff
+
+0.50
+
+5:
+Update the model: θt+1 = θt −η(∇θtLr(θt; Dr) +
+λt∇θtg(θt; ϕK)),
+
+0
+10
+20
+30
+40
+50
+60
+70
+80
+90
+100
+Iteration
+
+6:
+where λt = max{0, at−∇θg(θt)T ∇θLr(θt;Dr)
+
+Similarity Between and gf
+
+∥∇θg(θt)∥2
+2
+}.
+
+1.0
+
+MOO
+EraseDiff
+
+7: end for
+
+0.8
+
+0.6
+
+Cosine similarity
+
+3.3. Analysis
+
+0.4
+
+0.2
+
+We can characterize the solution of our algorithm as follows
+and the proof can be found in §7 in the Appendix:
+
+0.0
+
+0.2
+
+Theorem 3.2 (Pareto optimality). The stationary point ob-
+tained by our algorithm is Pareto optimal of the problem
+minθ[Lr(θ; Dr), Lf(θ; Df)].
+
+0.4
+
+0.6
+
+0
+10
+20
+30
+40
+50
+60
+70
+80
+90
+100
+Iteration
+
+This asserts that the solution obtained by our algorithm
+is Pareto optimal for the problem of minimizing both ob-
+jectives, which implies that the solution obtained by the
+algorithm ensures a balanced trade-off between preserving
+model utility and erasing undesirable influences.
+We further take DDPM with CIFAR-10 when forget-
+ting the ‘airplane’ as an example to show that our pro-
+posed method helps alleviate the gradient conflict which
+prevents a balanced trade-off between erasure and preser-
+vation. Fig. 2 presents the cosine similarity between the
+update vector δ and the gradient gr = ∇θLr(θ; Dr) for
+preservation, and the cosine similarity between the update
+vector δ and the gradient gf = ∇Lf(θ; Df) for erasing.
+The cosine similarity represents the alignment between the
+update vector and the gradients associated with the preser-
+vation and erasure. Higher positive values indicate align-
+ment, meaning that the update vector δ is directed similarly
+to the respective gradient, whereas negative values indicate
+misalignment or conflict. In particular, negative values sug-
+gest a high degree of opposition between the update vector
+and the respective gradient, which can signify competing
+objectives between preservation and erasure during the op-
+timization process.
+MOO (Multi-Objective Optimization) denotes the naive
+integration of erasing and preservation as stated in Eq. (3).
+For the vanilla MOO, Fig. 2 shows a clear alternating pat-
+tern in cosine similarity values between the update vector δ
+and the gradients gr and gf. Specifically, when the cosine
+
+Figure 2. Top to bottom: cosine similarity between the update
+vector δ and the preservation gradient gr, followed by the cosine
+similarity between δ and the erasing gradient gf. Positive values
+indicate alignment, while negative values suggest conflict. This
+visualization illustrates how well the update vector aligns with the
+objectives of preservation and erasure over successive iterations.
+
+similarity between δ and gr is greater than 0, the similarity
+between δ and gf tends to be less than 0, and vice versa.
+This pattern suggests that MOO experiences gradient con-
+flict, as it cannot effectively balance the two objectives of
+preservation and erasure, preventing MOO from achieving a
+harmonious update that supports both goals simultaneously.
+In contrast, EraseDiff mostly shows positive cosine similar-
+ity values between the update vector δ and both the preser-
+vation gradient gr and the erasing gradient gf. This indi-
+cates that EraseDiff aligns the update direction with both
+objectives, suggesting it manages to avoid significant gra-
+dient conflict. By maintaining positive alignment, EraseD-
+iff appears to balance preservation and erasure more effec-
+tively, leading to better cooperation between objectives.
+
+4. Related Work
+
+Memorization in generative models.
+Privacy of genera-
+tive models has been studied extensively for GANs [17, 42,
+
+these methods in terms of the trade-off between the forget-
+ting and preserving model utility.
+
+65] and generative language models [8, 9, 32, 62]. These
+generative models often risk replicating from their training
+data. Recently, several studies [10, 57, 58, 64] investigated
+these data replication behaviors in diffusion models, rais-
+ing concerns about the privacy and copyright issues. Possi-
+ble mitigation strategies are deduplicating and randomizing
+conditional information [57, 58], or training models with
+differential privacy (DP) [1, 13–15]. However, leveraging
+DP-SGD [1] may cause training to diverge [10].
+
+5. Experiment
+
+We evaluate EraseDiff in various scenarios, including re-
+moving images with specific classes/concepts, to answer
+the following research questions (RQs): (i) Can typical ma-
+chine unlearning methods be applied to diffusion models?
+(ii) Is EraseDiff able to remove the influence of Df in the
+diffusion models? (iii) Is EraseDiff able to preserve the
+model utility while removing Df? (iv) Is EraseDiff efficient
+in removing the data? (v) How does EraseDiff perform on
+the public well-trained models?
+
+Malicious misuse.
+Diffusion models usually use training
+data from varied open sources and when such unfiltered data
+is employed, there is a risk of it being tainted [12] or ma-
+nipulated [47], resulting in inappropriate generation [53].
+They also risk the imitation of copyrighted content, e.g.,
+mimicking the artistic style [20, 56]. To counter inappropri-
+ate generation, data censoring [3, 19, 44, 52] where exclud-
+ing black-listed images before training, and safety guidance
+where diffusion models will be updated away from the in-
+appropriate/undesired concept [20, 53] are proposed. Shan
+et al. [56] propose protecting artistic style by adding barely
+perceptible perturbations to the artworks before public re-
+lease. Yet, Rando et al. [47] argue that DMs can still gener-
+ate content that bypasses the filter. Chen et al. [12] highlight
+the susceptibility of DMs to poison attacks, where target im-
+ages are generated with specific triggers.
+
+5.1. Setup
+
+Experiments are reported on CIFAR-10 [34] with DDPM,
+Imagenette [31] with Stable Diffusion (SD) for class-wise
+forgetting, I2P [53] dataset with SD for concept-wise for-
+getting. For all SD experiments, we use the open-source
+SD v1.4 [48] checkpoint as the pre-trained model. Imple-
+mentation details and additional results like visualizations
+of generated images can be found in §8 and §9.
+
+Baselines.
+We primarily benchmark against the following
+baselines commonly used in machine unlearning: (i) Un-
+scrubbed, (ii) Finetune (FT) [23], (iii) NegGrad (NG) [23],
+(iv) BlindSpot [60], (v) ESD [20], (vi) FMN [69], (vii) Se-
+lective Amnesia (SA) [28] and (viii) the SOTA machine un-
+learning algorithm SalUn [16].
+
+Machine unlearning.
+Removing data directly involves
+retraining the model from scratch, which is inefficient and
+impractical. Thus, to reduce the computational overhead,
+efficient machines unlearning methods [4, 7, 11, 22, 23, 25,
+33, 43, 49, 55, 60, 66] have been proposed. Several stud-
+ies [5, 16, 20, 21, 27, 28, 69] recently introduce unlearning
+in diffusion models. Most of them [20, 21, 27, 69] mainly
+focus on text-to-image models and high-level visual con-
+cept erasure. Heng and Soh [28] adopt Elastic Weight Con-
+solidation (EWC) and Generative Replay (GR) from con-
+tinual learning to perform unlearning effectively without
+access to the training data. Heng and Soh’s method can
+be applied to a wide range of generative models, however,
+it needs the computation of FIM for different datasets and
+models, which may lead to significant computational de-
+mands. Fan et al. [16] propose a very potent unlearning
+algorithm called SalUn that shifts attention to important pa-
+rameters w.r.t. the forgetting data. SalUn can perform effec-
+tively across image classification and generation tasks.
+In this work, we introduce a simple yet effective un-
+learning algorithm for diffusion models by formulating the
+problem as a constrained optimization problem, to achieve
+a fine-tuned balance between preservation and targeted era-
+sure, yielding an optimal trade-off. Below, we will show
+that our algorithm is not only faster than Heng and Soh’s
+method [28] and Fan’s method [16], but even outperforms
+
+Metrics.
+Several metrics are utilized to evaluate the al-
+gorithms: (i) Frechet Inception Distance (FID) [29]: the
+widely-used metric for assessing the quality of generated
+images. (ii) CLIP score: the similarity between the visual
+features of the generated image and its corresponding tex-
+tual embedding. (iii) Pψ(y = cf|xf) [28]: the classifica-
+tion rate of a pre-trained classifier Pψ(y|x), with a ResNet
+architecture [26] used to classify generated images condi-
+tioned on the forgetting classes. A lower classification value
+indicates superior unlearning performance. (iv) Precision
+and Recall: A low FID may indicate high precision (re-
+alistic images) but low recall (small variations) [36, 50].
+Kynk¨a¨anniemi et al. [36] shows that generative models
+claim to optimize FID (high fidelity) but always sacrifice
+variation (low diversity). Hence, we include metric preci-
+sion (fidelity) and recall (diversity) to express the quality of
+the generated samples, to provide explicit visibility of the
+tradeoff between sample quality and variety.
+
+5.2. Results on DDPM
+
+Following SA, we aim to forget the ‘airplane’ class on
+CIFAR-10. Here, we replace ϵ ∈N(0, Id) with ϵf =
+
+Table 1. Results on CIFAR10 with DDPM when forgetting the ‘airplane’ class. Pψ(y = cf|xf) indicate the probability of the forgotten
+class (i.e., the effectiveness of erasing). Precision and Recall demonstrate the fidelity and diversity [36, 50], and FID scores are computed
+between the generated 45K images and the corresponding ground truth images with the same labels from Dr (i.e., preserving model utility).
+SA excels in class-wise forgetting but struggles to perform concept-wise forgetting as shown in Fig. 3 and Tab. 2. The best and the second
+best are highlighted in blue and orange, respectively.
+
+Unscrubbed FT [23] NG [23] BlindSpot [60] SA [28] SalUn [16] EraseDiffrl EraseDiffnoise
+
+FID ↓
+9.63
+8.21
+76.73
+9.12
+8.19
+9.16
+8.66
+7.61
+Precision (fidelity) ↑
+0.40
+0.43
+0.08
+0.41
+0.43
+0.41
+0.43
+0.43
+Recall (diversity) ↑
+0.79
+0.77
+0.61
+0.78
+0.75
+0.76
+0.77
+0.72
+Pψ(y = cf|xf)↓
+0.97
+0.96
+0.61
+0.90
+0.06
+0.07
+0.24
+0.22
+
+I2P - ESD
+
+I2P - SA
+
+I2P - SalUn
+
+I2P - Erasediff
+
+Male_Genitalia (7)
+
+7
+
+7
+
+7
+
+Belly (162)
+
+6
+
+6
+
+6
+
+Armpits (158)
+
+5
+
+5
+
+5
+
+Feet (55)
+
+4
+
+4
+
+4
+
+Male_Breast (44)
+
+3
+
+3
+
+3
+
+Female_Genitalia (13)
+
+2
+
+2
+
+2
+
+Female_Breast (276)
+
+1
+
+1
+
+1
+
+Buttocks (28)
+
+0
+
+0
+
+0
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+Figure 3. Quantity of nudity content detected using the NudeNet classifier from I2P data. Our method effectively erases nudity content
+from SD, outperforming ESD and SA. Note that Fig. 3 and Tab. 2 together presents the trade-off between erasing and preservation.
+
+Table 2. Evaluation of 30K generated images by SD when erasing
+‘nudity’. The FID score is measured compared to validation data,
+while the CLIP similarity score evaluates the alignment between
+generated images and the corresponding prompts. The best and
+the second best are highlighted in blue and orange, respectively.
+
+from over-forgetting (the probability of generated images
+belonging to the forgetting class is decreased compared to
+that of the unscrubbed model but the generated image qual-
+ity drops significantly).
+Then, comparing SA and SalUn’s unlearning methods,
+SA achieves an FID score of 8.19 but sacrifices variation
+(decreased recall). Also, note that SA introduces excessive
+computational resource requirements and time consump-
+tion [28, 70]. Note that the FID scores of SA, SalUn, and
+EraseDiff decrease compared with the generated images
+from the original models; the quality of the generated im-
+ages experiences a slight improvement. However, there is
+a decrease in recall (diversity), which can be attributed to
+the scrubbed models being fine-tuned over Dr, suggesting a
+tendency towards overfitting. Regarding forgetting, SalUn
+achieves a smaller probability of the generated images clas-
+sified as the forgetting class than ours; yet, the FID score
+is larger than ours, and images generated by EraseDiffrl
+present better diversity and fidelity.
+
+ESD [20] SA [28] SalUn [16] EraseDiff
+
+FID ↓
+15.76
+25.58
+25.06
+17.01
+CLIP ↑
+30.33
+31.03
+28.91
+30.58
+
+ϵθ(xt|cm) like random labelling used in [16] where cm ̸= c,
+denoted as EraseDiffrl. We also try to use ϵf = U(0, Id)
+like SA, denoted as EraseDiffnoise. Note that the choice of
+replacement for forgotten classes is flexible and is not the
+primary focus of this work. For further discussion on the
+choice of substitution strategies, please refer to related stud-
+ies [6, 40].
+Results are presented in Tab. 1. Firstly, from Tab. 1,
+we can conclude that traditional machine unlearning meth-
+ods designed for image classification or regression tasks fall
+short in effectively performing forgetting for DDPM. Fine-
+tune and BlindSpot suffer from under-forgetting (i.e., the
+generated image quality is good but the probability of gen-
+erated images belonging to the forgetting class approaching
+the value of the unscrubbed model), and NegGrad suffers
+
+5.3. Results on Stable Diffusion
+
+In this experiment, we apply EraseDiff to perform class-
+wise forgetting from Imagenette and erase the ‘nudity’ con-
+cept with SD v1.4. For all experiments, we employ SD
+for sampling with 50 time steps. When forgetting ‘nudity’,
+we have no access to the training data; instead, we gener-
+
+Table 3. Performance of class-wise forgetting on Imagenette using SD. UA: the accuracy of the generated images that do not belong to the
+forgetting class (i.e., the effectiveness of forgetting). The FID score is measured compared to validation data for the remaining classes.
+
+Forget. Class
+FMN∗[69]
+ESD∗[20]
+SalUn∗[16]
+EraseDiff
+FID ↓UA (%)↑FID ↓UA (%)↑FID ↓UA (%)↑FID ↓UA (%)↑
+
+Tench
+1.63
+42.40
+1.22
+99.40
+2.53
+100.00
+1.29
+100
+English Springer
+1.75
+27.20
+1.02
+100.00
+0.79
+100.00
+1.38
+100
+Cassette Player
+0.80
+93.80
+1.84
+100.00
+0.91
+99.80
+0.85
+100
+Chain Saw
+0.94
+48.40
+1.48
+96.80
+1.58
+100.00
+1.17
+99.9
+Church
+1.32
+23.80
+1.91
+98.60
+0.90
+99.60
+0.83
+100
+French Horn
+0.99
+45.00
+1.08
+99.80
+0.94
+100.00
+1.09
+100
+Garbage Truck
+0.92
+41.40
+2.71
+100.00
+0.91
+100.00
+0.96
+100
+Gas Pump
+1.30
+53.60
+1.99
+100.00
+1.05
+100.00
+1.25
+100
+Golf Ball
+1.05
+15.40
+0.80
+99.60
+1.45
+98.80
+1.50
+99.5
+Parachute
+2.33
+34.40
+0.91
+99.80
+1.16
+100.00
+0.78
+99.7
+
+Average
+1.30
+42.54
+1.49
+99.40
+1.22
+99.82
+1.11
+99.91
+
+SD v1.4
+ESD
+SA
+SalUn
+EraseDiff
+
+Added by authors for publication
+
+Figure 4. Top to Bottom: generated examples with I2P and COCO prompts after forgetting the concept of ’nudity’.
+
+ate ∼400 images with the prompts cf ={‘nudity’, ‘naked’,
+‘erotic’, ‘sexual’}.
+
+Female/Male Breasts and Female/Male Genitalia. While
+SalUn excels at forgetting, our algorithm demonstrates a
+significant improvement in the quality of generated images,
+as shown in Tab. 2. Tab. 2 presented results evaluating the
+utility of scrubbed models. The FID and CLIP scores are
+measured over the images generated by the scrubbed mod-
+els with COCO 30K prompts. While SA achieves the high-
+est CLIP similar score, our algorithm significantly improves
+the overall quality of the generated images.
+
+Forget nudity. 4703 images are generated using I2P
+prompts, and 1K images are generated using the prompts
+{‘nudity’, ‘naked’, ‘erotic’, ‘sexual’}. The quantity of nu-
+dity content is detected using the NudeNet classifier [2]. In
+Fig. 3, the number in the y-axis denotes the number of ex-
+posed body parts generated by the SD v1.4 model. Fig. 3
+presents the percentage change in exposed body parts w.r.t.
+SD v1.4. In §9, we provide the number of exposed body
+parts counted in all generated images with different thresh-
+olds. Here, our algorithm replaces ϵf with ϵθ(xt|cm) where
+cm is ‘a photo of pokemon’. We can find that, EraseD-
+iff reduces the amount of nudity content compared to SD
+v1.4, ESD, and SA, particularly on sensitive content like
+
+Forget class. When performing class-wise forgetting,
+following Fan et al. [16], we set the prompt as ‘an image
+of [c]’. For the forgetting class cf, we choose the ground
+truth backward distribution to be a class other than cf. We
+generate 100 images for each prompt. Results for methods
+with ∗presented in Tab. 3 are from SalUn [16]. Our method
+
+Table 4. Computational overhead. Time is the average duration
+measured over five runs on DDPM when forgetting ‘airplane’.
+
+Memory (MiB) Time (min.) Complexity
+
+SA
+3352.3
+140.00
+O(n2)
+SalUn
+4336.2
+28.17
+O(n)
+EraseDiff
+3360.3
+12.70
+O(n)
+
+outperforms SalUn on average across 10 classes. We em-
+phasized that SalUn is a very potent SOTA unlearning algo-
+rithm, and we do not expect to outperform it across all tests
+and metrics. Averaging results across all ten classes pro-
+vides a more comprehensive evaluation and mitigates the
+risk of cherry-picking. Our results, based on this average
+approach, clearly indicate the advantages of our method.
+We also present results when improving the forgetting abil-
+ity of SalUn in §9. However, note that this enhancement
+comes with a drop in the FID score of the generated images.
+Our method, while slightly better than SalUn on average
+across 10 classes, demonstrates a more balanced trade-off
+between erasing and preservation, indicating that it achieves
+a favorable balance in preserving fidelity while enhancing
+erasing performance.
+
+(a)
+(b)
+
+Figure 5. (a) Ablation results. (b) Potential incomplete erasures.
+
+tice, we have λt = max{0, at−∇θg(θt)⊤∇θLr(θt;Dr)
+
+∥∇θg(θt)∥2
+2
+} =
+
+max{0, η −∇θg(θt)⊤∇θLr(θt;Dr)
+
+∥∇θg(θt)∥2
+2
+}, we can see that η deter-
+mines the extent to which the update direction for forgetting
+can deviate from that for preserving model utility. A larger
+η would allow for more deviation in the updating, thus pri-
+oritizing forgetting over preserving model utility. In Fig. 5
+(a), the FID score tends to increase (i.e., image quality drop)
+as the step size η increases, indicating that larger η leads
+to greater deviations from the direction that preserves the
+model utility. Furthermore, the number of iterations K de-
+termines how closely the approximation ϕK will approach
+arg minϕ Lf(ϕ; Df). Hence, a larger number of iterations
+K leads to more thorough erasure, which is also supported
+by the results shown in Fig. 5 (a), as increasing K correlates
+with an increase in the FID score.
+
+5.4. Computational efficiency
+
+Finally, we measure the computational complexity of un-
+learning algorithms. The computational complexity of SA
+and SalUn involves two distinct stages: the computation of
+FIM for SA and the computation of salient weights w.r.t. Df
+for SalUn, and the subsequent forgetting stage for both al-
+gorithms. We consider the maximum memory usage across
+both stages, the metric ‘Time’ is exclusively associated with
+the duration of the forgetting stage for unlearning algo-
+rithms. Tab. 4 show that EraseDiff outperforms SA and
+SalUn in terms of efficiency, achieving a speed increase of
+∼11× than SA and ∼2× than SalUn. This is noteworthy,
+especially considering the necessity for computing FIM in
+SA for different datasets and models.
+
+6. Conclusion and Limitations
+
+In this work, we explored erasing undesirable influence in
+diffusion models and proposed an efficient method EraseD-
+iff to achieve a balanced trade-off between erasing and
+preservation.
+Comprehensive experiments on diffusion
+models demonstrate the proposed algorithm’s effectiveness
+in data removal, its efficacy in preserving the model utility,
+and its efficiency in erasure. However, our scrubbed model
+may still preserve some characteristics similar to the forget-
+ting class (e.g., in Fig. 5 (b), generated images conditioned
+on the forgetting class ‘tench’ by our scrubbed model when
+forgetting the class ‘tench’ from Imagenette, which may
+preserve some characteristics similar to that close to ‘tench’
+visually). Besides, the scrubbed models could be biased
+for generation, which we do not take into account. Future
+directions could include assessing fairness post-unlearning,
+using advanced privacy-preserving training techniques, and
+advanced MOO solutions. We hope the proposed approach
+could serve as an inspiration for future research in the field
+of erasing undesirable concepts in diffusion models.
+
+5.5. Ablation study
+
+We further investigate the influence of the number of it-
+erations K that approximate min Lf(ϕ; Df), and the step
+size η that controls the weight of forgetting and preserving
+model utility. Here, we replace ϵ ∈N(0, Id) with ϵf ∈
+U(0, Id). Note that for different hyperparameters in Fig. 5
+(a), the average entropy of the classifier’s output distribu-
+tion given xf, which is H(Pψ(y|xf)) = −E[P
+
+i Pψ(y =
+ci|x) loge Pψ(y = ci|x)], remains close to 2.02. This in-
+dicates that the scrubbed models become uncertain about
+the images conditioned on the forgetting class, effectively
+erasing the information about Df. Below, we will further
+demonstrate the influence on the model utility.
+In prac-
+
+References
+
+In International conference on theory and applications of
+models of computation, pages 1–19. Springer, 2008.
+[15] Cynthia Dwork, Frank McSherry, Kobbi Nissim, and Adam
+Smith.
+Calibrating noise to sensitivity in private data
+analysis.
+In Theory of Cryptography: Third Theory of
+Cryptography Conference, TCC 2006, New York, NY, USA,
+March 4-7, 2006. Proceedings 3, pages 265–284. Springer,
+2006. 5
+[16] Chongyu Fan, Jiancheng Liu, Yihua Zhang, Dennis Wei,
+Eric Wong, and Sijia Liu.
+Salun:
+Empowering ma-
+chine unlearning via gradient-based weight saliency in
+both image classification and generation.
+arXiv preprint
+arXiv:2310.12508, 2023. 2, 3, 5, 6, 7
+[17] Qianli Feng, Chenqi Guo, Fabian Benitez-Quiroz, and
+Aleix M Martinez. When do gans replicate? on the choice of
+dataset size. In Proceedings of the IEEE/CVF International
+Conference on Computer Vision, pages 6701–6710, 2021. 4
+[18] Chelsea Finn, Pieter Abbeel, and Sergey Levine.
+Model-
+agnostic meta-learning for fast adaptation of deep networks.
+In International conference on machine learning, pages
+1126–1135. PMLR, 2017. 2
+[19] Shreyansh Gandhi, Samrat Kokkula, Abon Chaudhuri,
+Alessandro Magnani, Theban Stanley, Behzad Ahmadi,
+Venkatesh Kandaswamy, Omer Ovenc, and Shie Man-
+nor.
+Scalable detection of offensive and non-compliant
+content/logo in product images.
+In Proceedings of the
+IEEE/CVF Winter Conference on Applications of Computer
+Vision, pages 2247–2256, 2020. 5
+[20] Rohit
+Gandikota,
+Joanna
+Materzynska,
+Jaden
+Fiotto-
+Kaufman, and David Bau.
+Erasing concepts from diffu-
+sion models.
+In 2023 IEEE International Conference on
+Computer Vision (ICCV), 2023. 2, 5, 6, 7
+[21] Rohit Gandikota, Hadas Orgad, Yonatan Belinkov, Joanna
+Materzy´nska, and David Bau. Unified concept editing in dif-
+fusion models. arXiv preprint arXiv:2308.14761, 2023. 2,
+5
+[22] Antonio Ginart,
+Melody Guan,
+Gregory Valiant,
+and
+James Y Zou.
+Making ai forget you: Data deletion in
+machine learning.
+In Advances in Neural Information
+Processing Systems (NeurIPS), 2019. 2, 5
+[23] Aditya Golatkar, Alessandro Achille, and Stefano Soatto.
+Eternal sunshine of the spotless net: Selective forgetting in
+deep networks. In 2020 IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR), pages 9301–9309,
+2020. 2, 5, 6
+[24] Eric Goldman. An introduction to the california consumer
+privacy act (ccpa). Santa Clara Univ. Legal Studies Research
+Paper, 2020. 1
+[25] Chuan Guo, Tom Goldstein, Awni Hannun, and Laurens Van
+Der Maaten. Certified data removal from machine learning
+models. In Proceedings of the 37th International Conference
+on Machine Learning, pages 3832–3842. PMLR, 2020. 2, 5
+[26] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In Proceedings
+of the IEEE conference on computer vision and pattern
+recognition, pages 770–778, 2016. 5
+[27] Alvin Heng and Harold Soh. Continual learning for forget-
+ting in deep generative models. 2023. 2, 5
+
+[1] Martin Abadi, Andy Chu, Ian Goodfellow, H Brendan
+McMahan, Ilya Mironov, Kunal Talwar, and Li Zhang. Deep
+learning with differential privacy. In Proceedings of the 2016
+ACM SIGSAC conference on computer and communications
+security, pages 308–318, 2016. 5
+[2] P Bedapudi. Nudenet: Neural nets for nudity classification,
+detection and selective censoring, 2019. 7, 2
+[3] Abeba Birhane and Vinay Uday Prabhu.
+Large image
+datasets: A pyrrhic win for computer vision? In 2021 IEEE
+Winter Conference on Applications of Computer Vision
+(WACV), pages 1536–1546. IEEE, 2021. 5
+[4] Lucas Bourtoule, Varun Chandrasekaran, Christopher A.
+Choquette-Choo, Hengrui Jia, Adelin Travers, Baiwu Zhang,
+David Lie, and Nicolas Papernot. Machine unlearning. In
+2021 IEEE Symposium on Security and Privacy (SP), pages
+141–159, 2021. 2, 5
+[5] Anh Bui, Khanh Doan, Trung Le, Paul Montague, Tamas
+Abraham, and Dinh Phung. Removing undesirable concepts
+in text-to-image generative models with learnable prompts.
+arXiv preprint arXiv:2403.12326, 2024. 2, 5
+[6] Anh Bui, Long Vuong, Khanh Doan, Trung Le, Paul Mon-
+tague, Tamas Abraham, and Dinh Phung. Erasing undesir-
+able concepts in diffusion models with adversarial preserva-
+tion. arXiv preprint arXiv:2410.15618, 2024. 2, 6
+[7] Yinzhi Cao and Junfeng Yang. Towards making systems for-
+get with machine unlearning. In 2015 IEEE Symposium on
+Security and Privacy (SP), pages 463–480, 2015. 2, 5
+[8] Nicholas Carlini, Florian Tramer, Eric Wallace, Matthew
+Jagielski, Ariel Herbert-Voss, Katherine Lee, Adam Roberts,
+Tom Brown, Dawn Song, Ulfar Erlingsson, et al. Extracting
+training data from large language models. In 30th USENIX
+Security Symposium (USENIX Security 21), pages 2633–
+2650, 2021. 5
+[9] Nicholas Carlini,
+Daphne Ippolito,
+Matthew Jagielski,
+Katherine Lee, Florian Tramer, and Chiyuan Zhang. Quan-
+tifying memorization across neural language models. arXiv
+preprint arXiv:2202.07646, 2022. 5
+[10] Nicolas Carlini, Jamie Hayes, Milad Nasr, Matthew Jagiel-
+ski, Vikash Sehwag, Florian Tramer, Borja Balle, Daphne
+Ippolito, and Eric Wallace.
+Extracting training data from
+diffusion models.
+In 32nd USENIX Security Symposium
+(USENIX Security 23), pages 5253–5270, 2023. 1, 5
+[11] Min Chen, Weizhuo Gao, Gaoyang Liu, Kai Peng, and Chen
+Wang. Boundary unlearning: Rapid forgetting of deep net-
+works via shifting the decision boundary. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 7766–7775, 2023. 2, 5
+[12] Weixin Chen, Dawn Song, and Bo Li.
+Trojdiff:
+Tro-
+jan attacks on diffusion models with diverse targets.
+In
+Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, pages 4035–4044, 2023. 5
+[13] Tim Dockhorn, Tianshi Cao, Arash Vahdat, and Karsten
+Kreis. Differentially private diffusion models. arXiv preprint
+arXiv:2210.09929, 2022. 5
+[14] Cynthia Dwork. Differential privacy: A survey of results.
+
+[28] Alvin Heng and Harold Soh. Selective amnesia: A contin-
+ual learning approach to forgetting in deep generative mod-
+els. In Advances in Neural Information Processing Systems
+(NeurIPS), 2023. 2, 3, 5, 6
+[29] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner,
+Bernhard Nessler, and Sepp Hochreiter. Gans trained by a
+two time-scale update rule converge to a local nash equilib-
+rium. Advances in neural information processing systems,
+30, 2017. 5
+[30] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising dif-
+fusion probabilistic models. Advances in neural information
+processing systems, 33:6840–6851, 2020. 1, 2
+[31] Jeremy Howard and Sylvain Gugger. Fastai: A layered api
+for deep learning. Information, 11(2):108, 2020. 2, 5
+[32] Matthew Jagielski, Om Thakkar, Florian Tramer, Daphne
+Ippolito, Katherine Lee, Nicholas Carlini, Eric Wallace,
+Shuang Song, Abhradeep Thakurta, Nicolas Papernot, et al.
+Measuring forgetting of memorized training examples. arXiv
+preprint arXiv:2207.00099, 2022. 5
+[33] Masayuki Karasuyama and Ichiro Takeuchi.
+Multiple in-
+cremental decremental learning of support vector machines.
+IEEE Transactions on Neural Networks, 21(7):1048–1059,
+2010. 2, 5
+[34] Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple
+layers of features from tiny images. 2009. 2, 5
+[35] Nupur Kumari, Bingliang Zhang, Sheng-Yu Wang, Eli
+Shechtman, Richard Zhang, and Jun-Yan Zhu.
+Ablating
+concepts in text-to-image diffusion models. In Proceedings
+of the IEEE/CVF International Conference on Computer
+Vision, pages 22691–22702, 2023. 2
+[36] Tuomas Kynk¨a¨anniemi, Tero Karras, Samuli Laine, Jaakko
+Lehtinen, and Timo Aila.
+Improved precision and recall
+metric for assessing generative models. Advances in neural
+information processing systems, 32, 2019. 5, 6
+[37] Bo Liu, Xingchao Liu, Xiaojie Jin, Peter Stone, and Qiang
+Liu. Conflict-averse gradient descent for multi-task learn-
+ing.
+Advances in Neural Information Processing Systems
+(NeurIPS), 34:18878–18890, 2021. 3
+[38] Bo Liu, Mao Ye, Stephen Wright, Peter Stone, and Qiang
+Liu. Bome! bilevel optimization made easy: A simple first-
+order approach. Advances in Neural Information Processing
+Systems, 35:17248–17262, 2022. 2, 3
+[39] Risheng Liu, Xuan Liu, Xiaoming Yuan, Shangzhi Zeng, and
+Jin Zhang.
+A value-function-based interior-point method
+for non-convex bi-level optimization.
+In International
+conference on machine learning, pages 6882–6892. PMLR,
+2021. 2, 3
+[40] Mengyao Lyu, Yuhong Yang, Haiwen Hong, Hui Chen,
+Xuan Jin, Yuan He, Hui Xue, Jungong Han, and Guiguang
+Ding. One-dimensional adapter to rule them all: Concepts
+diffusion models and erasing applications. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 7559–7568, 2024. 2, 6
+[41] Dougal Maclaurin, David Duvenaud, and Ryan Adams.
+Gradient-based hyperparameter optimization through re-
+versible learning. In International conference on machine
+learning, pages 2113–2122. PMLR, 2015. 2
+
+[42] Casey Meehan, Kamalika Chaudhuri, and Sanjoy Das-
+gupta. A non-parametric test to detect data-copying in gen-
+erative models.
+In International Conference on Artificial
+Intelligence and Statistics, 2020. 4
+[43] Ronak Mehta, Sourav Pal, Vikas Singh, and Sathya N.
+Ravi.
+Deep unlearning via randomized conditionally in-
+dependent hessians.
+In 2022 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), pages
+10412–10421, 2022. 2, 5
+[44] Alex Nichol, Prafulla Dhariwal, Aditya Ramesh, Pranav
+Shyam, Pamela Mishkin, Bob McGrew, Ilya Sutskever, and
+Mark Chen. Glide: Towards photorealistic image generation
+and editing with text-guided diffusion models. arXiv preprint
+arXiv:2112.10741, 2021. 5
+[45] Jiˇr´ı V Outrata. On the numerical solution of a class of stack-
+elberg problems. Zeitschrift f¨ur Operations Research, 34:
+255–277, 1990. 2, 3
+[46] Aravind Rajeswaran, Chelsea Finn, Sham M Kakade, and
+Sergey Levine.
+Meta-learning with implicit gradients.
+Advances in neural information processing systems, 32,
+2019. 3
+[47] Javier Rando, Daniel Paleka, David Lindner, Lennard Heim,
+and Florian Tram`er. Red-teaming the stable diffusion safety
+filter. arXiv preprint arXiv:2210.04610, 2022. 1, 5
+[48] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Bj¨orn Ommer.
+High-resolution image
+synthesis with latent diffusion models.
+In Proceedings of
+the IEEE/CVF conference on computer vision and pattern
+recognition (CVPR), pages 10684–10695, 2022. 1, 2, 5
+[49] Enrique Romero, Ignacio Barrio, and Llu´ıs Belanche. In-
+cremental and decremental learning for linear support vector
+machines. In International Conference on Artificial Neural
+Networks, pages 209–218. Springer, 2007. 5
+[50] Mehdi SM Sajjadi, Olivier Bachem, Mario Lucic, Olivier
+Bousquet, and Sylvain Gelly.
+Assessing generative mod-
+els via precision and recall. Advances in neural information
+processing systems, 31, 2018. 5, 6
+[51] Hadi Salman, Alaa Khaddaj, Guillaume Leclerc, Andrew
+Ilyas, and Aleksander Madry. Raising the cost of malicious
+ai-powered image editing. arXiv preprint arXiv:2302.06588,
+2023. 1
+[52] Patrick Schramowski, Christopher Tauchmann, and Kristian
+Kersting. Can machines help us answering question 16 in
+datasheets, and in turn reflecting on inappropriate content?
+In Proceedings of the 2022 ACM Conference on Fairness,
+Accountability, and Transparency, pages 1350–1361, 2022.
+5
+[53] Patrick Schramowski, Manuel Brack, Bj¨orn Deiseroth, and
+Kristian Kersting. Safe latent diffusion: Mitigating inappro-
+priate degeneration in diffusion models. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 22522–22531, 2023. 1, 2, 5
+[54] Christoph Schuhmann, Romain Beaumont, Richard Vencu,
+Cade Gordon,
+Ross Wightman,
+Mehdi Cherti,
+Theo
+Coombes, Aarush Katta, Clayton Mullis, Mitchell Worts-
+man, et al. Laion-5b: An open large-scale dataset for train-
+ing next generation image-text models. Advances in Neural
+Information Processing Systems, 35:25278–25294, 2022. 2
+
+[55] Ayush Sekhari, Jayadev Acharya, Gautam Kamath, and
+Ananda Theertha Suresh.
+Remember what you want to
+forget:
+Algorithms for machine unlearning.
+Advances
+in Neural Information Processing Systems (NeurIPS), 34:
+18075–18086, 2021. 2, 5
+[56] Shawn Shan, Jenna Cryan, Emily Wenger, Haitao Zheng,
+Rana Hanocka, and Ben Y Zhao. Glaze: Protecting artists
+from style mimicry by text-to-image models. arXiv preprint
+arXiv:2302.04222, 2023. 5
+[57] Gowthami Somepalli, Vasu Singla, Micah Goldblum, Jonas
+Geiping, and Tom Goldstein. Diffusion art or digital forgery?
+investigating data replication in diffusion models. In 2022
+IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pages 6048–6058, 2023. 1, 5
+[58] Gowthami Somepalli, Vasu Singla, Micah Goldblum, Jonas
+Geiping, and Tom Goldstein.
+Understanding and mit-
+igating copying in diffusion models.
+arXiv preprint
+arXiv:2305.20086, 2023. 1, 5
+[59] Jiaming
+Song,
+Chenlin
+Meng,
+and
+Stefano
+Ermon.
+Denoising diffusion implicit models.
+arXiv preprint
+arXiv:2010.02502, 2020. 1
+[60] Ayush Kumar Tarun, Vikram Singh Chundawat, Murari
+Mandal, and Mohan Kankanhalli. Deep regression unlearn-
+ing. In International Conference on Machine Learning, pages
+33921–33939. PMLR, 2023. 2, 5, 6
+[61] Ayush K Tarun, Vikram S Chundawat, Murari Mandal, and
+Mohan Kankanhalli.
+Fast yet effective machine unlearn-
+ing. IEEE Transactions on Neural Networks and Learning
+Systems, 2023. 2
+[62] Kushal Tirumala, Aram Markosyan, Luke Zettlemoyer, and
+Armen Aghajanyan. Memorization without overfitting: An-
+alyzing the training dynamics of large language models.
+Advances in Neural Information Processing Systems, 35:
+38274–38290, 2022. 5
+[63] Paul Voigt and Axel Von dem Bussche. The eu general data
+protection regulation (gdpr).
+A Practical Guide, 1st Ed.,
+Cham: Springer International Publishing, 10(3152676):10–
+5555, 2017. 1
+[64] Nikhil Vyas, Sham Kakade, and Boaz Barak.
+Provable
+copyright protection for generative models. arXiv preprint
+arXiv:2302.10870, 2023. 5
+[65] Ryan Webster, Julien Rabin, Loic Simon, and Frederic
+Jurie.
+This person (probably) exists. identity member-
+ship attacks against gan generated faces.
+arXiv preprint
+arXiv:2107.06018, 2021. 5
+[66] Yinjun Wu, Edgar Dobriban, and Susan Davidson.
+Delt-
+aGrad:
+Rapid retraining of machine learning models.
+In Proceedings of the 37th International Conference on
+Machine Learning, pages 10355–10366. PMLR, 2020. 2,
+5
+[67] Jingwen Ye, Yifang Fu, Jie Song, Xingyi Yang, Songhua Liu,
+Xin Jin, Mingli Song, and Xinchao Wang. Learning with
+recoverable forgetting.
+In Computer Vision–ECCV 2022:
+17th European Conference, Tel Aviv, Israel, October 23–27,
+2022, Proceedings, Part XI, pages 87–103. Springer, 2022. 2
+[68] Jane J Ye and DL Zhu.
+Optimality conditions for bilevel
+programming problems. Optimization, 33(1):9–27, 1995. 2,
+3
+
+[69] Eric Zhang, Kai Wang, Xingqian Xu, Zhangyang Wang, and
+Humphrey Shi. Forget-me-not: Learning to forget in text-to-
+image diffusion models. arXiv preprint arXiv:2303.17591,
+2023. 2, 5, 7
+[70] Yihua Zhang, Yimeng Zhang, Yuguang Yao, Jinghan Jia,
+Jiancheng Liu, Xiaoming Liu, and Sijia Liu. Unlearncanvas:
+A stylized image dataset to benchmark machine unlearn-
+ing for diffusion models. arXiv preprint arXiv:2402.11846,
+2024. 6
+
+Erasing Undesirable Influence in Diffusion Models
+
+Supplementary Material
+
+Impact Statements
+
+the optimal solution we have
+
+DMs have experienced rapid advancements and have shown
+the merits of generating high-quality data. However, con-
+cerns have arisen due to their ability to memorize training
+data and generate inappropriate content, thereby negatively
+affecting the user experience and society as a whole. Ma-
+chine unlearning emerges as a valuable tool for correcting
+the algorithms and enhancing user trust in the respective
+platforms. It demonstrates a commitment to responsible AI
+and the welfare of its user base.
+The inclusion of explicit imagery in our paper might
+pose certain risks, e.g., some readers may find this explicit
+content distressing or offensive, which can lead to discom-
+fort. Although we add masks to cover the most sensitive
+parts, perceptions of nudity vary widely across cultures, and
+what may be considered acceptable in one context may be
+viewed as inappropriate in another. Besides, while unlearn-
+ing protects privacy, it may also hinder the ability of rele-
+vant systems, potentially lead to biased outcomes, and even
+be adopted for malicious usage, i.e., the methods developed
+in our study might potentially be misused for censorship or
+exploitation. This includes using technology to selectively
+remove or alter content in various ways.
+Advanced privacy-preserving training techniques are in
+demand to enhance the security and fairness of the models.
+Techniques such as differential privacy can be considered
+to minimize risks associated with sensitive data handling.
+Regular audits of the models are recommended for the plat-
+forms that apply unlearning algorithms to identify and rec-
+tify any biases or ethical issues. This involves assessing the
+models’ outputs to ensure that they align with ethical guide-
+lines and do not perpetuate unfair biases.
+
+δ −∇θLr(θt; Dr) −λ∇θg(θt) = 0,
+
+∇θg(θt)⊤δ ≥at,
+
+λ(at −∇θg(θt)T δ) = 0,
+
+λ ≥0.
+(8)
+
+From the above constraints, we can obtain:
+
+δ = ∇θLr(θt; Dr) + λ∇θg(θt),
+
+λ = max{0, at −∇θg(θt)⊤∇θLr(θt; Dr)
+
+∥∇θg(θt)∥2
+2
+}.
+(9)
+
+Theorem 3.2 [Pareto optimality] The stationary point ob-
+tained by our algorithm is Pareto optimal of the problem
+minθ[Lr(θ; Dr), Lf(θ; Df)].
+
+Proof. Let θ∗be the solution to our problem. Recall that
+for the current θ, we find ϕK to minimize g(θ, ϕ) =
+Lf(θ; Df) −min Lf(ϕ; Df). Assume that we can update
+in sufficient number of steps K so that ϕK = ϕ∗(θ) =
+argminϕ g(θ, ϕ) = argminϕ Lf(ϕ; Df). Here ϕ is initial-
+ized at θ.
+The
+objective
+aims
+to
+minimize
+Lr(θ; Dr)
++
+λg(θ; ϕ∗(θ)), let θ∗be the optimal solution to this
+objective.
+Note that g(θ, ϕ∗(θ))
+=
+Lf(θ; Df) −
+min Lf(ϕ∗(θ); Df) ≥0 as ϕ starts from θ and is update to
+decreas Lf(ϕ; Df). This will decrease to 0 for minimizing
+the above objective.
+Therefore, at the optimal solution
+θ∗, we have g(θ∗, ϕ∗(θ∗)) = 0. This further implies that
+Lf(θ∗; Df) = min Lf(ϕ∗(θ∗); Df), meaning that θ∗is
+the current optimal solution of Lf(θ; Df) because we can-
+not update further the optimal solution. Moreover, we have
+θ∗as the local minima of Lr(θ; Dr) in sufficiently small
+vicinity considered, because in the small vicinity around
+θ∗, g (θ, ϕ∗(θ∗)) = 0 provides no further improvements
+for the above sum, any increase in the above objective in
+the vicinity of θ∗would primarily be due to an increase in
+Lr(θ; Dr).
+
+7. Proofs
+
+Theorem 3.1 The optimal solution of the optimization
+problem in Eq. (6) is δ∗= ∇θLr(θt; Dr) + λt∇θg(θt)
+where λt = max{0, at−∇θg(θt)⊤∇θLr(θt;Dr)
+
+∥∇θg(θt)∥2
+2
+}.
+
+Proof. The Lagrange function with λ ≥0 for Eq. (6) is
+
+8. Reproducibility Statement and Details
+
+h(δ, λ) = 1
+
+∇θL(θt; Dr) −δ
+
+
+2
+2
+
+2
+
+In this section, we provide detailed instructions on the re-
+production of our results, we also share our source code at
+the repository
+EraseDiff.
+
++ λ(at −∇θg(θt)⊤δ).
+(7)
+
+Then, using the Karush-Kuhn-Tucker (KKT) theorem, at
+
+DDPM.
+Results on conditional DDPM follow the setting
+in SA [28]. Thanks to the pre-trained DDPM from SA. The
+batch size is set to be 128, the learning rate is 1 × 10−4, our
+model is trained for around 300 training steps. 5K images
+per class are generated for evaluation. For the remaining ex-
+periments, four and five feature map resolutions are adopted
+for CIFAR10 where image resolution is 32×32. All models
+apply the linear schedule for the diffusion process. We used
+A5500 and A100 for all experiments.
+
+SD.
+We use the open-source SD v1.4 checkpoint as the
+pre-trained model for all SD experiments. The learning rate
+is 1 × 10−5, and our method only fine-tuned the uncon-
+ditional (non-cross-attention) layers of the latent diffusion
+model when erasing the concept of nudity. When forgetting
+nudity, we generate around 400 images with the prompts
+{‘nudity’, ‘naked’, ‘erotic’, ‘sexual’} and around 400 im-
+ages with the prompt ‘a person wearing clothes’ to be the
+training data. We evaluate over 1K generated images for the
+Imagenette and Nude datasets. 4703 generated images with
+I2P prompts are evaluated using the open-source NudeNet
+classifier [2]. The repositories we built upon use the CC-BY
+4.0 and MIT Licenses.
+
+9. Additional results
+
+Below, we also provide results on SD for EraseDiff when
+we replace ϵf with ϵθ(xt|cm) like Fan et al. [16], Heng
+and Soh [28], where cm is ‘a person wearing clothes’, de-
+noted as EraseDiff wc. The CLIP score and FID score for
+EraseDiff wc are 30.31 and 19.55, respectively.
+
+Table 5. Performance of class-wise forgetting on Imagenette using
+SD. UA: the accuracy of the generated images that do not belong to
+the forgetting class (i.e., the effectiveness of forgetting). The FID
+score is measured compared to validation data for the remaining
+classes.
+
+Forget. Class
+SalUn
+EraseDiff
+FID ↓UA (%)↑FID ↓UA (%)↑
+
+Tench
+1.49
+100
+1.29
+100
+English Springer
+1.50
+100
+1.38
+100
+Cassette Player
+1.11
+100
+0.85
+100
+Chain Saw
+1.64
+100
+1.17
+99.9
+Church
+0.76
+100
+0.83
+100
+French Horn
+0.67
+100
+1.09
+100
+Garbage Truck
+1.54
+100
+0.96
+100
+Gas Pump
+1.59
+100
+1.25
+100
+Golf Ball
+1.29
+98.8
+1.50
+99.5
+Parachute
+1.35
+100
+0.78
+99.7
+
+Average
+1.29
+99.88
+1.11
+99.91
+
+Nude - ESD
+
+Nude - SA
+
+Nude - SalUn
+
+Nude - Erasediff
+
+Male_Genitalia (58)
+
+7
+
+7
+
+7
+
+Belly (686)
+
+6
+
+6
+
+6
+
+Armpits (792)
+
+5
+
+5
+
+5
+
+Feet (89)
+
+4
+
+4
+
+4
+
+Male_Breast (68)
+
+3
+
+3
+
+3
+
+Female_Genitalia (351)
+
+2
+
+2
+
+2
+
+Female_Breast (1496)
+
+1
+
+1
+
+1
+
+Buttocks (92)
+
+0
+
+0
+
+0
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+100
+75
+50
+25
+0
+% Change from SD v1.4
+
+Figure 6. Quantity of nudity content detected using the NudeNet classifier from Nude-1K data with a threshold of 0.6. Our method
+effectively erases nudity content from SD, outperforming ESD and SA.
+
+SD v1.4
+SalUn
+EraseDiff_wc
+ESD
+
+SA
+EraseDiff
+
+Added by authors for publication
+
+Figure 7. Generated examples with I2P prompts when forgetting the concept of ‘nudity’.
+
+SD v1.4
+SalUn
+ESD
+SA
+EraseDiff_wc
+EraseDiff
+
+Added by authors for publication
+
+Figure 8. Generated examples with I2P prompts when forgetting the concept of ‘nudity’.
+
+SD v1.4
+SalUn
+ESD
+SA
+EraseDiff_wc
+EraseDiff
+
+Added by authors for publication
+
+Figure 9. Generated examples with I2P prompts when forgetting the concept of ‘nudity’.
+
+Figure 10. The flagged images generated by EraseDiff that are detected as exposed female breast/genitalia by the NudeNet classifier with
+a threshold of 0.6. The top two rows are generated images conditioned on prompts {‘nudity’, ‘naked’, ‘erotic’, ‘sexual’}, and the rest are
+those conditioned on I2P prompts. No images contain explicit nudity content.
+
+SD v1.4
+SalUn
+ESD
+
+SA
+EraseDiff_wc
+EraseDiff
+
+Added by authors for publication
+
+Figure 11. Visualization of generated examples with prompts {‘nudity’, ‘naked’, ‘erotic’, ‘sexual’} when forgetting the concept of ‘nudity’.
+
+SD v1.4
+SalUn
+ESD
+SA
+EraseDiff_wc
+EraseDiff
+
+Figure 12. Visualization of generated images with COCO 30K prompts by the scrubbed SD models when forgetting the concept of ‘nudity’.
+
+SD v1.4
+SalUn
+ESD
+SA
+EraseDiff_wc
+EraseDiff
+
+Figure 13. Visualization of generated images with COCO 30K prompts by the scrubbed SD models when forgetting the concept of ‘nudity’.
+
+SD v1.4
+
+ESD
+
+SalUn
+
+EraseDiff
+
+Figure 14. Generated images after forgetting the class ‘tench’. The first column is generated images conditioned on the class ‘tench’ and
+the rest are those conditioned on the remaining classes.
+
+SD v1.4
+
+ESD
+
+SalUn
+
+EraseDiff
+
+Figure 15. Visualization of generated images by the scrubbed SD models when forgetting the class ‘tench’ on Imagenette. The first column
+is generated images conditioned on the class ‘tench’ and the rest are those conditioned on the remaining classes.
+
+SD v1.4
+
+ESD
+
+SalUn
+
+EraseDiff
+
+Figure 16. Visualization of generated images by the scrubbed SD models when forgetting the class ‘tench’ on Imagenette. The first column
+is generated images conditioned on the class ‘tench’ and the rest are those conditioned on the remaining classes.
+
+SD v1.4
+
+ESD
+
+SalUn
+
+EraseDiff
+
+Figure 17. Visualization of generated images by the scrubbed SD models when forgetting the class ‘tench’ on Imagenette. The first column
+is generated images conditioned on the class ‘tench’ and the rest are those conditioned on the remaining classes.
+
+SD v1.4
+
+ESD
+
+SalUn
+
+EraseDiff
+
+Figure 18. Visualization of generated images by the scrubbed SD models when forgetting the class ‘tench’ on Imagenette. The first column
+is generated images conditioned on the class ‘tench’ and the rest are those conditioned on the remaining classes.
+
+NG
+FT
+
+BlindSpot
+
+SA
+
+SalUn
+EraseDiff
+
+Figure 19. Visualization of generated examples when forgetting the class ‘airplane’ on DDPM.

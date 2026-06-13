@@ -1,0 +1,1986 @@
+Neural Architecture Generator Optimization
+
+Pedro M. Esperança
+Huawei Noah’s Ark Lab
+London, UK
+
+Binxin Ru
+Machine Learning Research Group
+University of Oxford, UK
+
+arXiv:2004.01395v3 [cs.LG] 2 Jan 2021
+
+Fabio M. Carlucci
+Huawei Noah’s Ark Lab
+London, UK
+
+Abstract
+
+Neural Architecture Search (NAS) was ﬁrst proposed to achieve state-of-the-art
+performance through the discovery of new architecture patterns, without human
+intervention. An over-reliance on expert knowledge in the search space design
+has however led to increased performance (local optima) without signiﬁcant archi-
+tectural breakthroughs, thus preventing truly novel solutions from being reached.
+In this work we propose 1) to cast NAS as a problem of ﬁnding the optimal net-
+work generator and 2) a new, hierarchical and graph-based search space capable
+of representing an extremely large variety of network types, yet only requiring
+few continuous hyper-parameters. This greatly reduces the dimensionality of the
+problem, enabling the effective use of Bayesian Optimisation as a search strat-
+egy. At the same time, we expand the range of valid architectures, motivating a
+multi-objective learning approach. We demonstrate the effectiveness of our strategy
+on six benchmark datasets and show that our search space generates extremely
+lightweight yet highly competitive models illustrating the beneﬁts of a NAS ap-
+proach that optimises over network generator selection. The code is available at
+
+1
+Introduction
+
+Neural Architecture Search (NAS) has the potential to discover paradigm-changing architectures
+with state-of-the-art performance, and at the same time removes the need for a human expert in the
+network design process. While signiﬁcant improvements have been recently achieved [1, 2, 3, 4, 5, 6],
+this has taught us little about why a speciﬁc architecture is more suited for a given dataset. Similarly,
+no conceptually new architecture structure has emerged from NAS works. We attribute this to two
+main issues: (i) reliance on over-engineered search spaces and (ii) the inherent difﬁculty in analyzing
+complex architectures.
+
+The ﬁrst point is investigated in [7]. In order to reduce search time, current NAS methods often
+restrict the macro-structure and search only the micro-structure at the cell level, focusing on which
+operations to choose but ﬁxing the global wiring pattern [1, 8, 9, 10]. This leads to high accuracy
+but restricts the search to local minima: indeed deep learning success stories, such as ResNet [11],
+DenseNet [12] and Inception [13] all rely on speciﬁc global wiring rather than speciﬁc operations.
+
+The second issue appears hard to solve, as analyzing the structure of complex networks is itself a
+demanding task for which few tools are available. We suggest that by moving the focus towards
+network generators we can obtain a much more informative solution, as the whole network can
+
+Stage 1
+
+Input
+
+Input
+
+2
+1
+
+0
+
+3x3
+Pool
+
+5x5
+Conv
+3x3
+Conv
+
+0
+1
+
+Stage 2
+
+4
+3
+
+3x3
+Conv
+1x1
+Conv
+
+1x1
+Conv
+
+3
+2
+
+Stage 3
+
+5x5
+Pool
+
+3x3
+Conv
+
+4
+
+7
+5
+6
+
+Output
+
+Output
+
+Task Speciﬁc Layer (e.g. classiﬁcation)
+
+Figure 1: Architecture sampled from HNAG, given hyperparameters Θ. Each node, both in the
+top-level and mid-level graphs, is an independently sampled graph. Finally, at the bottom level each
+node corresponds to an independently sampled atomic operation. Note how features at the top level
+can ﬂow between different stages (e.g. from node 1 and 4 to 7), which is beneﬁcial for certain tasks.
+
+then be represented by a small set of parameters. This idea, ﬁrst introduced by [14], offers many
+advantages for NAS: the smaller number of parameters is easier to optimize and easier to interpret
+when compared to the popular categorical, high-dimensional search spaces. Furthermore it allows the
+algorithm to focus on macro differences (e.g. global connectivity) rather than the micro differences
+arising from minor variations with little impact on the ﬁnal accuracy.
+
+To summarize, our main contributions are as follows.
+
+1) A Network Architecture Generator Optimization framework (NAGO), which redirects the
+focus of NAS from optimizing a single architecture to optimizing an architecture generator. To the
+best of our knowledge, we are the ﬁrst to investigate this direction and we demonstrate the usefulness
+of this by using Bayesian Optimization (BO) in both multi-ﬁdelity and multi-objective settings.
+
+2) A new hierarchical, graph-based search space, together with a stochastic network genera-
+tor which can output an extremely wide range of previously unseen networks in terms of wiring
+complexity, memory usage and training time.
+
+3) Extensive empirical evaluation showing that NAGO achieves state-of-the-art NAS results on a
+variety of vision tasks, and ﬁnds lightweight yet competitive architectures.
+
+2
+Neural Architecture Generator
+
+Previous research has shown that small perturbations in the network’s structure do not signiﬁcantly
+change its performance, i.e. the speciﬁc connection between any single pair of nodes is less important
+than the overall connectivity [14, 7]. As such, we hypothesize, and experimentally conﬁrm in
+Section 4.1, that architectures sampled from the same generative distribution perform similarly. This
+assumption allows us to greatly simplify the search and explore more conﬁgurations in the search
+space by only evaluating those sampled from different generator hyperparameters. Therefore, instead
+of optimizing a speciﬁc architecture, we focus on ﬁnding the optimal hyperparameters for a stochastic
+network generator [14].
+
+2.1
+Hierarchical Graph-based Search Space (HNAG)
+
+Our network search space is modelled as a hierarchical graph with three levels (Figure 1). At the
+top-level, we have a graph of cells. Each cell is itself represented by a mid-level graph. Similarly,
+each node in a cell is a graph of basic operations (conv3×3, conv5×5, etc.). This results in 3
+sets of graph hyperparameters: θtop, θmid, θbottom, each of which independently deﬁnes the graph
+generation model in each level. Following [14] we use the Watts-Strogatz (WS) model as the
+random graph generator for the top and bottom levels, with hyperparameters θtop = [Nt, Kt, Pt] and
+θbottom = [Nb, Kb, Pb]; and use the Erd˝os–Rényi (ER) graph generator for the middle level, with
+hyperparameters θmid = [Nm, Pm] to allow for the single-node case 1. This gives us the ﬂexibility
+to reduce our search space to two levels (when the mid-layer becomes single node) and represent a
+
+1The WS model cannot generate a single-node graph but the ER model can.
+
+DARTS-like architecture. Indeed HNAG is designed to be able to emulate existing search spaces
+while also exploring potentially better/broader ones.
+
+By varying the graph generator hyperparameters and thus the connectivity properties at each level,
+we can produce a extremely diverse range of architectures (see end of this section). For instance, if
+the top-level graph has 20 nodes arranged in a feed-forward conﬁguration and the mid-level graph
+has a single node, then we obtain networks similar to those sampled from the DARTS search space
+[1]. While if we ﬁx the top-level graph to 3 nodes, the middle level to 1 and the bottom-level graph to
+32, we can reproduce the search space from [14].
+
+Stages. CNNs are traditionally divided into stages, each having a different image resolution and
+number of channels [15, 1, 14]. In previous works, both the length of each stage and the number of
+channels were ﬁxed. Our search space is the ﬁrst that permits the learning of the optimal channel
+ratio as well as the channel multiplier for each stage. To do so, we deﬁne two hyperparameter vectors:
+stage ratio θS and channel ratio θC. θS is normalized and represents the relative length of each stage.
+For example, if there are 20 nodes at the top level and θS = [0.2, 0.2, 0.6] then the three stages will
+have 4, 4 and 12 nodes, respectively. θC controls the number of channels in each stage; e.g. if it is
+set to [4, 1, 4] than stages 1 and 3 hold the same number of channels while stage 2 only holds one
+fourth of that. The absolute number of channels depends on the overall desired number of parameters
+while θC only controls the relative ratio.
+
+Merging options and Operations.
+When multiple edges enter the same node, they are merged.
+Firstly, all activations are downscaled via pooling to match the resolution of the smallest tensor. Note
+we only tried pooling for our work but strided convolution is an alternative option to achieve the
+same effect. Likewise, we use 1 × 1 convolutions to ensure that all inputs share the same number
+of channels. Then, independently for each node, we sample, according to the probability weights
+θM, one merging strategy from: weighted sum, attention weighted sum, concatenation. Each atomic
+operation is sampled from a categorical distribution parameterized with θop, which can be task
+speciﬁc.
+
+Therefore,
+our
+search
+space
+is
+fully
+speciﬁed
+by
+the
+hyperparameters
+Θ
+=
+[θtop, θmid, θbottom, θS, θC, θM, θop].
+The top-level enables a mixture of short- and long-
+range connections among features of different stages (resolutions/channels). The mid-level regulates
+the search complexity of the bottom-level graph by connecting features computed locally (within
+each mid-level node).2 This serves a function similar to the use of cells in other NAS method but
+relaxes the requirement of equal cells. Our hierarchical search expresses a wide variety of networks
+(see Section 4.1). The total number of networks in our search space is larger than 4.58 × 1056. For
+reference, in the DARTS search space that number is 814 ≈4.40 × 1012 (details in Appendix A).
+
+2.2
+BO-based Search Strategy
+
+Our proposed hierarchical graph-based search space allows us to represent a wide variety of neural
+architectures with a small number of continuous hyperparameters, making NAS amenable to a wide
+range of powerful BO methods such as multi-ﬁdelity and multi-objective BO. The general algorithm
+for applying BO to our search space is presented in Appendix B.
+
+Multi-ﬁdelity BO (BOHB). We use the multi-ﬁdelity BOHB approach [16], which uses partial evalu-
+ations with smaller-than-full budget in order to exclude bad conﬁgurations early in the search process,
+thus saving resources to evaluate more promising conﬁgurations and speeding up optimisation. Given
+the same time constraint, BOHB evaluates many more conﬁgurations than conventional BO which
+evaluates all conﬁgurations with full budget.
+
+Multi-objective BO (MOBO). We use MOBO to optimize for multiple objectives which are conﬂict-
+ing in nature. For example, we may want to ﬁnd architectures which give high accuracy but require
+low memory. Given the competing nature of the multiple objectives, we adapt a state-of-the-art
+MOBO method to learn the Pareto front [17] 3. The method constructs multiple acquisition functions,
+one for each objective function, and then recommends the next query point by sampling the point with
+
+2For example, a 32-nodes graph has 496 possible connections. If we divide this into 4 subgraphs of 8 nodes,
+that number is 118 = 28 × 4 (within subgraphs) + 6 (between subgraphs).
+3Note modifying BOHB to also accommodate the multi-objective setting is an interesting future direction.
+One potential way is to do so is by selecting the Pareto set points at each budget to be evaluated for longer
+epochs during Successive Halving.
+
+the highest uncertainty on the Pareto front of all the acquisition functions. We modify the approach
+in the following two aspects for our application:
+
+1) Heteroscedastic surrogate model. We use a stochastic gradient Hamiltonian Monte Carlo (SGHMC)
+BNN [18] as the surrogate, which does a more Bayesian treatment of the weights and thus gives better-
+calibrated uncertainty estimates than other alternatives in prior BO-NAS works [19, 20, 21]. SGHMC
+BNN in [18] assumes homoscedastic aleatoric noise with zero mean and constant variance w2
+n. By
+sampling the network weights wf and the noise parameter wn from their posterior wi ∼p(w|D)
+where w = [wf, wn] and D is the surrogate training data, the predictive posterior mean µ(f|Θ, D)
+and variance σ2(f|Θ, D) are approximated as:
+
+N
+X
+
+N
+X
+
+µ(f|Θ, D) = 1
+
+i=1
+ˆf(Θ; wi
+f),
+σ2(f|Θ, D) = 1
+
+i=1
+ˆf(Θ; wi
+f)2 −µ(f|D)2 + w2
+n
+(1)
+
+N
+
+N
+
+However, our optimization problem has heteroscedastic aleatoric noise: the variance in the network
+performance, in terms of test accuracy or other objectives, changes with the generator hyperparameters
+(Figure 2). Therefore, we propose to append a second output to the surrogate network and model the
+noise variance as a deterministic function of the inputs, w2
+n(Θ). Our heteroscedastic BNN has the
+same predictive posterior mean as Equation (2.2) but a slightly different predictive posterior variance:
+σ2(f|Θ, D) = 1
+
+N
+PN
+i=1
+
+ˆf(Θ; wi
+f)2 +
+
+wi
+n(Θ)
+2
+−µ(f|Θ, D)2. Our resultant surrogate network
+comprises 3 fully-connected layers, each with 10 neurons, and two outputs. The hyperparameter
+details for our BNN surrogate is described in Appendix C.
+
+We verify the modelling performance of our het-
+eroscedastic surrogate network by comparing it
+to its homoscedastic counterpart. We randomly
+sample 150 points from BOHB query data for
+each of the ﬁve image datasets and randomly
+split them into a train-test ratio of 1:2. The me-
+dian results on negative log likelihood (NLL)
+and root mean square error (RMSE) over 10
+random splits are shown in Table 1. The het-
+eroscedastic model not only improves over the
+homoscedastic model on RMSE, which depends
+on the predictive posterior mean only, but more
+importantly, shows much lower NLL, which de-
+pends on both the predictive posterior mean and
+variance. This shows that the heteroscedastic surrogate can model the variance of the objective
+function better, which is important for the BO exploration.
+
+Table 1: Regression performance of heteroscedas-
+tic (Het) and homoscedastic (Hom) BNN surro-
+gates, trained on 50 generator samples and tested
+on 100 samples, in terms of negative log-likelood
+(NLL) and root mean square error (RMSE)
+
+NLL
+RMSE
+
+Hom
+Het
+Hom
+Het
+CIFAR10
+5.92
+3.43
+0.02
+0.01
+CIFAR100
+7.15
+0.89
+0.02
+0.02
+SPORT8
+23.8
+19.0
+0.15
+0.14
+MIT67
+7.23
+-0.92
+0.12
+0.11
+FLOWERS102
+15.6
+7.49
+0.19
+0.18
+
+2) Parallel evaluations per BO iteration. The original multi-objective BO algorithm is sequential (i.e.
+recommends one new conﬁguration per iteration). We modify the method to a batch algorithm which
+recommends multiple new conﬁgurations per iteration and enjoys faster convergence in terms of BO
+iterations [22, 23]. This allows the use of parallel computation to evaluate batches of conﬁgurations
+simultaneously. We collect the batch by applying the local penalisation on the uncertainty metric of
+the original multi-objective BO [23]. See Appendix D for details.
+
+3
+Related Work
+
+Neural Architecture Search (NAS). NAS aims to automate the design of deep neural networks and
+was initially formulated as a search problem over the possible operations (e.g. convolutions and
+pooling ﬁlters) in a graph. Several approaches have been proposed that outperform human-designed
+networks in vision tasks: reinforcement learning [24, 3], evolution [25], gradient descent [1, 8]
+and multi-agent learning [4]. To achieve a computationally feasible solution, these works rely on a
+manually-designed, cell-based search space where the macro-structure of the network (the global
+wiring) is ﬁxed and only the micro-structure (the operations) is searched. Some recent works also
+start to look into the search space design [26, 27] but study very different perspectives from our work.
+
+Network Wiring. Recent works have explored the importance of the wiring of a neural network.
+[28] use a gradient-based approach to search the network wiring via learnable weights, and [29]
+
+search for the wirings among channels instead of layers; both modify existing network architectures
+instead of discovering new ones. In contrast, [14] build networks from random graph models.
+
+The concept of stochastic network generator was introduced by [14] who show that networks based
+on simple random graph models (RNAG) are competitive with human and algorithm designed
+architectures on the ImageNet benchmark. In contrast with our work, they do not offer a strategy
+to optimize their generators. The second main difference with their work lies in our search space
+(HNAG). While RNAG is ﬂat with 3 sequentially connected graphs, HNAG is hierarchical with
+each node in the higher level corresponding to a graph in the level below, leading to a variable
+number of nested graphs. Our 3-level hierarchical structure is not only a generalization which
+enables the creation of more complex architectures, but it also allows the creation of local clusters of
+operation units, which result in more memory efﬁcient models (Fig.3) or architectures with fewer
+nodes (Sec.4.3). Moreover, the HNAG top level provides diverse connections across different stages,
+leading to more ﬂexible information ﬂow than RNAG. Finally, nodes in RNAG only process features
+of ﬁxed channel size and resolution within a stage while those in HNAG receive features with different
+channel sizes and resolution. To summarize, our work distinguishes itself by proposing a signiﬁcantly
+different search space and a BO based framework to optimize it, empirically evaluating it on 6
+datasets and further investigating the multi-objective setting [6, 30].
+
+BO for NAS. BO has been widely used for optimizing the hyperparamters of machine learning
+algorithms [31, 32, 33, 34, 35, 16, 36] and more recently it has found applications in NAS [37, 38,
+19, 20, 21]. However, current NAS search spaces—even cell-based ones—are noncontinuous and
+relatively high dimensional [39], thus unfavourable to conventional BO algorithms that focus on
+low-dimensional continuous problems [40, 41]. Our proposed HNAG which addresses the above
+issues can make NAS amenable to BO methods.
+
+Hierarchical Search Space. [42] proposes to search for the outer network-level structure in addition
+to the commonly searched cell-level structure; [43] proposes a factorised hierarchical search space
+which permits different operations and connections in different cells; [44] introduce a hierarchical
+construction of networks with higher-level motifs being formed by using lower-level motifs. However,
+none of these prior works propose to optimise architecture generators instead of single architectures,
+which is the main contribution of our search space; Such generator-based search space formulation
+leads to advantages like high expressiveness, representational compactness and stochasticity.
+
+4
+Experiments
+
+We experiment with the following two network generators.
+
+1) Hierarchical Neural Architecture Generator (HNAG): our proposed 3-level, hierarchical generator.
+Due to resource constraint, we limit our search space to the 8 random graph generator hyperparame-
+ters [θtop, θmid, θbottom]4. The search ranges of these hyperparameters are in Appendix E. Following
+[14] we ﬁx θS = [0.33, 0.33, 0.33] and θC = [1 : 2 : 4]. Experiments on expanded search spaces are
+shown in Appendix H. The absolute number of channels for each stage is computed by multiplying
+the channel ratio with a constant which is calculated based on our parameter limit.
+
+2) Randomly Wired Neural Architecture Generator (RNAG): the ﬂat network generator in [14]
+which connects three WS graphs in sequence to form an architecture. We optimize the three WS
+hyperparameters (N, K, P) for each stage, leading to 9 hyperparameters in total.
+
+For both HNAG and RNAG, we apply multi-ﬁdelity and multi-objective BO to optimize their
+hyperparameters, leading to 4 methods for comparison: HNAG-BOHB, HNAG-MOBO, RNAG-
+BOHB, RNAG-MOBO. To verify the effectiveness of our search strategy as well as expressiveness,
+we also evaluate the performance of random samples drawn from HNAG (HNAG-RS) and use it as
+another baseline. For all generator-based methods, we use summation to merge the inputs and only
+use 3×3 convolution as the operation choice, unless otherwise stated.
+
+Datasets. We perform experiments on a variety of image datasets: CIFAR10, CIFAR100 [45],
+IMAGENET [46] for object recognition; SPORT8 for action recognition [47]; MIT67 for scene
+
+4Namely the 3 WS graph hyperparameters at top and bottom levels, θtop ∈R3, θbottom ∈R3; and the 2 ER
+graph hyperparameters at mid level, θtop ∈R2.
+
+7
+
+30
+
+Test Error (%)
+
+Test Error (%)
+
+6
+
+28
+
+26
+
+5
+
+24
+
+4
+
+22
+
+20
+40
+Memory Consumption (MB)
+
+50
+100
+150
+200
+Train time per epoch (S)
+
+20
+40
+60
+Memory Consumption (MB)
+
+50
+100
+150
+200
+Train time per epoch (S)
+
+(a) CIFAR10
+
+(b) CIFAR100
+
+Figure 2: Expressiveness of our HNAG search space. The above plots shows the mean and standard
+deviation of test error vs. memory consumption and training time per epoch achieved by 40 random
+generator hyperparameters for CIFAR10 and CIFAR100. The mean and standard deviation of results
+over the 8 sampled architectures for each generator hyperparameter are presented.
+
+CIFAR10
+
+CIFAR100
+
+SPORT8
+
+MIT67
+
+FLOWERS102
+
+50
+
+40
+
+70
+
+70
+
+HNAG-MOBO
+RNAG-MOBO
+
+14
+
+35
+
+60
+
+45
+
+60
+
+Val. Error (%)
+
+30
+
+12
+
+50
+
+40
+
+25
+
+40
+
+10
+
+50
+
+35
+
+20
+
+30
+
+8
+
+30
+
+15
+
+40
+
+20
+
+10
+
+25
+
+6
+
+5
+
+10
+
+20
+40
+60
+Memory Consumption (MB)
+
+20
+40
+60
+Memory Consumption (MB)
+
+50
+100
+150
+200
+250
+Memory Consumption (MB)
+
+50
+100
+150
+200
+250
+Memory Consumption (MB)
+
+50
+100
+150
+200
+250
+Memory Consumption (MB)
+
+Figure 3: Query data by MOBO for HNAG (red) and RNAG (blue). The Pareto optimal conﬁgurations
+are highlighted in solid lines and ﬁlled markers. Each BO evaluation uses 200 training epochs for
+SPORT8 and 60 training epochs for the other datasets.
+
+recognition [48]; FLOWERS102 for ﬁne-grained object recognition [49]. We limit the number of
+network parameters to 4.0M for small-image tasks and 6.0M for large-image tasks.
+
+Complete training protocol. For all datasets except IMAGENET, we evaluate the performance of
+the (Pareto) optimal generators recommended by BO by sampling 8 networks from the generator
+and training them to completion (600 epochs) with initial learning rate 0.025 and batch size 96. For
+IMAGENET, we follow the complete training protocol of small model regime in [14], which trains
+the networks for 250 epochs with an initial learning rate of 0.1 and a batch size of 256. We use cutout
+with length 16 for small-image tasks and size 112 for large-image tasks. Note that we do not use
+DropPath or other advanced training augmentations. All experiments use NVIDIA Tesla V100 GPUs.
+
+4.1
+Expressiveness of the search space
+
+We evaluate the performance of 40 randomly sampled network generator hyperparameters for CI-
+FAR10 and CIFAR100 (Figure 2). The performance of each hyperparameter set is evaluated by
+training 8 neural network architectures generated by following the complete training protocol (de-
+scribed above) and evaluating on the test datasets. Similar plots following the training protocol in the
+BO search phase are presented in Appendix G. There are three observations we highlight.
+
+Firstly, the accuracy (test error) and efﬁciency (memory consumption5 or training time) achieved
+by different generator hyperparameters are spread over a considerable range. This shows that our
+search space can express a variety of generators whose networks have different characteristics, thus
+optimization is meaningful. Secondly, the networks produced by good generator hyperparameters
+mostly have small variation in their accuracy and memory, which justiﬁes our proposal to focus on
+the generator instead of the network. It also supports our approach to assess the performance of a
+speciﬁc generator conﬁguration with only one architecture sample in our BO phase. Third, there exist
+Pareto optimal generator hyperparameters in our search space as some of them result in architectures
+which are both efﬁcient and accurate. This justiﬁes our motivation for performing MOBO.
+
+5See Appendix F for a comparison with DARTS search space.
+
+Table 2: Validation accuracy (%) and search cost
+(GPU days) for BOHB results. The accuracy
+reported is obtained in the BOHB search setting
+which uses large batch sizes based on GPU ma-
+chine memory and trains the network sample for
+400 epochs for SPORT8 and 120 epochs for the
+other datasets.
+
+Table 3: The optimal values found for the 8
+generator hyperparameters for single-objective
+BOHB (top block) and MOBO (bottom block)
+experiments. “MPS” is Memory Per Sample.
+
+Top
+Mid
+Bottom
+MPS
+N
+K
+P
+N
+P
+N
+K
+P
+(MB)
+CIFAR10
+8
+5
+0.6
+1
+0.7
+5
+4
+0.2
+17
+CIFAR100
+8
+5
+0.4
+1
+0.7
+4
+2
+0.4
+14
+SPORT8
+7
+2
+0.9
+5
+0.8
+6
+3
+0.6
+121
+MIT67
+9
+4
+0.6
+1
+0.2
+3
+2
+0.5
+54
+FLOWERS102
+6
+4
+0.4
+1
+0.4
+6
+5
+0.9
+62
+IMAGENET
+4
+2
+0.5
+5
+0.6
+6
+4
+0.4
+136
+CIFAR10
+6
+4
+0.8
+1
+0.1
+3
+2
+0.5
+13
+CIFAR100
+6
+4
+0.3
+1
+0.7
+3
+2
+0.5
+13
+SPORT8
+3
+2
+0.3
+1
+0.2
+3
+2
+0.8
+43
+MIT67
+3
+2
+0.6
+1
+0.8
+4
+2
+0.6
+48
+FLOWERS102
+6
+5
+0.2
+1
+0.8
+3
+2
+0.5
+48
+
+RNAG-BOHB
+HNAG-BOHB
+
+Accuracy
+Cost
+Accuracy
+Cost
+CIFAR10
+93.5
+14.0
+95.6
+12.8
+CIFAR100
+72.2
+11.8
+77.2
+10.4
+SPORT8
+94.7
+23.4
+95.3
+17.6
+MIT67
+67.7
+22.6
+71.8
+20.0
+FLOWERS102
+91.4
+11.2
+93.3
+10.6
+
+Table 4: Test accuracy (%) and memory consumption (MB) for variants of HNAG and RNAG
+after completing training. “BOHB” and “MOBO”indicates BO was used to optimise generator
+hyperparameters. “RNAG-D” is the best generator in [14] and “HNAG-RS” is the generator with
+hyperparameters randomly sampled from HNAG. Each table entry shows “mean (stdev)” of test
+accuracy (top row) and memory (bottom row) over 8 random samples. The best performance,
+separately for test accuracy and memory consumption, is highlighted in bold. Number of model
+parameters is limited to 4M for CIFAR10 and CIFAR100 and 6M for the other datasets.
+
+RNAG-BOHB
+HNAG-BOHB
+RNAG-MOBO
+HNAG-MOBO
+RNAG-D
+HNAG-RS
+
+CIFAR10
+94.3(0.13)
+57.9(0.52)
+96.6(0.15)
+17.0(1.76)
+94.0(0.26)
+25.9(0.91)
+96.6(0.07)
+12.8(0.00)
+94.1(0.16)
+44.2(1.29)
+95.7(0.68)
+53.9(40.6)
+
+CIFAR100
+73.0(0.50)
+56.5(0.90)
+79.3(0.31)
+14.0(1.07)
+71.8(0.50)
+27.0(0.91)
+77.6(0.45)
+12.8(0.00)
+71.7(0.36)
+43.5(1.23)
+77.1(1.34)
+72.6(40.2)
+
+SPORT8
+93.6(0.76)
+101.9(1.18)
+94.9(0.52)
+121.9(13.1)
+93.1(0.73)
+57.8(1.07)
+95.2(0.40)
+43.1(0.00)
+93.6(0.99)
+112.1(3.45)
+93.2(1.55)
+375.7(277)
+
+MIT67
+68.3(0.78)
+156.1(6.40)
+74.2(0.67)
+54.1(2.50)
+66.9(1.46)
+56.7(0.59)
+73.5(0.56)
+48.1(0.00)
+66.7(0.54)
+111.7(3.58)
+72.5(1.38)
+324.8(140)
+
+FLOWERS102
+95.7(0.38)
+143.5(2.27)
+97.9(0.18)
+61.7(0.00)
+94.9(0.53)
+63.0(1.63)
+98.1(0.19)
+48.4(0.00)
+94.7(0.46)
+111.6(3.35)
+95.3(1.29)
+211.2(140)
+
+4.2
+BO Experiments
+
+BOHB is used to ﬁnd the optimal network generator hyperparameters in terms of the validation
+accuracy. We perform BOHB for 60 iterations. We use training budgets of 100, 200, 400 epochs
+to evaluate architectures on SPORT8 and 30, 60, 120 epochs on the other datasets. MOBO returns
+the Pareto front of generator hyperparameters for two objectives: validation accuracy and sample
+memory. For parallel MOBO, we start with 50 BOHB evaluation data and search for 30 iterations
+with a BO batch size of 8; at each BO iteration, the algorithm recommends 8 new points to be
+evaluated and updates the surrogate model with these new evaluations. We use a ﬁxed training budget
+of 200 epochs to evaluate architectures suggested for SPORT8 and 60 epochs for the other datasets.
+For experiments with both BO methods, we only sample 1 architecture to evaluate the performance of
+a speciﬁc generator. We scale the batch size up to a maximum of 512 to fully utilise the GPU memory
+and adjust the initial learning rate via linear extrapolation from 0.025 for a batch size of 96 to 0.1 for
+a batch size of 512. The other network training set-up follows the complete training protocol.
+
+The validation accuracy of the best generator conﬁguration recommended by BOHB as well as
+the computation costs to complete the BOHB search for both our proposed hierarchical network
+generator (HNAG) and the Randomly Wired Networks Generator (RNAG) are shown in Table 2.
+HNAG improves over RNAG in terms of both accuracy and cost. The high rank correlation between
+architecture accuracies at subsequent budgets (see Fig. 5b in Appendix I) indicates that a good
+generator conﬁguration remains good even when a new architecture is re-sampled and re-evaluated
+at a higher budget; this reconﬁrms the validity of our practice to assess the generator conﬁguration
+performance with only one architecture sample during the BO search phase.
+
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+
+74
+
+82
+
+96
+
+72
+
+80
+
+96
+
+70
+
+94
+
+78
+
+68
+
+92
+
+76
+
+66
+
+90
+
+94
+
+76
+78
+80
+82
+74
+
+66
+68
+70
+72
+64
+
+87 88 89 90 91 92 93 94
+
+92
+94
+96
+random sampling, top-1 acc (%)
+
+94
+96
+
+DARTS
+PDARTS
+NSGANET
+ENAS
+CNAS
+MANAS
+StacNAS
+NAO
+NAGO (ours)
+
+Figure 4: Comparison of various NAS methods (performance on y-axis) and random sampling
+(performance on x-axis) from their respective search spaces. Ellipse centres, ellipse edges and
+whisker ends represent the µ ± {0, σ/2, σ}, respectively (mean µ, standard deviation σ). Methods
+above the diagonal line outperform the average architecture, and vice-versa. Note NAGO clearly
+achieves the largest improvement over naive random sampling than all other methods on all tasks.
+Results for all methods except ours (NAGO: HNAG-BOHB) were taken from public resources
+provided by [7]. While all high-performing competing methods use Cutout, DropPath and Auxiliary
+Towers, our method only uses Cutout. The other methods are: DARTS [1], PDARTS [2], NSGANET
+[50], ENAS [3], CNAS [51], MANAS [4], StacNAS [5], NAO [52].
+
+The query data by MOBO over the two objectives, validation error and sample memory consumption
+are presented in Figure 3. Clearly, the Pareto front of HNAG dominates that of RNAG, showing that
+our proposed search space not only performs better but is also more memory efﬁcient.
+
+4.3
+Analysis of the Optimal Hyperparameters
+
+In Table 3, most optimal generators have much fewer nodes (≤40 nodes) than the graph-based
+generator in [14] (96 nodes) while still achieve better performance (Section 4.4). This shows that our
+hierarchical search space helps reduce the complexity/size of the architectures found. Interestingly,
+most datasets have the optimal solution with a single-node mid-level graph. We hypothesize this to
+be due to the low parameter count we enforced, which encourages the search to be conservative with
+the total number of nodes. Moreover, we see similar conﬁgurations appear to be optimal for different
+datasets, showing the promise of using transfer-learning to speed up the search in our future work.
+
+4.4
+Complete Training Results
+
+Table 5: Test accuracy (%) of small networks
+(∼6M paremeters) on IMAGENET. We train
+our HNAG-BOHB for 250 epochs similar to
+RandomWire-WS [14].
+
+We train (i) the best network generator hyper-
+parameters of both HNAG and RNAG found
+by BO; (ii) the default optimal RNAG set-
+ting (RNAG-D) recommended in [14]; and (iii)
+randomly sampled hyperparameters values for
+our HNAG (HNAG-RS) following the com-
+plete training protocol. HNAG clearly outper-
+forms RNAG (Table 4). Moreover, in the multi-
+objective case, HNAG-MOBO is able to ﬁnd
+models which are not only competitive in test
+accuracy but also very lightweight (i.e., consum-
+ing only 1/3 of the memory when compared to
+RNAG-D).
+
+Network
+Top-1 acc.
+Top-5 acc.
+Params(M)
+ShufﬂeNetV2 [53]
+74.9
+92.2
+7.4
+
+NASNet [54]
+74.0
+91.6
+5.3
+Amoeba [55]
+75.7
+92.4
+6.4
+PNAS [56]
+74.2
+91.9
+5.1
+DARTS [1]
+73.1
+91.0
+4.9
+XNAS [8]
+76.0
+—
+5.2
+
+RandWire-WS
+74.7
+92.2
+5.6
+HNAG-BOHB
+76.8
+93.4
+5.7
+
+An interesting analysis is presented in Figure 4. This plot shows the relationship between randomly-
+sampled and method-provided architectures, and is thus able to separate the contribution of the search
+space from that of the search algorithm. Notably, not only does NAGO provide high accuracy, but
+also has the best relative improvements of all methods. It must be noted that while these methods train
+their networks using Cutout [57], DropPath [58] and Auxiliary Towers [13], we only used Cutout.
+DropPath and Auxiliary Towers could conceivably be used with our search space 6, although an
+effective and efﬁcient implementation is non-trivial. Furthermore, the competitive performance of
+
+6We naively apply DropPath and Auxiliary Towers, following set-ups in [1], to re-train architectures from
+our hierarchical search space. These techniques lead to 0.54% increase in the average test accuracy 25 over 8
+architecture samples on CIFAR10, leading to results competitive with the state-of-the-art.
+
+one-shot NAS methods is largely due to the above-mentioned training techniques and their well-
+designed narrow search space [7]. Finally, while the number of parameters in other methods can vary
+quite a lot (the number of channels is ﬁxed, regardless of the speciﬁc solution), NAGO dynamically
+computes the appropriate number of channels to preserve the given parameter count.
+
+We also perform the search on IMAGENET. Due to resource constraints, we only run 10 iterations of
+BOHB with search budgets of 15, 30, 60 epochs and train 2 sample networks from the best generator
+hyperparameters recommended by BOHB, following the complete training protocol in [14]. Although
+this is likely a sub-optimal conﬁguration, it serves to validate our approach on large datasets such as
+IMAGENET. The mean network performance achieved by HNAG-BOHB approach outperforms [14]
+and other benchmarks (Table 5). Note that XNAS uses DropPath, Auxiliary Towers and AutoAugment
+[59] to boost performance.
+
+5
+Discussion and conclusion
+
+We presented NAGO, a novel solution to the NAS problem. Due to its highly-expressive hierarchical,
+graph-based search space, together with its focus on optimizing a generator instead of a speciﬁc
+network, it signiﬁcantly simpliﬁes the search space and enables the use of more powerful global
+optimisation strategies. NAGO, as other sample-based NAS methods, requires more computation
+(< 20 GPU-days) than one-shot NAS methods (< 2 GPU-days). The later are geared towards fast
+solutions, but rely heavily on weight-sharing (with associated drawbacks [60]) and a less expressive
+search space with ﬁxed macro-structure to achieve this speed-up, and tend to overﬁt to speciﬁc
+datasets (CIFAR), while under-performing on others (Figure 4). Additionally, while the architectures
+found by NAGO are already extremely competitive, the training protocol is not fully optimised:
+NAGO does not use DropPath or Auxiliary Towers—which have been used to signiﬁcantly boost
+performance of one-shot NAS [7]—so additional accuracy gains are available, and we aim to transfer
+these protocols to our HNAG backbone. For future direction it would be interesting to consider a
+lifelong NAS setting or transfer learning, in which each new task can build on previous experience so
+that we can quickly get good results on large datasets, such as ImageNet. This can be more easily
+achieved with our novel search space HNAG as it allows us to deploy the existing transfer-learning
+BO works directly. In addition, the network generator hyperparameters deﬁne the global properties
+of the resultant architectures—network connectivity and operation types—and from these we can
+derive a high level understanding of the properties that make up a good architecture for a given task.
+
+6
+Broader Impact
+
+As highlighted in [7], NAS literature has focused for a long time on achieving higher accuracies,
+no matter the source of improvement. This has lead to the widespread use of narrowly engineered
+search spaces, in which all considered architectures share the same human deﬁned macro-structure.
+While this does lead to higher accuracies, it prevents those methods from ever ﬁnding truly novel
+architecture. This is detrimental both for the community, which has focused many works on marginally
+improving performance in a shallow pond, but also for the environment [61]. As NAS is undoubtedly
+computationally intensive, researchers have the moral obligation to make sure these resources are
+invested in meaningful pursuits: our ﬂexible search space, based on hierarchical graphs, has the
+potential to ﬁnd truly novel network paradigms, leading to signiﬁcant changes in the way we design
+networks. It is worth mentioning that, as our search space if fundamentally different from previous
+ones, it is not trivial to use the well-optimised training techniques (e.g. DropPath, Auxiliary Towers,
+etc.) which are commonly used in the ﬁeld. While transferring those techniques is viable, we do
+believe that our new search space will open up the development of novel training techniques.
+
+We do however acknowledge that the computational costs of using our NAS approach are still
+relatively high - this may not be attractive to the industrial or academic user with limited resources.
+On the other hand, by converting NAS to a low-dimensional hyperparameter optimisation problem,
+we have signiﬁcantly reduced the optimisation difﬁculty and opened up the chance of applying
+more optimisation techniques to NAS. Although only demonstrated with BOHB and MOBO in
+this work, we believe more query-efﬁcient methods, such as BO works based on transfer learning
+[62, 63, 64, 65, 66, 67] can be deployed directly on our search space to further reduce the computation
+costs.
+
+References
+
+[1] H. Liu, K. Simonyan, and Y. Yang, “DARTS: Differentiable architecture search,” in International
+Conference on Learning Representations (ICLR), 2019.
+
+[2] X. Chen, L. Xie, J. Wu, and Q. Tian, “Progressive differentiable architecture search,” in
+International Conference on Computer Vision (ICCV), 2019.
+
+[3] H. Pham, M. Guan, B. Zoph, Q. Le, and J. Dean, “Efﬁcient neural architecture search via
+parameter sharing,” in International Conference on Machine Learning (ICML), pp. 4092–4101,
+2018.
+
+[4] F. Carlucci, P. M. Esperança, M. Singh, A. Yang, V. Gabillon, H. Xu, Z. Chen, and J. Wang,
+“MANAS: Multi-agent neural architecture search,” arxiv:1909.01051, 2019.
+
+[5] G. Li, X. Zhang, Z. Wang, Z. Li, and T. Zhang, “StacNAS: Towards stable and consistent
+optimization for differentiable neural architecture search,” arXiv:1909.11926, 2019.
+
+[6] H. Cai, L. Zhu, and S. Han, “ProxylessNAS: Direct neural architecture search on target task and
+hardware,” in International Conference on Learning Representations (ICLR), 2019.
+
+[7] A. Yang, P. M. Esperança, and F. M. Carlucci, “NAS evaluation is frustratingly hard,” in
+International Conference on Learning Representations (ICLR), 2020.
+
+[8] N. Nayman, A. Noy, T. Ridnik, I. Friedman, R. Jin, and L. Zelnik, “XNAS: Neural architecture
+search with expert advice,” in Advances in Neural Information Processing Systems (NIPS),
+pp. 1975–1985, 2019.
+
+[9] J. Fang, Y. Sun, K. Peng, Q. Zhang, Y. Li, W. Liu, and X. Wang, “Fast neural network adaptation
+via parameter remapping and architecture search,” in International Conference on Learning
+Representations (ICLR), 2020.
+
+[10] J. Mei, X. Lian, X. Jin, L. Yang, Y. Li, A. Yuille, and J. Yang, “AtomNAS: Fine-grained end-
+to-end neural architecture search,” in International Conference on Learning Representations
+(ICLR), 2020.
+
+[11] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image recognition,” in
+Computer Vision and Pattern Recognition (CVPR), pp. 770–778, 2016.
+
+[12] G. Huang, Z. Liu, L. Van Der Maaten, and K. Q. Weinberger, “Densely connected convolutional
+networks,” in Computer Vision and Pattern Recognition (CVPR), pp. 4700–4708, 2017.
+
+[13] C. Szegedy, W. Liu, Y. Jia, P. Sermanet, S. Reed, D. Anguelov, D. Erhan, V. Vanhoucke, and
+A. Rabinovich, “Going deeper with convolutions,” in Computer Vision and Pattern Recognition
+(CVPR), pp. 1–9, 2015.
+
+[14] S. Xie, A. Kirillov, R. Girshick, and K. He, “Exploring randomly wired neural networks for
+image recognition,” arXiv:1904.01569, 2019.
+
+[15] C. Szegedy, S. Ioffe, V. Vanhoucke, and A. A. Alemi, “Inception-v4, Inception-ResNet and the
+impact of residual connections on learning,” in Conference on Artiﬁcial Intelligence (AAAI),
+2017.
+
+[16] S. Falkner, A. Klein, and F. Hutter, “BOHB: Robust and efﬁcient hyperparameter optimization
+at scale,” in International Conference on Machine Learning (ICML), pp. 1436–1445, 2018.
+
+[17] S. Belakaria, A. Deshwal, N. K. Jayakodi, and J. R. Doppa, “Uncertainty-aware search frame-
+work for multi-objective Bayesian optimization,” in Conference on Artiﬁcial Intelligence (AAAI),
+2020.
+
+[18] J. T. Springenberg, A. Klein, S. Falkner, and F. Hutter, “Bayesian optimization with robust
+Bayesian neural networks,” in Advances in Neural Information Processing Systems (NIPS),
+pp. 4134–4142, 2016.
+
+[19] L. Ma, J. Cui, and B. Yang, “Deep neural architecture search with deep graph Bayesian
+optimization,” in Web Intelligence (WI), pp. 500–507, IEEE/WIC/ACM, 2019.
+
+[20] H. Shi, R. Pi, H. Xu, Z. Li, J. T. Kwok, and T. Zhang, “Multi-objective neural architecture
+search via predictive network performance optimization,” 2019.
+
+[21] C. White, W. Neiswanger, and Y. Savani, “BANANAS: Bayesian optimization with neural
+architectures for neural architecture search,” arXiv:1910.11858, 2019.
+
+[22] J. González, Z. Dai, P. Hennig, and N. Lawrence, “Batch bayesian optimization via local
+penalization,” in Artiﬁcial Intelligence and Statistics (AISTATS), pp. 648–657, 2016.
+
+[23] A. S. Alvi, B. Ru, J. Calliess, S. J. Roberts, and M. A. Osborne, “Asynchronous batch Bayesian
+optimisation with improved local penalisation,” arXiv:1901.10452, 2019.
+
+[24] B. Zoph and Q. Le, “Neural architecture search with reinforcement learning,” in International
+Conference on Learning Representations (ICLR), 2017.
+
+[25] E. Real, S. Moore, A. Selle, S. Saxena, Y. L. Suematsu, J. Tan, Q. V. Le, and A. Kurakin,
+“Large-scale evolution of image classiﬁers,” in International Conference on Machine Learning
+(ICML), pp. 2902–2911, 2017.
+
+[26] G. Bender, H. Liu, B. Chen, G. Chu, S. Cheng, P.-J. Kindermans, and Q. V. Le, “Can weight
+sharing outperform random architecture search? an investigation with tunas,” in Proceedings
+of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 14323–14332,
+2020.
+
+[27] I. Radosavovic, R. P. Kosaraju, R. Girshick, K. He, and P. Dollár, “Designing network de-
+sign spaces,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pp. 10428–10436, 2020.
+
+[28] K. Yuan, Q. Li, Y. Zhou, J. Shao, and J. Yan, “Diving into optimization of topology in neural
+networks.” OpenReview ID:HyetFnEFDS, 2020.
+
+[29] M. Wortsman, A. Farhadi, and M. Rastegari, “Discovering neural wirings,” in Advances in
+Neural Information Processing Systems (NIPS), pp. 2680–2690, 2019.
+
+[30] T. Elsken, J. H. Metzen, and F. Hutter, “Efﬁcient multi-objective neural architecture search via
+lamarckian evolution,” in International Conference on Learning Representations, 2018.
+
+[31] J. Snoek, H. Larochelle, and R. P. Adams, “Practical Bayesian optimization of machine learning
+algorithms,” in Advances in Neural Information Processing Systems (NIPS), pp. 2951–2959,
+2012.
+
+[32] J. S. Bergstra, R. Bardenet, Y. Bengio, and B. Kégl, “Algorithms for hyper-parameter opti-
+mization,” in Advances in Neural Information Processing Systems (NIPS), pp. 2546–2554,
+2011.
+
+[33] J. Bergstra, D. Yamins, and D. D. Cox, “Making a science of model search: Hyperparameter
+optimization in hundreds of dimensions for vision architectures,” in International Conference
+on Machine Learning (ICML), 2013.
+
+[34] F. Hutter, H. H. Hoos, and K. Leyton-Brown, “Sequential model-based optimization for general
+algorithm conﬁguration,” in Learning and Intelligent Optimization (LION), pp. 507–523, 2011.
+
+[35] A. Klein, S. Falkner, S. Bartels, P. Hennig, and F. Hutter, “Fast Bayesian optimization of
+machine learning hyperparameters on large datasets,” arXiv:1605.07079, 2016.
+
+[36] Y. Chen, A. Huang, Z. Wang, I. Antonoglou, J. Schrittwieser, D. Silver, and N. de Freitas,
+“Bayesian optimization in AlphaGo,” arXiv:1812.06855, 2018.
+
+[37] K. Kandasamy, W. Neiswanger, J. Schneider, B. Poczos, and E. P. Xing, “Neural architecture
+search with Bayesian optimisation and optimal transport,” in Advances in Neural Information
+Processing Systems (NIPS), pp. 2016–2025, 2018.
+
+[38] C. Ying, A. Klein, E. Christiansen, E. Real, K. Murphy, and F. Hutter, “NAS-Bench-101:
+Towards reproducible neural architecture search,” in International Conference on Machine
+Learning (ICML), pp. 7105–7114, 2019.
+
+[39] T. Elsken, J. H. Metzen, and F. Hutter, “Neural architecture search: A survey,” arXiv:1808.05377,
+2018.
+
+[40] B. Shahriari, K. Swersky, Z. Wang, R. P. Adams, and N. De Freitas, “Taking the human out
+of the loop: A review of bayesian optimization,” Proceedings of the IEEE, vol. 104, no. 1,
+pp. 148–175, 2015.
+
+[41] P. Hennig, M. A. Osborne, and M. Girolami, “Probabilistic numerics and uncertainty in compu-
+tations,” Proc. R. Soc. A, vol. 471, no. 2179, p. 20150142, 2015.
+
+[42] C. Liu, L.-C. Chen, F. Schroff, H. Adam, W. Hua, A. L. Yuille, and F.-F. Li, “Auto-deeplab:
+Hierarchical neural architecture search for semantic image segmentation.,” in CVPR, 2019.
+
+[43] M. Tan, B. Chen, R. Pang, V. Vasudevan, M. Sandler, A. Howard, and Q. Le, “Mnasnet:
+Platform-aware neural architecture search for mobile,” in 2019 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), pp. 2815–2823, 2019.
+
+[44] H. Liu, K. Simonyan, O. Vinyals, C. Fernando, and K. Kavukcuoglu, “Hierarchical representa-
+tions for efﬁcient architecture search,” in International Conference on Learning Representations,
+2018.
+
+[45] A. Krizhevsky, “Learning multiple layers of features from tiny images,” tech. rep., University of
+Toronto, 2009.
+
+[46] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei, “ImageNet: A large-scale
+hierarchical image database,” in Computer Vision and Pattern Recognition (CVPR), pp. 248–
+255, 2009.
+
+[47] L.-J. Li and L. Fei-Fei, “What, where and who? classifying events by scene and object
+recognition,” in International Conference on Computer Vision (ICCV), pp. 1–8, 2007.
+
+[48] A. Quattoni and A. Torralba, “Recognizing indoor scenes,” in Computer Vision and Pattern
+Recognition (CVPR), pp. 413–420, 2009.
+
+[49] M.-E. Nilsback and A. Zisserman, “Automated ﬂower classiﬁcation over a large number of
+classes,” in Indian Conference on Computer Vision, Graphics & Image Processing (ICVGIP),
+pp. 722–729, 2008.
+
+[50] Z. Lu, I. Whalen, V. Boddeti, Y. Dhebar, K. Deb, E. Goodman, and W. Banzhaf, “NSGA-NET:
+a multi-objective genetic algorithm for neural architecture search,” in Genetic and Evolutionary
+Computation Conference (GECCO), 2019.
+
+[51] Y. Weng, T. Zhou, L. Liu, and C. Xia, “Automatic convolutional neural architecture search for
+image classiﬁcation under different scenes,” IEEE Access, vol. 7, pp. 38495–38506, 2019.
+
+[52] R. Luo, F. Tian, T. Qin, E. Chen, and T.-Y. Liu, “Neural architecture optimization,” in Advances
+in Neural Information Processing Systems (NIPS), pp. 7816–7827, 2018.
+
+[53] N. Ma, X. Zhang, H.-T. Zheng, and J. Sun, “Shufﬂenet v2: Practical guidelines for efﬁcient cnn
+architecture design,” in Proceedings of the European Conference on Computer Vision (ECCV),
+pp. 116–131, 2018.
+
+[54] B. Zoph, V. Vasudevan, J. Shlens, and Q. V. Le, “Learning transferable architectures for scalable
+image recognition,” in Computer Vision and Pattern Recognition (CVPR), pp. 8697–8710, 2018.
+
+[55] E. Real, A. Aggarwal, Y. Huang, and Q. V. Le, “Regularized evolution for image classiﬁer
+architecture search,” in Proceedings of the aaai conference on artiﬁcial intelligence, vol. 33,
+pp. 4780–4789, 2019.
+
+[56] C. Liu, B. Zoph, M. Neumann, J. Shlens, W. Hua, L.-J. Li, L. Fei-Fei, A. Yuille, J. Huang, and
+K. Murphy, “Progressive neural architecture search,” in European Conference on Computer
+Vision (ECCV), pp. 19–34, 2018.
+
+[57] T. DeVries and G. W. Taylor, “Improved regularization of convolutional neural networks with
+cutout,” arXiv:1708.04552, 2017.
+
+[58] G. Larsson, M. Maire, and G. Shakhnarovich, “Fractalnet: Ultra-deep neural networks without
+residuals,” arXiv:1605.07648, 2016.
+
+[59] E. D. Cubuk, B. Zoph, D. Mane, V. Vasudevan, and Q. V. Le, “Autoaugment: Learning
+augmentation policies from data,” arXiv:1805.09501, 2018.
+
+[60] A. Zela, J. Siems, and F. Hutter, “Nas-bench-1shot1: Benchmarking and dissecting one-shot
+neural architecture search,” in International Conference on Learning Representations, 2020.
+
+[61] E. Strubell, A. Ganesh, and A. McCallum, “Energy and policy considerations for deep learning
+in nlp,” arXiv preprint arXiv:1906.02243, 2019.
+
+[62] M. Wistuba, N. Schilling, and L. Schmidt-Thieme, “Two-stage transfer surrogate model for
+automatic hyperparameter optimization,” in Joint European conference on machine learning
+and knowledge discovery in databases, pp. 199–214, Springer, 2016.
+
+[63] M. Poloczek, J. Wang, and P. I. Frazier, “Warm starting bayesian optimization,” in 2016 Winter
+Simulation Conference (WSC), pp. 770–781, IEEE, 2016.
+
+[64] Z. Wang, B. Kim, and L. P. Kaelbling, “Regret bounds for meta bayesian optimization with
+an unknown gaussian process prior,” in Advances in Neural Information Processing Systems,
+pp. 10477–10488, 2018.
+[65] M. Wistuba, N. Schilling, and L. Schmidt-Thieme, “Scalable gaussian process-based transfer
+surrogates for hyperparameter optimization,” Machine Learning, vol. 107, no. 1, pp. 43–78,
+2018.
+[66] M. Feurer, B. Letham, and E. Bakshy, “Scalable meta-learning for bayesian optimization using
+ranking-weighted gaussian process ensembles,” in AutoML Workshop at ICML, 2018.
+[67] V. Perrone, R. Jenatton, M. W. Seeger, and C. Archambeau, “Scalable hyperparameter transfer
+learning,” in Advances in Neural Information Processing Systems, pp. 6845–6855, 2018.
+[68] E. Brochu, V. M. Cora, and N. De Freitas, “A tutorial on bayesian optimization of expensive
+cost functions, with application to active user modeling and hierarchical reinforcement learning,”
+arXiv preprint arXiv:1012.2599, 2010.
+[69] Z. B. Zabinsky, “Random search algorithms,” Wiley encyclopedia of operations research and
+management science, 2010.
+
+A
+Comparison of our hierarchical search space (HNAG) with previous ones
+
+conv layer
+classifier
+input node
+output node
+operation node
+
+(a) θtop = (3, 2, 0.8), θmid = (1, 1.0),
+θbottom = (32, 4, 0.75) (RNAG default)
+
+(b) θtop = (8, 0.4, 5), θmid = (1, 0.7),
+θbottom = (4, 2, 0.4)
+
+(c) θtop = (6, 0.4, 4), θmid = (1, 0.4),
+θbottom = (6, 4, 0.4)
+
+(d) θtop = (6, 0.4, 4), θmid = (1, 0.4),
+θbottom = (6, 5, 0.9)
+
+(e) θtop = (7, 0.9, 2), θmid = (5, 0.8),
+θbottom = (6, 3, 0.6)
+
+(f) θtop = (4, 0.5, 2), θmid = (5, 0.6),
+θbottom = (6, 4, 0.4)
+
+Figure 5: Our proposed HNAG search space contains a large diversity of architectures
+
+A.1
+Quantifying the expressiveness of the hierarchical search space (HNAG) against
+DARTS search space
+
+The total number of possible graphs in our hierarchical search space is larger than
+
+NO
+X
+
+NC
+X
+
+NS
+X
+
+n=3
+2φ(n)
+!
+
+n=1
+2φ(n)
+!
+
+n=3
+2φ(n) · M n
+!
+
+·
+
+·
+
+T =
+
+|
+{z
+}
+Operation-level
+
+|
+{z
+}
+Cell-level
+
+|
+{z
+}
+Stage-level
+
+where φ(n) = n(n + 1)/2 is the number of possible DAGs with n nodes; NO, NC, NS are the
+maximum numbers of nodes in the operation-, cell- and stage-level graphs, respectively; and M is
+the number of possible operations in the operation-level graph.
+
+NOTE: This calculation does not include all variations due to the different merging possibilities for
+each node (addition and concatenation).
+
+Concretely, for the setting implemented (NO = NC = NS = 10, M = 5) we have THNAG ≈
+4.58 × 1056. For comparison, the DARTS search space has TDARTS = 814 ≈4.40 × 1012.
+
+A.2
+Example architectures from HNAG search space
+
+We show six sample architectures drawn from our proposed HNAG search space in Figure 5. It’s
+evident that our hierarchical graph-based search space can generate a large variety of architectures.
+Note Figure 5 (a) corresponds to the optimal architecture proposed in [14], which is also contained in
+our search space.
+
+A.3
+Illustrating difference from RNAG [14]
+
+Figure 6: Architecture sampled from RNAG. RNAG is ﬂat but our HNAG is hierarchical.
+
+While RNAG is ﬂat with 3 sequentially connected graphs, HNAG is hierarchical with 3 levels and
+each node in the higher level corresponds to a graph in the level below. Thus, the middle graph in
+RNAG does not correspond to the middle-level graph in HNAG. Our 3-level hierarchical structure
+is not only a generalisation which enables the creation of more complex architectures, but it also
+allows the creation of local clusters of operation units, which result in more memory efﬁcient models
+or architectures with fewer nodes as shown in the main paper and Figure 5. Moreover, the HNAG
+top level provides diverse connections across different stages, leading to more ﬂexible information
+ﬂow than RNAG. Finally, nodes in RNAG only process features of ﬁxed channel size and resolution
+within a stage while those in HNAG receive features with different channel sizes and resolution. To
+summarize, our proposed search space HNAG is signiﬁcantly different from RNAG.
+
+B
+Neural Architecture Generator Optimisation (NAGO) Algorithm
+
+BO is a technique for optimizing a black-box function which is usually noisy and expensive to
+evaluate. The two key components of BO are: a statistical surrogate model which models the
+unknown objective; and an acquisition function which is optimized to recommend the next query
+location [68, 40]. Our NAGO algorithm deploys BO to optimise over the low-dimensional continuous
+search space of generator hyperparameters. In summary, NAGO trains the surrogate model from
+query data and uses it to build an acquisition function which trades off exploitation and exploration.
+At each iteration, NAGO recommends B new generator hyperparameter values by maximizing the
+acquisition function and updates the surrogate after evaluating these B points. The full algorithm of
+NAGO is presented in Algorithm 1.
+
+Algorithm 1 Network Architecture Generator Optimization
+
+1: Input: Network generator G, BO surrogate model p(f|Θ, D) and acquisition function α(Θ|D)
+2: for t = 1 to T do
+3:
+Recommend {Θj
+t}B
+j=1 = arg max αt−1(Θ|D)
+4:
+for j = 1 to B in parallel do
+5:
+Sample an architecture from G(Θj
+t) and evaluate its validation performance f j
+t
+6:
+end for
+7:
+Update D and thus p(f|Θ, D) with {Θj
+t, f j
+t }B
+j=1
+8: end for
+9: Obtain the best performing Θ∗or the Pareto set Θ∗
+
+10: Sample 8 architectures from G(Θ∗), train them to completion and report their test performance.
+
+C
+Hyperparameters of BO algorithms in NAGO
+
+For experiments with both BO methods, we only sample 1 architecture to evaluate the performance
+of a speciﬁc generator. We scale the batch size up to a maximum of 512 to fully utilise the GPU
+memory and adjust the initial learning rate via linear extrapolation from 0.025 for a batch size of
+96 to 0.1 for a batch size of 512. The other network training set-up follows the complete training
+protocol described from line 202 to 208 in Section 4.
+
+C.1
+BOHB hyperparameters and set-up
+
+We use the released code of BOHB 7. We perform BOHB for 60 iterations with its hyperparamter
+η = 2. All the other BOHB hyperparameters follow the default setting in [16]. We use training
+budgets of 100, 200, 400 epochs to evaluate architectures on SPORT8 and 30, 60, 120 epochs on the
+other datasets.
+
+C.2
+Hyperparameters of MOBO and its heteroscedastic Bayesian Neural Network
+Surrogate
+
+MOBO returns the Pareto front of generator hyperparameters for two objectives: validation accuracy
+and sample memory. For parallel MOBO, we start with 50 initial data from BOHB queries and search
+for 30 iterations with a BO batch size of 8; at each BO iteration, the algorithm recommends 8 new
+points to be evaluated and updates the surrogate model with these new evaluations.We use a ﬁxed
+training budget of 200 epochs to evaluate architectures suggested for SPORT8 and 60 epochs for the
+other datasets.
+
+Our Bayesian neural network surrogate is a 3-layer fully connected network with 10 neurons for each
+layer and two ﬁnal outputs: predicted validation accuracy and heteroscedastic noise variance. For
+sampling network weights, we perform 5 × |D| SGHMC steps as burn-in, followed by 10 × 100
+sampling steps (retaining every 10th sample). We use a total of 100 samples of wf to approximate
+the integration in Equation (1) in the main paper. All the other hyperparameters of SGHMC follow
+the default setting in [18]. We implemented this surrogate by modifying the code of [18] 8.
+
+D
+Local Penalisation for Batch Bayesian Optimization
+
+We adopt the hard local penalization method proposed in [23] to collect a batch of new generator
+conﬁgurations which are then evaluated in parallel. The method sequentially selects a batch of B
+new conﬁgurations by repeatedly applying a hard local penalizer function on the selected points
+(Algorithm 2).
+
+7Available at
+8Available at
+
+Algorithm 2 Local Penalisation
+
+1: Input: BO surrogate model p(f|Θ, D) and acquisition function α(Θ|D), BO batch size B,
+Local penalization function φ(Θ|Θj)
+2: Output: The batch of new conﬁgurations B = {Θj}B
+j=1
+3: Θ1 = arg max α(Θ|D) and B = {Θ1}
+4: for j = 2, . . . , B do
+
+5:
+Θj = arg max
+
+α(Θ|D) Qj−1
+i=1 φ(Θ|Θi)
+
+
+6:
+B ←B ∪Θj
+
+7: end for
+
+The hard penalisation function is deﬁned as:
+
+φ(Θ|Θj) = min
+
+L∥Θ −Θj∥
+|µ(f|Θ, D) −M| + σ(f|Θ, D), 1
+
+
+where M is the best objective value observed so far, L = maxΘ ∥▽µ(f|Θ, D)∥is the approximated
+Lipschitz constant of the objective function, and µ(f|Θ, D) and σ(f|Θ, D) are predictive posterior
+mean and standard deviation of the BO surrogate model.
+
+E
+Search Range of Generator Hyperparameters
+
+For our Hierarchical Neural Architecture Generator (HNAG), the ranges over which the generator
+hyperparameters are searched are deﬁned as:
+
+Small-Image
+
+Large-Image
+
+20
+
+HNAG
+
+HNAG
+
+20
+
+10
+
+10
+
+0
+
+0
+
+20
+RNAG
+
+RNAG
+
+20
+
+10
+
+0
+
+0
+
+20
+DARTS
+
+20
+DARTS
+
+10
+
+10
+
+0
+
+0
+
+50
+100
+150
+200
+Memory Consumption (MB)
+
+100
+200
+300
+400
+500
+600
+700
+800
+Memory Consumption (MB)
+
+Figure 7: Memory consumption histograms of 300 sample architectures from HNAG, RNAG and
+DARTS search spaces for small-image 32 × 32 × 3 and large-image 224 × 224 × 3 datasets. Our
+HNAG search space can generate architectures with a wider range of memory consumption, especially
+for the large-image data.
+
+Hyperparameters of the top-level and bottom-level Watts–Strogatz graphs
+
+• The number of nodes in the graph Nt, Nb ∈[3, 10]
+• The number of nearest neighbors to which each node is connected in ring topology Kt, Kt ∈
+[2, 5]
+• the probability of rewiring each edge Pt, Pb ∈[0.1, 0.9]
+
+Hyperparameters of the Mid-level Erd˝os–Rényi graph
+
+• The number of nodes in the graph Nm ∈[1, 10]
+• the probability of edge creation Pm ∈[0.1, 0.9]
+
+14
+
+Test Error (%)
+
+12
+
+10
+
+8
+
+6
+
+50
+100
+150
+Memory Consumption (MB)
+
+100
+200
+300
+400
+Train time per epoch (S)
+
+Figure 8: The mean and standard deviation of test error vs. memory consumption and training time
+per epoch achieved by 50 random generator hyperparameters for CIFAR10 after training for 60
+epoches following BO search phase protocol.
+
+For the Randomly Wired Neural Architecture Generator (RNAG), the hyperparameter ranges are:
+
+Hyperparameters of the Watts–Strogatz graphs in 1st, 2nd and 3rd stages
+
+• The number of nodes in the graph N1, N2, N3 ∈[10, 40]
+
+• The number of nearest neighbors to which each node is connected in ring topology
+K1, K2, K3 ∈[2, 9]
+
+• the probability of rewiring each edge P1, P2, P3 ∈[0.1, 0.9]
+
+Note that although HNAG has a smaller range for the number of nodes in each graph N than RNAG
+does, it actually can lead to a much larger range of total number of nodes in an architectures ([9, 1000])
+than that of RNAG ([30, 120]).
+
+F
+Memory Consumption Range of Architectures from Different Search
+Space
+
+Our hierarchical graph-based search space can generate architectures with a wider range of memory
+consumption than those of RNAG and DARTS. We draw 300 sample architectures from the search
+spaces of HNAG, RNAG and DARTS and evaluate their memory consumption per image. The
+histogram for results on small-image data and large-image data are shown in Figure 7. It is evident
+that our proposed search space is much wider than both RNAG and DARTS in terms of the memory
+consumption.
+
+G
+Performance of randomly sampled network generator hyperparameters
+during BO search phase
+
+In Figure 8, we evaluate the test performance of 50 randomly sampled network generator hyper-
+parameters for CIFAR10. For each generator hyperparameter value, we sample 8 neural network
+architectures and train them for 60 epochs following the protocol of the BO search phase: we scale
+the batch size up to a maximum of 512 to fully utilise the GPU memory and adjust the initial learning
+rate via linear extrapolation from 0.025 for a batch size of 96 to 0.1 for a batch size of 512. The
+observations we made on Figure 2 in the main paper also hold for Figure 8.
+
+Table 6: Validation accuracy (%) and search cost (GPU days) for BOHB results. The accuracy
+reported is obtained in the BOHB search setting which uses large batch sizes based on GPU machine
+memory and trains the network sample for 400 epochs for SPORT8 and 120 epochs for the other
+datasets. The search space of HNAG-AugV1 is ΘaugV 1 = [θtop, θmid, θbottom, θM, θop] ∈R15
+
+while that of HNAG is Θorign = [θtop, θmid, θbottom] ∈R8.
+
+HNAG-AugV1
+HNAG
+
+Accuracy
+Cost
+Accuracy
+Cost
+CIFAR10
+94.7
+19.2
+95.6
+12.8
+CIFAR100
+74.5
+21.3
+77.2
+10.4
+SPORT8
+94.0
+26.1
+95.3
+17.6
+MIT67
+68.8
+33.3
+71.8
+20.0
+FLOWERS102
+91.0
+14.4
+93.3
+10.6
+
+H
+BOHB results on searching more generator hyperparameters
+
+H.1
+Include hyperparameters controlling merge options and node operations
+
+We also perform BOHB on an expanded search space ΘaugV 1 which includes not only the original
+space of the three random graph model hyperparameters Θorigin = [θtop, θmid, θbottom] but also
+hyperparameters controlling the merge options and node operations θM and θop. Speciﬁcally, θM
+deﬁnes the probability of choosing weighted sum or concatenation when merging multiple inputs at
+a node. θM deﬁnes the probability of choosing a speciﬁc operation among (conv1 × 1, conv3 × 3,
+conv5 × 5, pool3 × 3 and pool5 × 5) for each node in the bottom-level graph. The stage ratio and
+channel ratio are still ﬁxed to θS = [0.33, 0.33, 0.33] and θC = [1 : 2 : 4] following [14]. Therefore,
+the expanded search space is ΘaugV 1 = [θtop, θmid, θbottom, θM, θop].
+
+As seen in Table 6, the best validation accuracies achieved by HNAG-AugV1 are lower than that by
+HNAG for all the datasets. This result is counter-intuitive as Θorigin ⊂ΘaugV 1 and thus searching
+on Θexpanded should lead to better or at least equal performance as on Θorigin. Yet, this result can
+be explained by the follwoing two reasons:
+
+1) the signiﬁcant increase in optimisation difﬁculty. The search dimensionality of ΘaugV 1 is almost
+twice that of Θorigin, which signiﬁcantly increases the difﬁculty of BOHB in ﬁnding the global
+optimum 9. Thus, given similar search budget, BOHB is more likely to ﬁnd a hyperparameter near the
+global optimum or a better local optimum in the space Θorigin than in the expanded space ΘaugV 1.
+
+2) the marginal gain in expanding the search space. [14] empirically demonstrate that the wiring
+pattern in a architecture plays a much more important role than the operation choices. Our result in
+Table 6 conﬁrms this observation; namely, after ﬁnding the good wiring, changing the operations
+only lead to small perturbation on the generator performance. Putting this in the context of generator
+optimisation, it means that the wiring hyparameters Θorigin determines the region where the global
+optimum locates and the hyperparameters controlling the operation and merge options only perturb
+the exact location of the global optimum to a small extent.
+
+Combing the above two factors, we attribute the worse validation performance for HNAG-AugV1V1
+to the fact that the increase in optimisation difﬁculty far outweights the gain in expanding the search
+space.
+
+H.2
+Include hyperparameters controlling stage ratios and channel ratios
+
+We then perform similar experiments like above but instead optimise the hyperparameters controlling
+the stage ratios θS and channel ratios θC while keeping θM and θop ﬁxed. The experimental results
+are shown in Table 7. While there is a marginal increase in performance, the worst case train time
+substantially increases due to extreme stage and channel ratios. So, while the number of architectures
+sampled stays the same, the computational cost increases due to more lengthy training. We had
+
+9To optimize a function to within ϵ distance from the global optimum using random search, the expected
+number of iterations required is O(ϵ−d) [69]
+
+Table 7: Validation accuracy (%) during search and network training time per epoch (seconds). The
+accuracy reported is obtained in the BOHB search setting which uses large batch sizes based on GPU
+machine memory and trains the network sample for 400 epochs for SPORT8 and 120 epochs for the
+other datasets. The search space of HNAG-AugV2 is Θaugv2 = [θtop, θmid, θbottom, θS, θC] ∈R14
+
+while that of HNAG is Θorign = [θtop, θmid, θbottom] ∈R8.
+
+HNAG-AugV2
+HNAG
+
+Accuracy
+Mean(Max) Time
+Accuracy
+Mean(Max) Time
+CIFAR10
+95.7
+99.3(998)
+95.6
+54.9(246)
+CIFAR100
+77.5
+82.2(711)
+77.2
+43.0(216)
+SPORT8
+95.9
+20.6(93.6)
+95.3
+22.8(37.0)
+MIT67
+72.0
+130(1056)
+71.8
+85.4(291)
+FLOWERS102
+93.3
+58.4(397)
+93.3
+45.4(105)
+
+observed this effect during preliminary experiments on CIFAR10 and thus decided to ﬁx θS and θC
+to standard values in order to obtain competitive results at a reasonable cost. Nonetheless, even with
+such constrains on the search space, our HNAG is still much more expressive than most NAS search
+spaces.
+
+I
+BOHB samples
+
+Here we show the BOHB query results on the generator hyperparameters for the case of CIFAR10.
+We use three training budgets in BOHB: 30 (green), 60 (orange) and 120 (blue) epochs. In Figure
+9, the top subplot shows the validation error for the three budgets over time. Query data for
+different budget are mostly well separated. The bottom subplot shows the spearman rank correlation
+coefﬁcients ρspearman ∈[−1, 1] of the validation errors between different budgets. It’s evident that
+the ρspearman between data of 60 epochs and those of 120 epochs are quite high (0.82), indicating
+that good hyperparameters found in the budget of 60 epochs will remain good when being evaluated
+with 120 epochs. This motivates our to only a ﬁxed budget of 60 epochs for evaluating all the
+hyperparameter samples in the multi-objective BO setting.
+
+g
+
+60.0
+120.0
+
+1.00
+
+0.75
+
+b=120.000000
+b=60.000000
+b=30.000000
+
+spearman = 0.860951
+
+spearman = 0.524675
+
+30
+
+p = 0.000000
+
+p = 0.014609
+
+30.0
+
+0.50
+
+n = 42
+
+n = 21
+
+25
+
+0.25
+
+0.00
+
+20
+
+loss
+
+-0.25
+
+15
+
+spearman = 0.820855
+
+p = 0.000000
+
+60.0
+
+-0.50
+
+n = 41
+
+10
+
+-0.75
+
+5
+
+-1.00
+
+0
+20000
+40000
+60000
+80000
+100000
+120000
+140000
+wall clock time [s]
+
+(a) Validation error for different budgets over time
+
+(b) Rank correlation of validation errors across budgets
+
+Figure 9: BOHB query data across different budgets for HNAG on CIFAR10

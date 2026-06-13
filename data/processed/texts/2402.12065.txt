@@ -1,0 +1,1763 @@
+WKVQuant: Quantizing Weight and Key/Value Cache for Large Language
+Models Gains More
+
+Yuxuan Yue*
+Harbin Institute of Technology (Shenzhen)
+Zhihang Yuan∗
+
+Houmo AI
+
+Haojie Duanmu
+Shanghai Artificial Intelligence Laboratory
+Shanghai Jiao Tong University
+
+Sifan Zhou
+Houmo AI
+Jianlong Wu and Liqiang Nie
+Harbin Institute of Technology (Shenzhen)
+
+Abstract
+
+W4
+
+Performance
+
+Large Language Models (LLMs) face signifi-
+cant deployment challenges due to their sub-
+stantial memory requirements and the compu-
+tational demands of auto-regressive text gen-
+eration process. This paper addresses these
+challenges by focusing on the quantization
+of LLMs, a technique that reduces memory
+consumption by converting model parameters
+and activations into low-bit integers. We crit-
+ically analyze the existing quantization ap-
+proaches, identifying their limitations in balanc-
+ing the accuracy and efficiency of the quantized
+LLMs. To advance beyond these limitations,
+we propose WKVQuant, a PTQ framework es-
+pecially designed for quantizing weights and
+the key/value (KV) cache of LLMs. Specifi-
+cally, we incorporates past-only quantization
+to improve the computation of attention. Addi-
+tionally, we introduce two-dimensional quan-
+tization strategy to handle the distribution of
+KV cache, along with a cross-block reconstruc-
+tion regularization for parameter optimization.
+Experiments show that WKVQuant achieves
+almost comparable memory savings to weight-
+activation quantization, while also approaching
+the performance of weight-only quantization.
+
+Ours (WKVQuant)
+
+arXiv:2402.12065v2 [cs.LG] 20 Feb 2024
+
+W4A4
+
+Memory Consumption
+
+Figure 1: Memory-Performance curve.
+
+1
+Introduction
+Large language models (LLMs) such as GPT
+(Brown et al., 2020; Ouyang et al., 2022), OPT
+(Zhang et al., 2022), and LLaMA (Touvron et al.,
+2023a,b) are essential in natural language process-
+ing, demonstrating unparalleled abilities to un-
+derstand and generate text. However, their large
+size poses significant challenges for deployment.
+Firstly, the large number of weights in LLMs con-
+sumes a considerable amount of memory. For in-
+stance, the LLaMA-13b model requires approxi-
+mately 26GB of memory when stored in FP16 for-
+mat, which can only be accommodated by high-end
+GPUs. Secondly, due to the auto-regressive nature
+
+Memory Footprint Analyze (LLaMA-13b)
+
+Two-dimensional Quantization (2D-Quantization).
+Static channel smoothing aligns large values be-
+tween channels, while dynamic token-wise quan-
+tization addresses variations between tokens. ❸
+We discover a bias in the reconstruction loss func-
+tion used for parameter optimization in the existing
+PTQ method (Shao et al., 2023). So we further
+introduce cross-block reconstruction regularization
+to reduce such bias and obtain better quantized
+parameters and smoothing parameters, thereby re-
+ducing quantization errors.
+We evaluate the performance of WKVQuant on
+the LLaMA (Touvron et al., 2023) and LLaMA-
+2 (Touvron et al., 2023) models.
+Our experi-
+ments demonstrate that the W4KV4 quantized
+network with WKVQuant achieves significantly
+higher accuracy compared to the W4A4 quantized
+network. Specifically, when generating short se-
+quences, W4KV4 performs equally well as the
+W4 quantization. For long sequence generation,
+W4KV4 exhibits performance close to that of W4
+quantization. Meanwhile, the memory consump-
+tion of W4KV4 is nearly identical to that of W4A4.
+In conclusion, our proposed WKVQuant pro-
+vides a promising trade-off between accuracy and
+efficiency as shown in Figure 1.
+
+weight
+
+80
+
+KV cache
+
+Percentage
+
+temporary
+
+60
+
+40
+
+20
+
+0
+
+bs=1
+len=2048
+
+bs=1
+len=8192
+
+bs=16
+len=2048
+
+bs=1
+len=2048
+
+bs=1
+len=8192
+
+bs=16
+len=2048
+
+decode
+
+decode
+
+decode
+
+prefill
+
+prefill
+
+prefill
+
+Figure 2: The memory usage proportions of weight, KV
+cache, and temporary storage on LLaMA-2-13b.
+
+2
+Related Work
+
+Existing quantization methods for LLMs can be
+classified into two types: weight-only quantiza-
+tion and weight-activation quantization (Zhao et al.,
+2023).
+
+Relative Time Cost (LLaMA-13b)
+
+Weight
+KV Cache
+Temporary Act
+
+1.0
+
+Relative Time Cost
+
+INT8
+4.89
+4.88
+4.92
+
+0.8
+
+INT4
+4.99
+5.27
+785.56
+
+0.6
+
+0.4
+
+weight quantization
+
+Table 1: Perplexity on WikiText2 under quantizing each
+part of LLaMA-2-13b (perplexity of FP16 model is
+4.88). Weight is quantized by GPTQ, and activations
+are dynamically per-token quantized. Act denotes acti-
+vations.
+
+weight-KV cache quantization
+
+0.2
+
+weight-activations quantization
+
+V100
+A6000
+A100
+H100
+0.0
+
+Figure 3: Relative time cost to generate 2048 tokens for
+a 2048 length input prompt using different quantization
+settings on LLaMA-2-13b (batchsize=1).
+
+3
+Method
+
+In this section, we first analysis the memory con-
+sumption when deploying LLMs in Section 3.1 and
+present the proposed WKVQuant in Section 3.2.
+We then describe the details of WKVQuant in the
+following sections.
+
+and OWQ (Lee et al., 2023) take into account the
+impact of activation outliers on weight quantiza-
+tion, showing quantization performance improve-
+ments. PB-LLM (Shang et al., 2023) exploits the
+salient-weight property of LLM and achieves ex-
+treme quantization to the lowest possible bit. While
+weight-only quantization can alleviate the compu-
+tational burdens, its impact on memory usage and
+acceleration is still limited compared to weight-
+activation quantization.
+
+3.1
+Memory Consumption Analysis
+
+Deploying LLMs faces a significant challenge due
+to their enormous memory consumption. The mem-
+ory usage of LLMs is mainly contributed by three
+resources: ❶the weights of LLMs need to be
+stored in memory. For example, LLaMA-13b with
+13 billion weights occupies around 26GB of mem-
+ory in FP16 format. ❷Temporary activations are
+generated during inference. For instance, Trans-
+former inputs are kept in memory until the resid-
+ual connection is executed. ❸For auto-regressive
+LLMs, caching key and value activations (KV
+cache) into memory is necessary for subsequent
+token generation.
+We use LLMViewer (Yuan, 2024) to analyze
+memory consumption and show the results in Fig-
+ure 2. The analysis reveals that the memory foot-
+print of temporary activations is relatively small,
+especially in decode phase. This is due to their
+short lifespan, as their memory can be released af-
+ter usage. In contrast, the memory allocated for
+the KV cache cannot be released until the com-
+pletion of a full answer generation process, which
+involves multiple inference passes through the net-
+work. Moreover, the memory consumption of the
+KV cache increases with larger batch sizes and
+longer input sequences as the model needs to store
+more KV pairs.
+
+3.2
+Weight-KV Cache Quantization
+
+Inputs
+
+Current Key and Value
+
+New Keys and Values
+
+Quantized Layer i (LLaMA)
+
+(3) Dequantize
+
+Norm
+
+FP16 Operation
+
+INT4 Weight
+
+(1) Quantize
+
+Q
+K
+V
+
+INT4 KV Cache
+POQ
+
+(2) Concat
+
+(5) Forward
+
++
+
+Past KV Cache
+
+(4) Cache
+
+Norm
+
+K Cache
+V Cache
+
+Up
+Gate
+
+2D-Quantization
+
+(a) Origin
+
+SiLU
+
+Matmul & Softmax
+
+Current Key and Value
+
+New Keys and Values
+
+Multiply
+
+Matmul
+
+(4) Concat
+
++
+
+Out
+
+Down
+
++
+
++
+
+(1) Quantize
+
+(6) Forward
+(3) Dequantize
+
+i+1
+…
+CRR
+Outputs
+
+FP16 Layer
+
+FP16 Layer
+
+(2) Concat
+
+i+k-1
+
+(5) Cache
+
+Past KV Cache
++
+
+Figure 4: The framework of WKVQuant.
+
+(b) Past Only Quantization
+
+Raw FP16
+Quantized INT4
+Dequantized FP16
+
+Figure 5: Comparison between original quantization
+method and Past Only Quantization (POQ) for KV
+cache. POQ utilizes the current key and value in raw
+full-precision and only quantizes the past KV cache.
+
+To achieve this trade-off,
+we propose a
+Post-Training Quantization (PTQ) framework,
+WKVQuant, which is specifically tailored for quan-
+tizing weights and KV cache of LLMs.
+No-
+tably, to our knowledge, WKVQuant is the first
+method developed to address the exclusive quanti-
+zation of weights and KV cache. The overview of
+WKVQuant is shown in Figure 4. Our WKVQuant
+comprises three main features: Past-Only Quan-
+tization (POQ) to enhance attention computation,
+2D-Quantization strategy to handle the distribution
+of KV cache, and cross-block reconstruction reg-
+ularization for parameter optimization. We will
+describe the details in the following section.
+
+transformed into:
+
+before being passed into inference, which is a sub-
+optimal approach.
+To this end, we propose a novel inference pro-
+cess called Past Only Quantization (POQ) to pre-
+serve the accuracy of the current key and value. As
+shown in Figure 5.(b), POQ does not quantize the
+representations generated from the current token.
+Instead, it uses the original full-precision represen-
+tations when merging them with the de-quantized
+past KV cache during the forward process. Only
+the past KV loaded from KV cache are quantized
+in current decoding inference phase. By using un-
+quantized KV during matrix multiplication in the
+Attention mechanism, POQ enhances the accuracy
+of Attention computation. During the prefill phase,
+POQ enables the network to attain the same level
+of accuracy as weight-only quantization since all
+the KV used in Attention are full-precision. In the
+decode phase, POQ combines the current unquan-
+tized KV with the previously quantized KV cache
+for prediction, thereby improving the prediction
+accuracy.
+
+⊙s + δ,
+(1)
+
+Y = (Y −δ) ⊘s
+|
+{z
+}
+˜Y
+
+where‘⊘’and ‘⊙’represent element-wise division
+and multiplication, respectively. ˜Y is the smoothed
+key or value after channel-wise shifting and scaling.
+The value difference among channels are signifi-
+cantly decreased by smoothing. Note that part of
+the parameters can be absorbed into the original
+linear weight and bias, which can be formulated as:
+
+˜Y = (XW + B −δ) ⊘s = X W ⊘s
+| {z }
+˜
+W
+
++ (B −δ) ⊘s
+|
+{z
+}
+˜B
+
+,
+(2)
+
+where ˜W and ˜B denote transformed weight and
+bias, respectively. After that, the quantization oper-
+ation is applied to the smoothed weight and bias.
+To further suppress the outliers in the token
+dimension, we utilize dynamic token-wise fine-
+grained quantization as formulated by:
+
+Qt(˜Y) = clamp(⌊
+˜Y −m
+
+n
+⌉, −2N−1, 2N−1 −1),
+
+(3)
+
+where n = max(abs(˜Y −m))
+
+2N−1
+, m = mean(˜Y),
+
+3.4
+Two-dimensional Quantization
+
+where Qt represents quantization process. ⌊·⌉de-
+notes round operation and N is the target bit num-
+ber. Note that the max, abs, and mean operations
+are dynamically calculated in the token dimension.
+By shifting each value of every token close to their
+average, the outliers have less effect on per-token
+quantization. In addition, the fine-grained quanti-
+zation method can be applied to this step, which
+calculates the m and n in a finer-grained (such as
+128 values as a group). This approach can further
+enhance the quantization performance.
+For the weight quantization, we adopt the
+method in Omniquant (Shao et al., 2023), which is
+formulated as:
+
+Wq = clamp
+
+⌊W
+
+h ⌉+ z, 0, 2N−1
+
+,
+(4)
+
+where h = (γmax(W) −βmin(W))/2N−1, z =
+−⌊βmin(W)/h⌉. γ and β are trainable clipping
+parameters.
+
+3.5
+Cross-block Reconstruction
+Regularization
+
+iyˆ
+
+argmin
+γ,β,s,δ
+MAE(ˆyi+k−1, yi+k−1).
+(5)
+
+i
+
+i
+Quantized Block i
+
+Mean
+Square
+
+xi
+
+iy
+
+i
+
+Error
+
+i
+
+FP16 Block i
+
+4
+Experiments
+
+(a) Block-wise MSE Loss
+
+In this section, we introduce the detailed experi-
+mental settings as well as demonstrate the effec-
+tiveness of the proposed WKVQuant.
+
+…
+
+1
+-
+iy
+k
+ˆ 
+i+1
+
+i
+
+i+k-1
+
+Mean
+Absolute
+
+xi
+
+…
+
+1
+-
+iy
+k
+
+
+Error
+
+i+k-1
+
+i
+
+i+1
+
+(b) Cross-block Reconstruction Regularization
+
+4.1
+Experimental Settings
+
+Figure 6:
+Comparison between Block-wise Mean
+Square Error (MSE) loss and Cross-block Reconstruc-
+tion Regularization (CRR): CRR computes Mean Abso-
+lute Error (MAE) in the block dimension of i + k −1
+while Block-wise MSE loss computes MSE in the block
+dimension of i.
+
+Models.
+We
+evaluate
+our
+WKVQuant
+on
+LLaMA (Touvron et al., 2023a) and LLaMA-
+2 (Touvron et al., 2023b) models (i.e., LLaMA-
+2-7B, LLaMA-2-13B, LLaMA-7B, and LLaMA-
+13B).
+
+Baselines.
+We perform
+our WKVQuant
+in
+W4KV4
+(quantizing
+weights
+to
+4
+bit
+and
+keys/values to 4 bit) setting. We also display results
+on OmniQuant (Shao et al., 2023) in W4A4 (quan-
+tizing weights to 4 bit and activations to 4 bit) set-
+ting and on GPTQ (Frantar et al., 2022) in W4 set-
+ting. Since there is no work for weight-KV/cache
+quantization before, we combine the scaling param-
+eter for weights in W4 OmniQuant and the scaling
+parameter between query and key states in W4A4
+OmniQuant to formalize so-called OmniQuant† in
+W4KV4 setting for comparison. The weight quan-
+tization in all methods are performed with group
+size of 128.
+
+the local reconstruction loss between the output
+of the quantized Transformer layer and the full-
+precision Transformer layer, computing the gradi-
+ents of these parameters with respect to the loss,
+and updating the parameters accordingly. However,
+it is worth noting that the local reconstruction loss
+introduces a bias and does not align with the final
+task loss (Yuan et al., 2022; Liu et al., 2023a; Zhou
+et al., 2024). This is due to the varying impact of
+each activation in the Transformer layer on the final
+network output. Additionally, it has been observed
+that outliers within the activations significantly af-
+fect on the Mean Squared Error (MSE) loss, which
+is square-based.
+
+Model
+Method
+Setting
+Longtext avg↑
+Zero-shot avg↑
+WikiText2 ppl↓
+PTB ppl↓
+C4 ppl↓
+
+-
+FP16
+34.69
+58.30%
+5.47
+37.91
+7.26
+GPTQ
+W4
+34.71
+57.74%
+5.62
+241.52
+7.46
+OmniQuant
+W4A4
+11.16
+45.44%
+14.34
+10304.68
+20.18
+OmniQuant†
+W4KV4
+31.34
+56.75%
+6.09
+64.39
+8.98
+WKVQuant
+W4KV4
+34.48
+58.38%
+5.64
+38.85
+7.49
+
+LLaMA-2-7B
+
+-
+FP16
+34.12
+61.32%
+4.88
+50.93
+6.72
+GPTQ
+W4
+34.06
+60.55%
+4.99
+50.25
+6.84
+OmniQuant
+W4A4
+16.35
+47.46%
+12.39
+263.60
+17.51
+OmniQuant†
+W4KV4
+31.72
+59.82%
+5.18
+55.95
+7.30
+WKVQuant
+W4KV4
+32.52
+60.34%
+5.00
+52.36
+6.89
+
+LLaMA-2-13B
+
+-
+FP16
+34.80
+57.68%
+5.67
+41.15
+7.34
+GPTQ
+W4
+33.54
+57.30%
+5.83
+43.70
+7.51
+OmniQuant
+W4A4
+7.83
+46.53%
+11.58
+231.46
+16.19
+OmniQuant†
+W4KV4
+28.80
+56.84%
+6.25
+51.96
+8.17
+WKVQuant
+W4KV4
+33.86
+57.91%
+5.80
+44.02
+7.54
+
+LLaMA-7B
+
+-
+FP16
+36.02
+60.60%
+5.09
+28.09
+6.79
+GPTQ
+W4
+35.14
+60.10%
+5.19
+29.25
+6.90
+OmniQuant
+W4A4
+11.55
+43.56%
+11.18
+115.38
+16.37
+OmniQuant†
+W4KV4
+28.79
+58.92%
+5.64
+32.78
+7.86
+WKVQuant
+W4KV4
+35.50
+60.44%
+5.21
+27.74
+6.93
+
+LLaMA-13B
+
+Table 2: The overall experimental results. Our results are shown in gray line.
+
+Model
+Method
+Setting
+Qasper↑
+2WikiMultihopQA↑
+HotpotQA↑
+TriviaQA↑
+LCC↑
+Longtext avg↑
+
+-
+FP16
+7.81
+7.53
+8.44
+84.21
+65.49
+34.69
+GPTQ
+W4
+7.68
+9.35
+8.55
+84.88
+63.12
+34.71
+OmniQuant
+W4A4
+4.47
+5.51
+3.94
+18.55
+23.35
+11.16
+OmniQuant†
+W4KV4
+6.18
+8.69
+7.07
+77.81
+56.96
+31.34
+WKVQuant
+W4KV4
+7.57
+9.64
+8.31
+84.11
+62.79
+34.48
+
+LLaMA-2-7B
+
+-
+FP16
+7.19
+9.60
+9.70
+83.49
+64.04
+34.80
+GPTQ
+W4
+6.31
+9.91
+9.36
+79.51
+62.61
+33.54
+OmniQuant
+W4A4
+2.77
+4.57
+3.54
+13.19
+15.11
+7.83
+OmniQuant†
+W4KV4
+4.53
+8.01
+7.51
+66.23
+57.74
+28.80
+WKVQuant
+W4KV4
+6.75
+10.23
+9.18
+81.21
+61.93
+33.86
+
+LLaMA-7B
+
+Table 3: Longtext scores. Results of LLaMA-2-13B and LLaMA-13B can be found in A.5.
+
+4.2
+Overall Results
+
+Evaluated tasks and datasets.
+To eliminate the
+effectiveness of quantized LLMs under long in-
+put sequence circumstances, we perform experi-
+ments by using LongBench (Bai et al., 2023) frame-
+work on various datasets, i.e., Qasper (Dasigi et al.,
+2021), 2WikiMultihopQA (Ho et al., 2020), Hot-
+potQA (Yang et al., 2018), TriviaQA (Joshi et al.,
+2017), LCC (Guo et al., 2023), and MultiFieldQA-
+en (Bai et al., 2023).
+The corresponding re-
+sults are shown as Longtext score.
+We dis-
+play the detailed information of the used datasets,
+which can be found in A.2. Following previous
+works, we also evaluate them on five zero-shot
+common sense reasoning tasks, i.e., PIQA (Tata
+and Patel, 2003), ARC-Challenge (Clark et al.,
+2018), HellaSwag (Zellers et al., 2019), and Wino-
+Grande (Sakaguchi et al., 2021). Moreover, we
+basically evaluate the quantized models’ perplexity
+(ppl) scores on WikiText2 (Merity et al., 2016), Pen
+Treebank (PTB) (Marcus et al., 1994) and C4 (Raf-
+fel et al., 2020).
+
+Quantization Method
+Evaluation Score↑
+FP16
+24.42
+RTN
+2.3
++ LWC
+3.88 (1.58↑)
++ 2D-Quant-channel
+19.03 (16.73↑)
++ 2D-Quant-token
+19.37 (17.07↑)
++ POQ
+16.11 (13.81↑)
+
+Longtext Dataset
+Block-wise MSE
+CRR
+Qasper↑
+7.13
+7.57
+2WikiMultihopQA↑
+9.41
+9.64
+HotpotQA↑
+7.99
+8.31
+TriviaQA↑
+84.60
+84.11
+LCC↑
+61.24
+62.79
+Loingtext avg↑
+34.07
+34.48
+
+Table 6: Ablation study of CRR.
+
+Table 4:
+The accuracy gain by utilizing each tech-
+nique based on quantized LLaMA-2-7B model with
+RTN method.
+
+Model
+FP
+W4
+W4KV4
+W4A4
+
+bs=1 len=2048
+LLaMA-2-7b
+14.0
+4.3
+3.5
+3.5
+LLaMA-2-13b
+27.1
+8.0
+6.8
+6.8
+
+Quantization Method
+Evaluation Score↑
+FP16
+24.42
+WKVQuant
+25.29
+- LWC
+24.08 (1.21↓)
+- 2D-Quant-channel
+22.74 (2.55↓)
+- 2D-Quant-token
+23.14 (2.15↓)
+- POQ
+19.95 (5.34↓)
+
+bs=1 len=9012
+LLaMA-2-7b
+17.2
+7.5
+4.3
+4.3
+LLaMA-2-13b
+32.1
+13.1
+8.0
+8.0
+
+bs=16 len=2048
+LLaMA-2-7b
+30.1
+20.4
+7.5
+7.5
+LLaMA-2-13b
+52.2
+33.2
+13.1
+13.1
+
+Table 7: The memory consumption (GB) of decoding
+using different quantization settings.
+
+Ablation study for CRR.
+Here, we ablate the ef-
+fect of proposed Cross-block Reconstruction Reg-
+ularization (CRR). As shown in Table 6, the pro-
+posed CRR is more effective than the commonly
+utilized block-wise MSE loss, which demonstrate
+the benefits training parameters by computing a
+more proper loss from a more global perspective.
+
+Table 5: The accuracy drop by deactivating each tech-
+nique based on quantized LLaMA-2-7B model with
+WKVQuant method.
+
+it can effectively quantize huge memory consump-
+tion caused by KV cache based on weight-only
+quantization, without introducing significant accu-
+racy degradation. For detailed zero-shot results,
+refer to A.4.
+
+4.4
+Memory Consumption
+
+We use LLMViewer (Yuan, 2024) to analyze mem-
+ory consumption and show the results in Table 7.
+It can be observed that the weight-KV cache quan-
+tization has comparable memory savings with the
+weight-activation quantization, which means that
+WKVQuant improves the accuracy with almost neg-
+ligibly increased memory.
+
+5
+Conclusion
+
+In this paper, we have identified the limitations
+of existing quantization approaches in balancing
+accuracy and efficiency for LLMs. To address
+these limitations, we propose WKVQuant, a novel
+quantization methodology specifically designed for
+quantizing weights and the KV cache of LLMs.
+WKVQuant incorporates past-only quantization to
+optimize the improve the computation of attention.
+Additionally, we introduce two-dimensional quan-
+tization to handle the distribution of KV cache,
+along with a cross-block reconstruction loss for
+parameter optimization. Our proposed WKVQuant
+provides a promising trade-off between accuracy
+and efficiency, making LLMs more practical for de-
+ployment in resource-constrained environments.
+
+Limitations
+
+Askell, et al. 2020. Language models are few-shot
+learners. Advances in Neural Information Processing
+Systems.
+
+Large Language Models (LLMs) face significant
+problem when deploying because of the vast size.
+In this work, we analyze the memory consumption
+of different parts of LLMs (i.e., weights, Key/Value
+cache, and other temporary activations) and their
+corresponding quantization difficulties. From the
+analysis we know that the temporary activations
+are of low value to be quantized. We thus propose
+WKVQuant, which optimizes the exclusive quan-
+tization of weight and KV cache. Although this
+approach can both maintain model accuracy and
+reduce memory consumption, it is limited by not
+quantizing temporary activations.
+Specifically, (1) this limitation means increased
+memory consumption since the temporary ac-
+tivations are remained in full-precision, espe-
+cially when in prefill stage and when the batch-
+size/sequence length is large. We don’t choose
+to quantize this part of activations because it con-
+sumes few memory space in most cases. (2) This
+limitation means that our approach can not utilize
+faster computation units, such as Nvidia’s INT8 ac-
+celeration units. Weight-activation methods quan-
+tized all operation variables into the same bit-width,
+thus having a good implementation on the men-
+tioned units.
+Although there should be a time
+cost difference, we claim that the gap is minimal
+because the inference of LLMs is primarily con-
+strained by memory access.
+In addition, we note that the cross-block recon-
+struction regularization will lead to an increase in
+the time required for optimizing quantization pa-
+rameters. Specifically, for a 7b model, the process
+takes approximately 3 hours, while for a 13b model,
+it takes around 4 hours. However, it is worth men-
+tioning that the process is typically performed only
+once before deployment. Therefore, we believe
+that the additional time is generally acceptable in
+the majority of cases.
+
+Jerry Chee, Yaohui Cai, Volodymyr Kuleshov, and
+Christopher De Sa. 2023. Quip: 2-bit quantization
+of large language models with guarantees. arXiv
+preprint arXiv:2307.13304.
+
+Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot,
+Ashish Sabharwal, Carissa Schoenick, and Oyvind
+Tafjord. 2018. Think you have solved question an-
+swering? try arc, the ai2 reasoning challenge. arXiv
+preprint arXiv:1803.05457.
+
+Pradeep Dasigi, Kyle Lo, Iz Beltagy, Arman Cohan,
+Noah A Smith, and Matt Gardner. 2021. A dataset of
+information-seeking questions and answers anchored
+in research papers. In Conference of the North Amer-
+ican Chapter of the Association for Computational
+Linguistics: Human Language Technologies.
+
+Tim Dettmers, Mike Lewis, Younes Belkada, and Luke
+Zettlemoyer. 2022. Llm. int8 (): 8-bit matrix mul-
+tiplication for transformers at scale. arXiv preprint
+arXiv:2208.07339.
+
+Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and
+Luke Zettlemoyer. 2024. Qlora: Efficient finetuning
+of quantized llms. Advances in Neural Information
+Processing Systems.
+
+Tim Dettmers, Ruslan Svirschevski, Vage Egiazarian,
+Denis Kuznedelev, Elias Frantar, Saleh Ashkboos,
+Alexander Borzunov, Torsten Hoefler, and Dan Al-
+istarh. 2023. Spqr: A sparse-quantized representa-
+tion for near-lossless llm weight compression. arXiv
+preprint arXiv:2306.03078.
+
+Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and
+Dan Alistarh. 2022. Gptq: Accurate post-training
+quantization for generative pre-trained transformers.
+arXiv preprint arXiv:2210.17323.
+
+Daya Guo, Canwen Xu, Nan Duan, Jian Yin, and Ju-
+lian McAuley. 2023. Longcoder: A long-range pre-
+trained language model for code completion. arXiv
+preprint arXiv:2306.14893.
+
+Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara,
+and Akiko Aizawa. 2020. Constructing a multi-hop
+qa dataset for comprehensive evaluation of reasoning
+steps. In International Conference on Computational
+Linguistics.
+
+References
+
+Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke
+Zettlemoyer. 2017. Triviaqa: A large scale distantly
+supervised challenge dataset for reading comprehen-
+sion. In Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers).
+
+Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu,
+Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao
+Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang,
+and Juanzi Li. 2023. Longbench: A bilingual, mul-
+titask benchmark for long context understanding.
+arXiv preprint arXiv:2308.14508.
+
+Sehoon Kim, Coleman Hooper, Amir Gholami, Zhen
+Dong, Xiuyu Li, Sheng Shen, Michael W Ma-
+honey, and Kurt Keutzer. 2023b.
+Squeezellm:
+Dense-and-sparse quantization.
+arXiv preprint
+arXiv:2306.07629.
+
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine
+Lee, Sharan Narang, Michael Matena, Yanqi Zhou,
+Wei Li, and Peter J Liu. 2020. Exploring the limits
+of transfer learning with a unified text-to-text trans-
+former. Journal of Machine Learning Research.
+
+Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavat-
+ula, and Yejin Choi. 2021. Winogrande: An adver-
+sarial winograd schema challenge at scale. Commu-
+nications of the ACM.
+
+Changhun Lee, Jungyu Jin, Taesu Kim, Hyungjun
+Kim, and Eunhyeok Park. 2023.
+Owq: Lessons
+learned from activation outliers for weight quanti-
+zation in large language models.
+arXiv preprint
+arXiv:2306.02272.
+
+Yuzhang Shang, Zhihang Yuan, Qiang Wu, and Zhen
+Dong. 2023. Pb-llm: Partially binarized large lan-
+guage models. International Conference on Learning
+Representations.
+
+Liang Li, Qingyuan Li, Bo Zhang, and Xiangxiang Chu.
+2023a. Norm tweaking: High-performance low-bit
+quantization of large language models. Association
+for the Advancement of Artificial Intelligence.
+
+Wenqi Shao, Mengzhao Chen, Zhaoyang Zhang, Peng
+Xu, Lirui Zhao, Zhiqian Li, Kaipeng Zhang, Peng
+Gao, Yu Qiao, and Ping Luo. 2023. Omniquant:
+Omnidirectionally calibrated quantization for large
+language models. CoRR, abs/2308.13137.
+
+Yixiao Li, Yifan Yu, Chen Liang, Pengcheng He, Nikos
+Karampatziakis, Weizhu Chen, and Tuo Zhao. 2023b.
+Loftq: Lora-fine-tuning-aware quantization for large
+language models. arXiv preprint arXiv:2310.08659.
+
+Sandeep Tata and Jignesh M Patel. 2003. Piqa: An al-
+gebra for querying protein data sets. In International
+Conference on Scientific and Statistical Database
+Management.
+
+Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang,
+Xingyu Dang, and Song Han. 2023. Awq: Activation-
+aware weight quantization for llm compression and
+acceleration. arXiv preprint arXiv:2306.00978.
+
+Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier
+Martinet, Marie-Anne Lachaux, Timothée Lacroix,
+Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023a.
+Llama:
+Open and effi-
+cient foundation language models. arXiv preprint
+arXiv:2302.13971.
+
+Jiawei Liu, Lin Niu, Zhihang Yuan, Dawei Yang, Xing-
+gang Wang, and Wenyu Liu. 2023a. Pd-quant: Post-
+training quantization based on prediction difference
+metric. In IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition.
+
+Zechun Liu, Barlas Oguz, Changsheng Zhao, Ernie
+Chang, Pierre Stock, Yashar Mehdad, Yangyang
+Shi, Raghuraman Krishnamoorthi, and Vikas Chan-
+dra. 2023b. Llm-qat: Data-free quantization aware
+training for large language models. arXiv preprint
+arXiv:2305.17888.
+
+Hugo Touvron, Louis Martin, Kevin Stone, Peter Al-
+bert, Amjad Almahairi, Yasmine Babaei, Nikolay
+Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti
+Bhosale, et al. 2023b.
+Llama 2: Open founda-
+tion and fine-tuned chat models.
+arXiv preprint
+arXiv:2307.09288.
+
+Mitch Marcus, Grace Kim, Mary Ann Marcinkiewicz,
+Robert MacIntyre, Ann Bies, Mark Ferguson, Karen
+Katz, and Britta Schasberger. 1994. The penn tree-
+bank: Annotating predicate argument structure. In
+Human Language Technology: Proceedings of a
+Workshop held at Plainsboro.
+
+Xiuying Wei, Yunchen Zhang, Yuhang Li, Xiangguo
+Zhang, Ruihao Gong, Jinyang Guo, and Xiang-
+long Liu. 2023.
+Outlier suppression+: Accurate
+quantization of large language models by equiva-
+lent and optimal shifting and scaling. arXiv preprint
+arXiv:2304.09145.
+
+Stephen Merity, Caiming Xiong, James Bradbury, and
+Richard Socher. 2016. Pointer sentinel mixture mod-
+els. arXiv preprint arXiv:1609.07843.
+
+Xiuying Wei, Yunchen Zhang, Xiangguo Zhang, Ruihao
+Gong, Shanghang Zhang, Qi Zhang, Fengwei Yu, and
+Xianglong Liu. 2022. Outlier suppression: Pushing
+the limit of low-bit transformer language models.
+Advances in Neural Information Processing Systems.
+
+Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Xinhao
+Cheng, Hongyi Jin, Tianqi Chen, and Zhihao Jia.
+2023. Towards efficient generative large language
+model serving: A survey from algorithms to systems.
+arXiv preprint arXiv:2312.15234.
+
+Guangxuan Xiao, Ji Lin, Mickael Seznec, Julien De-
+mouth, and Song Han. 2022. Smoothquant: Accurate
+and efficient post-training quantization for large lan-
+guage models. arXiv preprint arXiv:2211.10438.
+
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio,
+William Cohen, Ruslan Salakhutdinov, and Christo-
+pher D Manning. 2018. Hotpotqa: A dataset for
+diverse, explainable multi-hop question answering.
+In Conference on Empirical Methods in Natural Lan-
+guage Processing.
+
+Zhewei Yao, Reza Yazdani Aminabadi, Minjia Zhang,
+Xiaoxia Wu, Conglong Li, and Yuxiong He. 2022.
+Zeroquant: Efficient and affordable post-training
+quantization for large-scale transformers.
+arXiv
+preprint arXiv:2206.01861.
+
+Zhihang Yuan. 2024. LLMViewer.
+com/hahnyuan/LLMViewer. Accessed: February 14,
+2024.
+
+Zhihang Yuan, Lin Niu, Jiawei Liu, Wenyu Liu, Xing-
+gang Wang, Yuzhang Shang, Guangyu Sun, Qiang
+Wu, Jiaxiang Wu, and Bingzhe Wu. 2023a. Rptq:
+Reorder-based post-training quantization for large
+language models. arXiv preprint arXiv:2304.01089.
+
+Zhihang Yuan, Yuzhang Shang, Yue Song, Qiang
+Wu, Yan Yan, and Guangyu Sun. 2023b.
+Asvd:
+Activation-aware singular value decomposition for
+compressing large language models. arXiv preprint
+arXiv:2312.05821.
+
+Zhihang Yuan, Chenhao Xue, Yiqi Chen, Qiang Wu,
+and Guangyu Sun. 2022. Ptq4vit: Post-training quan-
+tization for vision transformers with twin uniform
+quantization. In European Conference on Computer
+Vision.
+
+Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali
+Farhadi, and Yejin Choi. 2019. Hellaswag: Can a
+machine really finish your sentence? arXiv preprint
+arXiv:1905.07830.
+
+Susan Zhang, Stephen Roller, Naman Goyal, Mikel
+Artetxe, Moya Chen, Shuohui Chen, Christopher De-
+wan, Mona Diab, Xian Li, Xi Victoria Lin, et al. 2022.
+Opt: Open pre-trained transformer language models.
+arXiv preprint arXiv:2205.01068.
+
+Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang,
+Xiaolei Wang, Yupeng Hou, Yingqian Min, Beichen
+Zhang, Junjie Zhang, Zican Dong, et al. 2023. A
+survey of large language models.
+arXiv preprint
+arXiv:2303.18223.
+
+Sifan Zhou, Liang Li, Xinyu Zhang, Bo Zhang, Shipeng
+Bai, Miao Sun, Ziyu Zhao, Xiaobo Lu, and Xiangxi-
+ang Chu. 2024. Lidar-ptq: Post-training quantization
+for point cloud 3d object detection. International
+Conference on Learning Representations.
+
+A
+Appendix
+
+learning rate for two-dimensional quantization (2D-
+Quantization) and learnable weight clipping is set
+as 5e−4 and 1e−2, respectively. The optimization
+process is facilitated on a single Nvidia A100 GPU,
+utilizing a batch size of 1 over 5 epochs. Since
+the KV cache is not used in our calibration dataset,
+we deactivate past only quantization (POQ) while
+training and activate POQ after training.
+
+A.1
+Find the Best Number of Blocks for
+Cross-block Reconstruction
+Regularization
+
+We propose the Cross-block Reconstruction Reg-
+ularization for our WKVQuant, which computes
+Mean Absolute Error loss between the original and
+quantized outputs after several decoder blocks. To
+find out the best number of blocks, we perform
+ablation study designed for this hyper-parameter.
+Results are displayed in Table 8. From the table we
+can observe that the best number for k should be 5.
+So we fix it as 5 during the whole experiments.
+
+A.4
+Zero-shot Accuracy
+
+See Table 10. This table can be seen as an extension
+to Table 2 as we display the zero-shot accuracy
+results on all the used datasets here.
+
+A.5
+Longtext Scores of LLaMA-2-13B and
+LLaMA-13B models
+
+k
+WikiText2 ppl↓
+PTB ppl↓
+C4 ppl↓
+1
+5.7094
+42.9600
+7.5700
+2
+5.6758
+43.7015
+7.5517
+3
+5.6677
+46.0000
+7.5498
+4
+5.6668
+41.9152
+7.5417
+5
+5.6622
+39.7035
+7.5413
+6
+5.6642
+40.7976
+7.5437
+
+See Tabel 11. This table is a supplement to Table 3
+as we display Longtext scores of LLaMA-2-13B
+and LLaMA-13B models here.
+
+Table 8: Results of perplexity on WikiText2, PTB, and
+C4 dataset by applying different number of blocks used
+in Cross-block Reconstruction Regularization. It can be
+observed from the table that setting k to 5 lead to the
+best results.
+
+A.2
+Detailed Information of the Used
+LongBench Datasets
+
+To perform experiments on long texts (Longtexts),
+we utilize LongBench (Bai et al., 2023) framework
+to perfrom predictions on various datasets. De-
+tailed information of the used datasets are shown
+in Table 9.
+The first four datasets each have
+200 samples. LCC dataset has 500 samples and
+MultiFieldQA-en dataset has 150 samples.
+
+Dataset
+Task Type
+Metric
+Length
+Qasper
+Single-doc QA
+F1
+3619
+2WikiMultihopQA
+Multi-doc QA
+F1
+4887
+HotpotQA
+Multi-doc QA
+F1
+9151
+TriviaQA
+Few-Shot QA
+F1
+8209
+LCC
+Code
+Edit Sim
+1235
+MultiFieldQA-en
+Single-doc
+F1
+4559
+
+Table 9: Description of the used LongBench datasets.
+
+A.3
+Implementation Details
+
+Model
+Method
+Setting
+PIQA↑
+ARC-Challenge↑
+HellaSwag↑
+WinoGrande↑
+Zero-shot avg↑
+
+-
+FP16
+78.40%
+39.84%
+56.67%
+67.24%
+58.30%
+GPTQ
+W4
+78.34%
+38.82%
+56.06%
+66.92%
+57.74%
+OmniQuant
+W4A4
+66.15%
+28.15%
+42.04%
+53.67%
+45.45%
+OmniQuant†
+W4KV4
+77.09%
+38.99%
+54.17%
+65.43%
+56.75%
+WKVQuant
+W4KV4
+78.23%
+40.78%
+56.14%
+67.48%
+58.38%
+
+LLaMA-2-7B
+
+-
+FP16
+78.72%
+45.56%
+59.69%
+69.69%
+61.32%
+GPTQ
+W4
+78.83%
+43.60%
+59.24%
+68.58%
+60.55%
+OmniQuant
+W4A4
+67.02%
+30.54%
+44.83%
+53.90%
+47.46%
+OmniQuant†
+W4KV4
+78.07%
+43.17%
+58.22%
+68.74%
+59.82%
+WKVQuant
+W4KV4
+78.12%
+43.94%
+58.98%
+68.75%
+60.34%
+
+LLaMA-2-13B
+
+-
+FP16
+78.40%
+38.22%
+56.42%
+66.92%
+57.68%
+GPTQ
+W4
+78.18%
+37.62%
+56.11%
+65.98%
+57.30%
+OmniQuant
+W4A4
+66.97%
+29.01%
+43.63%
+53.35%
+46.53%
+OmniQuant†
+W4KV4
+77.63%
+37.88%
+55.02%
+65.35%
+56.84%
+WKVQuant
+W4KV4
+78.23%
+39.76%
+55.75%
+65.58%
+57.91%
+
+LLaMA-7B
+
+-
+FP16
+78.78%
+43.94%
+59.10%
+70.08%
+60.61%
+GPTQ
+W4
+78.29%
+43.51%
+58.50%
+69.13%
+60.10%
+OmniQuant
+W4A4
+64.25%
+24.57%
+41.88%
+52.09%
+43.56%
+OmniQuant†
+W4KV4
+78.45%
+40.95%
+57.37%
+70.32%
+58.92%
+WKVQuant
+W4KV4
+79.71%
+43.00%
+58.62%
+71.19%
+60.44%
+
+LLaMA-13B
+
+Table 10: Zero-shot accuracy of all methods on PIQA, ARC-Challenge, HellaSwag, and WinoGrande dataset.
+
+Model
+Method
+Setting
+Qasper↑
+2WikiMultihopQA↑
+HotpotQA↑
+TriviaQA↑
+LCC↑
+Longtext avg↑
+
+-
+FP16
+6.55
+8.32
+8.86
+84.97
+61.92
+34.12
+GPTQ
+W4
+7.02
+8.72
+8.66
+85.64
+60.28
+34.06
+OmniQuant
+W4A4
+4.71
+5.41
+4.70
+28.96
+37.98
+16.35
+OmniQuant†
+W4KV4
+6.45
+8.79
+8.09
+81.58
+53.69
+31.72
+WKVQuant
+W4KV4
+6.00
+7.73
+8.26
+82.15
+58.5
+32.52
+
+LLaMA-2-13B
+
+-
+FP16
+8.16
+9.88
+9.69
+85.50
+66.87
+36.02
+GPTQ
+W4
+6.97
+10.00
+9.54
+84.05
+65.16
+35.14
+OmniQuant
+W4A4
+3.75
+4.84
+4.44
+21.09
+23.66
+11.55
+OmniQuant†
+W4KV4
+5.35
+8.31
+8.33
+66.14
+55.84
+28.79
+WKVQuant
+W4KV4
+6.71
+9.47
+9.04
+86.60
+65.69
+35.50
+
+LLaMA-13B
+
+Table 11: Longtext scores. Our results are shown in gray line.

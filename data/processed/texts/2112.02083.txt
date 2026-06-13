@@ -1,0 +1,1573 @@
+Think Green - Turn Off The Lights
+
+Haiyang Han∗, Nikos Terzenidis†, Dimitris Syrivelis‡, Arash F. Beldachi§, George T. Kanellos§, Yigit Demir¶,
+Jie Gu∗, Srikanth Kandula∥, Nikos Pleros†, Fabi´an Bustamante∗and Nikos Hardavellas∗
+
+∗CS & ECE, Northwestern University
+
+{jgu, fabianb,
+
+†Aristotle University of Thessaloniki, Greece
+{nterzeni,
+
+‡NVIDIA, Israel
+
+∥Microsoft Research
+
+§EEng, University of Bristol, UK
+{gt.kanellos,
+
+¶Google
+
+arXiv:2112.02083v2 [cs.NI] 20 Dec 2021
+
+that expend most of their energy only during packet transmis-
+sion, optical interconnects are always on and consume power,
+even during periods of inactivity. In reality, the interconnect
+often stays idle for long periods: compute-intensive workloads
+underutilize the interconnect (common in scientiﬁc and many
+analytic workloads), and servers in data centers often stay idle
+or exhibit load imbalances (data centers are typically 20–30%
+utilized [6], [7]).
+The natural solution is to turn off the transceiver of an idle
+link to save energy, and turn it back on when packets arrive
+to facilitate communication [32]. A naive implementation of
+this “laser gating”, though, risks exposing multiple laser turn-
+on delays to the end application as a packet typically crosses
+multiple links to reach its destination, signiﬁcantly increasing
+packet latency and lowering performance.
+We propose to hide the laser turn-on delay by capitalizing
+on the path diversity of modern data center interconnects. To
+service high levels of trafﬁc across a large number of nodes,
+data centers typically exploit scalable network topologies. For
+example, full-optical Clos networks are widely deployed in
+Facebook [48], Google [51] and Microsoft [31] data centers,
+and ﬂattened butterﬂy topologies have been proposed as a cost-
+efﬁcient alternative by Google [1]. All these topologies provide
+path diversity, i.e., there are multiple paths between any
+source-destination pair. Instead of turning off links arbitrarily
+and severing end-to-end paths, which exposes the laser turn-
+on delay, we propose to turn off only redundant links when
+utilization is low, and turn them on again when the aggregate
+workload needs more bandwidth. Maintaining full connectivity
+removes the laser turn-on latency from the critical path and
+results in minimal performance degradation.
+We also propose to control the server-to-ToR (Top of the
+Rack) switch links by intercepting socket write calls at the
+OS level and raising a signal to the Network Interface Card
+(NIC) lasers to turn on. The TCP/IP processing latency is high
+enough that allows for ample time to notify the server NIC
+of the impending trafﬁc. By the time the data are ready to
+be sent, the laser is already on and locked at the appropriate
+frequency, thereby allowing the node to save energy with zero
+
+Abstract—Optical interconnects are already the dominant
+technology in large-scale data center networks. However, the
+high optical loss of many optical components coupled with the
+low efﬁciency of laser sources result in high aggregate power
+requirements for the thousands of optical transceivers used by
+these networks. As optical interconnects stay always on even
+as trafﬁc demands ebb and ﬂow, most of this power is wasted.
+We present LC DC , a data center network system architecture
+in which the operating system, the switch, and the optical
+components are co-designed to achieve energy proportionality.
+LC DC capitalizes on the path divergence of data center
+networks to turn on and off redundant paths according to
+trafﬁc demand, while maintaining full connectivity. Turning
+off redundant paths allows the optical transceivers and their
+electronic drivers to power down and save energy. Maintaining
+full connectivity hides the laser turn-on delay. At the node layer,
+intercepting send requests within the OS allows for the NIC’s
+laser turn-on delay to be fully overlapped with TCP/IP packet
+processing, and thus egress links can remain powered off until
+needed with zero performance penalty.
+We demonstrate the feasibility of LC DC by i) implementing
+the necessary modiﬁcations in the Linux kernel and device
+drivers, ii) implementing a 10 Gbit/s FPGA switch, and iii)
+performing physical experiments with optical devices and circuit
+simulations. Our results on university data center traces and
+models of Facebook and Microsoft data center trafﬁc show that
+LC DC saves on average 60% of the optical transceivers power
+(68% max) at the cost of 6% higher packet delay.
+
+I. INTRODUCTION
+
+Optical interconnects have emerged as a promising solution
+to meet the growing demand for high-bandwidth, low-latency,
+and energy-efﬁcient communication in data centers [1], [31],
+[48]. A signiﬁcant fraction of the energy consumption in
+these networks can be attributed to the laser sources and laser
+drivers. As we argue, most of this energy is wasted.
+For example, a typical 64-port switch with 220 W peak
+power draws on average 140 W [4] and employs 10G SFP+
+optical transceivers at 1 W per port. With this conﬁguration the
+switch consumes a third of its power on optical transceivers.
+QSFP (40G) transceivers consume as much as 3.5× more
+power, raising the power ceiling even further. However, most
+of the laser energy is wasted. Unlike traditional interconnects
+
+II. MOTIVATION
+
+Power and energy efﬁciency have been at the forefront of
+research in circuits and computer architecture for at least 15
+years [11], [25], [52]. Innovations in these ﬁelds coupled with
+technological advances in materials, semiconductor processes
+and packaging yield lower-power devices at each technology
+node [9], [34], [40], [55]. The end result is the rapidly increas-
+ing energy efﬁciency of server components, including memory,
+storage, processors, and ultimately the servers themselves.
+Simultaneously, the high power demands of modern data
+centers has pushed data center operators to drastically reduce
+power inefﬁciencies. As a result, modern state-of-the-art data
+centers reduced the power overhead for cooling, electrical and
+mechanical systems from more than 2× a decade ago to only
+6% today [24], [30], [42]. As servers deliver increasingly
+higher performance per Watt, and data center overheads are
+aggressively eliminated, their contribution to the overall data
+center power consumption drops, exposing other components
+that have not yet received similar attention [32]. Data center
+networks are one of these components, and its relative power
+consumption rises as innovations in other sectors reduce the
+power draw of other data center components.
+Figure 1 shows the breakdown of data center power as
+various optimizations are applied on servers. For generality, we
+carry out the same study across various network designs from
+the literature: a Clos Facebook site [48], a Flattened Butterﬂy
+interconnect by Google [1], and three Fat-Tree networks
+derived from [28] that are either readily available using off-the-
+shelf components (Fat-Tree 1), or require board and chassis
+engineering for higher efﬁciency and lower cost (Fat-Tree 2),
+or require board, chassis and new ASIC design (Fat-Tree 3).
+All designs are modeled using the exact component counts
+and connectivity described in their respective publications.
+Figure 1 breaks down the data center power into:
+
+• We propose LC DC (Laser Control for Data Centers),
+a data center network system architecture in which the
+operating system, the switch, and the optical components
+are co-designed to achieve energy proportionality.
+
+• We demonstrate the feasibility of employing LC DC at
+servers and global switches through modiﬁcations in the
+Linux kernel and device drivers, switch design on FPGA
+boards, physical experiments with optical devices, and
+analog circuit simulations.
+
+• Server systems
+
+• Switch ASIC and CPU chips (28 W per switch) [28]
+
+• We develop a data center trafﬁc generator that models the
+trafﬁc exhibited at Facebook and Microsoft. We show that
+our trafﬁc generator produces CDFs of ﬂow size and ﬂow
+intervals that closely match real-world trafﬁc.
+
+• Server network card (NIC) electronics (10 W) [1]
+
+• Switch PHY chips that implement the Layer 1 protocol
+exposed by the switch (0.8 W, one PHY per port) [28]
+
+• Optical transceivers on switch and NIC card ports, as-
+suming 1 W for 10G SFP+, 2.4 W for 40G QSFP [28]
+The ﬁgure excludes the overhead for cooling, electrical and
+mechanical systems within the data center, as the additional
+overhead these systems impose is proportional to the power
+draw of the server, storage and networking equipment. We
+note that modern hyperscale data centers often achieve Power
+
+• We evaluate LC DC on models of Facebook and Mi-
+crosoft data center trafﬁc, as well as trafﬁc traces from a
+university data center. LC DC saves on average 60% of
+the optical transceiver power (68% max) at the cost of
+6% higher packet delay.
+
+• As servers and cooling, electrical and mechanical systems
+become increasingly more energy efﬁcient, we project
+
+Fully Energy-prop. Server
+
+Fully Energy-prop. Server
+
+Fully Energy-prop. Server
+
+Fully Energy-prop. Server
+
+Fully Energy-prop. Server
+
++ DRAM Poweroff & Disaggregation
+
++ DRAM Poweroff & Disaggregation
+
++ DRAM Poweroff & Disaggregation
+
++ DRAM Poweroff & Disaggregation
+
++ DRAM Poweroff & Disaggregation
+
+Typical Server 30% (2013)
+
+Typical Server 30% (2013)
+
+Typical Server 30% (2013)
+
+Typical Server 30% (2013)
+
+Typical Server 30% (2013)
+
+Energy-eff. Server 30% (2021)
+
+Energy-eff. Server 30% (2021)
+
+Energy-eff. Server 30% (2021)
+
+Energy-eff. Server 30% (2021)
+
+Energy-eff. Server 30% (2021)
+
++ 3D Memory (HMC)
+
++ 3D Memory (HMC)
+
++ 3D Memory (HMC)
+
++ 3D Memory (HMC)
+
++ 3D Memory (HMC)
+
++ 3D NAND Flash SSDs
+
++ 3D NAND Flash SSDs
+
++ 3D NAND Flash SSDs
+
++ 3D NAND Flash SSDs
+
++ 3D NAND Flash SSDs
+
++ Processing in-Memory
+
++ Processing in-Memory
+
++ Processing in-Memory
+
++ Processing in-Memory
+
++ Processing in-Memory
+
++ Silicon Tech Scaling (1.5nm)
+
++ Silicon Tech Scaling (1.5nm)
+
++ Silicon Tech Scaling (1.5nm)
+
++ Silicon Tech Scaling (1.5nm)
+
++ Silicon Tech Scaling (1.5nm)
+
++ Specialized Computing
+
++ Specialized Computing
+
++ Specialized Computing
+
++ Specialized Computing
+
++ Specialized Computing
+
+Server Peak Power
+
+Server Peak Power
+
+Server Peak Power
+
+Server Peak Power
+
+Server Peak Power
+
+Facebook-Clos [42]
+Google-FBFLY [1]
+Fat-Tree 1 [22]
+Fat-Tree 2 [22]
+Fat-Tree 3 [22]
+
+Fig. 1. Data center power breakdown change as a function of server system optimizations, across various network designs.
+
+and the employment of specialized computing which is mod-
+eled after the Catapult project [47] in Microsoft that deployed
+FPGAs in production data centers to off-load computations
+from conventional general-purpose processors.
+Finally, the last two bars show the impact of applying vari-
+ous recent technologies such as DRAM refresh reduction [39],
+DRAM idle power-off [56], memory disaggregation [44], and
+near-memory processing [38]. We model the impact of these
+optimizations by employing them only on the appropriate
+components, following the typical power proﬁle of data-center-
+class servers [26] and switches [4], [28].
+As Figure 1 indicates, with each optimization the relative
+power consumption of servers drops, to the point where the
+network becomes a major component. Our projections indicate
+that, unless something is done, the thousands of transceivers
+employed in a data center network will account for 20% of
+the data center power consumption on average across network
+designs, after these series of optimizations are applied on the
+servers. Moreover, the combined switch PHY chips, server
+NIC electronics and transceivers will account for as much as
+46% of the data center power. Thus, we argue it is time to
+start optimizing the network not only for latency, bandwidth
+and cost, but also for power and energy efﬁciency.
+It is important to note that the optimizations we model
+in this study are carefully selected to be conservative and
+readily available, and they are solidly backed by experimental
+characterization of existing products. The technology projec-
+tions conform to the roadmap that the semiconductor industry
+collectively sets every year since 1993 [10], [34], the memory
+and SSD devices are already commercially available [16], [45],
+[46], [55], nearly full-energy-proportional servers are com-
+mercially available today [53], and some data centers already
+deploy specialized computing (e.g., Microsoft’s Catapult [47],
+Google’s Tensor Processing Units [35]).
+
+Usage Effectiveness (PUE) of 1.06 [24], [30], [42] and report a
+comprehensive trailing twelve-month PUE of 1.10 [30] across
+all large-scale data centers, in all seasons, including all sources
+of overhead. Thus, the additional overhead of large-scale data
+centers nowadays represents a relatively small fraction of their
+overall energy consumption.
+Most readers would be familiar with the left-most stacked
+bar for each network, where 92–95% of the power is consumed
+by the servers and only 5–8% goes to the interconnect. How-
+ever, this assumes that all servers run at 100% utilization and
+draw peak power all the time. In reality, servers are typically
+only 20–30% utilized [6], [7]. Thus, their contribution to data
+center power is lower, and the relative importance of other
+components grows. The second stacked bar shows this effect
+assuming typical servers circa 2013 [26].
+The third bar shows the effect of 30% server utilization on a
+best-of-class modern server that is nearly energy-proportional:
+the Lenovo Think System SR665, which currently has the
+highest performance per Watt as measured by an audited
+SPECpower benchmark [53]. This server expends 58% of its
+power at 30% utilization (compared to 70% for the 2013
+server [6]). The fourth bar continues that trend and models
+a fully energy-proportional server at 30% utilization [6], [7],
+[26] at which point it consumes 40% of its peak power. On
+average, a data center with fully energy-proportional servers
+at 30% utilization seems to spend about 86% of its energy on
+the servers and the remaining 14% on the network.
+The following bars apply successively more optimizations
+on the server components (and if applicable the switch and
+NIC electronics) to account for the transition from 7 nm to
+1.5 nm CMOS technology following IRDS projections [10],
+[34]; the use of modern memory technology (e.g., Micron’s
+3D hybrid memory cube, HMC) [10], [46]; the introduction of
+16-die-stacked 3D NAND Flash for solid-state drives [3], [55];
+
+Fig. 2. Data center network conﬁguration, similar to [48].
+
+To capture a wider range or projections, we also include two
+more sophisticated energy-efﬁciency optimizations that have
+been in active development in industry for more than a decade,
+and while they are not mainstream products yet, they are in
+advanced stages of development. These optimizations include
+near-memory processing [38] and disaggregation [44]. There
+is a large number of much more aggressive optimizations
+that we explicitly chose not to include, as their ability to
+scale up to production at reasonable cost is unknown, or
+they are not a good ﬁt for hypercale data centers, or simply
+because they are not commercially available yet, despite their
+high potential (e.g., STT-RAM, PCM, near-threshold-voltage
+processors, spintronics, neuromorphic processors, and chip-
+and board-level photonics).
+
+uplinks to CSW intermediate routers (12:1 oversubscription).
+In turn, the CSW’s provide 4 40G uplinks to FC switches
+(2:1 oversubscription). Each set of CSWs within a cluster and
+the FCs are connected on a ring formed by 8 10G links and
+sixteen 10G links respectively, for load balancing.
+LC DC controls each tier independently. Each RSW has
+4 uplinks to connect to all the CSWs in its cluster (path
+divergence). Each one of these uplinks deﬁnes a Stage. When
+we say that stage k is active, we mean that links 1 through k
+are active. Initially only one stage per RSW is active. LC DC
+on each switch estimates network trafﬁc by monitoring the
+buffer depth (buffer utilization, aka queue backlog) of its
+active links, which is an accurate and lightweight method [12].
+When a buffer’s depth exceeds a tunable threshold (high
+watermark), the RSW turns on an additional stage to provide
+higher bandwidth and minimize queueing delay. The switch
+sends a control message through the already active stages
+to the corresponding CSW informing it of the new stage
+activation, and once its transceiver is active and has received
+an acknowledgement from the CSW that the receiving side is
+active, it starts using the additional link.
+The newly activated stage turns off when the RSW that
+activated it becomes underutilized, i.e., its buffer utilization
+falls below a low watermark. In that case, LC DC realizes that
+the additional bandwidth provided by the redundant link is not
+necessary, and should turn it off. The RSW stops receiving
+outgoing messages in this port, serves all the packets in its
+buffers, and then notiﬁes the corresponding CSW with a stage
+turn-off message which deactivates the last activated stage.
+Once the CSW acknowledges the link deactivation, RSW turns
+off its transceiver too. Link activation and deactivation at
+CSWs and FCs is performed similarly.
+LC DC adaptively routes trafﬁc through only the active
+stages which achieves load balancing, turns on lasers on the
+side and hides their turn-on delay, and avoids unnecessary link
+activation which maximizes the energy savings.
+
+III. LC DC ARCHITECTURE
+
+We propose LC DC to minimize the amount of power spent
+on optical transceivers employed in switches and server NIC
+cards by turning them off when they are not needed. Moreover,
+we can extend the design of LC DC to also put the switch
+PHY chips and the server NIC electronics into a low-power
+state at the same time that the laser is switched off. While
+we do not study this extension in this paper, it can address as
+much as 46% of the projected data center power consumption
+(Figure 1), even after accounting for the CMOS scaling of the
+PHY and NIC electronics.
+To minimize the performance impact of waiting for the
+lasers to turn on, LC DC deactivates only redundant links,
+while maintaining full network connectivity. As there is always
+a path connecting any pair of nodes, packets can still reach
+their destination while links are activated. LC DC monitors
+the interconnect trafﬁc and turns off links when the utilization
+is low to save energy, and activates additional links when the
+utilization is high to increase performance.
+
+A. LC DC Operation at the Switch Level
+
+LC DC is applicable to any network topology with path
+diversity. In this paper we evaluate it in a network similar
+to a site in the Facebook data center [48]. Figure 2 presents
+the network design. Each rack has 48 nodes which connect
+to a Rack Switch (RSW). 32 RSW’s form an Cluster and
+connect to 4 Cluster Switches (CSW). 4 Clusters (16 CSWs)
+connect to 4 “Fat Cat” Routers (FC) to form a site. The
+RSWs have 48 10G (downlink) input-output ports and 4 10G
+
+B. LC DC Switch Architecture
+
+Figure 3 shows the architecture of the LC DC switch.
+LC DC
+is
+a
+combined
+input-output
+queued
+switch
+(CIOQ) [13]. At the input, buffering relies on the hardware
+queues of RGMII MAC, while at the output the design
+features one RAM-based queue per physical port. The
+LC DC datapath is 64-bit wide and adds a single annotation
+
+NIOS CPU
+
+Stage Enable
+
+Altera Avalon-based ConﬁguraGon Interface for
+
+Control
+Message
+Generator
+
+RGMII MAC
+RGMII MAC
+
+logical TCAM and Stage Out Maps
+
+Stage Up/Down
+Trigger
+
+MAC Rx
+Queue
+MAC Tx
+Queue
+
+To Stage Enable
+Electronics
+
+2. Stage Ctrl Packet OR Logical port lookup
+
+Backlog
+Monitor
+
+Stage
+Enable
+
+Stage RDY
+
+MAC Rx
+Queue
+
+MAC Tx
+Queue
+
+Stage
+Packet
+Parser
+
+3. Stage-aware scheduler
+
+Stage 1 CAM Map
+
+1. Input RR Arbiter
+
+4.Output Queues
+
+MAC Rx
+Queue
+
+MAC Tx
+Queue
+
+Stage 2 CAM Map
+
+Packet
+Enqueue
+CAM
+Logical
+
+Stage 3 CAM Map
+
+MAC Rx
+Queue
+
+MAC Tx
+Queue
+
+Stage 4 CAM Map
+
+Port
+Lookup
+
+MAC Rx
+Queue
+
+MAC Tx
+Queue
+
+Scheduler
+
+logic
+
+MAC Tx
+Queue
+
+MAC Rx
+Queue
+
+Fig. 3. LC DC switch architecture.
+
+ﬂit to each packet that ﬂows through it to pass information
+from one stage to the next. The design implements a control
+message channel that uses the same physical ports as data
+packets (in-band).
+1) Dataplane Pipeline Stages: The Ethernet frames are
+pulled from RGMII MAC queues that drive the physical
+interfaces using a round robin arbiter. Besides the physical
+input ports, the switch features a virtual port that interfaces a
+2-port memory to the arbiter. The memory is pre-programmed
+with all ﬂavors of control packets that are forwarded to other
+switches to initiate LC DC stage changes. The arbiter polls
+the virtual port out-of-order to prioritize the forwarding of
+generated control packets.
+In the next pipeline stage the processing differs depending
+on whether the packet is LC DC control or not. The LC DC
+control packet is an ethernet frame where bytes 13-14 form
+the LC DC Ethernet type (0x9100). The next 8 bytes contain
+the senderID (4 B), the stageID (2 B), and the TTL (2 B).
+The packet is then padded to the minimum ethernet frame
+size. The stageID denotes the LC DC stage to be enabled
+and the possible values are deployment-wide agreed. The TTL
+designates the number of switching layers that the control
+packet may ﬂow through before it is discarded. This approach
+simpliﬁes the distribution scheme by allowing control packets
+to get forwarded from all output ports of each switch without
+worrying for endless loops. Accordingly, the control packet
+processing checks the stageID and sends the appropriate
+notiﬁcation to the LC DC stage enabling component, updates
+the TTL and drops the packet (if zero) or propagates it for
+forwarding. Finally, the senderID designates the control packet
+sender, so it is used to determine if the packet was generated
+
+in the local switch. If it was, it is directly forwarded to
+the scheduler because the stage transition process is initiated
+before control packet generation.
+The non-local packets initiate a Content Addressable Mem-
+ory (CAM) lookup to match the packet destination Ethernet
+MAC address with a logical port, which is a deployment-
+unique identiﬁer of the destination switch where the packet
+recipient is attached. This switch addressing scheme is internal
+to LC DC and has to be conﬁgured by the control plane
+(Section III-B2). For multicast support, special logical port
+identiﬁers are programmed by the control plane for each
+multicast tree. Accordingly, the logical port identiﬁer is pushed
+to the packet annotation space and a multicast bit is set when
+needed before the packet propagates to the scheduler pipeline
+stage.
+The scheduler load-balances the incoming trafﬁc over the
+available output physical port queues based on the packet
+destination and the LC DC stage that is enabled. As the
+provided packet destination is a logical port, the scheduler
+has access to a series of binary CAM tables, one per LC DC
+stage, to determine the physical output port options. These
+CAM tables take the logical port as input and provide a binary
+map at the output where all the possible physical ports that
+may be used for this destination, based on the enabled LC DC
+stage, are one-hot encoded. The scheduler uses each time a
+single CAM that corresponds to the currently enabled stage.
+A simple weighted scheduling algorithm chooses the output
+queue with the minimum backlog from the ones that belong
+to the given map. In case of multicast packets, the scheduler
+places a copy to all output queues of the encoded map, which
+is encoded accordingly to implement the multicast. This step
+
+(a) SFP+ transceiver module conﬁguration.
+(b) Experimental setup for the optical modules.
+(c) Output Eye diagram.
+
+Fig. 4. Physical on/off timing experiment with a VCSEL laser device.
+
+concludes the LC DC datapath operation.
+Moreover, three peripheral components orchestrate the
+LC DC stage transitions. First, the queue backlog monitor
+component inspects all the output queue backlogs. When a
+backlog exceeds an administrator deﬁned high watermark,
+the stage up trigger is sent in parallel to the other two
+components: i) the stage enable component and ii) the stage
+enable control message generator. The former immediately
+drives the electronics to enable the next stage and when it
+receives a stage ready signal it enables the CAM stage table
+that corresponds to the currently active output ports. The latter
+activates the virtual input port so that the arbiter pulls the
+proper control packet to notify the rest of the deployment for
+the state change. If the backlogs become low, the backlog
+monitor sends to the stage enable component the stage down
+trigger, which immediately enables the appropriate CAM table
+while it requests the shutdown of speciﬁc physical ports.
+2) LC DC Control Plane: The LC DC switch requires
+control plane support that has overview of the whole net-
+work deployment and device topology in order to provide
+the required forwarding information on all CAM tables, the
+thresholds on the backlog monitors and the programming of
+the control packets for the underlying switch fabrics. For this
+particular purpose the current design features an Altera Avalon
+bus interface that connects the aforementioned components to
+the Altera NIOS processor, a softcore processor solution that is
+provided by the FPGA platform we use. Therefore, low-level
+software-based control plane support can be realized on each
+switch, which can then be integrated with data center network
+orchestration tools like OpenStack Neutron according to the
+SDN paradigm.
+
+the laser to be fully operational and transmit the data. Changes
+to the Linux driver and kernel module is minimal at around
+200 lines of code.
+
+IV. FEASIBILITY STUDY
+
+A. Feasibility at the Device Level
+
+1) Optical
+Transceiver
+Turn-on
+Delay:
+The
+datacom
+transceiver modules that are largely deployed in current data
+center implementations mainly rely on SFP+ modules for
+up to 10 Gbit/s link bandwidths and QSFP modules, which
+is a quadruple form of SFP+, for link bandwidths in the
+range of 40 Gbit/s to 100 Gbit/s. The simplest SFP+ form of
+transceiver is shown in Figure 4a and comprises a transmitter
+side which includes a laser component followed by the laser
+driver circuitry, and a receiver side that includes a photodetec-
+tor followed by the pre-ampliﬁer, also called trans-impedance
+ampliﬁer (TIA), and the post-ampliﬁer. Optional additional
+circuitry may include a CDR (clock and data recovery) circuit
+in both transceiver sides.
+In such transceiver conﬁgurations, the transmitter turn on/off
+timings are denoted as Tx Disable assert time / Tx negate
+assert time and are deﬁned in the SFP+ multisource agreement
+(MSA) [50]. The MSA speciﬁes that the transmitter turn on/off
+timings are 100 µs and 1 ms respectively, while the receiver
+turn on/off times denoted as Rx LOS assert delay / Rx LOS
+negate delay are 100 µs each. However, the MSAs have set
+the timing boundaries well beyond any safety margins of
+stable operation in order to fully relax the design and cost
+requirements of the transceivers [50]. In fact, though both
+optical and electrical components comprising the transceivers
+allow for signiﬁcantly faster operations, this has never been
+a design objective for commercial manufacturers of Datacom
+transceiver modules, and hence they are not optimized for it.
+This becomes evident for transceivers in the SFP+ form-
+factor that are deployed in PON (Passive Optical Network) ap-
+plications, such as the 10GE-PON SFP+ transceivers. For these
+transceivers, the necessity for burst operation has led to their
+commercial implementations exhibiting turn on/off times of
+512 ns each [18], [23], [33]. These transceivers retain all other
+Datacom SFP+ speciﬁcations, such as power consumption, bit
+rate, etc, and thus demonstrate that transceiver for Datacom
+applications (e.g., data centers) can also be implemented with
+equally fast µs-scale turn on/off timings.
+To provide further evidence that the optical components can
+be turned on/off at such high speed, we set an experimental
+
+C. OS and Device Driver Design for Node-Level LC DC
+
+In addition to controlling the redundant links, LC DC
+independently controls the transceivers on each server’s NIC
+card, by using a modiﬁed network card device driver which
+is controlled by the system as a kernel module. LC DC
+intercepts the Linux sendmsg() system call and replaces
+it with our version of sendmsg() by modifying the system
+call table at driver module initialization. Upon a user-level
+socket_write() call, the driver signals its laser to turn
+on and then invokes the original sendmsg() function. While
+the laser turns on, the payload goes through the TCP/IP stack
+processing. By the time the driver-speciﬁc transmit function is
+called to transmit over the ﬁber, sufﬁcient time has elapsed for
+
+(a) Lumped model for VCSEL
+laser [29].
+
+(b) Spice simulation waveform in a 45 nm
+CMOS technology.
+
+Fig. 5. Spice simulation on power gating a VCSEL laser.
+
+simpliﬁed lumped model has been veriﬁed from DC to high
+frequency (25 GHz) to match well with measured responses
+from the physical VCSEL laser [29]. In our simulation, a small
+CMOS driver with transistor sizes of 10 µm was used to turn
+on and off the laser block. Simulation in Figure 5b shows that
+the laser junction voltage can be driven within 25 ns with a
+large signal magnitude using our small CMOS driver. This
+simulation shows that such a laser source can be power gated
+well within 100 ns or 1 µs time window.
+
+B. Feasibility at the Switch Level
+
+Similar to transceiver modules, commercially available
+switches do not allow for fast nanosecond-scale updates to port
+maps or rules. While technologically this should be feasible
+within a few processor cycles, commercial designs never had
+the incentive to optimize it to a few nanoseconds.
+To demonstrate the feasibility of LC DC at the switch layer
+we implemented a prototype of the described LC DC pipeline
+architecture in Verilog as a 6×6 switch, with small-sized
+CAMs (100 entries each) and support for four LC DC stages
+(Figure 3). The design targets an Altera Stratix V GT platform
+where it achieves a clock rate of 169.32 MHz, providing a
+10.8 Gbit/s backplane. The overall latency from the time a
+packet ﬂit enters the pipeline until it is delivered to the output
+queues is 7 cycles (2 cycles for the logical port lookup, 2 for
+the stage out port map lookup, 2 for the scheduler, and 1 for
+placing at the output queue). The cycle count is expected to
+grow with the number of output ports because the scheduler
+checks all backlogs before queueing a packet.
+Our design also demonstrates fast stage trigger generation.
+When the backlog monitor observes a threshold violation
+(checked on every cycle) it signals the stage enable component
+in the same cycle (<5.8 ns delay). When a control packet that
+initiates the stage change appears at the input, 2 cycles elapse
+before the proper ﬂit is parsed (12.8 ns). As soon as the stage
+enable component receives the ready signal from the output
+ports, it enables the appropriate stage CAM lookup table on
+the next cycle so that the next packet (whenever it arrives) is
+forwarded according to the new stage.
+Our FPGA prototype demonstrates that it is feasible to
+implement a fast LC DC switch with ns-scale latencies. ASIC
+implementations would be even faster than our FPGA imple-
+mentation, but they are outside the scope of this paper.
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+1
+
+0.4
+
+0.4
+
+0.8
+
+Simulated
+Literature
+
+Simulated
+Literature
+
+0.2
+
+0.2
+
+0
+
+0
+
+CDF
+
+0.6
+
+0.01
+0.1
+1
+10
+100
+1000
+10000
+
+0.01
+0.1
+1
+10
+100
+1000
+10000
+
+0.4
+
+(a) Flow size: FB web server.
+
+(b) Flow size: FB cache follower.
+
+0.2
+
+1.2
+
+1.2
+
+0
+
+1
+
+1
+
+0.01
+0.1
+1
+10
+100
+1000
+10000 100000 1000000
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+Flow Size (Kilo bytes)
+
+0.4
+
+0.4
+
+Simulated
+Literature
+
+Simulated
+Literature
+
+0.2
+
+0.2
+
+(a) Flow size CDF.
+
+0
+
+0
+
+0.1
+10
+1000
+100000
+
+0.01
+0.1
+1
+10
+100
+1000
+10000
+
+FB Web Servers
+FB Cache Follower
+FB Hadoop
+MSFT Data Center
+EDU1
+EDU2
+
+(d) Flow size: MS Data Center.
+
+(c) Flow size: FB Hadoop.
+
+1.2
+
+1.2
+
+1
+
+1
+
+1
+
+0.8
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.6
+
+CDF
+
+0.4
+
+0.4
+
+0.4
+
+Simulated
+Literature
+
+0.2
+
+0.2
+
+Simulated
+Literature
+
+0
+
+0
+
+0.2
+
+1
+10
+100
+1000
+10000 1000001000000
+
+1
+10
+100
+1000
+10000 1000001000000
+
+(f) Flow interval: FB cache follower.
+
+(e) Flow interval: FB web server.
+
+0
+
+10
+100
+1000
+10000
+100000
+1000000
+
+1.2
+
+1.2
+
+Message inter arrival 0me (usec)
+
+1
+
+1
+
+0.8
+
+0.8
+
+(b) Flow interval CDF.
+
+0.6
+
+0.6
+
+Fig. 6. CDF of trafﬁc data input used in simulation.
+
+0.4
+
+0.4
+
+Simulated
+Literature
+
+Simulated
+Literature
+
+0.2
+
+0.2
+
+0
+
+0
+
+1
+10
+100
+1000
+10000 1000001000000
+
+1
+10
+100
+1000
+10000 1000001000000
+
+C. Feasibility at the Node Level
+
+(g) Flow interval: FB Hadoop.
+
+(h) Flow interval: MSFT Data Center
+
+Using our modiﬁed Linux network device driver we mea-
+sured the latency between the hypothetical “laser turn on”
+command that the device driver will issue to the NIC
+transceiver, and the subsequent call to the device-speciﬁc
+transmit function that starts sending the bits through the phys-
+ical link. To do this we took timestamps with our version of
+the sendmsg() system call and NIC device transmit function
+were invoked. Our test-bed consists of an Intel 82579LM Eth-
+ernet card and an Intel Core i5 2520M 2.5 GHz processor run-
+ning Linux kernel 4.2.0 on Ubuntu 15.10. We measured a mean
+elapsed time of 3.2 µs over 100k samples on a completely
+idle system at runlevel 1 to minimize perturbations from other
+kernel services, TCP_NODELAY to eliminate small packet
+aggregation, and with hyper-threading, frequency governors,
+and all but one cores disabled to minimize perturbations due
+to thread migration or core frequency changes.
+Our results corroborate independent measurements in liter-
+ature of 3.7 µs for a packet to traverse the TCP/IP stack [41].
+These results independently measured that it takes 950 ns for
+a process to send a message to the socket interface on a
+connection that has already been established. Evoking a socket
+write begins the TCP layer to initiate transmission, copy the
+application buffer into the transmit queue in kernel space
+and prepare a datagram for the IP layer (260 ns). Then the
+IP layer does routing, segmentation, processes the IP header,
+and eventually calls the network device driver (550 ns). The
+
+Fig. 7.
+Comparison of simulated trafﬁc CDF of ﬂow size and ﬂow
+intervals vs. target large-scale data center trafﬁc from published mea-
+surements.
+
+network device driver constructs the output packet queue entry
+and calls the precise hardware implementation of the NIC
+card to transmit the frame by passing a pointer to the packet
+descriptor (430 ns). This causes a control register write within
+the NIC to set up a DMA transfer to fetch the pointer, and
+when it completes control is handed to the NIC card (400 ns).
+Another 760 ns are consumed by the NIC to process the
+core register write, interpret the descriptor, and based on the
+descriptor initiate a DMA to fetch from main memory the
+data of the packet to transmit. Each 64-byte cache line access
+to memory takes an estimated 400 ns to propagate from the
+PCIe signal pins to memory and back. Thus, it takes a total
+of 3.75 µs for an application to launch a packet onto the ﬁber
+interface. Thus, the server’s NIC card will have ample time to
+turn on its laser and it will impose no laser turn-on delay to
+the sending process.
+
+V. EXPERIMENTAL METHODOLOGY
+
+We model the data center network in Figure 2 using
+the BookSim cycle-accurate network simulator [17] that we
+modiﬁed in-house. We faithfully model all trafﬁc, including
+
+0%
+1%
+2%
+3%
+4%
+5%
+6%
+7%
+8%
+9%
+10%
+
+100%
+
+Packet Latency Increase
+
+Execu&on Time
+
+88%
+
+75%
+
+63%
+
+50%
+
+38%
+
+<25%
+
+Web Server
+
+Hadoop
+
+EDU1
+
+EDU2
+
+Cache Follower
+
+Data Center
+
+Web Server
+
+Cache Follower
+
+Hadoop
+
+EDU1
+
+EDU2
+
+Data Center
+
+Facebook
+MSFT
+University
+Mean
+
+Facebook
+MSFT
+University
+Mean
+
+Fig. 10. Impact of LC DC on packet latency.
+
+Fig. 8.
+Breakdown of partial network activation. The legend indicates
+the fraction of the network links that are on.
+
+the fraction of the time each link is deactivated. We set the
+high watermark at 75% buffer utilization for stage activation,
+and the low watermark at 22% buffer utilization for stage
+deactivation (experimentally determined to balance energy
+savings with network performance).
+
+Transceiver Energy Savings
+
+70%
+
+60%
+
+50%
+
+40%
+
+VI. EXPERIMENTAL RESULTS
+
+30%
+
+20%
+
+A. Input Data
+
+10%
+
+Figure 6 shows the data trafﬁc injected into our simulated
+network. We created a trafﬁc generator that produces trafﬁc
+that closely approximates the network trafﬁc originating from
+large-scale data centers in Facebook [48], Microsoft [31], [36],
+as well as in higher education settings [8]. Comparing the
+distribution of trafﬁc from our generator with the large-scale
+data center trafﬁc from published measurements [31], [36],
+[48], we conﬁrm that they have similar CDFs, as is shown in
+Figure 7. We measure the Pearson r coefﬁcient to be between
+0.979–0.992 for the ﬂow size CDF, and 0.894–0.998 for the
+ﬂow interval CDF. Thus, our simulations are conducted under
+conditions that closely approximate real-world environments.
+
+0%
+
+Web Server
+
+Hadoop
+
+EDU1
+
+EDU2
+
+Cache Follower
+
+Data Center
+
+Facebook
+MSFT
+University
+Mean
+
+Fig. 9. LC DC transceiver energy savings.
+
+the additional control packets generated by LC DC . The
+simulator is supplied packets from a trafﬁc generator that
+shapes trafﬁc to conform to the distributions prevalent in
+large-scale data centers. The trafﬁc generator models the
+trafﬁc characteristics shown in [31], [36], [48]. In addition
+to large-scale data centers with heavy trafﬁc, we evaluate the
+performance of LC DC on more traditional data centers that
+exhibit lower trafﬁc demand. For that, we use snippets of traces
+collected from routers in a university data center [8].
+The feasibility study (Section IV) demonstrated that optical
+devices can turn on/off at ns-µs scale. To remain conservative
+in our evaluation, we model laser turn on/off times based
+on a commercially available SFP+ module (MRV SFPFC401)
+which has a turn-on/off delay of 1 µs /10 µs [43]. We model the
+delay characteristics of routers as derived from our feasibility
+study (Section IV), and we calculate link latency based on the
+traversed optical ﬁber length.
+We estimate network performance by measuring the average
+packet delivery latency, and the energy savings by measuring
+
+B. Results
+
+Figure 8 shows the portion of the network that is activated
+during the execution of the trafﬁc workload for each modelled
+trafﬁc. Most trafﬁc types exhibit sparse and bursty packet in-
+jection trends. Thus, LC DC ﬁnds windows of low utilization
+to deactivate a link, and 87% of the time on average half of
+the network is deactivated, indicating the potential to achieve
+signiﬁcant power savings. The Microsoft data center trafﬁc
+presents the most challenges, but LC DC still manages to turn
+off half of the network half the time.
+As a result, LC DC saves on average 60% of the optical
+transceivers’ energy (Figure 9). The lower energy savings
+relative to the time breakdown (Figure 8) are due to the fact
+that while a transceiver is in the process of turning on or off,
+the link is still considered deactivated, but we conservatively
+charge the full transceiver power consumption to the network.
+The energy savings come at the cost of 6% higher average
+
+35%
+
+35%
+
+35%
+
+30%
+
+30%
+
+30%
+
+25%
+
+25%
+
+25%
+
+20%
+
+20%
+
+20%
+
+15%
+
+15%
+
+15%
+
+10%
+
+10%
+
+10%
+
+5%
+
+5%
+
+5%
+
+0%
+
+0%
+
+0%
+
+Data Center
+
+Data Center
+
+Cache Follower
+
+Cache Follower
+
+Web Server
+
+Web Server
+
+EDU1
+
+EDU2
+
+EDU1
+
+EDU2
+
+Hadoop
+
+Hadoop
+
+Data Center
+
+Web Server
+
+EDU1
+
+EDU2
+
+Hadoop
+
+Cache Follower
+
+Facebook
+MSFT
+University
+Mean
+
+Facebook
+MSFT
+University
+Mean
+
+Facebook
+MSFT
+University
+Mean
+
+(b) Cloud servers at 50% utilization.
+
+(c) Cloud servers at 70% utilization.
+
+(a) Cloud servers at 30% utilization.
+
+Fig. 11. Impact of LC DC on overall data center energy.
+
+packet latency (Figure 10) as queueing in network buffers may
+slightly increase, which we argue can be largely absorbed by
+the application layer.
+Following the analysis in Section II we estimate the data
+center energy savings of LC DC in Figure 11. We consider the
+data center to be at an average utilization of 30%. Additionally
+we calculate the energy savings of LC DC in cloud servers,
+which are shown to typically have higher utilizations at 40%-
+70% [54]. Figures 11b and 11c show energy savings at 50%
+and 70% utilization, respectively. For data centers at 30%
+utilization, assuming the data center servers are optimized for
+energy while maintaining high performance, LC DC can save
+12% of the data center energy by deactivating links when
+they are not needed. It is also possible to extend LC DC to
+deactivate or put into a sleep mode the switch PHY chips and
+the server NIC electronics whenever the corresponding link is
+deactivated. With that extension, LC DC ’s data center energy
+savings can reach up to 27% on average, even after accounting
+for the CMOS scaling of the switch PHY and NIC card
+electronics. While we do not directly explore turning off the
+switch PHY and NIC card electronics, it is a promising future
+direction for this work. For cloud servers with utilizations
+of 50% and 70%, LC DC can respectively save 13% and
+12% of total data center energy by just turning off links. By
+deactivating the switch PHY and NIC electronics, LC DC can
+respectively save 23% and 21% of total data center energy.
+
+ities that laser gating on data center networks has to address
+(e.g., fast CDR, fast power-up of commercial transceiver
+electronics, control plane updates at the switch, and kernel
+modiﬁcation to set up an early warning system). A previous
+proposal for laser control in on-chip interconnects [20] was
+extended to data centers but only as a conceptual study;
+no evaluation was performed on trafﬁc similar to modern
+large-scale data centers (only a university data center trafﬁc
+trace was used), and the feasibility of the technique was not
+demonstrated.
+Helios [27] identiﬁes the subset of trafﬁc best suited to
+circuit switching and dynamically reconﬁgures the network
+topology at runtime based on shifting communication patterns.
+Unlike LC DC , Helios exhibits a high reconﬁguration cost of
+15 ms, even with Electronic Dispersion Compensation disabled
+(noise compensation is not needed when light from high-
+power transceivers travels over a short ﬁber). Helios needed
+to constantly reconﬁgure the topology, but did not capitalize
+on fast CDR techniques such as clock phase caching nor
+considered transceivers that are built to support fast on/off
+timing. It relied on commercially-available components that
+were designed over a decade ago at a time when there was no
+incentive to make control plane updates fast, as traditionally
+they were infrequent events; updates on many such switches
+are happening by posting a request to perform an update,
+which sometime later is picked up by a polling thread within
+the switch and is serviced. In contrast, LC DC is designed
+from the ground up with speed as one of the main targets,
+and the software and hardware infrastructure are redesigned
+around it.
+
+VII. RELATED WORK
+
+Heller et. al propose ElasticTree [32], a power manager
+that dynamically adjusts the set of active links and switches
+to satisfy data center trafﬁc while saving energy. However,
+ElasticTree cannot hide the high latency of rebooting a switch,
+and thus it is only applicable to large-grain trafﬁc ebb and
+ﬂow, while LC DC exerts very ﬁne-grain control over link
+activations. Ananthanarayanan and Katz [2] present a switch
+design that estimates trafﬁc to power down ports when pos-
+sible. Unlike LC DC , it may send packets to sleeping ports
+and expose long delays to the application.
+Laser gating has been proposed before for on-chip intercon-
+nects [19]–[22], which however do not present the complex-
+
+VIII. CONCLUSION
+
+As technological innovations steadily reduce the power con-
+sumption of data center components, network power consump-
+tion becomes increasingly prominent. We argue that it is time
+to start optimizing the network designs not only for latency,
+bandwidth and cost, but also for power and energy efﬁciency.
+We present LC DC , a data center network system architecture
+in which the operating system, the switch, and the optical
+components are co-designed to achieve energy proportionality.
+
+ACKNOWLEDGEMENTS
+This work was partially supported by NSF awards CCF-
+1453853 and CCF-1846424.
+
+REFERENCES
+
+[1] D. Abts, M. R. Marty, P. M. Wells, P. Klausler, and H. Liu, “Energy
+proportional datacenter networks,” in Proceedings of the 37th Annual
+International Symposium on Computer Architecture, ser. ISCA’10,
+2010, pp. 338–347. [Online]. Available:
+1815961.1816004
+[2] G. Ananthanarayanan and R. H. Katz, “Greening the switch,” in
+Proceedings of the 2008 Conference on Power Aware Computing
+and Systems, ser. HotPower’08, 2008, pp. 7–7. [Online]. Available:
+
+[3] D. G. Andersen and S. Swanson, “Rethinking ﬂash in the data center,”
+IEEE Micro, vol. 30, no. 4, pp. 52–54, July 2010.
+[4] Arista, “7050SX series 10/40G data center switches data sheet,” 2020.
+[Online]. Available:
+7050SX-128 64 Datasheet S.pdf
+[5] H. Ballani, P. Costa, R. Behrendt, D. Cletheroe, I. Haller, K. Jozwik,
+F. Karinou, S. Lange, K. Shi, B. Thomsen, and H. Williams, “Sirius:
+A ﬂat datacenter network with nanosecond optical switching,” in
+Proceedings of the ACM SIGCOMM 2020 Conference, 2020, p.
+782–797. [Online]. Available:
+[6] L. A. Barroso, J. Clidaras, and U. H¨olzle, “The datacenter as a computer:
+An introduction to the design of warehouse-scale machines,” Synthesis
+lectures on computer architecture, vol. 8, no. 3, pp. 1–154, 2013.
+[7] L. A. Barroso and U. Holzle, “The case for energy-proportional com-
+puting,” IEEE Computer, vol. 40, no. 12, pp. 33–37, 2007.
+[8] T. Benson, A. Akella, and D. A. Maltz, “Network trafﬁc characteristics
+of data centers in the wild,” in Proceedings of the 10th ACM SIGCOMM
+Conference on Internet Measurement, ser. IMC’10, 2010, pp. 267–280.
+[Online]. Available:
+[9] S.
+Borkar,
+“Exascale
+computing
+-
+a
+fact
+or
+a
+ﬁction?”
+in
+Proceedings of the 27th IEEE International Parallel and Distributed
+Processing Symposium, ser. IPDPS’13, May 2013. [Online]. Available:
+IPDPS May 2013.pdf
+[10] S.
+Borkar,
+“Node
+architecture:
+From
+present
+technol-
+ogy
+to
+future
+exascale
+nodes,”
+in
+Proceedings
+of
+the
+2015
+ISC
+High
+Performance
+Conference,
+July
+2015.
+[Online].
+Available:
+
+systems-intel-fellow-conjures-the-perfect-exascale-machine/
+[11] D. Brooks, V. Tiwari, and M. Martonosi, “Wattch: A framework for
+architectural-level power analysis and optimizations,” in Proceedings of
+the 27th Annual International Symposium on Computer Architecture,
+ser. ISCA’00, 2000, pp. 83–94. [Online]. Available:
+turing.library.northwestern.edu/10.1145/339647.339657
+[12] L. Chen, L. Zhao, R. Wang, and T. Pinkston, “MP3: Minimizing
+performance penalty for power-gating of clos network-on-chip,” in
+Proceedings of the 20th IEEE International Symposium on High Perfor-
+mance Computer Architecture (HPCA), Feb 2014, pp. 296–307.
+[13] S.-T. Chuang, A. Goel, N. McKeown, and B. Prabhakar, “Matching
+output queueing with a combined input/output-queued switch,” IEEE
+Journal on Selected Areas in Communications, vol. 17, no. 6, pp. 1030–
+1039, Jun 1999.
+[14] K. Clark, H. Ballani, P. Bayvel, D. Cletheroe, T. Gerard, I. Haller,
+K. Jozwik, K. Shi, B. Thomsen, P. Watts, H. Williams, G. Zervas,
+P. Costa, and Z. Liu, “Sub-nanosecond clock and data recovery in an
+optically-switched data centre network,” in Proceedings of the 2018
+European Conference on Optical Communication (ECOC), 2018, pp.
+1–3.
+[15] K. A. Clark, D. Cletheroe, T. Gerard, I. Haller, K. Jozwik, K. Shi,
+B. Thomsen, H. Williams, G. Zervas, H. Ballani, P. Bayvel, P. Costa,
+and Z. Liu, “Synchronous subnanosecond clock and data recovery for
+optically switched data centres using clock phase caching,” Nature
+Electronics, vol. 3, no. 7, pp. 426–433, Jul 2020. [Online]. Available:
+
+139 TR4.pdf, Mitsubishi Electric ADVANCE, Tech. Rep., September
+2011.
+[34] International Roadmap Committee, “International roadmap for devices
+and systems (IRDS),” 2020 Edition.
+[35] N. Jouppi, “Google supercharges machine learning tasks with TPU
+custom
+chip,”
+
+supercharges-machine-learning-tasks-with-custom-chip.html,
+May
+2016.
+[36] S. Kandula, S. Sengupta, A. Greenberg, P. Patel, and R. Chaiken,
+“The nature of data center trafﬁc: Measurements and analysis,”
