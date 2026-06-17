@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TOP_K = 5   # Number of chunks to retrieve per query
+TOP_K = 2   # Number of chunks to retrieve per query
 
 # ── FAISS Store Singleton ─────────────────────────────────────────────────────
 # We load the FAISS store once at module level so it isn't

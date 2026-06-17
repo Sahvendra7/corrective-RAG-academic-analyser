@@ -118,7 +118,15 @@ def generate_hypothetical_answer(query: str, llm) -> str:
 
     try:
         response = llm.invoke(messages)
-        hypothetical = response.content.strip()
+        raw_content = response.content
+        
+        # Safely extract text whether response is a list or a string
+        if isinstance(raw_content, list):
+            content_str = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+        else:
+            content_str = str(raw_content)
+            
+        hypothetical = content_str.strip()
         logger.info(f"[REWRITER] HyDE passage: {hypothetical[:100]}...")
         return hypothetical
 
@@ -192,7 +200,15 @@ def rewrite_query(
 
     try:
         response = llm.invoke(messages)
-        rewritten = response.content.strip()
+        raw_content = response.content
+        
+        # Safely extract text whether response is a list or a string
+        if isinstance(raw_content, list):
+            content_str = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+        else:
+            content_str = str(raw_content)
+            
+        rewritten = content_str.strip()
 
         # Sanity check — don't use rewrite if it's empty or identical
         if not rewritten or rewritten.lower() == query.lower():
