@@ -41,14 +41,6 @@ DELAY_BETWEEN_DOWNLOADS = 2  # seconds — be polite to arXiv servers
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("data/processed/download.log"),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 
@@ -128,6 +120,8 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
 
             paper_id = result.entry_id.split("/")[-1]  # e.g. "2401.15884v2"
             arxiv_id = paper_id.split("v")[0]           # e.g. "2401.15884"
+            # Sanitize pre-2007 IDs that contain '/' (e.g. "hep-th/9901001")
+            arxiv_id = arxiv_id.replace("/", "_")
 
             # Skip if already downloaded
             if arxiv_id in metadata:
@@ -145,6 +139,14 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
                 logger.info(f"[DOWN] {arxiv_id} — {result.title[:60]}...")
                 pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
                 urllib.request.urlretrieve(pdf_url, str(pdf_path))
+
+                # Validate downloaded file is actually a PDF
+                with open(pdf_path, "rb") as pdf_check:
+                    header = pdf_check.read(5)
+                if header != b"%PDF-":
+                    logger.warning(f"[WARN] Downloaded file is not a valid PDF: {arxiv_id}")
+                    pdf_path.unlink(missing_ok=True)
+                    continue
 
                 # Save metadata entry
                 metadata[arxiv_id] = {
@@ -170,6 +172,9 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
 
             except Exception as e:
                 logger.error(f"[ERR]  Failed to download {arxiv_id}: {e}")
+                # Clean up partial/corrupt file on failure
+                if pdf_path.exists():
+                    pdf_path.unlink(missing_ok=True)
                 time.sleep(5)  # Longer wait on error
                 continue
 

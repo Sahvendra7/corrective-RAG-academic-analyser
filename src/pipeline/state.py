@@ -150,10 +150,14 @@ def create_initial_state(query: str) -> CRAGState:
     Returns:
         A fully initialised CRAGState dict
     """
+    if not query or not isinstance(query, str):
+        raise ValueError("Query must be a non-empty string")
+
     return CRAGState(
-        query                   = query,
+        query                   = query.strip(),
         rewritten_query         = "",
         documents               = [],
+        relevant_documents      = [],
         grade                   = "",
         document_grades         = [],
         generation              = "",

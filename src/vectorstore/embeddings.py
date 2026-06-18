@@ -17,7 +17,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
+# tqdm is used internally by SentenceTransformer.encode(show_progress_bar=True)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -34,14 +34,6 @@ BATCH_SIZE = 64  # Number of chunks to embed at once — tune down if RAM issues
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("data/embeddings/embeddings.log"),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 
@@ -253,12 +245,15 @@ def save_embeddings(embeddings: np.ndarray, chunks: list[dict], existing_registr
 
 def print_stats(embeddings: np.ndarray, chunks: list[dict]):
     """Print a summary of what was generated."""
+    if not chunks:
+        logger.warning("No chunks to compute stats for.")
+        return
     word_counts = [c["word_count"] for c in chunks]
     logger.info(f"\n{'='*60}")
     logger.info(f"Embedding stats:")
     logger.info(f"  Total chunks embedded : {len(chunks)}")
     logger.info(f"  Embedding dimensions  : {embeddings.shape[1]}")
-    logger.info(f"  Avg words per chunk   : {sum(word_counts) // max(len(word_counts), 1)}")
+    logger.info(f"  Avg words per chunk   : {sum(word_counts) // len(word_counts)}")
     logger.info(f"  Min words per chunk   : {min(word_counts)}")
     logger.info(f"  Max words per chunk   : {max(word_counts)}")
     logger.info(f"  Embeddings file size  : {embeddings.nbytes / 1024 / 1024:.1f} MB")

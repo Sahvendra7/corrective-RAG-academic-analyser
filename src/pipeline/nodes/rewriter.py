@@ -245,7 +245,10 @@ def rewriter_node(state: CRAGState) -> dict:
             - rewritten_query: improved query for next retrieval attempt
             - retry_count: incremented by 1
     """
-    query           = state["query"]
+    # Use the most recent query — if we've already rewritten, build on that
+    rewritten = state.get("rewritten_query", "").strip()
+    original_query = state["query"]
+    query = rewritten if rewritten else original_query
     document_grades = state.get("document_grades", [])
     retry_count     = state.get("retry_count", 0)
 

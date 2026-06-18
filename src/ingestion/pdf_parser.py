@@ -26,14 +26,6 @@ MIN_TEXT_LENGTH = 500  # Skip papers with less than 500 chars (likely scanned/em
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("data/processed/parsing.log"),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 
@@ -82,48 +74,47 @@ def extract_text_from_pdf(pdf_path: Path) -> str | None:
     Extract raw text from a PDF using PyMuPDF block-level layout analysis.
     """
     try:
-        doc = fitz.open(str(pdf_path))
-        pages_text = []
+        with fitz.open(str(pdf_path)) as doc:
+            pages_text = []
 
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            
-            # Get the page dimensions to calculate thresholds
-            page_rect = page.rect
-            header_threshold = page_rect.height * 0.08  # Top 8% of page
-            footer_threshold = page_rect.height * 0.92  # Bottom 8% of page
-
-            # Extract text organized by physical blocks
-            blocks = page.get_text("blocks")
-            
-            # Sort blocks primarily by y0 (top to bottom), then by x0 (left to right)
-            # This helps preserve reading order in complex layouts
-            blocks.sort(key=lambda b: (b[1], b[0]))
-            
-            page_content = []
-            for b in blocks:
-                # b[0]=x0, b[1]=y0, b[2]=x1, b[3]=y1, b[4]=text, b[5]=block_no, b[6]=block_type
-                y0 = b[1]
-                y1 = b[3]
-                block_type = b[6]
-
-                # Skip non-text blocks (like images, where type == 1)
-                if block_type != 0:
-                    continue
-
-                # Filter out headers and footers based on y-coordinates
-                if y0 < header_threshold or y1 > footer_threshold:
-                    continue
+            for page_num in range(len(doc)):
+                page = doc[page_num]
                 
-                # Clean up the block text and append
-                text = b[4].strip()
-                if text:
-                    page_content.append(text)
+                # Get the page dimensions to calculate thresholds
+                page_rect = page.rect
+                header_threshold = page_rect.height * 0.08  # Top 8% of page
+                footer_threshold = page_rect.height * 0.92  # Bottom 8% of page
 
-            pages_text.append("\n\n".join(page_content))
+                # Extract text organized by physical blocks
+                blocks = page.get_text("blocks")
+                
+                # Sort blocks primarily by y0 (top to bottom), then by x0 (left to right)
+                # This helps preserve reading order in complex layouts
+                blocks.sort(key=lambda b: (b[1], b[0]))
+                
+                page_content = []
+                for b in blocks:
+                    # b[0]=x0, b[1]=y0, b[2]=x1, b[3]=y1, b[4]=text, b[5]=block_no, b[6]=block_type
+                    y0 = b[1]
+                    y1 = b[3]
+                    block_type = b[6]
 
-        doc.close()
-        return "\n\n".join(pages_text)
+                    # Skip non-text blocks (like images, where type == 1)
+                    if block_type != 0:
+                        continue
+
+                    # Filter out headers and footers based on y-coordinates
+                    if y0 < header_threshold or y1 > footer_threshold:
+                        continue
+                    
+                    # Clean up the block text and append
+                    text = b[4].strip()
+                    if text:
+                        page_content.append(text)
+
+                pages_text.append("\n\n".join(page_content))
+
+            return "\n\n".join(pages_text)
 
     except Exception as e:
         logger.error(f"Failed to extract text from {pdf_path.name}: {e}")
@@ -230,7 +221,13 @@ def parse_papers(metadata: dict, parse_log: dict) -> tuple[dict, dict]:
             skipped += 1
             continue
 
-        pdf_path = Path(paper.get("pdf_path", ""))
+        raw_pdf_path = paper.get("pdf_path", "")
+        if not raw_pdf_path:
+            logger.warning(f"[MISS] No pdf_path for: {arxiv_id}")
+            parse_log[arxiv_id] = {"status": "missing", "reason": "No pdf_path in metadata"}
+            failed += 1
+            continue
+        pdf_path = Path(raw_pdf_path)
 
         # Skip if PDF file doesn't exist on disk
         if not pdf_path.exists():

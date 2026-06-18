@@ -32,14 +32,6 @@ TOP_K_DEFAULT   = 5     # Default number of results to return
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("data/embeddings/faiss.log"),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 
@@ -96,11 +88,19 @@ class FAISSStore:
 
         # Load chunk IDs (ordered list matching embedding rows)
         ids_path = EMBEDDINGS_DIR / "chunk_ids.json"
+        if not ids_path.exists():
+            logger.error(f"Chunk IDs file not found: {ids_path}")
+            logger.error("Run embeddings.py first.")
+            return
         with open(ids_path, "r") as f:
             self.chunk_ids = json.load(f)
 
         # Load chunk registry (chunk_id → metadata + text)
         registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
+        if not registry_path.exists():
+            logger.error(f"Chunk registry not found: {registry_path}")
+            logger.error("Run embeddings.py first.")
+            return
         with open(registry_path, "r") as f:
             self.registry = json.load(f)
 
@@ -108,9 +108,11 @@ class FAISSStore:
         logger.info(f"Loaded {len(self.registry)} registry entries")
 
         # Sanity check — embeddings rows must match chunk IDs count
-        assert len(embeddings) == len(self.chunk_ids), (
-            f"Mismatch: {len(embeddings)} embeddings vs {len(self.chunk_ids)} chunk IDs"
-        )
+        if len(embeddings) != len(self.chunk_ids):
+            raise ValueError(
+                f"Mismatch: {len(embeddings)} embeddings vs {len(self.chunk_ids)} chunk IDs. "
+                f"Re-run embeddings.py to regenerate."
+            )
 
         # Build FAISS index
         # IndexFlatIP = Flat (brute-force) index using Inner Product (dot product)

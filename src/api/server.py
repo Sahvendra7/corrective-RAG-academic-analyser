@@ -1,4 +1,3 @@
-import os
 import sys
 import json
 import logging
@@ -22,7 +21,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize the LangGraph agent once at startup
-app_graph = build_graph()
+try:
+    app_graph = build_graph()
+    logger.info("CRAG pipeline graph initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize CRAG pipeline: {e}")
+    app_graph = None
 
 # Initialize FastAPI
 app = FastAPI(
@@ -32,17 +36,19 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend integration
+# NOTE: allow_credentials=True is incompatible with allow_origins=["*"]
+# In production, replace "*" with your actual frontend domain(s)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to your frontend domain
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # --- Pydantic Models ---
 class ChatRequest(BaseModel):
-    query: str = Field(..., example="How does Corrective RAG handle irrelevant documents?")
+    query: str = Field(..., min_length=1, max_length=2000, example="How does Corrective RAG handle irrelevant documents?")
     thread_id: str = Field(default="default-thread", example="user-123-session-abc")
     force_web_search: bool = Field(default=False)
 
@@ -95,8 +101,8 @@ async def generate_stream(request: ChatRequest):
         # Gracefully handle the disconnect to save LLM tokens
         raise
     except Exception as e:
-        logger.error(f"Error during graph execution: {e}")
-        error_data = {"event": "error", "message": str(e)}
+        logger.error(f"Error during graph execution: {e}", exc_info=True)
+        error_data = {"event": "error", "message": "An internal error occurred. Please try again."}
         yield f"data: {json.dumps(error_data)}\n\n"
 
 # --- Endpoints ---
@@ -105,6 +111,8 @@ async def chat_stream(request: ChatRequest):
     """
     Streaming endpoint that returns Server-Sent Events.
     """
+    if app_graph is None:
+        raise HTTPException(status_code=503, detail="Pipeline not initialized. Check server logs.")
     # The X-Accel-Buffering header prevents Nginx from buffering the stream in production
     return StreamingResponse(
         generate_stream(request), 

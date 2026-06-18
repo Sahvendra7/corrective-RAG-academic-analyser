@@ -61,10 +61,6 @@ from src.pipeline.nodes.hallucination import hallucination_node
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -138,44 +134,9 @@ def route_after_grader(state: CRAGState) -> str:
         return NODE_WEB_SEARCH
 
 
-def route_after_hallucination(state: CRAGState) -> str:
-    """
-    Conditional edge function called after the hallucination node.
-
-    Currently always routes to END — the answer is returned
-    regardless of hallucination status because the hallucination
-    node annotates the answer with a warning rather than
-    discarding it.
-
-    This is intentional — blocking answers on hallucination
-    detection risks being too aggressive and frustrating users.
-    The warning gives users the information they need to
-    verify the answer themselves.
-
-    Future enhancement: route back to generator for regeneration
-    if hallucination confidence is very high.
-
-    Args:
-        state: Current CRAGState
-
-    Returns:
-        Always "END" for now
-    """
-    hallucination = state.get("hallucination", False)
-
-    if hallucination:
-        logger.warning(
-            "[GRAPH] Hallucination detected — returning annotated answer to user"
-        )
-    else:
-        logger.info("[GRAPH] Answer verified — no hallucination detected")
-
-    return END
-
-
 # ── Graph Builder ─────────────────────────────────────────────────────────────
 
-def build_graph() -> StateGraph:
+def build_graph():
     """
     Build and compile the CRAG LangGraph state machine.
 
@@ -242,26 +203,30 @@ def build_graph() -> StateGraph:
     # After generation, always check for hallucinations
     graph.add_edge(NODE_GENERATOR, NODE_HALLUCINATION)
 
-    # Conditional edge: hallucination → END
-    # Currently always ends — see route_after_hallucination() for reasoning
-    graph.add_conditional_edges(
-        source=NODE_HALLUCINATION,
-        path=route_after_hallucination,
-        path_map={
-            END: END,
-        },
-    )
+    # Fixed edge: hallucination → END
+    # Currently always ends — the hallucination node annotates the answer
+    # with a warning rather than discarding it, so we always proceed to END.
+    graph.add_edge(NODE_HALLUCINATION, END)
 
     logger.info("[GRAPH] Edges configured")
-
-    # ── Step 4: Set entry point ───────────────────────────────────────────────
-    graph.set_entry_point(NODE_RETRIEVER)
 
     # ── Step 5: Compile ───────────────────────────────────────────────────────
     compiled = graph.compile()
     logger.info("[GRAPH] Graph compiled successfully")
 
     return compiled
+
+
+# ── Cached Graph ──────────────────────────────────────────────────────────────
+
+_cached_graph = None
+
+def _get_cached_graph():
+    """Return a cached compiled graph, building it once on first call."""
+    global _cached_graph
+    if _cached_graph is None:
+        _cached_graph = build_graph()
+    return _cached_graph
 
 
 # ── Query Runner ──────────────────────────────────────────────────────────────
@@ -285,8 +250,8 @@ def run_query(query: str, verbose: bool = True) -> CRAGState:
     logger.info(f"[GRAPH] New query: '{query}'")
     logger.info(f"{'='*60}")
 
-    # Build the graph
-    graph = build_graph()
+    # Use cached graph (built once, reused for all queries)
+    graph = _get_cached_graph()
 
     # Create initial state
     initial_state = create_initial_state(query)

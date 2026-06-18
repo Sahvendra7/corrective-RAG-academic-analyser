@@ -27,16 +27,11 @@ CHUNK_SIZE    = 512   # Target number of words per chunk
 CHUNK_OVERLAP = 64    # Number of words to overlap between consecutive chunks
 MIN_CHUNK_SIZE = 50   # Discard chunks shorter than this (words)
 
+# Pre-compiled regex for sentence splitting (avoids recompilation per call)
+SENTENCE_PATTERN = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("data/processed/chunking.log"),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 
@@ -93,8 +88,7 @@ def split_into_sentences(text: str) -> list[str]:
     """
     # Split on period/exclamation/question mark followed by space and capital letter
     # This avoids splitting on "e.g." or "et al." or "Fig. 3"
-    sentence_endings = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
-    sentences = sentence_endings.split(text)
+    sentences = SENTENCE_PATTERN.split(text)
 
     # Clean up each sentence
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -161,7 +155,6 @@ def chunk_text(text: str, arxiv_id: str) -> list[dict]:
             overlap_sentences = []
             overlap_word_count = 0
 
-            # Walk backwards through current sentences to build overlap
             # Walk backwards through current sentences to build overlap
             for sent in reversed(current_sentences):
                 sent_words = len(sent.split())

@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import json
+import uuid
 
 st.set_page_config(page_title="CRAG Agent", page_icon="🤖", layout="centered")
 
@@ -10,6 +11,10 @@ st.markdown("Ask a question and watch the LangGraph agent self-correct and reaso
 # Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# Generate a unique session ID per user session (fixes cross-user contamination)
+if "session_id" not in st.session_state:
+    st.session_state.session_id = f"streamlit-{uuid.uuid4().hex[:12]}"
 
 # Display previous chat messages
 for message in st.session_state.messages:
@@ -31,15 +36,18 @@ if prompt := st.chat_input("Ask a machine learning research question..."):
         final_answer = ""
         
         # Connect to your FastAPI server
-        url = "http://localhost:8000/chat/stream"
+        import os
+        api_url = os.getenv("CRAG_API_URL", "http://localhost:8000")
+        url = f"{api_url}/chat/stream"
         payload = {
             "query": prompt, 
-            "thread_id": "streamlit-session-1" # Hardcoded for now
+            "thread_id": st.session_state.session_id
         }
         
         try:
             # stream=True is crucial for reading the Server-Sent Events
-            with requests.post(url, json=payload, stream=True) as response:
+            # timeout=(connect_timeout, read_timeout) prevents indefinite hangs
+            with requests.post(url, json=payload, stream=True, timeout=(5, 120)) as response:
                 response.raise_for_status()
                 
                 # Iterate over the streaming chunks from FastAPI
@@ -76,10 +84,22 @@ if prompt := st.chat_input("Ask a machine learning research question..."):
                                     
                             except json.JSONDecodeError:
                                 continue
-                                
+
         except requests.exceptions.ConnectionError:
             st.error("⚠️ Cannot connect to the API. Is your FastAPI server running on port 8000?")
+        except requests.exceptions.Timeout:
+            st.error("⚠️ Request timed out. The server may be overloaded. Please try again.")
+        except requests.exceptions.HTTPError as e:
+            st.error(f"⚠️ Server error: {e.response.status_code}. Please try again later.")
+        except requests.exceptions.RequestException as e:
+            st.error(f"⚠️ An unexpected error occurred. Please try again.")
             
-        # Append the final generated text to the chat history
-        if final_answer:
-            st.session_state.messages.append({"role": "assistant", "content": final_answer})
+    # Append the final generated text to the chat history
+    if final_answer:
+        st.session_state.messages.append({"role": "assistant", "content": final_answer})
+    else:
+        # Record failed exchanges so they persist in history
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": "⚠️ Failed to generate an answer. Please try again."
+        })

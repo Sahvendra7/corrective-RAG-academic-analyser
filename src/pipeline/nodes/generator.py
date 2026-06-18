@@ -155,10 +155,10 @@ def generate_answer(query: str, context: str, llm) -> str:
         return answer
 
     except Exception as e:
-        logger.error(f"[GENERATOR] Answer generation failed: {e}")
+        logger.error("[GENERATOR] Answer generation failed", exc_info=True)
         return (
-            "I was unable to generate an answer due to an error. "
-            f"Error details: {str(e)}"
+            "I was unable to generate an answer due to an internal error. "
+            "Please try again or rephrase your question."
         )
 
 

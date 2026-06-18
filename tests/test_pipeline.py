@@ -124,8 +124,10 @@ def test_step1_download():
             print_result("PDF downloaded", str(pdf_path))
 
         # Verify file exists and has content
-        assert pdf_path.exists(), "PDF file not found after download"
-        assert pdf_path.stat().st_size > 10_000, "PDF file seems too small"
+        if not pdf_path.exists():
+            raise RuntimeError("PDF file not found after download")
+        if pdf_path.stat().st_size <= 10_000:
+            raise RuntimeError("PDF file seems too small")
         print_result("PDF size", f"{pdf_path.stat().st_size / 1024:.1f} KB")
 
         # Save minimal metadata
@@ -237,6 +239,9 @@ def test_step3_chunk():
         CHUNK_SIZE    = 512
         CHUNK_OVERLAP = 64
         MIN_CHUNK     = 50
+        # NOTE: These values differ from production chunker.py (which uses 256/64/50).
+        # This is intentional — the test uses a larger chunk size for a single paper
+        # to reduce the number of chunks and speed up the test.
 
         # Load text
         txt_path = TEXT_DIR / f"{TEST_ARXIV_ID}.txt"

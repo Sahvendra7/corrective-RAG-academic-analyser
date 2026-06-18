@@ -293,7 +293,12 @@ def web_search_node(state: CRAGState) -> dict:
 
     return {
             "documents": web_documents,          # Appends to the raw log (operator.add)
-            "relevant_documents": web_documents, # Overwrites the empty list left by the grader
+            "relevant_documents": web_documents,  # Overwrites the empty list left by the grader
+            # NOTE: Web search results skip individual LLM grading because:
+            # 1. They are already filtered by Tavily's relevance scoring
+            # 2. Grading would add latency and API cost for results that are
+            #    typically relevant (since they come from a targeted query)
+            # 3. The hallucination checker downstream still verifies groundedness
             "web_search_used": True,
             "source": source,
         }

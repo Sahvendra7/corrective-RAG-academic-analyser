@@ -15,6 +15,7 @@ Uses the free Gemini 1.5 Flash model via langchain-google-genai.
 
 import logging
 import os
+import threading
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -27,8 +28,9 @@ logger = logging.getLogger(__name__)
 
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 
-# ── Singletons ────────────────────────────────────────────────────────────────
+# ── Thread-Safe Singletons ────────────────────────────────────────────────────
 
+_lock = threading.Lock()
 _llm: ChatGoogleGenerativeAI | None = None
 _creative_llm: ChatGoogleGenerativeAI | None = None
 _generator_llm: ChatGoogleGenerativeAI | None = None
@@ -46,7 +48,7 @@ def _get_api_key() -> str:
     return api_key
 
 
-def get_llm(temperature: float = 0.0) -> ChatGoogleGenerativeAI:
+def get_llm() -> ChatGoogleGenerativeAI:
     """
     Return a singleton LLM instance with temperature=0.0.
 
@@ -54,13 +56,15 @@ def get_llm(temperature: float = 0.0) -> ChatGoogleGenerativeAI:
     """
     global _llm
     if _llm is None:
-        api_key = _get_api_key()
-        _llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            temperature=temperature,
-            google_api_key=api_key,
-        )
-        logger.info(f"[LLM_FACTORY] LLM loaded: {GEMINI_MODEL} (temp={temperature})")
+        with _lock:
+            if _llm is None:
+                api_key = _get_api_key()
+                _llm = ChatGoogleGenerativeAI(
+                    model=GEMINI_MODEL,
+                    temperature=0.0,
+                    google_api_key=api_key,
+                )
+                logger.info(f"[LLM_FACTORY] LLM loaded: {GEMINI_MODEL} (temp=0.0)")
     return _llm
 
 
@@ -72,13 +76,15 @@ def get_creative_llm() -> ChatGoogleGenerativeAI:
     """
     global _creative_llm
     if _creative_llm is None:
-        api_key = _get_api_key()
-        _creative_llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            temperature=0.3,
-            google_api_key=api_key,
-        )
-        logger.info(f"[LLM_FACTORY] Creative LLM loaded: {GEMINI_MODEL} (temp=0.3)")
+        with _lock:
+            if _creative_llm is None:
+                api_key = _get_api_key()
+                _creative_llm = ChatGoogleGenerativeAI(
+                    model=GEMINI_MODEL,
+                    temperature=0.3,
+                    google_api_key=api_key,
+                )
+                logger.info(f"[LLM_FACTORY] Creative LLM loaded: {GEMINI_MODEL} (temp=0.3)")
     return _creative_llm
 
 
@@ -90,11 +96,23 @@ def get_generator_llm() -> ChatGoogleGenerativeAI:
     """
     global _generator_llm
     if _generator_llm is None:
-        api_key = _get_api_key()
-        _generator_llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            temperature=0.2,
-            google_api_key=api_key,
-        )
-        logger.info(f"[LLM_FACTORY] Generator LLM loaded: {GEMINI_MODEL} (temp=0.2)")
+        with _lock:
+            if _generator_llm is None:
+                api_key = _get_api_key()
+                _generator_llm = ChatGoogleGenerativeAI(
+                    model=GEMINI_MODEL,
+                    temperature=0.2,
+                    google_api_key=api_key,
+                )
+                logger.info(f"[LLM_FACTORY] Generator LLM loaded: {GEMINI_MODEL} (temp=0.2)")
     return _generator_llm
+
+
+def reset_llms():
+    """Reset all singleton LLM instances. Useful for testing."""
+    global _llm, _creative_llm, _generator_llm
+    with _lock:
+        _llm = None
+        _creative_llm = None
+        _generator_llm = None
+        logger.info("[LLM_FACTORY] All LLM instances reset")

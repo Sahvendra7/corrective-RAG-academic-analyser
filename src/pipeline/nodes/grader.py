@@ -42,6 +42,17 @@ from src.pipeline.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
+# Cached structured LLM for grading (avoids re-creating per document)
+_structured_grader_llm = None
+
+def _get_structured_grader_llm():
+    """Return cached structured LLM for document grading."""
+    global _structured_grader_llm
+    if _structured_grader_llm is None:
+        llm = get_llm()
+        _structured_grader_llm = llm.with_structured_output(DocumentGrade)
+    return _structured_grader_llm
+
 # ── Pydantic Schema for Structured Output ─────────────────────────────────────
 
 class DocumentGrade(BaseModel):
@@ -97,8 +108,8 @@ def grade_document(query: str, doc: Document, llm) -> dict:
         ),
     ]
 
-    # Bind the Pydantic schema to the LLM
-    structured_llm = llm.with_structured_output(DocumentGrade)
+    # Use cached structured LLM (avoids re-creating wrapper per document)
+    structured_llm = _get_structured_grader_llm()
 
     try:
         # LLM returns the Pydantic object directly
@@ -169,7 +180,21 @@ def grader_node(state: CRAGState) -> dict:
     LangGraph node: grade retrieved documents for relevance.
     """
     query     = state["query"]
-    documents = state.get("documents", [])
+    all_documents = state.get("documents", [])
+    retry_count = state.get("retry_count", 0)
+
+    # On retries, documents accumulate due to operator.add in state.py.
+    # Only grade the LATEST batch (last TOP_K docs) to avoid re-grading
+    # previously rejected documents and wasting LLM API calls.
+    if retry_count > 0 and len(all_documents) > 2:
+        # Only grade the latest 2 docs (TOP_K=2 in retriever.py)
+        documents = all_documents[-2:]
+        logger.info(
+            f"[GRADER] Retry {retry_count}: grading latest {len(documents)} of "
+            f"{len(all_documents)} total accumulated documents"
+        )
+    else:
+        documents = all_documents
 
     logger.info(f"[GRADER] Grading {len(documents)} documents for query: '{query[:60]}'")
 

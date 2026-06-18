@@ -153,11 +153,11 @@ def check_hallucination(
         }
 
     except Exception as e:
-        logger.error(f"[HALLUCINATION] Check failed with error: {e}")
+        logger.error(f"[HALLUCINATION] Check failed with error: {e}", exc_info=True)
         return {
-            "hallucination": False, 
-            "reasoning": f"Check failed — error: {str(e)}",
-            "unsupported_claims": [],
+            "hallucination": True,  # Fail-closed: assume hallucinated if check fails
+            "reasoning": "Hallucination check failed due to an internal error. Marking as potentially hallucinated for safety.",
+            "unsupported_claims": ["Unable to verify — hallucination check encountered an error"],
         }
 
 
@@ -224,4 +224,45 @@ def hallucination_node(state: CRAGState) -> dict:
     }
 
 
-# ... [Test Block Remains Identical, just update test_state to use relevant_documents] ...
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    test_state: CRAGState = {
+        "query": "How does Corrective RAG decide when to use web search?",
+        "rewritten_query": "",
+        "documents": [],
+        "relevant_documents": [
+            {
+                "chunk_id": "2401.15884_chunk_0",
+                "arxiv_id": "2401.15884",
+                "text": (
+                    "Corrective Retrieval Augmented Generation (CRAG) introduces "
+                    "a lightweight retrieval evaluator to assess the quality of "
+                    "retrieved documents. When documents are graded as incorrect, "
+                    "CRAG triggers a web search via external APIs."
+                ),
+                "score": 0.93,
+                "title": "Corrective Retrieval Augmented Generation",
+                "authors": ["Shi-Qi Yan", "Jia-Chen Gu"],
+                "published": "2024-01-29",
+                "url": "http://arxiv.org/abs/2401.15884",
+                "abstract": "CRAG paper abstract",
+                "grade": "relevant",
+                "source": "faiss",
+            }
+        ],
+        "grade": "relevant",
+        "document_grades": [],
+        "generation": "CRAG uses a retrieval evaluator to assess document quality. When documents are irrelevant, it triggers web search.",
+        "hallucination": False,
+        "hallucination_reasoning": "",
+        "retry_count": 0,
+        "web_search_used": False,
+        "source": "faiss",
+        "error": "",
+    }
+
+    print("\nRunning hallucination node test...")
+    result = hallucination_node(test_state)
+    print(f"Hallucination: {result['hallucination']}")
+    print(f"Reasoning: {result['hallucination_reasoning']}")
