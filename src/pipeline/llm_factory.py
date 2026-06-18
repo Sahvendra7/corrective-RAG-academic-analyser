@@ -13,6 +13,7 @@ temperature settings for use across all pipeline nodes:
 Uses the free Gemini 1.5 Flash model via langchain-google-genai.
 """
 
+
 import logging
 import os
 
@@ -25,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 # ── Model Config ──────────────────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+API_TIMEOUT = 60.0  # Hard network timeout in seconds
+MAX_RETRIES = 2     # Stop trying after 2 failed network requests
 
 # ── Singletons ────────────────────────────────────────────────────────────────
 
@@ -59,6 +62,8 @@ def get_llm(temperature: float = 0.0) -> ChatGoogleGenerativeAI:
             model=GEMINI_MODEL,
             temperature=temperature,
             google_api_key=api_key,
+            timeout=API_TIMEOUT,
+            max_retries=MAX_RETRIES,
         )
         logger.info(f"[LLM_FACTORY] LLM loaded: {GEMINI_MODEL} (temp={temperature})")
     return _llm
@@ -77,6 +82,8 @@ def get_creative_llm() -> ChatGoogleGenerativeAI:
             model=GEMINI_MODEL,
             temperature=0.3,
             google_api_key=api_key,
+            timeout=API_TIMEOUT,
+            max_retries=MAX_RETRIES,
         )
         logger.info(f"[LLM_FACTORY] Creative LLM loaded: {GEMINI_MODEL} (temp=0.3)")
     return _creative_llm
@@ -95,6 +102,8 @@ def get_generator_llm() -> ChatGoogleGenerativeAI:
             model=GEMINI_MODEL,
             temperature=0.2,
             google_api_key=api_key,
+            timeout=API_TIMEOUT,
+            max_retries=MAX_RETRIES,
         )
         logger.info(f"[LLM_FACTORY] Generator LLM loaded: {GEMINI_MODEL} (temp=0.2)")
     return _generator_llm

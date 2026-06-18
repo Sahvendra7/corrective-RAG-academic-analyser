@@ -272,7 +272,7 @@ class FAISSStore:
                 break
 
         logger.info(
-            f"Query: '{query[:60]}' → {len(results)} results "
+            f"Query: '{query[:60]}' - {len(results)} results "
             f"(filters: year={year_filter}, author={author_filter})"
         )
 

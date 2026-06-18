@@ -22,6 +22,7 @@ This overall grade is what graph.py uses to decide the next node.
 import logging
 import sys
 from pathlib import Path
+import time
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -66,6 +67,8 @@ Grade each document as exactly one of:
 - "relevant"   : The document directly addresses, answers, or strongly supports the question
 - "ambiguous"  : The document is related to the topic but does not directly answer the question
 - "irrelevant" : The document has no meaningful connection to the question
+You MUST respond with ONLY a valid JSON object in this exact format:
+{"grade": "relevant", "reasoning": "brief reason"}
 
 Be strict. A document about a related topic but not the specific question is "ambiguous", not "relevant"."""
 
@@ -111,7 +114,7 @@ def grade_document(query: str, doc: Document, llm) -> dict:
             logger.warning(f"[GRADER] Invalid grade '{grade}' for {chunk_id} — defaulting to ambiguous")
             grade = GRADE_AMBIGUOUS
 
-        logger.info(f"[GRADER] {chunk_id} → {grade.upper()} | {result.reasoning[:80]}")
+        logger.info(f"[GRADER] {chunk_id} - {grade.upper()} | {result.reasoning[:80]}")
 
         return {
             "chunk_id"  : chunk_id,
@@ -190,7 +193,7 @@ def grader_node(state: CRAGState) -> dict:
     for doc in documents:
         grade_result = grade_document(query, doc, llm)
         document_grades.append(grade_result)
-        
+
         # Option A Filter Logic: Only keep documents that passed the grade.
         # We include both "relevant" and "ambiguous" here as potential context, 
         # dropping the purely "irrelevant" noise.
@@ -266,6 +269,6 @@ if __name__ == "__main__":
     
     print(f"\nPer-document grades:")
     for g in result["document_grades"]:
-        print(f"  {g['chunk_id']} → {g['grade'].upper()}")
+        print(f"  {g['chunk_id']} - {g['grade'].upper()}")
         print(f"  Reasoning: {g['reasoning']}")
         print()

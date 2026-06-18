@@ -111,11 +111,11 @@ def route_after_grader(state: CRAGState) -> str:
         return NODE_GENERATOR
 
     if grade == GRADE_RELEVANT:
-        logger.info("[GRAPH] Grade=RELEVANT → routing to generator")
+        logger.info("[GRAPH] Grade=RELEVANT - routing to generator")
         return NODE_GENERATOR
 
     elif grade == GRADE_IRRELEVANT:
-        logger.info("[GRAPH] Grade=IRRELEVANT → routing to web_search")
+        logger.info("[GRAPH] Grade=IRRELEVANT - routing to web_search")
         return NODE_WEB_SEARCH
 
     elif grade == GRADE_AMBIGUOUS:
@@ -134,7 +134,7 @@ def route_after_grader(state: CRAGState) -> str:
 
     else:
         # Unknown grade — fall back safely to web search
-        logger.warning(f"[GRAPH] Unknown grade '{grade}' → defaulting to web_search")
+        logger.warning(f"[GRAPH] Unknown grade '{grade}' - defaulting to web_search")
         return NODE_WEB_SEARCH
 
 
@@ -369,7 +369,7 @@ START
 
 Nodes   : retriever, grader, rewriter, web_search, generator, hallucination
 Edges   : 7 total (4 fixed, 2 conditional)
-Max path: START → retriever → grader → rewriter → retriever (×3) → web_search → generator → hallucination → END
+Max path: START -> retriever -> grader -> rewriter -> retriever (x3) -> web_search -> generator -> hallucination -> END
 """)
 
 

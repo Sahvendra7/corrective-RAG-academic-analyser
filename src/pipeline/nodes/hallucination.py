@@ -62,7 +62,16 @@ A hallucination is any claim in the answer that:
 An answer is NOT hallucinated if:
 - All specific claims can be traced back to the source documents
 - General statements are reasonable summaries of the documents
-- The answer acknowledges uncertainty where documents are unclear"""
+- The answer acknowledges uncertainty where documents are unclear
+
+You MUST respond with ONLY a valid JSON object in this exact format:
+{"grade": "grounded", "reasoning": "brief reason"}
+or
+{"grade": "not_grounded", "reasoning": "brief reason"}
+
+No markdown. No tables. No extra text. Just the JSON object.
+
+"""
 
 
 HALLUCINATION_HUMAN_PROMPT = """Original Question: {query}
