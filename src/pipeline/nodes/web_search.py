@@ -29,12 +29,10 @@ import logging
 import os
 import sys
 from pathlib import Path
-
-from dotenv import load_dotenv
 from tavily import TavilyClient
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[3]))
+import src.config as config
+
 
 from src.pipeline.state import (
     CRAGState,
@@ -43,8 +41,6 @@ from src.pipeline.state import (
     SOURCE_WEB,
     SOURCE_MIXED,
 )
-
-load_dotenv()
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

@@ -16,11 +16,12 @@ import logging
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
+import src.config as config
 
-RAW_DIR = Path("data/raw")
-TEXT_DIR = Path("data/processed/texts")
-META_FILE = Path("data/processed/metadata.json")
-PARSE_LOG = Path("data/processed/parse_log.json")
+RAW_DIR = config.RAW_DIR
+TEXT_DIR = config.TEXT_DIR
+META_FILE = config.META_FILE
+PARSE_LOG = config.PROCESSED_DIR / "parse_log.json"
 
 MIN_TEXT_LENGTH = 500  # Skip papers with less than 500 chars (likely scanned/empty)
 
@@ -37,34 +38,6 @@ def setup_dirs():
     logger.info(f"Text output directory ready: {TEXT_DIR}")
 
 
-def load_metadata() -> dict:
-    """Load paper metadata from JSON file."""
-    if not META_FILE.exists():
-        logger.error(f"Metadata file not found: {META_FILE}")
-        logger.error("Run arxiv_downloader.py first.")
-        return {}
-    with open(META_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_metadata(metadata: dict):
-    """Save updated metadata back to JSON file."""
-    with open(META_FILE, "w") as f:
-        json.dump(metadata, f, indent=2)
-
-
-def load_parse_log() -> dict:
-    """Load parse log to track which papers have already been parsed."""
-    if PARSE_LOG.exists():
-        with open(PARSE_LOG, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_parse_log(parse_log: dict):
-    """Save parse log to disk."""
-    with open(PARSE_LOG, "w") as f:
-        json.dump(parse_log, f, indent=2)
 
 
 # ── Text Extraction ───────────────────────────────────────────────────────────

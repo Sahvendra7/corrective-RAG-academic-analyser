@@ -21,14 +21,12 @@ from sentence_transformers import SentenceTransformer
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-CHUNK_DIR       = Path("data/processed/chunks")
-EMBEDDINGS_DIR  = Path("data/embeddings")
-META_FILE       = Path("data/processed/metadata.json")
+import src.config as config
 
-# The embedding model to use
-# all-MiniLM-L6-v2  → faster, smaller, good quality  (384 dimensions)
-# all-mpnet-base-v2 → slower, larger, better quality (768 dimensions)
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+CHUNK_DIR       = config.CHUNK_DIR
+EMBEDDINGS_DIR  = config.EMBEDDINGS_DIR
+META_FILE       = config.META_FILE
+EMBEDDING_MODEL = config.EMBEDDING_MODEL
 
 BATCH_SIZE = 64  # Number of chunks to embed at once — tune down if RAM issues
 

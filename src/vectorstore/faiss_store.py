@@ -24,11 +24,13 @@ from sentence_transformers import SentenceTransformer
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-EMBEDDINGS_DIR  = Path("data/embeddings")
+import src.config as config
+
+EMBEDDINGS_DIR  = config.EMBEDDINGS_DIR
 INDEX_PATH      = EMBEDDINGS_DIR / "faiss.index"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = config.EMBEDDING_MODEL
 EMBEDDING_DIM   = 384   # Must match the model used in embeddings.py
-TOP_K_DEFAULT   = 5     # Default number of results to return
+TOP_K_DEFAULT   = config.TOP_K     # Default number of results to return
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

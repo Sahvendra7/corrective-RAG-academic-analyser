@@ -4,13 +4,14 @@ import logging
 from pathlib import Path
 import asyncio
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi import Request
 
 # Import your LangGraph pipeline
 from src.pipeline.graph import build_graph
@@ -35,6 +36,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Initialize Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Enable CORS for frontend integration
 # NOTE: allow_credentials=True is incompatible with allow_origins=["*"]
 # In production, replace "*" with your actual frontend domain(s)
@@ -53,16 +59,16 @@ class ChatRequest(BaseModel):
     force_web_search: bool = Field(default=False)
 
 # --- Streaming Generator ---
-async def generate_stream(request: ChatRequest):
+async def generate_stream(body: ChatRequest):
     """
     Asynchronous generator that yields Server-Sent Events (SSE).
     We use LangGraph's astream() to yield node updates and tokens.
     """
     # Create the initial state dictionary
-    initial_state = create_initial_state(request.query)
+    initial_state = create_initial_state(body.query)
     
-    # Configuration for session state tracking
-    config = {"configurable": {"thread_id": request.thread_id}}
+    # Configure the thread ID for memory persistence
+    config = {"configurable": {"thread_id": body.thread_id}}
     
     try:
         # We use stream_mode="updates" to track which node is executing
@@ -97,7 +103,7 @@ async def generate_stream(request: ChatRequest):
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
 
     except asyncio.CancelledError:
-        logger.warning(f"Client disconnected. Halting generation for thread {request.thread_id}.")
+        logger.warning(f"Client disconnected. Halting generation for thread {body.thread_id}.")
         # Gracefully handle the disconnect to save LLM tokens
         raise
     except Exception as e:
@@ -107,7 +113,8 @@ async def generate_stream(request: ChatRequest):
 
 # --- Endpoints ---
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat_stream(request: Request, body: ChatRequest):
     """
     Streaming endpoint that returns Server-Sent Events.
     """
@@ -115,7 +122,7 @@ async def chat_stream(request: ChatRequest):
         raise HTTPException(status_code=503, detail="Pipeline not initialized. Check server logs.")
     # The X-Accel-Buffering header prevents Nginx from buffering the stream in production
     return StreamingResponse(
-        generate_stream(request), 
+        generate_stream(body), 
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no"}
     )

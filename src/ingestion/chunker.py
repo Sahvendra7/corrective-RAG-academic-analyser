@@ -18,17 +18,21 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-TEXT_DIR   = Path("data/processed/texts")
-CHUNK_DIR  = Path("data/processed/chunks")
-META_FILE  = Path("data/processed/metadata.json")
-CHUNK_LOG  = Path("data/processed/chunk_log.json")
+import src.config as config
 
-CHUNK_SIZE    = 512   # Target number of words per chunk
-CHUNK_OVERLAP = 64    # Number of words to overlap between consecutive chunks
-MIN_CHUNK_SIZE = 50   # Discard chunks shorter than this (words)
+TEXT_DIR   = config.TEXT_DIR
+CHUNK_DIR  = config.CHUNK_DIR
+META_FILE  = config.META_FILE
+CHUNK_LOG  = config.PROCESSED_DIR / "chunk_log.json"
 
-# Pre-compiled regex for sentence splitting (avoids recompilation per call)
-SENTENCE_PATTERN = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
+CHUNK_SIZE    = config.CHUNK_SIZE
+CHUNK_OVERLAP = config.CHUNK_OVERLAP
+MIN_CHUNK_SIZE = config.MIN_CHUNK_SIZE
+
+# Improved regex for sentence splitting (handles decimals, common abbreviations)
+# Looks for sentence endings (.!?) followed by space and a capital letter,
+# but tries to ignore common cases like e.g., i.e., et al., etc.
+SENTENCE_PATTERN = re.compile(r'(?<!\b(?:e\.g|i\.e|et\sal|vs|etc|cf|Dr|Mr|Mrs|Ms|Prof|Inc|Ltd))\.\s+(?=[A-Z])|(?<=[!?])\s+(?=[A-Z])')
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

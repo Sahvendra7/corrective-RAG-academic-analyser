@@ -26,12 +26,12 @@ import logging
 import sys
 import time
 from pathlib import Path
+import src.config as config
 
 # ── Setup paths ───────────────────────────────────────────────────────────────
 
-# Add project root to path so all imports work
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
+# Allow imports from project root
+PROJECT_ROOT = config.PROJECT_ROOT
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -48,12 +48,12 @@ TEST_ARXIV_ID = "2401.15884"
 TEST_QUERY    = "How does Corrective RAG handle irrelevant retrieved documents?"
 
 # Directories
-DATA_DIR       = PROJECT_ROOT / "data"
-RAW_DIR        = DATA_DIR / "raw"
-PROCESSED_DIR  = DATA_DIR / "processed"
-TEXT_DIR       = PROCESSED_DIR / "texts"
-CHUNK_DIR      = PROCESSED_DIR / "chunks"
-EMBEDDINGS_DIR = DATA_DIR / "embeddings"
+DATA_DIR       = config.DATA_DIR
+RAW_DIR        = config.RAW_DIR
+PROCESSED_DIR  = config.PROCESSED_DIR
+TEXT_DIR       = config.TEXT_DIR
+CHUNK_DIR      = config.CHUNK_DIR
+EMBEDDINGS_DIR = config.EMBEDDINGS_DIR
 META_FILE      = PROCESSED_DIR / "metadata.json"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -73,11 +73,13 @@ def print_separator():
     print(f"  {'─'*56}")
 
 
-def ensure_dirs():
-    """Create all required directories."""
+import pytest
+
+@pytest.fixture(autouse=True)
+def setup_test_dirs():
+    """Create all required directories before each test."""
     for d in [RAW_DIR, TEXT_DIR, CHUNK_DIR, EMBEDDINGS_DIR]:
         d.mkdir(parents=True, exist_ok=True)
-
 
 # ── Step 1: Locate or Download Single Paper ───────────────────────────────────
 
@@ -236,9 +238,9 @@ def test_step3_chunk():
     try:
         import re
 
-        CHUNK_SIZE    = 512
-        CHUNK_OVERLAP = 64
-        MIN_CHUNK     = 50
+        CHUNK_SIZE    = config.CHUNK_SIZE * 2
+        CHUNK_OVERLAP = config.CHUNK_OVERLAP
+        MIN_CHUNK     = config.MIN_CHUNK_SIZE
         # NOTE: These values differ from production chunker.py (which uses 256/64/50).
         # This is intentional — the test uses a larger chunk size for a single paper
         # to reduce the number of chunks and speed up the test.
@@ -527,11 +529,7 @@ def test_step6_pipeline():
     print_header("STEP 6: Full CRAG Pipeline (requires Google/Tavily API keys)")
 
     import os
-    from dotenv import load_dotenv
-    
-    # Load from exact path
-    env_path = PROJECT_ROOT / ".env"
-    load_dotenv(dotenv_path=env_path, override=True)
+    import src.config as config
 
     # 1. Check for your exact variable name from the .env file
     gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -587,60 +585,7 @@ def test_step6_pipeline():
         return False
 
 
-# ── Main Test Runner ──────────────────────────────────────────────────────────
+# ── Pytest Runner ─────────────────────────────────────────────────────────────
 
-def main():
-    print(f"\n{'#'*60}")
-    print(f"#  CRAG Pipeline — Single Paper Test")
-    print(f"#  Paper: arXiv:{TEST_ARXIV_ID} (CRAG paper)")
-    print(f"#{'#'*60}")
-
-    ensure_dirs()
-
-    results = {}
-
-    # Run each step — stop at first failure
-    steps = [
-        ("Step 1: Download",    test_step1_download),
-        ("Step 2: Parse PDF",   test_step2_parse),
-        ("Step 3: Chunk",       test_step3_chunk),
-        ("Step 4: Embeddings",  test_step4_embeddings),
-        ("Step 5: FAISS",       test_step5_faiss),
-        ("Step 6: Pipeline",    test_step6_pipeline),
-    ]
-
-    for step_name, step_fn in steps:
-        result = step_fn()
-        results[step_name] = result
-
-        # Stop if a critical step fails (but not Step 6 which is optional)
-        if result is False and step_name != "Step 6: Pipeline":
-            print(f"\n  ⛔ Stopping at {step_name} — fix errors before continuing")
-            break
-
-    # Final summary
-    print_header("TEST SUMMARY")
-    all_passed = True
-    for step, result in results.items():
-        if result is True:
-            print(f"  ✅  {step}")
-        elif result is None:
-            print(f"  ⚠️   {step} — SKIPPED (missing API key)")
-        else:
-            print(f"  ❌  {step} — FAILED")
-            all_passed = False
-
-    print()
-    if all_passed:
-        print("  🎉 All steps passed! Phase 2 is fully operational.")
-        print()
-        print("  Next steps:")
-        print("    1. Proceed to Phase 3 (Evaluation & FastAPI)")
-    else:
-        print("  ⚠️  Some steps failed — check errors above before proceeding.")
-
-    print(f"\n{'='*60}\n")
-
-
-if __name__ == "__main__":
-    main()
+# To run this script:
+#   pytest tests/test_pipeline.py -v -s

@@ -41,8 +41,6 @@ from pathlib import Path
 
 from langgraph.graph import StateGraph, START, END
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from src.pipeline.state import (
     CRAGState,

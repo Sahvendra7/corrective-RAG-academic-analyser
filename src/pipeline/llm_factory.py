@@ -16,17 +16,15 @@ Uses the free Gemini 1.5 Flash model via langchain-google-genai.
 import logging
 import os
 import threading
-
-from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-load_dotenv()
+import src.config as config
 
 logger = logging.getLogger(__name__)
 
 # ── Model Config ──────────────────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_MODEL = config.GEMINI_MODEL
 
 # ── Thread-Safe Singletons ────────────────────────────────────────────────────
 

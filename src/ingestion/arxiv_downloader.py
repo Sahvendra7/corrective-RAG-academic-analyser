@@ -18,9 +18,10 @@ import urllib.request
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
+import src.config as config
 
-RAW_DIR = Path("data/raw")
-META_FILE = Path("data/processed/metadata.json")
+RAW_DIR = config.RAW_DIR
+META_FILE = config.META_FILE
 
 SEARCH_QUERIES = [
     "large language models",
@@ -46,27 +47,13 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+from src.utils.metadata_utils import load_metadata, save_metadata
+
 def setup_dirs():
     """Create required directories if they don't exist."""
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     META_FILE.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Directories ready: {RAW_DIR}, {META_FILE.parent}")
-
-
-def load_existing_metadata() -> dict:
-    """Load already-downloaded paper metadata to avoid re-downloading."""
-    if META_FILE.exists():
-        with open(META_FILE, "r") as f:
-            data = json.load(f)
-        logger.info(f"Loaded {len(data)} existing metadata entries.")
-        return data
-    return {}
-
-
-def save_metadata(metadata: dict):
-    """Save metadata dict to JSON file."""
-    with open(META_FILE, "w") as f:
-        json.dump(metadata, f, indent=2)
 
 
 def sanitize_filename(title: str) -> str:

@@ -25,8 +25,6 @@ import logging
 import sys
 from pathlib import Path
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 from src.pipeline.state import (
     CRAGState,

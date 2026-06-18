@@ -35,8 +35,6 @@ from pathlib import Path
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 from src.pipeline.state import CRAGState
 from src.pipeline.llm_factory import get_creative_llm

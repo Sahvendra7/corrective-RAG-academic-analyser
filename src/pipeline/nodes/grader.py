@@ -26,8 +26,6 @@ from pathlib import Path
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 from src.pipeline.state import (
     CRAGState,

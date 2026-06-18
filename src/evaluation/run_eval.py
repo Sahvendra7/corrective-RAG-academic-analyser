@@ -3,9 +3,6 @@ import sys
 import pandas as pd
 from pathlib import Path
 
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parents[2]))
-
 from src.pipeline.graph import build_graph
 from src.pipeline.state import create_initial_state
 from src.pipeline.llm_factory import get_llm
