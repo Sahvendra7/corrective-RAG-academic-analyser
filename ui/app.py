@@ -71,7 +71,7 @@ if prompt := st.chat_input("Ask a machine learning research question..."):
                                     status_text.caption(f"⚙️ **Agent is thinking...** currently running `[ {node} ]` node")
                                     
                                     # If we hit the generation or hallucination node, display the text
-                                    if node in ["generator", "hallucination"]:
+                                    if node in ["generator", "hallucination_checker"]:
                                         if "generation" in updates:
                                             final_answer = updates["generation"]
                                             answer_placeholder.markdown(final_answer)

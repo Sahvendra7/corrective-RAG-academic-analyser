@@ -68,7 +68,7 @@ NODE_GRADER        = "grader"
 NODE_REWRITER      = "rewriter"
 NODE_WEB_SEARCH    = "web_search"
 NODE_GENERATOR     = "generator"
-NODE_HALLUCINATION = "hallucination"
+NODE_HALLUCINATION = "hallucination_checker"
 
 
 # ── Conditional Routing Functions ─────────────────────────────────────────────
