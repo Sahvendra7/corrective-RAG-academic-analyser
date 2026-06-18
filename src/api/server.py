@@ -77,14 +77,15 @@ async def generate_stream(body: ChatRequest):
                 
                 # We strip out complex objects (like LangChain Documents) to avoid JSON serialization errors
                 safe_state = {}
-                if "grade" in node_state:
-                    safe_state["grade"] = node_state["grade"]
-                if "source" in node_state:
-                    safe_state["source"] = node_state["source"]
-                if "generation" in node_state:
-                    safe_state["generation"] = node_state["generation"]
-                if "hallucination" in node_state:
-                    safe_state["hallucination"] = node_state["hallucination"]
+                if isinstance(node_state, dict):
+                    if "grade" in node_state:
+                        safe_state["grade"] = node_state["grade"]
+                    if "source" in node_state:
+                        safe_state["source"] = node_state["source"]
+                    if "generation" in node_state:
+                        safe_state["generation"] = node_state["generation"]
+                    if "hallucination" in node_state:
+                        safe_state["hallucination"] = node_state["hallucination"]
 
                 # Construct the event payload
                 event_data = {

@@ -9,8 +9,6 @@ in the retrieved documents or contains fabricated claims.
 """
 
 import logging
-import sys
-from pathlib import Path
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field

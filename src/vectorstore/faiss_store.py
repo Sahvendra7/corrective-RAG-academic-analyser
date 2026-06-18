@@ -158,13 +158,19 @@ class FAISSStore:
         ids_path = EMBEDDINGS_DIR / "faiss_chunk_ids.json"
         if not ids_path.exists():
             ids_path = EMBEDDINGS_DIR / "chunk_ids.json"
-        with open(ids_path, "r") as f:
-            self.chunk_ids = json.load(f)
+        if ids_path.exists():
+            with open(ids_path, "r") as f:
+                self.chunk_ids = json.load(f)
+        else:
+            self.chunk_ids = []
 
         # Load registry
         registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
-        with open(registry_path, "r") as f:
-            self.registry = json.load(f)
+        if registry_path.exists():
+            with open(registry_path, "r") as f:
+                self.registry = json.load(f)
+        else:
+            self.registry = {}
 
         logger.info(f"Loaded {len(self.chunk_ids)} chunk IDs")
         logger.info(f"Loaded {len(self.registry)} registry entries")
@@ -221,6 +227,9 @@ class FAISSStore:
         # so we have room to filter by metadata
         fetch_k = top_k * 10 if (year_filter or author_filter) else top_k
         fetch_k = min(fetch_k, self.index.ntotal)  # Can't fetch more than we have
+        
+        if fetch_k == 0:
+            return []
 
         scores, indices = self.index.search(query_embedding, fetch_k)
 

@@ -27,8 +27,7 @@ Flow:
 
 import logging
 import os
-import sys
-from pathlib import Path
+import threading
 from tavily import TavilyClient
 
 import src.config as config
@@ -55,18 +54,21 @@ MAX_CONTENT_LEN  = 1500  # Truncate web content to this many chars per result
 # ── Tavily Client Singleton ───────────────────────────────────────────────────
 
 _tavily: TavilyClient | None = None
+_tavily_lock = threading.Lock()
 
 def get_tavily() -> TavilyClient:
     """Return singleton Tavily client."""
     global _tavily
     if _tavily is None:
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "TAVILY_API_KEY not found in environment. Check your .env file."
-            )
-        _tavily = TavilyClient(api_key=api_key)
-        logger.info("[WEB_SEARCH] Tavily client initialised")
+        with _tavily_lock:
+            if _tavily is None:
+                api_key = os.getenv("TAVILY_API_KEY")
+                if not api_key:
+                    raise ValueError(
+                        "TAVILY_API_KEY not found in environment. Check your .env file."
+                    )
+                _tavily = TavilyClient(api_key=api_key)
+                logger.info("[WEB_SEARCH] Tavily client initialised")
     return _tavily
 
 
@@ -266,21 +268,23 @@ def web_search_node(state: CRAGState) -> dict:
     # Run Tavily search
     web_documents = search_web(query)
 
+    existing_docs = state.get("documents", [])
+    
     if not web_documents:
         logger.warning(
             "[WEB_SEARCH] No web results found — "
             "pipeline will attempt generation with existing docs"
         )
         return {
-            "documents"      : [],
-            "web_search_used": True,
-            "source"         : SOURCE_WEB,
-            "error"          : "Web search returned no results",
+            "documents"         : existing_docs,
+            "relevant_documents": state.get("relevant_documents", []),
+            "web_search_used"   : True,
+            "source"            : SOURCE_WEB,
+            "error"             : "Web search returned no results",
         }
 
     # Determine source label
-    existing_docs = state.get("documents", [])
-    source        = determine_source(existing_docs, web_documents)
+    source = determine_source(existing_docs, web_documents)
 
     logger.info(
         f"[WEB_SEARCH] Complete — "
@@ -288,8 +292,8 @@ def web_search_node(state: CRAGState) -> dict:
     )
 
     return {
-            "documents": web_documents,          # Appends to the raw log (operator.add)
-            "relevant_documents": web_documents,  # Overwrites the empty list left by the grader
+            "documents": existing_docs + web_documents,
+            "relevant_documents": state.get("relevant_documents", []) + web_documents,
             # NOTE: Web search results skip individual LLM grading because:
             # 1. They are already filtered by Tavily's relevance scoring
             # 2. Grading would add latency and API cost for results that are

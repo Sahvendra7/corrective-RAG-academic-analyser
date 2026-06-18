@@ -16,8 +16,6 @@ right before the hallucination checker.
 """
 
 import logging
-import sys
-from pathlib import Path
 
 from langchain_core.messages import SystemMessage, HumanMessage
 

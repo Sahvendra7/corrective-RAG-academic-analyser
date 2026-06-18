@@ -74,12 +74,12 @@ def print_separator():
 
 
 import pytest
+from src.config import setup_dirs
 
 @pytest.fixture(autouse=True)
-def setup_test_dirs():
+def init_test_dirs():
     """Create all required directories before each test."""
-    for d in [RAW_DIR, TEXT_DIR, CHUNK_DIR, EMBEDDINGS_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
+    setup_dirs()
 
 # ── Step 1: Locate or Download Single Paper ───────────────────────────────────
 

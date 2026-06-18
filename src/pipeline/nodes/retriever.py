@@ -22,8 +22,7 @@ Flow:
 """
 
 import logging
-import sys
-from pathlib import Path
+import threading
 
 
 from src.pipeline.state import (
@@ -47,6 +46,7 @@ TOP_K = 2   # Number of chunks to retrieve per query
 # reloaded on every node call — loading takes a few seconds.
 
 _store: FAISSStore | None = None
+_store_lock = threading.Lock()
 
 def get_store() -> FAISSStore:
     """
@@ -55,8 +55,10 @@ def get_store() -> FAISSStore:
     """
     global _store
     if _store is None:
-        logger.info("Loading FAISS store (first call)...")
-        _store = FAISSStore(load_existing=True)
+        with _store_lock:
+            if _store is None:
+                logger.info("Loading FAISS store (first call)...")
+                _store = FAISSStore(load_existing=True)
     return _store
 
 
@@ -92,10 +94,10 @@ def retriever_node(state: CRAGState) -> dict:
     logger.info(f"[RETRIEVER] Query: '{query[:80]}'")
 
     # Guard against empty query
-    if not query.strip():
-        logger.error("[RETRIEVER] Empty query received — cannot search")
+    if not query:
+        logger.warning("[RETRIEVER] Empty query provided")
         return {
-            "documents": [],
+            "documents": state.get("documents", []),
             "source": SOURCE_FAISS,
             "error": "Empty query received by retriever",
         }
@@ -109,7 +111,7 @@ def retriever_node(state: CRAGState) -> dict:
         if not raw_results:
             logger.warning("[RETRIEVER] No results returned from FAISS")
             return {
-                "documents": [],
+                "documents": state.get("documents", []),
                 "source": SOURCE_FAISS,
             }
 
@@ -133,22 +135,17 @@ def retriever_node(state: CRAGState) -> dict:
             }
             documents.append(doc)
 
-        logger.info(f"[RETRIEVER] Retrieved {len(documents)} documents")
-        for i, doc in enumerate(documents):
-            logger.info(
-                f"  [{i+1}] score={doc['score']:.4f} | "
-                f"{doc['title'][:50]} | chunk {doc['chunk_id']}"
-            )
-
+        logger.info(f"[RETRIEVER] Found {len(documents)} context chunks")
+        
         return {
-            "documents" : documents,
-            "source"    : SOURCE_FAISS,
+            "documents": state.get("documents", []) + documents,
+            "source"   : SOURCE_FAISS,
         }
 
     except Exception as e:
         logger.error(f"[RETRIEVER] Error during FAISS search: {e}")
         return {
-            "documents" : [],
+            "documents" : state.get("documents", []),
             "source"    : SOURCE_FAISS,
             "error"     : f"Retriever error: {str(e)}",
         }

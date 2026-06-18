@@ -15,6 +15,7 @@ import json
 import time
 import logging
 import urllib.request
+import requests
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
     client = arxiv.Client(
         page_size=50,
         delay_seconds=3,
-        num_retries=3,
+        retries=3,
     )
 
     total_downloaded = 0
@@ -105,9 +106,9 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
             if total_downloaded >= MAX_TOTAL_PAPERS:
                 break
 
-            paper_id = result.entry_id.split("/")[-1]  # e.g. "2401.15884v2"
-            arxiv_id = paper_id.split("v")[0]           # e.g. "2401.15884"
-            # Sanitize pre-2007 IDs that contain '/' (e.g. "hep-th/9901001")
+            paper_id = result.entry_id.split("/abs/")[-1]  # e.g. "2401.15884v2" or "quant-ph/0412125v1"
+            arxiv_id = paper_id.split("v")[0]              # e.g. "2401.15884" or "quant-ph/0412125"
+            # Sanitize pre-2007 IDs that contain '/' (e.g. "quant-ph/0412125")
             arxiv_id = arxiv_id.replace("/", "_")
 
             # Skip if already downloaded
@@ -124,8 +125,11 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
             try:
                 # Download PDF
                 logger.info(f"[DOWN] {arxiv_id} — {result.title[:60]}...")
-                pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
-                urllib.request.urlretrieve(pdf_url, str(pdf_path))
+                pdf_url = result.pdf_url
+                response = requests.get(pdf_url, timeout=30)
+                response.raise_for_status()
+                with open(pdf_path, "wb") as f:
+                    f.write(response.content)
 
                 # Validate downloaded file is actually a PDF
                 with open(pdf_path, "rb") as pdf_check:
@@ -152,7 +156,7 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
                 logger.info(f"[OK]   {total_downloaded}/{MAX_TOTAL_PAPERS} — {arxiv_id}")
 
                 # Save metadata after every download (safe against crashes)
-                save_metadata(metadata)
+                save_metadata(metadata, META_FILE)
 
                 # Polite delay
                 time.sleep(DELAY_BETWEEN_DOWNLOADS)
@@ -181,9 +185,9 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
 def main():
     logger.info("Starting arXiv downloader...")
     setup_dirs()
-    metadata = load_existing_metadata()
+    metadata = load_metadata(META_FILE)
     metadata = download_papers(SEARCH_QUERIES, PAPERS_PER_QUERY, metadata)
-    save_metadata(metadata)
+    save_metadata(metadata, META_FILE)
     logger.info("Done.")
 
 

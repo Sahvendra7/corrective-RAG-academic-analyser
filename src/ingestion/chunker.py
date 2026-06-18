@@ -16,6 +16,10 @@ import logging
 import re
 from pathlib import Path
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+from src.utils.metadata_utils import load_metadata, save_metadata
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 import src.config as config
@@ -29,10 +33,9 @@ CHUNK_SIZE    = config.CHUNK_SIZE
 CHUNK_OVERLAP = config.CHUNK_OVERLAP
 MIN_CHUNK_SIZE = config.MIN_CHUNK_SIZE
 
-# Improved regex for sentence splitting (handles decimals, common abbreviations)
-# Looks for sentence endings (.!?) followed by space and a capital letter,
-# but tries to ignore common cases like e.g., i.e., et al., etc.
-SENTENCE_PATTERN = re.compile(r'(?<!\b(?:e\.g|i\.e|et\sal|vs|etc|cf|Dr|Mr|Mrs|Ms|Prof|Inc|Ltd))\.\s+(?=[A-Z])|(?<=[!?])\s+(?=[A-Z])')
+# Standard regex for sentence splitting (avoids lookbehind errors)
+# Looks for sentence endings (.!?) followed by space and a capital letter.
+SENTENCE_PATTERN = re.compile(r'(?<=[.!?])\s+(?=[A-Z])')
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -47,34 +50,14 @@ def setup_dirs():
     logger.info(f"Chunk output directory ready: {CHUNK_DIR}")
 
 
-def load_metadata() -> dict:
-    """Load paper metadata from JSON file."""
-    if not META_FILE.exists():
-        logger.error(f"Metadata file not found: {META_FILE}")
-        logger.error("Run arxiv_downloader.py and pdf_parser.py first.")
-        return {}
-    with open(META_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_metadata(metadata: dict):
-    """Save updated metadata back to JSON file."""
-    with open(META_FILE, "w") as f:
-        json.dump(metadata, f, indent=2)
-
-
 def load_chunk_log() -> dict:
-    """Load chunk log to track which papers have already been chunked."""
-    if CHUNK_LOG.exists():
-        with open(CHUNK_LOG, "r") as f:
-            return json.load(f)
-    return {}
+    """Load chunking log to avoid re-chunking files."""
+    return load_metadata(CHUNK_LOG)
 
 
 def save_chunk_log(chunk_log: dict):
     """Save chunk log to disk."""
-    with open(CHUNK_LOG, "w") as f:
-        json.dump(chunk_log, f, indent=2)
+    save_metadata(chunk_log, CHUNK_LOG)
 
 
 # ── Sentence Splitting ────────────────────────────────────────────────────────
@@ -162,12 +145,22 @@ def chunk_text(text: str, arxiv_id: str) -> list[dict]:
             # Walk backwards through current sentences to build overlap
             for sent in reversed(current_sentences):
                 sent_words = len(sent.split())
+                
+                # Prevent overlap from exceeding chunk size (avoids infinite loops)
+                if overlap_word_count + sent_words > CHUNK_SIZE and overlap_sentences:
+                    break
+                    
                 overlap_sentences.insert(0, sent)
                 overlap_word_count += sent_words
                 
-                # Break ONLY AFTER we have met or exceeded the overlap quota
                 if overlap_word_count >= CHUNK_OVERLAP:
                     break
+
+            # If overlap somehow became identical to current_sentences (e.g. single giant sentence),
+            # force an advance to prevent an infinite loop.
+            if len(overlap_sentences) == len(current_sentences):
+                overlap_sentences = []
+                overlap_word_count = 0
 
             # Start next chunk from the overlap sentences
             current_sentences = overlap_sentences
@@ -269,9 +262,8 @@ def chunk_all_papers(metadata: dict, chunk_log: dict) -> tuple[dict, dict]:
             logger.warning(f"[WARN] No chunks produced for {arxiv_id}")
             chunk_log[arxiv_id] = {"status": "failed", "reason": "no chunks produced"}
             failed += 1
+            save_metadata(metadata, META_FILE)
             continue
-
-        # Save chunks to disk
         output_path = save_chunks(arxiv_id, chunks)
 
         # Update metadata
@@ -311,14 +303,14 @@ def chunk_all_papers(metadata: dict, chunk_log: dict) -> tuple[dict, dict]:
 def main():
     logger.info("Starting chunker...")
     setup_dirs()
-    metadata = load_metadata()
+    metadata = load_metadata(META_FILE)
 
     if not metadata:
         return
 
     chunk_log = load_chunk_log()
     metadata, chunk_log = chunk_all_papers(metadata, chunk_log)
-    save_metadata(metadata)
+    save_metadata(metadata, META_FILE)
     save_chunk_log(chunk_log)
     logger.info("Done.")
 

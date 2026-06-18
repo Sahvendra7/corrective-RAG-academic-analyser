@@ -97,9 +97,3 @@ if prompt := st.chat_input("Ask a machine learning research question..."):
     # Append the final generated text to the chat history
     if final_answer:
         st.session_state.messages.append({"role": "assistant", "content": final_answer})
-    else:
-        # Record failed exchanges so they persist in history
-        st.session_state.messages.append({
-            "role": "assistant", 
-            "content": "⚠️ Failed to generate an answer. Please try again."
-        })

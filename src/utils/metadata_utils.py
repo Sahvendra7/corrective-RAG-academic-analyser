@@ -31,5 +31,8 @@ def save_metadata(metadata: dict, file_path: Path):
         os.replace(temp_path, file_path)
     except Exception as e:
         logger.error(f"Failed to atomically save metadata to {file_path}: {e}")
-        os.remove(temp_path)
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
         raise

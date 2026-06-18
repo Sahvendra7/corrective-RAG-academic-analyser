@@ -43,29 +43,20 @@ def setup_dirs():
     logger.info(f"Embeddings output directory ready: {EMBEDDINGS_DIR}")
 
 
-def load_metadata() -> dict:
-    """Load paper metadata from JSON file."""
-    if not META_FILE.exists():
-        logger.error(f"Metadata file not found: {META_FILE}")
-        return {}
-    with open(META_FILE, "r") as f:
-        return json.load(f)
+# ── Load Metadata ─────────────────────────────────────────────────────────────
 
+from src.utils.metadata_utils import load_metadata, save_metadata
 
 def load_chunk_registry() -> dict:
     """Load existing chunk registry if it exists."""
     registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
-    if registry_path.exists():
-        with open(registry_path, "r") as f:
-            return json.load(f)
-    return {}
+    return load_metadata(registry_path)
 
 
 def save_chunk_registry(registry: dict):
     """Save chunk registry to disk."""
     registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
-    with open(registry_path, "w") as f:
-        json.dump(registry, f, indent=2)
+    save_metadata(registry, registry_path)
     logger.info(f"Chunk registry saved: {len(registry)} entries")
 
 
@@ -89,7 +80,8 @@ def load_all_chunks(metadata: dict, existing_registry: dict) -> list[dict]:
     for arxiv_id, paper in metadata.items():
 
         # Skip if this paper's chunks are already embedded
-        if f"{arxiv_id}_chunk_0" in existing_registry:
+        # We check if any chunk starts with arxiv_id
+        if any(cid.startswith(f"{arxiv_id}_chunk_") for cid in existing_registry):
             skipped_papers += 1
             continue
 
@@ -207,6 +199,11 @@ def save_embeddings(embeddings: np.ndarray, chunks: list[dict], existing_registr
         # Stack old and new embeddings
         combined_embeddings = np.vstack([existing_embs, embeddings])
         combined_ids = existing_ids + [c["chunk_id"] for c in chunks]
+    elif existing_embeddings_path.exists() or existing_ids_path.exists():
+        # Prevent partial data wipe
+        logger.error("Data corruption: embeddings.npy or chunk_ids.json is missing.")
+        logger.error("Please delete both and re-run embedding, or restore from backup.")
+        raise FileNotFoundError("Partial embedding files found. Aborting to prevent silent data loss.")
     else:
         combined_embeddings = embeddings
         combined_ids = [c["chunk_id"] for c in chunks]
@@ -261,10 +258,10 @@ def print_stats(embeddings: np.ndarray, chunks: list[dict]):
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 def main():
-    logger.info("Starting embeddings generation...")
+    logger.info("Starting FAISS embedding process...")
     setup_dirs()
 
-    metadata = load_metadata()
+    metadata = load_metadata(META_FILE)
     if not metadata:
         return
 

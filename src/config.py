@@ -24,6 +24,7 @@ CHUNK_SIZE = 256
 CHUNK_OVERLAP = 64
 MIN_CHUNK_SIZE = 50
 
-# Ensure data directories exist
-for directory in [DATA_DIR, RAW_DIR, PROCESSED_DIR, TEXT_DIR, CHUNK_DIR, EMBEDDINGS_DIR]:
-    directory.mkdir(parents=True, exist_ok=True)
+def setup_dirs():
+    """Ensure data directories exist. Must be called explicitly by entry points."""
+    for directory in [DATA_DIR, RAW_DIR, PROCESSED_DIR, TEXT_DIR, CHUNK_DIR, EMBEDDINGS_DIR]:
+        directory.mkdir(parents=True, exist_ok=True)

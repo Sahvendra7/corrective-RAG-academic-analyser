@@ -15,6 +15,10 @@ import re
 import logging
 from pathlib import Path
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+from src.utils.metadata_utils import load_metadata, save_metadata
+
 # ── Config ────────────────────────────────────────────────────────────────────
 import src.config as config
 
@@ -129,14 +133,12 @@ def clean_text(raw_text: str) -> str:
     # Normalize multiple spaces into a single space
     text = re.sub(r" {2,}", " ", text)
 
-    # Normalize multiple newlines into a maximum of two
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
     # Strip leading/trailing whitespace from each line
     lines = [line.strip() for line in text.splitlines()]
 
-    # Remove empty lines at start/end, keep paragraph breaks
+    # Rejoin lines, then normalize multiple newlines into a maximum of two
     text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
     # Final strip
     text = text.strip()
@@ -255,8 +257,8 @@ def parse_papers(metadata: dict, parse_log: dict) -> tuple[dict, dict]:
         )
 
         # Save progress after every paper
-        save_metadata(metadata)
-        save_parse_log(parse_log)
+        save_metadata(metadata, META_FILE)
+        save_metadata(parse_log, PARSE_LOG)
 
     # Final summary
     logger.info(f"\n{'='*60}")
@@ -275,15 +277,15 @@ def parse_papers(metadata: dict, parse_log: dict) -> tuple[dict, dict]:
 def main():
     logger.info("Starting PDF parser...")
     setup_dirs()
-    metadata = load_metadata()
+    metadata = load_metadata(META_FILE)
 
     if not metadata:
         return
 
-    parse_log = load_parse_log()
+    parse_log = load_metadata(PARSE_LOG)
     metadata, parse_log = parse_papers(metadata, parse_log)
-    save_metadata(metadata)
-    save_parse_log(parse_log)
+    save_metadata(metadata, META_FILE)
+    save_metadata(parse_log, PARSE_LOG)
     logger.info("Done.")
 
 

@@ -21,8 +21,7 @@ State fields:
     error           : Any error message if something goes wrong
 """
 
-from typing import TypedDict, Annotated
-import operator
+from typing import TypedDict
 
 
 # ── Document Schema ───────────────────────────────────────────────────────────
@@ -72,13 +71,10 @@ class CRAGState(TypedDict):
     # produces an improved version of the query stored here.
     # The retriever uses this on retry instead of the original query.
 
-    documents: Annotated[list[Document], operator.add]
+    documents: list[Document]
     # List of retrieved document chunks.
-    # Annotated with operator.add so LangGraph appends new docs
-    # rather than replacing existing ones.
-    # This lets us combine FAISS docs + web search docs naturally.
 
-    # The clean, filtered list specifically for the generator (overwrites)
+    # The clean, filtered list specifically for the generator (accumulates)
     relevant_documents: list[Document]
 
     # ── Grading ────────────────────────────────────────────────────────────

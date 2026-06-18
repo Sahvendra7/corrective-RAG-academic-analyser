@@ -30,9 +30,6 @@ Flow:
 """
 
 import logging
-import sys
-from pathlib import Path
-
 from langchain_core.messages import SystemMessage, HumanMessage
 
 
@@ -120,7 +117,10 @@ def generate_hypothetical_answer(query: str, llm) -> str:
         
         # Safely extract text whether response is a list or a string
         if isinstance(raw_content, list):
-            content_str = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+            content_str = "".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in raw_content
+            )
         else:
             content_str = str(raw_content)
             
@@ -202,7 +202,10 @@ def rewrite_query(
         
         # Safely extract text whether response is a list or a string
         if isinstance(raw_content, list):
-            content_str = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
+            content_str = "".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in raw_content
+            )
         else:
             content_str = str(raw_content)
             

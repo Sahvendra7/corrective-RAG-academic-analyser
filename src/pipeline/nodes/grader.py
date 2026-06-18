@@ -20,12 +20,10 @@ This overall grade is what graph.py uses to decide the next node.
 """
 
 import logging
-import sys
-from pathlib import Path
+import threading
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
-
 
 from src.pipeline.state import (
     CRAGState,
@@ -42,13 +40,16 @@ logger = logging.getLogger(__name__)
 
 # Cached structured LLM for grading (avoids re-creating per document)
 _structured_grader_llm = None
+_grader_lock = threading.Lock()
 
 def _get_structured_grader_llm():
     """Return cached structured LLM for document grading."""
     global _structured_grader_llm
     if _structured_grader_llm is None:
-        llm = get_llm()
-        _structured_grader_llm = llm.with_structured_output(DocumentGrade)
+        with _grader_lock:
+            if _structured_grader_llm is None:
+                llm = get_llm()
+                _structured_grader_llm = llm.with_structured_output(DocumentGrade)
     return _structured_grader_llm
 
 # ── Pydantic Schema for Structured Output ─────────────────────────────────────
@@ -179,55 +180,48 @@ def grader_node(state: CRAGState) -> dict:
     """
     query     = state["query"]
     all_documents = state.get("documents", [])
-    retry_count = state.get("retry_count", 0)
 
-    # On retries, documents accumulate due to operator.add in state.py.
-    # Only grade the LATEST batch (last TOP_K docs) to avoid re-grading
-    # previously rejected documents and wasting LLM API calls.
-    if retry_count > 0 and len(all_documents) > 2:
-        # Only grade the latest 2 docs (TOP_K=2 in retriever.py)
-        documents = all_documents[-2:]
-        logger.info(
-            f"[GRADER] Retry {retry_count}: grading latest {len(documents)} of "
-            f"{len(all_documents)} total accumulated documents"
-        )
-    else:
-        documents = all_documents
+    logger.info(f"[GRADER] Evaluating documents for query: '{query[:60]}'")
 
-    logger.info(f"[GRADER] Grading {len(documents)} documents for query: '{query[:60]}'")
-
-    if not documents:
+    if not all_documents:
         logger.warning("[GRADER] No documents in state — marking as irrelevant")
         return {
+            "documents"          : [],
             "document_grades"    : [],
-            "relevant_documents" : [],
+            "relevant_documents" : state.get("relevant_documents", []),
             "grade"              : GRADE_IRRELEVANT,
         }
 
     llm = get_llm()
 
-    # Grade each document
+    updated_documents = []
     document_grades = []
-    relevant_documents = []
+    new_relevant_documents = []
     
-    for doc in documents:
+    for doc in all_documents:
+        # Skip grading if already graded in a previous retry
+        if doc.get("grade"):
+            updated_documents.append(doc)
+            continue
+            
+        # Grade new documents
         grade_result = grade_document(query, doc, llm)
         document_grades.append(grade_result)
         
-        # Option A Filter Logic: Only keep documents that passed the grade.
-        # We include both "relevant" and "ambiguous" here as potential context, 
-        # dropping the purely "irrelevant" noise.
+        graded_doc = dict(doc)
+        graded_doc["grade"] = grade_result["grade"]
+        updated_documents.append(graded_doc)
+        
         if grade_result["grade"] in [GRADE_RELEVANT, GRADE_AMBIGUOUS]:
-            filtered_doc = dict(doc)
-            filtered_doc["grade"] = grade_result["grade"]
-            relevant_documents.append(filtered_doc)
+            new_relevant_documents.append(graded_doc)
 
-    overall_grade = decide_overall_grade(document_grades)
+    # If no new documents were graded, default to IRRELEVANT to trigger fallback
+    overall_grade = decide_overall_grade(document_grades) if document_grades else GRADE_IRRELEVANT
 
-    # Return the filtered list to the new state key, safely overwriting old data
     return {
+        "documents"          : updated_documents,
         "document_grades"    : document_grades,
-        "relevant_documents" : relevant_documents, 
+        "relevant_documents" : state.get("relevant_documents", []) + new_relevant_documents, 
         "grade"              : overall_grade,
     }
 
