@@ -6,9 +6,9 @@ Centralized LLM factory for the CRAG pipeline.
 Provides singleton instances of the Google Gemini LLM at different
 temperature settings for use across all pipeline nodes:
 
-    get_llm()           → temperature=0.0 (grader, hallucination checker)
-    get_creative_llm()  → temperature=0.3 (rewriter)
-    get_generator_llm() → temperature=0.2 (generator)
+    get_llm()           - temperature=0.0 (grader, hallucination checker)
+    get_creative_llm()  - temperature=0.3 (rewriter)
+    get_generator_llm() - temperature=0.2 (generator)
 
 Uses the free Gemini 1.5 Flash model via langchain-google-genai.
 """
@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 # ── Model Config ──────────────────────────────────────────────────────────────
 
 GEMINI_MODEL = config.GEMINI_MODEL
+API_TIMEOUT = 60.0  # Hard network timeout in seconds
+MAX_RETRIES = 2     # Stop trying after 2 failed network requests
 
 # ── Thread-Safe Singletons ────────────────────────────────────────────────────
 
@@ -61,6 +63,8 @@ def get_llm() -> ChatGoogleGenerativeAI:
                     model=GEMINI_MODEL,
                     temperature=0.0,
                     google_api_key=api_key,
+                    timeout=API_TIMEOUT,
+                    max_retries=MAX_RETRIES,
                 )
                 logger.info(f"[LLM_FACTORY] LLM loaded: {GEMINI_MODEL} (temp=0.0)")
     return _llm
@@ -81,6 +85,8 @@ def get_creative_llm() -> ChatGoogleGenerativeAI:
                     model=GEMINI_MODEL,
                     temperature=0.3,
                     google_api_key=api_key,
+                    timeout=API_TIMEOUT,
+                    max_retries=MAX_RETRIES,
                 )
                 logger.info(f"[LLM_FACTORY] Creative LLM loaded: {GEMINI_MODEL} (temp=0.3)")
     return _creative_llm
@@ -101,6 +107,8 @@ def get_generator_llm() -> ChatGoogleGenerativeAI:
                     model=GEMINI_MODEL,
                     temperature=0.2,
                     google_api_key=api_key,
+                    timeout=API_TIMEOUT,
+                    max_retries=MAX_RETRIES,
                 )
                 logger.info(f"[LLM_FACTORY] Generator LLM loaded: {GEMINI_MODEL} (temp=0.2)")
     return _generator_llm

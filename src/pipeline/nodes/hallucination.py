@@ -43,11 +43,9 @@ class HallucinationGrade(BaseModel):
 
 # ── Prompt Templates ──────────────────────────────────────────────────────────
 
-HALLUCINATION_SYSTEM_PROMPT = """You are an expert fact-checker for AI-generated answers \
-about academic papers.
+HALLUCINATION_SYSTEM_PROMPT = """You are an expert fact-checker for AI-generated answers about academic papers.
 
-Your job is to determine whether a generated answer is fully grounded in the \
-provided source documents, or whether it contains hallucinated (fabricated) claims.
+Your job is to determine whether a generated answer is fully grounded in the provided source documents, or whether it contains hallucinated (fabricated) claims.
 
 A hallucination is any claim in the answer that:
 - Is not supported by ANY of the provided source documents
@@ -58,7 +56,9 @@ A hallucination is any claim in the answer that:
 An answer is NOT hallucinated if:
 - All specific claims can be traced back to the source documents
 - General statements are reasonable summaries of the documents
-- The answer acknowledges uncertainty where documents are unclear"""
+- The answer acknowledges uncertainty where documents are unclear
+
+CRITICAL: Do NOT wrap the JSON response in markdown code blocks, backticks, or '```json'. Return ONLY raw, valid JSON text that directly maps to the schema attributes."""
 
 
 HALLUCINATION_HUMAN_PROMPT = """Original Question: {query}
@@ -94,7 +94,7 @@ def build_check_context(documents: list[Document]) -> str:
         # Stop adding docs if we'd exceed the context limit
         if total_chars + part_chars > MAX_CONTEXT_LEN:
             logger.info(
-                f"[HALLUCINATION] Context limit reached at doc {i} — truncating context"
+                f"[HALLUCINATION] Context limit reached at doc {i} - truncating context"
             )
             break
 
@@ -133,14 +133,22 @@ def check_hallucination(
     try:
         result = structured_llm.invoke(messages)
 
+        if result is None:
+            logger.warning("[HALLUCINATION] LLM returned None — defaulting to hallucination=False")
+            return {
+                "hallucination": False,
+                "reasoning": "LLM returned None (failed to parse structured output) — defaulted to no hallucination",
+                "unsupported_claims": [],
+            }
+
         if result.hallucination:
             logger.warning(
-                f"[HALLUCINATION] DETECTED — {len(result.unsupported_claims)} unsupported claims"
+                f"[HALLUCINATION] DETECTED - {len(result.unsupported_claims)} unsupported claims"
             )
             for claim in result.unsupported_claims:
                 logger.warning(f"  Unsupported: {claim[:100]}")
         else:
-            logger.info("[HALLUCINATION] CLEAR — answer is grounded in sources")
+            logger.info("[HALLUCINATION] CLEAR - answer is grounded in sources")
 
         return {
             "hallucination": result.hallucination,

@@ -77,6 +77,8 @@ Grade each document as exactly one of:
 - "ambiguous"  : The document is related to the topic but does not directly answer the question
 - "irrelevant" : The document has no meaningful connection to the question
 
+CRITICAL: Do NOT wrap the JSON response in markdown code blocks, backticks, or '```json'. Return ONLY raw, valid JSON text that directly maps to the schema attributes.
+
 Be strict. A document about a related topic but not the specific question is "ambiguous", not "relevant"."""
 
 GRADER_HUMAN_PROMPT = """User Question: {query}
@@ -114,6 +116,14 @@ def grade_document(query: str, doc: Document, llm) -> dict:
         # LLM returns the Pydantic object directly
         result = structured_llm.invoke(messages)
         
+        if result is None:
+            logger.warning(f"[GRADER] LLM returned None for {chunk_id} — defaulting to ambiguous")
+            return {
+                "chunk_id"  : chunk_id,
+                "grade"     : GRADE_AMBIGUOUS,
+                "reasoning" : "LLM returned None (failed to parse structured output) — defaulted to ambiguous",
+            }
+        
         grade = result.grade.lower().strip()
 
         # Validate grade value
@@ -121,7 +131,7 @@ def grade_document(query: str, doc: Document, llm) -> dict:
             logger.warning(f"[GRADER] Invalid grade '{grade}' for {chunk_id} — defaulting to ambiguous")
             grade = GRADE_AMBIGUOUS
 
-        logger.info(f"[GRADER] {chunk_id} → {grade.upper()} | {result.reasoning[:80]}")
+        logger.info(f"[GRADER] {chunk_id} - {grade.upper()} | {result.reasoning[:80]}")
 
         return {
             "chunk_id"  : chunk_id,
@@ -283,6 +293,6 @@ if __name__ == "__main__":
     
     print(f"\nPer-document grades:")
     for g in result["document_grades"]:
-        print(f"  {g['chunk_id']} → {g['grade'].upper()}")
+        print(f"  {g['chunk_id']} - {g['grade'].upper()}")
         print(f"  Reasoning: {g['reasoning']}")
         print()

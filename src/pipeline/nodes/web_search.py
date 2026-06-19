@@ -168,6 +168,13 @@ def search_web(query: str) -> list[Document]:
     """
     client = get_tavily()
 
+    if len(query) > 395:
+        logger.warning(
+            f"[WEB_SEARCH] Query exceeds 395 characters ({len(query)}). "
+            f"Truncating to 395 characters."
+        )
+        query = query[:395]
+
     try:
         logger.info(f"[WEB_SEARCH] Searching Tavily: '{query[:80]}'")
 

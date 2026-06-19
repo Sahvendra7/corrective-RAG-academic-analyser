@@ -60,7 +60,7 @@ Rewriting strategies to apply:
 Rules:
 - Output ONLY the rewritten query — no explanation, no preamble, no quotes
 - Keep it as a question or search phrase, not a full sentence paragraph
-- Do not make it longer than 2-3 sentences
+- Keep the rewritten query concise, focused, and strictly under 400 characters
 - Do not change the core intent of the original question"""
 
 
