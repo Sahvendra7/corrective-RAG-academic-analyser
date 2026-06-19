@@ -1,52 +1,70 @@
-# Corrective RAG (CRAG) Academic Analyzer
+# 📚 Corrective RAG (CRAG) Academic Analyzer
 
-Corrective Retrieval Augmented Generation (CRAG) Academic Paper Analyzer using LangGraph, FAISS, and FastAPI.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-green.svg)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Enabled-orange.svg)](https://python.langchain.com/docs/langgraph)
+[![Gemini](https://img.shields.io/badge/Google%20Gemini-Pro-blueviolet.svg)](https://ai.google.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This project implements the [CRAG paper (Yan et al., 2024)](https://arxiv.org/abs/2401.15884) pipeline, which incorporates a retrieval evaluator to assess the quality of retrieved documents. If documents are irrelevant, the system triggers web searches using Tavily to find the missing context, ensuring highly accurate generation.
+Corrective Retrieval Augmented Generation (CRAG) Academic Paper Analyzer built with **LangGraph**, **FAISS**, **Google Gemini**, and **FastAPI**.
 
-## Features
+This project implements the [CRAG framework (Yan et al., 2024)](https://arxiv.org/abs/2401.15884), moving beyond naive RAG by incorporating a retrieval evaluator to assess document relevance. If retrieved documents lack sufficient context, the agent intelligently triggers a web search (via Tavily) to fetch the missing information, ensuring high-fidelity, hallucination-free generation.
 
-- **Document Ingestion:** Downloads academic papers from arXiv, parses PDFs using PyMuPDF, and creates text chunks.
-- **Vector Store:** Local vector store using FAISS and `sentence-transformers` for fast semantic search.
-- **Pipeline:** LangGraph-based state machine implementing CRAG:
-  - **Retriever:** Fetches top-k chunks.
-  - **Grader:** Evaluates retrieved chunks for relevance to the user's query.
-  - **Web Search:** Fallback using Tavily API if chunks are graded irrelevant.
-  - **Generator:** Uses Google Gemini (via `langchain-google-genai`) to generate an answer.
-  - **Hallucination Checker:** Verifies that the answer is grounded in the retrieved documents.
-  - **Rewriter:** Rewrites the query if hallucinated or poorly answered to retry retrieval.
-- **API Backend:** Production-ready FastAPI with streaming SSE (Server-Sent Events) and rate limiting.
-- **Frontend UI:** Interactive Streamlit interface to chat with the agent and view its reasoning graph in real time.
 
-## Installation
+## ✨ Features
+
+- **End-to-End Document Ingestion:** Automated downloading of arXiv papers, robust PyMuPDF parsing, and optimized text chunking.
+- **Local Vector Database:** High-performance FAISS indexing coupled with `sentence-transformers` for fast semantic retrieval.
+- **Agentic CRAG Pipeline (LangGraph):**
+  - 📥 **Retriever:** Fetches top-k relevant chunks.
+  - ⚖️ **Grader:** Strict evaluation of chunk relevance against the user query.
+  - 🌐 **Web Search Fallback:** Tavily API integration for context enrichment when local retrieval fails.
+  - 🧠 **Generator:** Powered by Google Gemini (via `langchain-google-genai`) for nuanced and accurate answer generation.
+  - 🛡️ **Hallucination Checker:** Enforces grounding by verifying the generated answer against the retrieved context.
+  - 🔄 **Query Rewriter:** Iteratively refines the query for better retrieval if hallucination is detected.
+- **Production-Ready API:** FastAPI backend featuring Server-Sent Events (SSE) for real-time streaming and built-in rate limiting.
+- **Interactive UI:** A sleek Streamlit frontend allowing users to chat with the agent and visualize the reasoning graph step-by-step.
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Python 3.10+
+- Google Gemini API Key
+- Tavily API Key
+
+### Installation
 
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/sahvendraz/Corrective-RAG-Academic-Analyser.git
 cd Corrective-RAG-Academic-Analyser
 
-# Create a virtual environment
+# 2. Create and activate a virtual environment
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
 
-# Install dependencies
+# 3. Install project dependencies
 pip install -e .
 ```
 
-## Setup
+### Configuration
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-2. Fill in your API keys in the `.env` file:
-   - `GEMINI_API_KEY`: Get from Google AI Studio.
-   - `TAVILY_API_KEY`: Get from Tavily.
+Copy the example environment variables file and insert your API keys:
 
-## Usage
+```bash
+cp .env.example .env
+```
+Update `.env` with:
+```env
+GEMINI_API_KEY="your_google_gemini_api_key"
+TAVILY_API_KEY="your_tavily_api_key"
+```
 
-### 1. Ingestion (Optional: if you want to index new papers)
-Download and chunk papers:
+## 🛠️ Usage
+
+### 1. Data Ingestion (Optional)
+To index new academic papers into your local FAISS vector store, run the ingestion pipeline:
+
 ```bash
 python src/ingestion/arxiv_downloader.py
 python src/ingestion/pdf_parser.py
@@ -54,31 +72,48 @@ python src/ingestion/chunker.py
 python src/vectorstore/embeddings.py
 ```
 
-### 2. Run the API Server
-Start the FastAPI server (runs on `http://localhost:8000`):
+### 2. Start the Backend API
+Launch the FastAPI server (runs locally at `http://localhost:8000`):
+
 ```bash
 uvicorn src.api.server:app --reload
 ```
+*Tip: You can access the Swagger UI documentation at `http://localhost:8000/docs`.*
 
-### 3. Run the Streamlit UI
-In a separate terminal, start the UI:
+### 3. Launch the Streamlit UI
+In a new terminal window, start the interactive chat interface:
+
 ```bash
 streamlit run ui/app.py
 ```
 
-## Testing
-Run the integration tests using pytest:
+## 🧪 Testing & Evaluation
+
+Run the unit and integration tests using `pytest`:
 ```bash
 pytest tests/
 ```
 
-## Architecture
+We leverage tools like `deepeval` and `ragas` for pipeline benchmarking. You can find evaluation scripts inside the `src/evaluation/` directory.
 
-- `src/api/`: FastAPI server and routes
-- `src/evaluation/`: Scripts to evaluate the pipeline against a ground-truth dataset
-- `src/ingestion/`: Tools to download, parse, and chunk academic papers
-- `src/pipeline/`: LangGraph definitions, states, and node logic
-- `src/utils/`: Shared utilities (e.g., metadata handling)
-- `src/vectorstore/`: FAISS wrappers and embedding scripts
-- `ui/`: Streamlit interface
-- `configs/`: Additional configuration files (if used)
+## 🏗️ Project Architecture
+
+```text
+├── configs/            # Application configuration files
+├── data/               # Downloaded PDFs, parsed text, and vector stores
+├── src/
+│   ├── api/            # FastAPI server, routers, and SSE streaming
+│   ├── evaluation/     # RAG benchmarking and testing scripts
+│   ├── ingestion/      # Downloaders, parsers, and chunkers
+│   ├── pipeline/       # LangGraph state definitions and node logic
+│   ├── utils/          # Shared helpers and metadata managers
+│   └── vectorstore/    # FAISS wrappers and embedding models
+├── tests/              # Pytest integration and unit tests
+├── ui/                 # Streamlit application frontend
+└── notebooks/          # Jupyter notebooks for experimentation
+```
+
+
+## 📄 License
+
+This project is licensed under the MIT License.
