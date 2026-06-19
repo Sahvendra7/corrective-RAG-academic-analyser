@@ -13,6 +13,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi import Request
 
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
 # Import your LangGraph pipeline
 from src.pipeline.graph import build_graph
 from src.pipeline.state import create_initial_state
