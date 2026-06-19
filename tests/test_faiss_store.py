@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import numpy as np
 import faiss
+import pytest
 
 # Import your production-grade store class
 from src.vectorstore.faiss_store import FAISSStore
@@ -16,7 +17,7 @@ EMBEDDING_DIM       = 384
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-class TestFAISSStore(FAISSStore):
+class FAISSStoreTestHelper(FAISSStore):
     """
     Subclass of production FAISSStore that overrides data paths 
     to test index generation on a single paper in isolation.
@@ -72,7 +73,7 @@ def run_isolated_store_test():
     test_arxiv_id = "1003.3081"
     
     # Initialize store without loading global production file
-    store = TestFAISSStore(load_existing=False)
+    store = FAISSStoreTestHelper(load_existing=False)
     
     # Build isolated context
     success = store.build_test_index(test_arxiv_id)
@@ -110,6 +111,10 @@ def run_isolated_store_test():
     # Clean up test binary file from disk
     if TEST_INDEX_PATH.exists():
         TEST_INDEX_PATH.unlink()
+
+def test_isolated_store():
+    """Pytest entrypoint to execute the isolated FAISS store tests."""
+    run_isolated_store_test()
 
 if __name__ == "__main__":
     run_isolated_store_test()

@@ -12,12 +12,19 @@ import json
 from dotenv import load_dotenv
 from pathlib import Path
 import sys
+import pytest
 
 # Allow imports from project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
+
+@pytest.fixture
+def query():
+    """Provides a default query for testing the pipeline."""
+    return "How does Corrective RAG handle irrelevant retrieved documents?"
+
 # Load API keys from your .env file
 load_dotenv()
 
@@ -31,6 +38,10 @@ if gemini_api_key:
 from src.pipeline.graph import run_query
 
 def test_single_query(query: str):
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key or gemini_api_key == "your_key_here":
+        pytest.skip("GEMINI_API_KEY not set. Skipping pipeline test.")
+
     print(f"\n{'='*70}")
     print(f"  Testing CRAG Pipeline: Single Query Execution")
     print(f"{'='*70}")
@@ -70,6 +81,7 @@ def test_single_query(query: str):
 
     except Exception as e:
         print(f"\n  PIPELINE FAILED: {e}\n")
+        raise e
 
 
 if __name__ == "__main__":

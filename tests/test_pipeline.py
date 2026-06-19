@@ -101,7 +101,7 @@ def test_step1_download():
 
         if not results:
             print_result("Paper found", "NOT FOUND", success=False)
-            return False
+            pytest.fail("Paper not found on arXiv")
 
         result = results[0]
         print_result("Paper found", result.title[:60])
@@ -151,12 +151,11 @@ def test_step1_download():
         print_result("Metadata saved", str(META_FILE))
 
         print(f"\n  ✅ Step 1 PASSED")
-        return True
 
     except Exception as e:
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 1 FAILED")
-        return False
+        raise
 
 # ── Step 2: Parse PDF ─────────────────────────────────────────────────────────
 
@@ -221,13 +220,12 @@ def test_step2_parse():
         print(f"  {text[:300].replace(chr(10), ' ')}")
 
         print(f"\n  ✅ Step 2 PASSED")
-        return True
 
     except Exception as e:
         logger.exception("Step 2 error")
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 2 FAILED")
-        return False
+        raise
 
 
 # ── Step 3: Chunk Text ────────────────────────────────────────────────────────
@@ -339,13 +337,12 @@ def test_step3_chunk():
         print(f"  {chunks[0]['text'][:200].replace(chr(10), ' ')}")
 
         print(f"\n  ✅ Step 3 PASSED")
-        return True
 
     except Exception as e:
         logger.exception("Step 3 error")
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 3 FAILED")
-        return False
+        raise
 
 
 # ── Step 4: Generate Embeddings ───────────────────────────────────────────────
@@ -431,13 +428,12 @@ def test_step4_embeddings():
         print_result("File size", f"{embeddings.nbytes / 1024:.1f} KB")
 
         print(f"\n  ✅ Step 4 PASSED")
-        return True
 
     except Exception as e:
         logger.exception("Step 4 error")
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 4 FAILED")
-        return False
+        raise
 
 
 # ── Step 5: Build FAISS Index ─────────────────────────────────────────────────
@@ -514,13 +510,12 @@ def test_step5_faiss():
         print_result("\n  Top score", f"{scores[0]:.4f}", success=scores[0] > 0.3)
 
         print(f"\n  ✅ Step 5 PASSED")
-        return True
 
     except Exception as e:
         logger.exception("Step 5 error")
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 5 FAILED")
-        return False
+        raise
 
 
 # ── Step 6: Run Full CRAG Pipeline ────────────────────────────────────────────
@@ -538,7 +533,7 @@ def test_step6_pipeline():
     if not gemini_api_key or gemini_api_key == "your_key_here":
         print(f"  ⚠️  GEMINI_API_KEY not set in .env file or is empty.")
         print(f"  Skipping Step 6 — add your Gemini API key to .env to test the full pipeline")
-        return None
+        return
         
     # 2. CRITICAL FIX: LangChain's Google GenAI package explicitly looks for "GOOGLE_API_KEY".
     # We take your GEMINI_API_KEY and map it so the LLM nodes can see it.
@@ -576,13 +571,12 @@ def test_step6_pipeline():
         print(f"  {generation[:500].replace(chr(10), ' ')}")
 
         print(f"\n  ✅ Step 6 PASSED")
-        return True
 
     except Exception as e:
         logger.exception("Step 6 error")
         print_result("Error", str(e), success=False)
         print(f"\n  ❌ Step 6 FAILED")
-        return False
+        raise
 
 
 # ── Pytest Runner ─────────────────────────────────────────────────────────────
