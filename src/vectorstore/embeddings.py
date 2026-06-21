@@ -19,6 +19,7 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 # tqdm is used internally by SentenceTransformer.encode(show_progress_bar=True)
 
+# logging.basicConfig(level=logging.INFO, format='%(message)s')
 # ── Config ────────────────────────────────────────────────────────────────────
 
 import src.config as config

@@ -22,6 +22,7 @@ import faiss
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
+# logging.basicConfig(level=logging.INFO, format='%(message)s')
 # ── Config ────────────────────────────────────────────────────────────────────
 
 import src.config as config

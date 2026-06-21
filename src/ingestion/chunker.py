@@ -16,6 +16,8 @@ import logging
 import re
 from pathlib import Path
 
+# logging.basicConfig(level=logging.INFO, format='%(message)s')
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 from src.utils.metadata_utils import load_metadata, save_metadata

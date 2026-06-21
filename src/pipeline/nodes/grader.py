@@ -77,8 +77,6 @@ Grade each document as exactly one of:
 - "ambiguous"  : The document is related to the topic but does not directly answer the question
 - "irrelevant" : The document has no meaningful connection to the question
 
-CRITICAL: Do NOT wrap the JSON response in markdown code blocks, backticks, or '```json'. Return ONLY raw, valid JSON text that directly maps to the schema attributes.
-
 Be strict. A document about a related topic but not the specific question is "ambiguous", not "relevant"."""
 
 GRADER_HUMAN_PROMPT = """User Question: {query}
