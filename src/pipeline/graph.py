@@ -286,7 +286,7 @@ def _print_summary(query: str, state: CRAGState):
     print(f"Hallucination  : {state.get('hallucination', False)}")
     print(f"{'='*60}")
     print(f"\nANSWER:")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
     print(state.get("generation", "No answer generated"))
     print(f"{'='*60}\n")
 

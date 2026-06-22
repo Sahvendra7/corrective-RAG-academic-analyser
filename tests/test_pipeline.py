@@ -26,7 +26,15 @@ import logging
 import sys
 import time
 from pathlib import Path
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 import src.config as config
+
+# Override global embeddings directory to prevent tests from overwriting production data
+config.EMBEDDINGS_DIR = config.DATA_DIR / "embeddings_test"
+config.EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
+config.META_FILE = config.PROCESSED_DIR / "metadata_test.json"
 
 # ── Setup paths ───────────────────────────────────────────────────────────────
 
@@ -54,7 +62,7 @@ PROCESSED_DIR  = config.PROCESSED_DIR
 TEXT_DIR       = config.TEXT_DIR
 CHUNK_DIR      = config.CHUNK_DIR
 EMBEDDINGS_DIR = config.EMBEDDINGS_DIR
-META_FILE      = PROCESSED_DIR / "metadata.json"
+META_FILE      = config.META_FILE
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

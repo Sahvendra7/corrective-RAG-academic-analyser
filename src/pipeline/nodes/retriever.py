@@ -106,13 +106,17 @@ def retriever_node(state: CRAGState) -> dict:
         store = get_store()
 
         # Search FAISS for top-k most similar chunks
+        import time
+        start_time = time.perf_counter()
         raw_results = store.search(query=query, top_k=TOP_K)
+        retrieval_ms = (time.perf_counter() - start_time) * 1000
 
         if not raw_results:
             logger.warning("[RETRIEVER] No results returned from FAISS")
             return {
                 "documents": state.get("documents", []),
                 "source": SOURCE_FAISS,
+                "retrieval_ms": state.get("retrieval_ms", 0.0) + retrieval_ms,
             }
 
         # Convert raw search results into Document dicts
@@ -140,6 +144,7 @@ def retriever_node(state: CRAGState) -> dict:
         return {
             "documents": state.get("documents", []) + documents,
             "source"   : SOURCE_FAISS,
+            "retrieval_ms": state.get("retrieval_ms", 0.0) + retrieval_ms,
         }
 
     except Exception as e:
@@ -148,7 +153,9 @@ def retriever_node(state: CRAGState) -> dict:
             "documents" : state.get("documents", []),
             "source"    : SOURCE_FAISS,
             "error"     : f"Retriever error: {str(e)}",
+            "retrieval_ms": state.get("retrieval_ms", 0.0),
         }
+
 
 
 # ── Test ──────────────────────────────────────────────────────────────────────

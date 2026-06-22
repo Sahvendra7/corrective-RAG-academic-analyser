@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 GEMINI_MODEL = config.GEMINI_MODEL
 API_TIMEOUT = 60.0  # Hard network timeout in seconds
-MAX_RETRIES = 2     # Stop trying after 2 failed network requests
+MAX_RETRIES = 0     # Stop trying after 0 failed network requests
 
 # ── Thread-Safe Singletons ────────────────────────────────────────────────────
 

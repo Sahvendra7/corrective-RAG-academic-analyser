@@ -75,9 +75,15 @@ def custom_naive_generator(state: CRAGState) -> dict:
     
     # 3. Generate and return
     chain = prompt | get_generator_llm()
+    import time
+    start_time = time.perf_counter()
     response = chain.invoke({"context": context_str, "question": query})
+    generation_ms = (time.perf_counter() - start_time) * 1000
     
-    return {"generation": response.content}
+    return {
+        "generation": response.content,
+        "generation_ms": generation_ms
+    }
 
 def custom_naive_retriever(state: CRAGState) -> dict:
     """
@@ -87,7 +93,10 @@ def custom_naive_retriever(state: CRAGState) -> dict:
     logger.info(f"[NAIVE GRAPH] Retrieving raw documents for: '{query}'")
     
     # 1. Fetch the raw documents
+    import time
+    start_time = time.perf_counter()
     docs = store.search(query, top_k=5) 
+    retrieval_ms = (time.perf_counter() - start_time) * 1000
     
     # 2. THE FIX: Rubber-stamp every document as "relevant"
     # This spoofs the CRAG grader so the generator accepts them blindly!
@@ -98,8 +107,10 @@ def custom_naive_retriever(state: CRAGState) -> dict:
     
     return {
         "documents": docs,
-        "source": "faiss_naive"
+        "source": "faiss_naive",
+        "retrieval_ms": retrieval_ms
     }
+
 
 # ── Graph Builder ─────────────────────────────────────────────────────────────
 
