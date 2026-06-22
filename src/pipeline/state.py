@@ -130,6 +130,13 @@ class CRAGState(TypedDict):
     # a message here. The graph checks this to short-circuit
     # to a safe fallback response instead of crashing.
 
+    # ── Latency Metrics ────────────────────────────────────────────────────
+    retrieval_ms: float
+    # Cumulative time spent on FAISS retrieval search calls in milliseconds.
+
+    generation_ms: float
+    # Time spent on final LLM answer generation in milliseconds.
+
 
 # ── Initial State Factory ─────────────────────────────────────────────────────
 
@@ -163,7 +170,10 @@ def create_initial_state(query: str) -> CRAGState:
         web_search_used         = False,
         source                  = "faiss",
         error                   = "",
+        retrieval_ms            = 0.0,
+        generation_ms           = 0.0,
     )
+
 
 
 # ── Grade Constants ───────────────────────────────────────────────────────────

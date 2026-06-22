@@ -186,7 +186,8 @@ def generator_node(state: CRAGState) -> dict:
                 "The local knowledge base and web search both returned no useful results. "
                 "Please try rephrasing your question or check if the topic is covered "
                 "in the indexed papers."
-            )
+            ),
+            "generation_ms": 0.0,
         }
 
     llm = get_generator_llm()
@@ -202,7 +203,10 @@ def generator_node(state: CRAGState) -> dict:
     )
 
     # Step 3: Generate answer
+    import time
+    start_time = time.perf_counter()
     answer = generate_answer(query, context, llm)
+    generation_ms = (time.perf_counter() - start_time) * 1000
 
     # Step 4: Add metadata footer
     source_label = {
@@ -218,7 +222,9 @@ def generator_node(state: CRAGState) -> dict:
 
     return {
         "generation": final_answer,
+        "generation_ms": generation_ms,
     }
+
 
 
 # ── Test ──────────────────────────────────────────────────────────────────────

@@ -56,9 +56,7 @@ A hallucination is any claim in the answer that:
 An answer is NOT hallucinated if:
 - All specific claims can be traced back to the source documents
 - General statements are reasonable summaries of the documents
-- The answer acknowledges uncertainty where documents are unclear
-
-CRITICAL: Do NOT wrap the JSON response in markdown code blocks, backticks, or '```json'. Return ONLY raw, valid JSON text that directly maps to the schema attributes."""
+- The answer acknowledges uncertainty where documents are unclear"""
 
 
 HALLUCINATION_HUMAN_PROMPT = """Original Question: {query}

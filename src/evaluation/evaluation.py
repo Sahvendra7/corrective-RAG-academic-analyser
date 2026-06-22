@@ -90,6 +90,9 @@ def run_evaluation(mode="crag", judge_model="gemini-3.1-flash-lite"):
                 "retry_count":      0,
                 "pipeline_grade":   "ungraded",
                 "judge_model":      judge_model,
+                "retrieval_ms":     0.0,
+                "generation_ms":    0.0,
+                "total_latency_ms": 0.0,
             }
             pd.DataFrame([row]).to_csv(output_path, mode='a', header=not os.path.exists(output_path), index=False)
             print(f"    [OK] Dummy row saved to CSV.")
@@ -97,12 +100,15 @@ def run_evaluation(mode="crag", judge_model="gemini-3.1-flash-lite"):
 
         # ── NORMAL PIPELINE ROUTING VIA GEMINI FACTORY ───────────────────────
         try:
+            import time
+            start_time = time.perf_counter()
             if mode == "crag":
                 result_state = run_crag_query(item["question"])
             elif mode == "naive":
                 result_state = run_naive_query(item["question"])
             else:
                 raise ValueError(f"Unknown evaluation mode: {mode}")
+            total_latency_ms = (time.perf_counter() - start_time) * 1000
 
             generated_answer   = result_state.get("generation", "Error: No answer generated.")
             retrieved_docs     = result_state.get("documents", [])
@@ -113,17 +119,20 @@ def run_evaluation(mode="crag", judge_model="gemini-3.1-flash-lite"):
                 "answer":           generated_answer,
                 "ground_truth":     item["ground_truth"],
                 "contexts":         str(retrieved_contexts),
-                "pipeline_source": result_state.get("source", "unknown"),
-                "web_search_used": result_state.get("web_search_used", False),
+                "pipeline_source":  result_state.get("source", "unknown"),
+                "web_search_used":  result_state.get("web_search_used", False),
                 "retry_count":      result_state.get("retry_count", 0),
                 "pipeline_grade":   result_state.get("grade", "unknown"),
                 "judge_model":      judge_model,
+                "retrieval_ms":     result_state.get("retrieval_ms", 0.0),
+                "generation_ms":    result_state.get("generation_ms", 0.0),
+                "total_latency_ms": total_latency_ms,
             }
 
             # Safely log data incrementally
             pd.DataFrame([row]).to_csv(output_path, mode='a', header=not os.path.exists(output_path), index=False)
 
-            print(f"    [OK] Answered and saved! (Source: {row['pipeline_source']} | Retries: {row['retry_count']})")
+            print(f"    [OK] Answered and saved! (Source: {row['pipeline_source']} | Retries: {row['retry_count']} | Latency: {total_latency_ms:.1f}ms)")
 
             # Crucial Sleep Delay to cool down Gemini's free tier RPM limit
             if i < len(eval_data) - 1:
@@ -141,7 +150,22 @@ def run_evaluation(mode="crag", judge_model="gemini-3.1-flash-lite"):
     # ── Clean Exit ──────────────────────────────────────────────────────────
     print(f"\n[SUCCESS] Generation loop complete!")
     print(f"Your raw dataset is safely preserved inside: {output_path}")
+
+    # Latency Stats Summary
+    try:
+        df_res = pd.read_csv(output_path)
+        if all(col in df_res.columns for col in ["retrieval_ms", "generation_ms", "total_latency_ms"]):
+            print(f"\n=== LATENCY SUMMARY STATS ({mode.upper()}) ===")
+            for metric in ["retrieval_ms", "generation_ms", "total_latency_ms"]:
+                mean_val = df_res[metric].mean()
+                p95_val = df_res[metric].quantile(0.95)
+                print(f"  {metric:<18} | Mean: {mean_val:8.2f} ms | P95: {p95_val:8.2f} ms")
+            print("======================================\n")
+    except Exception as e:
+        print(f"[WARNING] Could not generate latency summary stats: {e}")
+
     print("Ready for Step 2: Run your standalone RAGAS script on this CSV.\n")
 
+
 if __name__ == "__main__":
-    run_evaluation(mode="naive", judge_model="gemini-3.1-flash-lite")
+    run_evaluation(mode="crag", judge_model="gemini-3.1-flash-lite")
