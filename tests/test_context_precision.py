@@ -15,7 +15,9 @@ load_dotenv()
 
 def test_context_precision_calculation():
     # Ensure Gemini API key is set
-    assert "GEMINI_API_KEY" in os.environ, "GEMINI_API_KEY environment variable is not set"
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key or gemini_api_key == "your_key_here":
+        pytest.skip("GEMINI_API_KEY environment variable is not set. Skipping context precision test.")
 
     # Setup the asyncio loop for Ragas under Windows
     try:
