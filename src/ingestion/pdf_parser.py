@@ -56,6 +56,7 @@ HEADING_MAX_WORDS = 14
 
 _CAPTION = re.compile(r"^(fig(ure)?|table|tab\.|algorithm)\s*\d+", re.IGNORECASE)
 _PAGE_NUMBER = re.compile(r"^(page\s*)?\d{1,4}(\s*(of|/)\s*\d+)?$", re.IGNORECASE)
+_ARXIV_STAMP = re.compile(r"^arxiv:\s*\d{4}\.\d{4,5}", re.IGNORECASE)
 _INLINE_ABSTRACT = re.compile(r"^abstract\s*[—–\-:.]\s*", re.IGNORECASE)
 
 
@@ -202,7 +203,7 @@ def _read_blocks(pdf_path: Path) -> tuple[list[_Block], int]:
                     spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
                     if not spans:
                         continue
-                    text = "".join(s["text"] for s in spans)
+                    text = _join_spans(spans)
                     chars = sum(len(s["text"]) for s in spans) or 1
                     size = sum(s["size"] * len(s["text"]) for s in spans) / chars
                     bold = all((s.get("flags", 0) & 16) or "bold" in s.get("font", "").lower() for s in spans)
@@ -211,6 +212,25 @@ def _read_blocks(pdf_path: Path) -> tuple[list[_Block], int]:
                 if lines:
                     blocks.append(_Block(page=page_index + 1, lines=lines, page_height=height))
     return blocks, num_pages
+
+
+def _join_spans(spans: list[dict[str, Any]]) -> str:
+    """Concatenate spans, inserting a space where the horizontal gap implies one.
+
+    Justified LaTeX output often encodes inter-word space as positioning rather
+    than a space glyph, so naive concatenation glues words together.
+    """
+    out = ""
+    prev_x1: float | None = None
+    for span in spans:
+        text = span["text"]
+        x0 = span.get("bbox", (0, 0, 0, 0))[0]
+        if out and prev_x1 is not None and not out.endswith(" ") and not text.startswith(" "):
+            if x0 - prev_x1 > 0.12 * span.get("size", 10.0):
+                out += " "
+        out += text
+        prev_x1 = span.get("bbox", (0, 0, 0, 0))[2]
+    return out
 
 
 def _body_font_size(blocks: list[_Block]) -> float:
@@ -282,7 +302,7 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
             continue
         block = _Block(page=block.page, lines=kept, page_height=block.page_height)
         text = clean_text(block.text)
-        if not text:
+        if not text or _ARXIV_STAMP.match(text):
             continue
 
         # "1" on its own line followed by "Introduction": remember the number.
@@ -309,7 +329,14 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
             pending_number = ""
             canonical = classify_heading(title)
             depth = numbering_depth(title)
-            is_sub = depth >= 2 or (canonical == Section.OTHER and section not in (Section.FRONT_MATTER,) and depth == 0 and not looks_like_known_heading(title))
+            if section == Section.FRONT_MATTER and canonical == Section.OTHER:
+                heading = strip_numbering(title)  # paper title / author block
+                continue
+            if section == Section.REFERENCES and canonical == Section.OTHER:
+                canonical = Section.APPENDIX  # first heading after the bibliography
+            is_sub = depth >= 2 or (
+                canonical == Section.OTHER and depth == 0 and not looks_like_known_heading(title)
+            )
             if is_sub and heading:
                 subheading = strip_numbering(title)
             else:
@@ -318,8 +345,6 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
                     section = canonical
                 elif section in (Section.FRONT_MATTER, Section.ABSTRACT):
                     section = Section.OTHER
-                elif section == Section.REFERENCES:
-                    section = Section.APPENDIX  # content after the bibliography
             parsed.headings.append({"text": title, "page": block.page, "section": section.value, "level": 2 if subheading else 1})
             continue
         pending_number = ""
