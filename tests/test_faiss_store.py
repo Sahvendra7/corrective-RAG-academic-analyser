@@ -1,120 +1,119 @@
+"""Index build/load consistency and retrieval behaviour (hashing embedder, no downloads)."""
+
+from __future__ import annotations
+
 import json
-import logging
-from pathlib import Path
+
 import numpy as np
-import faiss
 import pytest
 
-# Import your production-grade store class
-from src.vectorstore.faiss_store import FAISSStore
+from src.vectorstore.embeddings import HashingEmbedder
+from src.vectorstore.faiss_store import FAISSStore, IndexConsistencyError, build_index
+from tests.conftest import make_chunks
 
-# ── Test Configuration ────────────────────────────────────────────────────────
-TEST_EMBEDDINGS_DIR = Path("data/embeddings")
-TEST_INDEX_PATH     = TEST_EMBEDDINGS_DIR / "faiss_test.index"
-TEST_CHUNKS_FILE    = Path("data/processed/chunks/1003.3081_chunks.json")
-EMBEDDING_DIM       = 384
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
+@pytest.fixture
+def index_dir(settings_env, tmp_path):
+    build_index(make_chunks(), tmp_path / "index", embedder=HashingEmbedder())
+    return tmp_path / "index"
 
-class FAISSStoreTestHelper(FAISSStore):
-    """
-    Subclass of production FAISSStore that overrides data paths 
-    to test index generation on a single paper in isolation.
-    """
-    def build_test_index(self, test_arxiv_id: str):
-        logger.info(f"--- Building Isolated FAISS Index for Paper: {test_arxiv_id} ---")
-        
-        # 1. Load your production artifacts
-        embeddings_path = TEST_EMBEDDINGS_DIR / "embeddings.npy"
-        ids_path = TEST_EMBEDDINGS_DIR / "chunk_ids.json"
-        registry_path = TEST_EMBEDDINGS_DIR / "chunk_registry.json"
-        
-        if not embeddings_path.exists() or not ids_path.exists() or not registry_path.exists():
-            logger.error("Global embedding artifacts missing. Run embeddings.py first.")
-            return False
 
-        # Load global arrays
-        all_embeddings = np.load(str(embeddings_path)).astype("float32")
-        with open(ids_path, "r") as f:
-            all_chunk_ids = json.load(f)
-        with open(registry_path, "r") as f:
-            all_registry = json.load(f)
+def load(index_dir):
+    return FAISSStore(index_dir=index_dir, embedder=HashingEmbedder())
 
-        # 2. Extract ONLY rows corresponding to our target test paper
-        test_indices = [i for i, cid in enumerate(all_chunk_ids) if cid.startswith(test_arxiv_id)]
-        
-        if not test_indices:
-            logger.error(f"No embeddings found matching paper ID: {test_arxiv_id} in global matrix.")
-            return False
-            
-        logger.info(f"Extracting {len(test_indices)} chunk rows from the global matrix...")
-        
-        # Slice matrix rows and filter metadata structures
-        self.chunk_ids = [all_chunk_ids[idx] for idx in test_indices]
-        test_embeddings = all_embeddings[test_indices]
-        self.registry = {cid: all_registry[cid] for cid in self.chunk_ids if cid in all_registry}
 
-        # 3. Compile FAISS Structure (Using production Flat Inner Product logic)
-        self.index = faiss.IndexFlatIP(EMBEDDING_DIM)
-        self.index.add(test_embeddings)
-        
-        logger.info(f"Isolated FAISS Index initialized with total rows: {self.index.ntotal}")
-        
-        # 4. Save test index binary to disk
-        faiss.write_index(self.index, str(TEST_INDEX_PATH))
-        logger.info(f"Test index safely serialized to: {TEST_INDEX_PATH}")
-        
-        # Initialize internal embedding engine for query handling
-        self._load_model()
-        return True
+def test_embedder_vectors_are_normalised_and_deterministic():
+    emb = HashingEmbedder(dim=64)
+    a, b = emb.encode(["retrieval evaluator", "retrieval evaluator"]), emb.encode(["retrieval evaluator"])
+    assert a.dtype == np.float32 and a.shape == (2, 64)
+    assert np.allclose(np.linalg.norm(a, axis=1), 1.0)
+    assert np.array_equal(a[0], b[0])
 
-def run_isolated_store_test():
-    test_arxiv_id = "1003.3081"
-    
-    # Initialize store without loading global production file
-    store = FAISSStoreTestHelper(load_existing=False)
-    
-    # Build isolated context
-    success = store.build_test_index(test_arxiv_id)
-    if not success:
-        return
 
-    # Verify basic internal stats
-    print("\n" + "="*60)
-    print(" Running In-Memory Matrix & Integrity Verifications")
-    print("="*60)
-    logger.info(f"FAISS Indexed Vectors : {store.index.ntotal} (Expected: 26)")
-    logger.info(f"Chunk ID Mapping Size : {len(store.chunk_ids)} matches.")
-    logger.info(f"Text Registry Records : {len(store.registry)} paragraphs cached.")
-    
-    assert store.index.ntotal == len(store.chunk_ids) == len(store.registry), "Data synchronization mismatch!"
-    logger.info("[PASS] Vector rows are perfectly synchronized with metadata structures.")
+def test_roundtrip_and_manifest(index_dir):
+    store = load(index_dir)
+    manifest = json.loads((index_dir / "manifest.json").read_text())
+    assert store.is_ready and store.index.ntotal == len(make_chunks()) == manifest["num_vectors"]
+    assert manifest["embedding_model"] == "hashing" and manifest["num_papers"] == 2
+    assert store.get_chunk_by_id("2401.00001_chunk_2")["page_start"] == 6
 
-    # 4. Fire an isolated semantic retrieval query
-    print("\n" + "-"*40)
-    print(" Executing Live Semantic Search Test")
-    print("-"*40)
-    test_query = "What is limited sustained activity (LSA) in cortical column networks?"
-    top_k = 2
-    
-    results = store.search(test_query, top_k=top_k)
-    
-    print(f"\nRetrieved top {len(results)} chunks for query: '{test_query}'")
-    for i, r in enumerate(results):
-        print(f"\n[Rank {i+1}] Similarity Score: {r['score']:.4f}")
-        print(f"Chunk Location  : {r['chunk_id']}")
-        print(f"Paper Title     : {r['title']}")
-        print(f"Text Payload    : {r['text'][:180]}...")
-    print("="*60 + "\n")
 
-    # Clean up test binary file from disk
-    if TEST_INDEX_PATH.exists():
-        TEST_INDEX_PATH.unlink()
+def test_search_returns_provenance_and_cosine_scores(index_dir):
+    results = load(index_dir).search("retrieval evaluator assigns confidence", top_k=2)
+    assert results[0]["chunk_id"] == "2401.00001_chunk_0"
+    assert {"title", "section", "page_start", "url", "score"} <= set(results[0])
+    assert -1.0 <= results[-1]["score"] <= results[0]["score"] <= 1.0
 
-def test_isolated_store():
-    """Pytest entrypoint to execute the isolated FAISS store tests."""
-    run_isolated_store_test()
 
-if __name__ == "__main__":
-    run_isolated_store_test()
+def test_paper_filter_is_exact_not_post_filtered(index_dir):
+    results = load(index_dir).search("retrieval evaluator", top_k=5, paper_ids=["2402.00002"])
+    assert results and {r["arxiv_id"] for r in results} == {"2402.00002"}
+    assert load(index_dir).search("anything", paper_ids=["9999.99999"]) == []
+
+
+def test_exclude_ids_returns_next_ranked(index_dir):
+    store = load(index_dir)
+    first = store.search("retrieval evaluator", top_k=2)
+    second = store.search("retrieval evaluator", top_k=2, exclude_ids={r["chunk_id"] for r in first})
+    assert not {r["chunk_id"] for r in first} & {r["chunk_id"] for r in second}
+
+
+def test_duplicate_text_is_deduplicated(settings_env, tmp_path):
+    chunks = make_chunks()
+    dup = dict(chunks[0], chunk_id="2401.00001_chunk_99")  # same content_hash
+    build_index(chunks + [dup], tmp_path / "dup", embedder=HashingEmbedder())
+    results = load(tmp_path / "dup").search(chunks[0]["text"], top_k=3)
+    assert len({r["content_hash"] for r in results}) == len(results)
+
+
+def test_empty_or_missing_index(settings_env, tmp_path):
+    store = FAISSStore(index_dir=tmp_path / "missing", embedder=HashingEmbedder())
+    assert not store.is_ready and store.search("x") == [] and store.stats() == {"ready": False}
+    with pytest.raises(ValueError):
+        build_index([], tmp_path / "empty", embedder=HashingEmbedder())
+
+
+def test_blank_query_returns_nothing(index_dir):
+    assert load(index_dir).search("   ") == []
+
+
+@pytest.mark.parametrize(
+    "tamper, match",
+    [
+        (lambda d: (d / "chunks.jsonl").write_text((d / "chunks.jsonl").read_text().split("\n", 1)[1]), "row mismatch"),
+        (lambda d: (d / "faiss.index").unlink(), "missing"),
+        (lambda d: (d / "faiss.index").write_bytes(b"garbage"), "cannot read"),
+        (
+            lambda d: (d / "chunks.jsonl").write_text((d / "chunks.jsonl").read_text().replace("chunk_0", "chunk_X", 1)),
+            "checksum",
+        ),
+    ],
+)
+def test_corruption_is_detected(index_dir, tamper, match):
+    tamper(index_dir)
+    with pytest.raises(IndexConsistencyError, match=match):
+        load(index_dir)
+
+
+def test_embedder_mismatch_is_refused(index_dir):
+    with pytest.raises(IndexConsistencyError, match="query embedder"):
+        FAISSStore(index_dir=index_dir, embedder=HashingEmbedder(dim=128))
+
+
+def test_rebuild_replaces_atomically(index_dir):
+    chunks = make_chunks()[:2]
+    build_index(chunks, index_dir, embedder=HashingEmbedder())
+    assert load(index_dir).index.ntotal == 2
+    assert not list(index_dir.parent.glob(".index.*"))  # no temp/old dirs left behind
+
+
+def test_duplicate_chunk_ids_rejected(settings_env, tmp_path):
+    chunks = make_chunks()
+    with pytest.raises(ValueError, match="duplicate"):
+        build_index(chunks + [chunks[0]], tmp_path / "x", embedder=HashingEmbedder())
+
+
+def test_papers_listing(index_dir):
+    papers = load(index_dir).papers()
+    assert [p["arxiv_id"] for p in papers] == ["2401.00001", "2402.00002"]
+    assert papers[0]["num_chunks"] == 3

@@ -1,5 +1,7 @@
 import os
 import pytest
+
+pytestmark = pytest.mark.llm  # needs GEMINI_API_KEY; run with `pytest -m llm`
 import asyncio
 from dotenv import load_dotenv
 from datasets import Dataset

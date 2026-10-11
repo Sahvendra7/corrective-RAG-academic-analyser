@@ -1,270 +1,135 @@
 """
-nodes/hallucination.py
------------------------
-The hallucination checking node in the CRAG pipeline.
+Grounding verifier: checks the generated answer against the evidence it was
+generated from.
 
-Runs after the generator node as a quality gate.
-Checks whether the generated answer is fully grounded
-in the retrieved documents or contains fabricated claims.
+Two signals, reported separately in ``state["grounding"]``:
+
+1. LLM claim check — the model lists claims not supported by the sources.
+2. Deterministic number check — numbers in the answer that appear in no
+   evidence passage (``unsupported_numbers``).
+
+Neither proves an answer correct; a clean check means "no problem found".
+If the verifier itself fails, the answer is marked *unverified*
+(``hallucination=True``, ``checked=False``), never silently "grounded".
+
+The verifier sees the answer **without** the generated Sources list and the
+evidence rendered exactly as the generator saw it.
 """
 
-import logging
+from __future__ import annotations
 
-from langchain_core.messages import SystemMessage, HumanMessage
+import logging
+import time
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-
-from src.pipeline.state import CRAGState, Document
+from src.config import get_settings
+from src.pipeline.evidence import UNTRUSTED_NOTICE, format_evidence, unsupported_numbers
 from src.pipeline.llm_factory import get_llm
-
-# ── Logging ───────────────────────────────────────────────────────────────────
+from src.pipeline.state import CRAGState, trace_entry
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+VERIFY_FAILED = "The grounding check could not run; the answer is unverified."
 
-MAX_CONTEXT_LEN = 6000  # Max chars of context to send to hallucination checker
-
-
-# ── Pydantic Schema for Structured Output ─────────────────────────────────────
 
 class HallucinationGrade(BaseModel):
-    """Structured output schema for the hallucination checker."""
-    hallucination: bool = Field(
-        description="True if the answer contains fabricated claims, False if fully grounded."
-    )
-    reasoning: str = Field(
-        description="Clear explanation of what is or is not grounded."
-    )
-    unsupported_claims: list[str] = Field(
-        default=[],
-        description="List of specific claims that are not supported. Empty if none."
-    )
-
-# ── Prompt Templates ──────────────────────────────────────────────────────────
-
-HALLUCINATION_SYSTEM_PROMPT = """You are an expert fact-checker for AI-generated answers about academic papers.
-
-Your job is to determine whether a generated answer is fully grounded in the provided source documents, or whether it contains hallucinated (fabricated) claims.
-
-A hallucination is any claim in the answer that:
-- Is not supported by ANY of the provided source documents
-- Contradicts information stated in the source documents
-- Adds specific details (statistics, names, dates, numbers) not present in sources
-- Makes causal claims not explicitly stated in the documents
-
-An answer is NOT hallucinated if:
-- All specific claims can be traced back to the source documents
-- General statements are reasonable summaries of the documents
-- The answer acknowledges uncertainty where documents are unclear"""
+    hallucination: bool = Field(description="True if any claim in the answer is not supported by the sources")
+    reasoning: str = Field(description="Brief explanation")
+    unsupported_claims: list[str] = Field(default_factory=list, description="Unsupported claims, quoted briefly")
 
 
-HALLUCINATION_HUMAN_PROMPT = """Original Question: {query}
+HALLUCINATION_SYSTEM_PROMPT = f"""You check whether an answer is supported by its sources.
 
-Source Documents:
-{context}
+A claim is unsupported if no source states it, if it contradicts a source, if it adds specifics
+(numbers, names, dates, causal statements) absent from the sources, or if its citation marker [n]
+points to a source that does not say it. Statements that the sources do not cover something are fine.
+{UNTRUSTED_NOTICE}"""
 
-Generated Answer to Check:
+HALLUCINATION_HUMAN_PROMPT = """Question: {query}
+
+{sources}
+
+Answer to check:
+<answer>
 {answer}
+</answer>
 
-Is this answer fully grounded in the source documents?
-Check every specific claim, number, name, and statement."""
-
-
-# ── Context Builder ───────────────────────────────────────────────────────────
-
-def build_check_context(documents: list[Document]) -> str:
-    """
-    Build a compact context string for the hallucination checker.
-    Directly uses the already-curated relevant_documents from state.
-    """
-    context_parts = []
-    total_chars   = 0
-
-    for i, doc in enumerate(documents, start=1):
-        # Truncate individual doc to keep total context manageable
-        text = doc.get("text", "")[:800]
-        title = doc.get("title", "Unknown")
-
-        part = f"[Doc {i}] {title}\n{text}"
-        part_chars = len(part)
-
-        # Stop adding docs if we'd exceed the context limit
-        if total_chars + part_chars > MAX_CONTEXT_LEN:
-            logger.info(
-                f"[HALLUCINATION] Context limit reached at doc {i} - truncating context"
-            )
-            break
-
-        context_parts.append(part)
-        total_chars += part_chars
-
-    return "\n\n".join(context_parts)
+List every unsupported claim."""
 
 
-# ── Core Check Logic ──────────────────────────────────────────────────────────
-
-def check_hallucination(
-    query: str,
-    answer: str,
-    context: str,
-    llm,
-) -> dict:
-    """
-    Ask the LLM to check whether the answer is grounded in context using Pydantic.
-    """
-    answer_to_check = answer[:3000] if len(answer) > 3000 else answer
-
+def check_hallucination(query: str, answer: str, sources: str, llm) -> dict:
     messages = [
         SystemMessage(content=HALLUCINATION_SYSTEM_PROMPT),
-        HumanMessage(
-            content=HALLUCINATION_HUMAN_PROMPT.format(
-                query=query,
-                context=context,
-                answer=answer_to_check,
-            )
-        ),
+        HumanMessage(content=HALLUCINATION_HUMAN_PROMPT.format(query=query, sources=sources, answer=answer[:4000])),
     ]
-
-    structured_llm = llm.with_structured_output(HallucinationGrade)
-
     try:
-        result = structured_llm.invoke(messages)
-
+        result = llm.with_structured_output(HallucinationGrade).invoke(messages)
         if result is None:
-            logger.warning("[HALLUCINATION] LLM returned None — defaulting to hallucination=False")
-            return {
-                "hallucination": False,
-                "reasoning": "LLM returned None (failed to parse structured output) — defaulted to no hallucination",
-                "unsupported_claims": [],
-            }
-
-        if result.hallucination:
-            logger.warning(
-                f"[HALLUCINATION] DETECTED - {len(result.unsupported_claims)} unsupported claims"
-            )
-            for claim in result.unsupported_claims:
-                logger.warning(f"  Unsupported: {claim[:100]}")
-        else:
-            logger.info("[HALLUCINATION] CLEAR - answer is grounded in sources")
-
+            raise ValueError("no structured output")
+    except Exception as exc:
+        logger.error("[VERIFIER] check failed: %s", exc)
         return {
-            "hallucination": result.hallucination,
-            "reasoning": result.reasoning,
-            "unsupported_claims": result.unsupported_claims,
+            "checked": False,
+            "verifier_failed": True,
+            "hallucination": True,
+            "reasoning": VERIFY_FAILED,
+            "unsupported_claims": [],
         }
-
-    except Exception as e:
-        logger.error(f"[HALLUCINATION] Check failed with error: {e}", exc_info=True)
-        return {
-            "hallucination": True,  # Fail-closed: assume hallucinated if check fails
-            "reasoning": "Hallucination check failed due to an internal error. Marking as potentially hallucinated for safety.",
-            "unsupported_claims": ["Unable to verify — hallucination check encountered an error"],
-        }
-
-
-# ── Answer Annotation ─────────────────────────────────────────────────────────
-
-def annotate_answer(answer: str, check_result: dict) -> str:
-    """Optionally annotate the answer with a hallucination warning."""
-    if not check_result["hallucination"]:
-        return answer
-
-    unsupported = check_result["unsupported_claims"]
-    if not unsupported:
-        return answer
-
-    warning = (
-        "\n\n⚠️ **Reliability Warning**: This answer may contain claims "
-        "not fully supported by the retrieved documents. "
-        "Please verify the following before relying on this answer:\n"
-    )
-    for claim in unsupported[:3]:  # Show max 3 unsupported claims
-        warning += f"  • {claim}\n"
-
-    return answer + warning
+    claims = [c for c in result.unsupported_claims if c.strip()]
+    return {
+        "checked": True,
+        "hallucination": bool(result.hallucination or claims),
+        "reasoning": result.reasoning,
+        "unsupported_claims": claims,
+    }
 
 
-# ── Node Function ─────────────────────────────────────────────────────────────
+def annotate_answer(generation: str, grounding: dict) -> str:
+    notes = []
+    if grounding.get("verifier_failed"):
+        notes.append("⚠️ **Unverified**: the grounding check could not run.")
+    elif grounding.get("unsupported_claims"):
+        claims = "\n".join(f"  - {c}" for c in grounding["unsupported_claims"][:5])
+        notes.append(f"⚠️ **Possibly unsupported by the sources** — verify before relying on:\n{claims}")
+    if grounding.get("unsupported_numbers"):
+        notes.append("⚠️ Numbers not found in any source: " + ", ".join(grounding["unsupported_numbers"][:8]))
+    return generation if not notes else generation + "\n\n" + "\n\n".join(notes)
+
 
 def hallucination_node(state: CRAGState) -> dict:
-    """LangGraph node: check generated answer for hallucinations."""
-    query      = state["query"]
-    answer     = state.get("generation", "")
-    
-    # CRITICAL FIX: Read from relevant_documents to match Generator's exact context
-    documents  = state.get("relevant_documents", [])
+    started = time.perf_counter()
+    evidence = state.get("evidence", [])
+    answer = state.get("answer_text", "")
+    grounding = dict(state.get("grounding", {}))
+    warnings = list(state.get("warnings", []))
 
-    logger.info(f"[HALLUCINATION] Checking answer for query: '{query[:60]}'")
+    if not evidence or not answer:
+        grounding.update(checked=False, applicable=False)
+        return {"grounding": grounding, "trace": trace_entry(state, "hallucination_checker", started, "skipped")}
 
-    if not answer.strip():
-        logger.warning("[HALLUCINATION] No answer in state — skipping check")
-        return {
-            "hallucination": False,
-            "hallucination_reasoning": "No answer to check",
-        }
+    grounding["unsupported_numbers"] = unsupported_numbers(answer, evidence)
+    calls = 0
+    if get_settings().verify_grounding:
+        sources = format_evidence(evidence, get_settings().max_evidence_chars)
+        grounding.update(check_hallucination(state["query"], answer, sources, get_llm()))
+        calls = 1
+    else:
+        grounding.update(checked=False, hallucination=False, reasoning="grounding check disabled", unsupported_claims=[])
+    grounding["applicable"] = True
+    if grounding.get("verifier_failed") and VERIFY_FAILED not in warnings:
+        warnings.append(VERIFY_FAILED)
 
-    if not documents:
-        logger.warning(
-            "[HALLUCINATION] No documents in state — "
-            "cannot verify answer, marking as potentially hallucinated"
-        )
-        return {
-            "hallucination": True,
-            "hallucination_reasoning": "No source documents available to verify answer against",
-        }
-
-    llm = get_llm()
-    context = build_check_context(documents)
-    check_result = check_hallucination(query, answer, context, llm)
-    annotated_answer = annotate_answer(answer, check_result)
-
+    detail = "unverified" if not grounding["checked"] else (
+        f"{len(grounding['unsupported_claims'])} unsupported claims" if grounding["hallucination"] else "no unsupported claims found"
+    )
     return {
-        "hallucination": check_result["hallucination"],
-        "hallucination_reasoning": check_result["reasoning"],
-        "generation": annotated_answer,
+        "hallucination": grounding["hallucination"],
+        "hallucination_reasoning": grounding.get("reasoning", ""),
+        "grounding": grounding,
+        "generation": annotate_answer(state.get("generation", ""), grounding),
+        "warnings": warnings,
+        "llm_calls": state.get("llm_calls", 0) + calls,
+        "trace": trace_entry(state, "hallucination_checker", started, detail),
     }
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    test_state: CRAGState = {
-        "query": "How does Corrective RAG decide when to use web search?",
-        "rewritten_query": "",
-        "documents": [],
-        "relevant_documents": [
-            {
-                "chunk_id": "2401.15884_chunk_0",
-                "arxiv_id": "2401.15884",
-                "text": (
-                    "Corrective Retrieval Augmented Generation (CRAG) introduces "
-                    "a lightweight retrieval evaluator to assess the quality of "
-                    "retrieved documents. When documents are graded as incorrect, "
-                    "CRAG triggers a web search via external APIs."
-                ),
-                "score": 0.93,
-                "title": "Corrective Retrieval Augmented Generation",
-                "authors": ["Shi-Qi Yan", "Jia-Chen Gu"],
-                "published": "2024-01-29",
-                "url": "http://arxiv.org/abs/2401.15884",
-                "abstract": "CRAG paper abstract",
-                "grade": "relevant",
-                "source": "faiss",
-            }
-        ],
-        "grade": "relevant",
-        "document_grades": [],
-        "generation": "CRAG uses a retrieval evaluator to assess document quality. When documents are irrelevant, it triggers web search.",
-        "hallucination": False,
-        "hallucination_reasoning": "",
-        "retry_count": 0,
-        "web_search_used": False,
-        "source": "faiss",
-        "error": "",
-    }
-
-    print("\nRunning hallucination node test...")
-    result = hallucination_node(test_state)
-    print(f"Hallucination: {result['hallucination']}")
-    print(f"Reasoning: {result['hallucination_reasoning']}")

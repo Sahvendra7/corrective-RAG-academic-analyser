@@ -52,19 +52,6 @@ _NUMBERING = re.compile(r"^\s*((\d+(\.\d+)*)|([ivxlc]+)|([a-z]))[\.\):]?\s+", re
 # Sections whose text should not be indexed by default.
 NON_CONTENT_SECTIONS = {Section.REFERENCES, Section.ACKNOWLEDGEMENTS, Section.FRONT_MATTER}
 
-# Sections a query intent should prefer (used as a soft retrieval prior).
-INTENT_SECTION_PRIORS: dict[str, set[Section]] = {
-    "limitations": {Section.LIMITATIONS, Section.DISCUSSION, Section.CONCLUSION},
-    "datasets": {Section.EXPERIMENTS, Section.RESULTS},
-    "baselines": {Section.EXPERIMENTS, Section.RESULTS},
-    "results": {Section.RESULTS, Section.EXPERIMENTS, Section.ABSTRACT},
-    "method": {Section.METHOD, Section.ABSTRACT, Section.INTRODUCTION},
-    "contribution": {Section.ABSTRACT, Section.INTRODUCTION, Section.CONCLUSION},
-    "related_work": {Section.RELATED_WORK, Section.INTRODUCTION},
-    "future_work": {Section.CONCLUSION, Section.LIMITATIONS, Section.DISCUSSION},
-}
-
-
 def strip_numbering(heading: str) -> str:
     """Remove leading section numbering such as ``3.2``, ``IV.`` or ``A.``."""
     return _NUMBERING.sub("", heading.strip(), count=1).strip()

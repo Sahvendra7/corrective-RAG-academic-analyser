@@ -11,10 +11,11 @@ Usage:
 # TODO: Add try/except block for 404s and fix pre-2007 ID parsing
 
 import arxiv
-import json
-import time
 import logging
-import urllib.request
+import os
+import re
+import tempfile
+import time
 import requests
 from pathlib import Path
 
@@ -55,6 +56,11 @@ def setup_dirs():
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     META_FILE.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Directories ready: {RAW_DIR}, {META_FILE.parent}")
+
+
+def strip_version(paper_id: str) -> str:
+    """``2401.15884v2`` → ``2401.15884``. Splitting on "v" breaks ids such as ``solv-int/9901001v1``."""
+    return re.sub(r"v\d+$", "", paper_id)
 
 
 def sanitize_filename(title: str) -> str:
@@ -107,7 +113,7 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
                 break
 
             paper_id = result.entry_id.split("/abs/")[-1]  # e.g. "2401.15884v2" or "quant-ph/0412125v1"
-            arxiv_id = paper_id.split("v")[0]              # e.g. "2401.15884" or "quant-ph/0412125"
+            arxiv_id = strip_version(paper_id)             # e.g. "2401.15884" or "quant-ph/0412125"
             # Sanitize pre-2007 IDs that contain '/' (e.g. "quant-ph/0412125")
             arxiv_id = arxiv_id.replace("/", "_")
 
@@ -180,16 +186,84 @@ def download_papers(queries: list[str], papers_per_query: int, metadata: dict) -
     return metadata
 
 
+# ── Re-fetch PDFs listed in metadata.json ─────────────────────────────────────
+
+def pdf_url_for(paper: dict) -> str:
+    """PDF URL for the exact arXiv version recorded in metadata (``…/abs/2401.15884v2``)."""
+    abs_url = paper.get("url") or f"http://arxiv.org/abs/{paper['arxiv_id']}"
+    paper_id = abs_url.rstrip("/").split("/abs/")[-1]
+    return f"https://arxiv.org/pdf/{paper_id}"
+
+
+def fetch_pdf(url: str, dest: Path, timeout: float = 60.0) -> None:
+    """Download ``url`` to ``dest`` atomically; raise ``ValueError`` if it is not a PDF."""
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    if not response.content.startswith(b"%PDF-"):
+        raise ValueError(f"not a PDF: {url}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(response.content)
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def download_from_metadata(metadata: dict, delay: float = DELAY_BETWEEN_DOWNLOADS) -> dict[str, int]:
+    """Download the PDF of every paper in ``metadata`` that is missing from ``data/raw``.
+
+    The repository ships ``metadata.json`` but not the PDFs (``data/raw`` is
+    git-ignored), so this is how a fresh clone rebuilds the corpus with the same
+    papers and versions.
+    """
+    stats = {"downloaded": 0, "present": 0, "failed": 0}
+    for arxiv_id, paper in metadata.items():
+        dest = Path(paper["pdf_path"]) if paper.get("pdf_path") else RAW_DIR / f"{arxiv_id}.pdf"
+        if not dest.is_absolute():
+            dest = config.PROJECT_ROOT / dest
+        if dest.resolve().parent != RAW_DIR.resolve():
+            dest = RAW_DIR / f"{arxiv_id}.pdf"  # never write outside data/raw
+        if dest.exists():
+            stats["present"] += 1
+            continue
+        try:
+            fetch_pdf(pdf_url_for(paper), dest)
+            stats["downloaded"] += 1
+            logger.info(f"[OK]   {arxiv_id}")
+        except Exception as e:
+            stats["failed"] += 1
+            logger.error(f"[ERR]  {arxiv_id}: {e}")
+        time.sleep(delay)
+    return stats
+
+
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Download arXiv PDFs into data/raw")
+    ap.add_argument(
+        "--from-metadata",
+        action="store_true",
+        help="re-download the PDFs listed in data/processed/metadata.json instead of searching",
+    )
+    args = ap.parse_args()
+
     logger.info("Starting arXiv downloader...")
     setup_dirs()
     metadata = load_metadata(META_FILE)
+    if args.from_metadata:
+        logger.info(f"Download summary: {download_from_metadata(metadata)}")
+        return
     metadata = download_papers(SEARCH_QUERIES, PAPERS_PER_QUERY, metadata)
     save_metadata(metadata, META_FILE)
     logger.info("Done.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     main()

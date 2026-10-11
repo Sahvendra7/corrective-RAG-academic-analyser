@@ -36,13 +36,13 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 # Import your EXACT SAME state to avoid Pydantic/LangGraph TypeErrors
 from src.pipeline.state import CRAGState, create_initial_state
 
-# 🚨 IMPORT YOUR RAW RETRIEVER HERE 🚨
-# Change this path if your vectorstore is located somewhere else
-from src.vectorstore.faiss_store import FAISSStore
-
+# Same index and the same top_k as the CRAG pipeline, so comparisons are fair.
+# (v0.1 built a FAISSStore at import time and used top_k=5 here vs 2 in CRAG.)
 from langchain_core.prompts import ChatPromptTemplate
+
+from src.config import get_settings
 from src.pipeline.llm_factory import get_generator_llm
-store = FAISSStore()
+from src.pipeline.nodes.retriever import get_store
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -87,7 +87,7 @@ def custom_naive_generator(state: CRAGState) -> dict:
 
 def custom_naive_retriever(state: CRAGState) -> dict:
     """
-    A dedicated naive retriever node that blindly fetches top 5 results.
+    A dedicated naive retriever node that blindly fetches the top-k results.
     """
     query = state.get("query", "")
     logger.info(f"[NAIVE GRAPH] Retrieving raw documents for: '{query}'")
@@ -95,7 +95,7 @@ def custom_naive_retriever(state: CRAGState) -> dict:
     # 1. Fetch the raw documents
     import time
     start_time = time.perf_counter()
-    docs = store.search(query, top_k=5) 
+    docs = get_store().search(query, top_k=get_settings().top_k)
     retrieval_ms = (time.perf_counter() - start_time) * 1000
     
     # 2. THE FIX: Rubber-stamp every document as "relevant"

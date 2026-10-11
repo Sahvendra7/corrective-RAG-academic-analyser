@@ -1,293 +1,124 @@
 """
-embeddings.py
---------------
-Loads all chunks from data/processed/chunks/,
-generates embeddings using sentence-transformers,
-and saves them to data/embeddings/ as numpy arrays.
+Embedding models behind one small interface.
 
-Also builds a chunk registry JSON mapping chunk_id -> metadata
-for fast lookup during retrieval.
+Every embedder returns L2-normalised ``float32`` vectors, so inner product in
+FAISS equals cosine similarity. The index manifest records the embedder name
+and dimension; :class:`~src.vectorstore.faiss_store.FAISSStore` refuses to
+query an index with a different embedder (mixed vector spaces return
+plausible-looking but meaningless neighbours).
 
-Usage:
-    python src/vectorstore/embeddings.py
+``HashingEmbedder`` ("hashing") is a deterministic bag-of-words embedder with
+no download and no model weights. It exists so tests and CI can exercise the
+full ingestion → index → retrieval path offline; it is not meant for real use.
 """
 
-import json
+from __future__ import annotations
+
+import hashlib
 import logging
+import re
+import threading
+from functools import lru_cache
+from typing import Protocol
+
 import numpy as np
-from pathlib import Path
-from sentence_transformers import SentenceTransformer
-# tqdm is used internally by SentenceTransformer.encode(show_progress_bar=True)
-
-# logging.basicConfig(level=logging.INFO, format='%(message)s')
-# ── Config ────────────────────────────────────────────────────────────────────
-
-import src.config as config
-
-CHUNK_DIR       = config.CHUNK_DIR
-EMBEDDINGS_DIR  = config.EMBEDDINGS_DIR
-META_FILE       = config.META_FILE
-EMBEDDING_MODEL = config.EMBEDDING_MODEL
-
-BATCH_SIZE = 64  # Number of chunks to embed at once — tune down if RAM issues
-
-# ── Logging ───────────────────────────────────────────────────────────────────
 
 logger = logging.getLogger(__name__)
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def setup_dirs():
-    """Create output directories if they don't exist."""
-    EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Embeddings output directory ready: {EMBEDDINGS_DIR}")
+HASHING_MODEL = "hashing"
 
 
-# ── Load Metadata ─────────────────────────────────────────────────────────────
+class Embedder(Protocol):
+    name: str
 
-from src.utils.metadata_utils import load_metadata, save_metadata
+    @property
+    def dim(self) -> int: ...
 
-def load_chunk_registry() -> dict:
-    """Load existing chunk registry if it exists."""
-    registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
-    return load_metadata(registry_path)
-
-
-def save_chunk_registry(registry: dict):
-    """Save chunk registry to disk."""
-    registry_path = EMBEDDINGS_DIR / "chunk_registry.json"
-    save_metadata(registry, registry_path)
-    logger.info(f"Chunk registry saved: {len(registry)} entries")
+    def encode(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
+        """Return an ``(n, dim)`` float32 array of L2-normalised vectors."""
+        ...
 
 
-# ── Load All Chunks ───────────────────────────────────────────────────────────
-
-def load_all_chunks(metadata: dict, existing_registry: dict) -> list[dict]:
-    """
-    Load all chunk JSON files from disk.
-    Skips papers whose chunks are already in the registry.
-
-    Args:
-        metadata: Paper metadata dict
-        existing_registry: Already-embedded chunk registry
-
-    Returns:
-        List of chunk dicts to embed
-    """
-    all_chunks = []
-    skipped_papers = 0
-
-    for arxiv_id, paper in metadata.items():
-
-        # Skip if this paper's chunks are already embedded
-        # We check if any chunk starts with arxiv_id
-        if any(cid.startswith(f"{arxiv_id}_chunk_") for cid in existing_registry):
-            skipped_papers += 1
-            continue
-
-        chunks_path = paper.get("chunks_path")
-        if not chunks_path:
-            logger.warning(f"[SKIP] No chunks_path for {arxiv_id} — run chunker.py first")
-            continue
-
-        chunks_path = Path(chunks_path)
-        if not chunks_path.exists():
-            logger.warning(f"[MISS] Chunk file not found: {chunks_path}")
-            continue
-
-        try:
-            with open(chunks_path, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-
-            # Attach paper-level metadata to each chunk for later retrieval
-            for chunk in chunks:
-                chunk["title"]     = paper.get("title", "")
-                chunk["authors"]   = paper.get("authors", [])
-                chunk["published"] = paper.get("published", "")
-                chunk["url"]       = paper.get("url", "")
-                chunk["abstract"]  = paper.get("abstract", "")
-
-            all_chunks.extend(chunks)
-
-        except Exception as e:
-            logger.error(f"Failed to load chunks for {arxiv_id}: {e}")
-            continue
-
-    logger.info(f"Loaded {len(all_chunks)} chunks from {len(metadata) - skipped_papers} papers")
-    logger.info(f"Skipped {skipped_papers} already-embedded papers")
-    return all_chunks
+def _normalise(vectors: np.ndarray) -> np.ndarray:
+    vectors = np.asarray(vectors, dtype="float32")
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return vectors / norms
 
 
-# ── Embedding Generation ──────────────────────────────────────────────────────
+class HashingEmbedder:
+    """Deterministic signed feature hashing of lower-cased word unigrams and bigrams."""
 
-def load_model(model_name: str) -> SentenceTransformer:
-    """
-    Load the sentence-transformer embedding model.
-    Downloads automatically on first run, cached locally after.
+    def __init__(self, dim: int = 512) -> None:
+        self.name = HASHING_MODEL
+        self._dim = dim
 
-    Args:
-        model_name: HuggingFace model name
+    @property
+    def dim(self) -> int:
+        return self._dim
 
-    Returns:
-        Loaded SentenceTransformer model
-    """
-    logger.info(f"Loading embedding model: {model_name}")
-    logger.info("(This may take a minute on first run — model will be cached after)")
-    model = SentenceTransformer(model_name)
-    logger.info(f"Model loaded. Embedding dimension: {model.get_sentence_embedding_dimension()}")
-    return model
+    def _vector(self, text: str) -> np.ndarray:
+        vec = np.zeros(self._dim, dtype="float32")
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        for feature in tokens + [f"{a}_{b}" for a, b in zip(tokens, tokens[1:])]:
+            digest = hashlib.md5(feature.encode("utf-8")).digest()
+            bucket = int.from_bytes(digest[:4], "little") % self._dim
+            vec[bucket] += 1.0 if digest[4] & 1 else -1.0
+        return vec
 
-
-def generate_embeddings(
-    chunks: list[dict],
-    model: SentenceTransformer,
-    batch_size: int
-) -> np.ndarray:
-    """
-    Generate embeddings for all chunks in batches.
-
-    Args:
-        chunks: List of chunk dicts (must have 'text' key)
-        model: Loaded SentenceTransformer model
-        batch_size: Number of chunks per batch
-
-    Returns:
-        numpy array of shape (num_chunks, embedding_dim)
-    """
-    texts = [chunk["text"] for chunk in chunks]
-    total = len(texts)
-
-    logger.info(f"Generating embeddings for {total} chunks in batches of {batch_size}...")
-
-    # encode() handles batching internally but tqdm gives us a progress bar
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=True,
-        convert_to_numpy=True,
-        normalize_embeddings=True,  # L2 normalize — better for cosine similarity
-    )
-
-    logger.info(f"Embeddings shape: {embeddings.shape}")
-    return embeddings
+    def encode(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, self._dim), dtype="float32")
+        return _normalise(np.stack([self._vector(t) for t in texts]))
 
 
-# ── Save Embeddings ───────────────────────────────────────────────────────────
+class SentenceTransformerEmbedder:
+    """Wrapper around a sentence-transformers model (loaded lazily, once)."""
 
-def save_embeddings(embeddings: np.ndarray, chunks: list[dict], existing_registry: dict):
-    """
-    Save embeddings as a numpy .npy file and update the chunk registry.
+    def __init__(self, model_name: str) -> None:
+        self.name = model_name
+        self._model = None
+        self._lock = threading.Lock()
 
-    The registry maps chunk_id -> full chunk metadata (text, paper info, etc.)
-    This lets us look up any chunk by ID during retrieval.
+    def _load(self):
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    from sentence_transformers import SentenceTransformer
 
-    Args:
-        embeddings: numpy array of embeddings
-        chunks: List of chunk dicts
-        existing_registry: Already-existing registry to append to
-    """
-    # Load existing embeddings if they exist and stack with new ones
-    existing_embeddings_path = EMBEDDINGS_DIR / "embeddings.npy"
-    existing_ids_path = EMBEDDINGS_DIR / "chunk_ids.json"
+                    logger.info("Loading embedding model %s", self.name)
+                    self._model = SentenceTransformer(self.name)
+        return self._model
 
-    if existing_embeddings_path.exists() and existing_ids_path.exists():
-        logger.info("Found existing embeddings — appending new ones...")
-        existing_embs = np.load(str(existing_embeddings_path))
-        with open(existing_ids_path, "r") as f:
-            existing_ids = json.load(f)
+    @property
+    def dim(self) -> int:
+        return int(self._load().get_sentence_embedding_dimension())
 
-        # Stack old and new embeddings
-        combined_embeddings = np.vstack([existing_embs, embeddings])
-        combined_ids = existing_ids + [c["chunk_id"] for c in chunks]
-    elif existing_embeddings_path.exists() or existing_ids_path.exists():
-        # Prevent partial data wipe
-        logger.error("Data corruption: embeddings.npy or chunk_ids.json is missing.")
-        logger.error("Please delete both and re-run embedding, or restore from backup.")
-        raise FileNotFoundError("Partial embedding files found. Aborting to prevent silent data loss.")
-    else:
-        combined_embeddings = embeddings
-        combined_ids = [c["chunk_id"] for c in chunks]
+    @property
+    def max_seq_length(self) -> int:
+        return int(self._load().max_seq_length)
 
-    # Save combined embeddings array
-    np.save(str(existing_embeddings_path), combined_embeddings)
-    logger.info(f"Saved embeddings: {combined_embeddings.shape} → {existing_embeddings_path}")
-
-    # Save ordered list of chunk IDs (index i → chunk_id)
-    with open(existing_ids_path, "w") as f:
-        json.dump(combined_ids, f, indent=2)
-    logger.info(f"Saved chunk IDs: {len(combined_ids)} entries")
-
-    # Update registry with new chunks
-    for chunk in chunks:
-        existing_registry[chunk["chunk_id"]] = {
-            "chunk_id":    chunk["chunk_id"],
-            "arxiv_id":    chunk["arxiv_id"],
-            "chunk_index": chunk["chunk_index"],
-            "text":        chunk["text"],
-            "word_count":  chunk["word_count"],
-            "title":       chunk["title"],
-            "authors":     chunk["authors"],
-            "published":   chunk["published"],
-            "url":         chunk["url"],
-            "abstract":    chunk["abstract"],
-        }
-
-    save_chunk_registry(existing_registry)
-    return combined_embeddings, combined_ids
+    def encode(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
+        model = self._load()
+        if not texts:
+            return np.zeros((0, self.dim), dtype="float32")
+        vectors = model.encode(
+            texts,
+            batch_size=batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=len(texts) > 1000,
+        )
+        return _normalise(vectors)
 
 
-# ── Stats ─────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=4)
+def get_embedder(model_name: str | None = None) -> Embedder:
+    """Process-wide embedder for ``model_name`` (defaults to ``Settings.embedding_model``)."""
+    if model_name is None:
+        from src.config import get_settings
 
-def print_stats(embeddings: np.ndarray, chunks: list[dict]):
-    """Print a summary of what was generated."""
-    if not chunks:
-        logger.warning("No chunks to compute stats for.")
-        return
-    word_counts = [c["word_count"] for c in chunks]
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Embedding stats:")
-    logger.info(f"  Total chunks embedded : {len(chunks)}")
-    logger.info(f"  Embedding dimensions  : {embeddings.shape[1]}")
-    logger.info(f"  Avg words per chunk   : {sum(word_counts) // len(word_counts)}")
-    logger.info(f"  Min words per chunk   : {min(word_counts)}")
-    logger.info(f"  Max words per chunk   : {max(word_counts)}")
-    logger.info(f"  Embeddings file size  : {embeddings.nbytes / 1024 / 1024:.1f} MB")
-    logger.info(f"{'='*60}")
-
-
-# ── Entry Point ───────────────────────────────────────────────────────────────
-
-def main():
-    logger.info("Starting FAISS embedding process...")
-    setup_dirs()
-
-    metadata = load_metadata(META_FILE)
-    if not metadata:
-        return
-
-    existing_registry = load_chunk_registry()
-
-    # Load all unembedded chunks
-    chunks = load_all_chunks(metadata, existing_registry)
-    if not chunks:
-        logger.info("No new chunks to embed. All papers already processed.")
-        return
-
-    # Load model
-    model = load_model(EMBEDDING_MODEL)
-
-    # Generate embeddings
-    embeddings = generate_embeddings(chunks, model, BATCH_SIZE)
-
-    # Save to disk
-    save_embeddings(embeddings, chunks, existing_registry)
-
-    # Print summary
-    print_stats(embeddings, chunks)
-
-    logger.info("Done.")
-
-
-if __name__ == "__main__":
-    main()
+        model_name = get_settings().embedding_model
+    if model_name == HASHING_MODEL:
+        return HashingEmbedder()
+    return SentenceTransformerEmbedder(model_name)

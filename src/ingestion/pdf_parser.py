@@ -116,7 +116,12 @@ def join_lines(lines: list[str]) -> str:
         if not out:
             out = line
         elif out.endswith("-") and line[:1].islower() and not out.endswith(" -"):
-            out = out[:-1] + line
+            # "abili-" + "ties" → "abilities", but "state-of-" + "the-art" keeps
+            # its hyphen: a fragment that already contains one is a compound.
+            # (A compound split at its only hyphen, "large-" + "scale", still
+            # loses the hyphen; telling those apart needs a dictionary.)
+            fragment = out.rsplit(" ", 1)[-1]
+            out = out + line if "-" in fragment[:-1] else out[:-1] + line
         else:
             out = out + " " + line
     return re.sub(r"\s{2,}", " ", out).strip()
@@ -172,6 +177,9 @@ class _Block:
 
 def _read_blocks(pdf_path: Path) -> tuple[list[_Block], int]:
     import pymupdf  # local import keeps module import cheap
+
+    # MuPDF prints recoverable warnings (e.g. unsupported annotations) to stderr.
+    pymupdf.TOOLS.mupdf_display_errors(False)
 
     if not pdf_path.is_file():
         raise PDFParseError(f"Not a file: {pdf_path.name}")
@@ -276,6 +284,38 @@ def _is_heading(block: _Block, body_size: float) -> bool:
     return numbered and all_bold
 
 
+def _split_leading_heading(block: _Block) -> tuple[str, _Block | None] | None:
+    """Detect a heading set on the first line(s) of a body block.
+
+    Many templates put the heading in the same text block as the paragraph that
+    follows it ("I." / "INTRODUCTION" / "A chatbot is ..."), so the block as a
+    whole never looks like a heading. Only *exact* well-known section names are
+    accepted here, which keeps body text from being promoted to a heading.
+
+    Returns ``(heading, rest)`` where ``rest`` is ``None`` if nothing remains,
+    or ``None`` when the block does not start with a heading.
+    """
+    for k in (1, 2):
+        if len(block.lines) <= k:
+            break
+        candidate = " ".join(ln.text.strip() for ln in block.lines[:k])
+        if not looks_like_known_heading(candidate):
+            continue
+        rest = list(block.lines[k:])
+        # IEEE drop cap: a single oversized capital ("R") followed by "ECENT years ...".
+        if len(rest) >= 2 and re.fullmatch(r"[A-Z]", rest[0].text.strip()):
+            drop, nxt = rest[0], rest[1]
+            rest = [_Line(drop.text.strip() + nxt.text.lstrip(), nxt.size, nxt.bold, nxt.y0, nxt.y1), *rest[2:]]
+        return candidate, _Block(page=block.page, lines=rest, page_height=block.page_height) if rest else None
+    return None
+
+
+# Front matter longer than this is almost certainly body text (abstract without
+# an "Abstract" heading, or an introduction whose heading was not detected).
+FRONT_MATTER_MAX_WORDS = 50
+FRONT_MATTER_MAX_PAGE = 2
+
+
 def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
     """Parse a PDF into structured paragraphs. Raises :class:`PDFParseError`."""
     doc_id = doc_id or pdf_path.stem
@@ -290,6 +330,36 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
     heading, subheading = "", ""
     section = Section.FRONT_MATTER
     pending_number = ""
+    body_started = False  # set once front matter is known to contain body text
+
+    def add_heading(title: str, page: int) -> None:
+        nonlocal heading, subheading, section
+        canonical = classify_heading(title)
+        depth = numbering_depth(title)
+        if section == Section.FRONT_MATTER and not (
+            depth > 0 or looks_like_known_heading(title) or canonical == Section.ABSTRACT
+        ):
+            # Paper title, author block, affiliations. Keyword classification of
+            # a title ("... Reasoning Benchmarks ...") must not open a section.
+            heading = heading or strip_numbering(title)
+            return
+        if section in (Section.REFERENCES, Section.APPENDIX) and canonical not in (
+            Section.ACKNOWLEDGEMENTS,
+            Section.REFERENCES,
+        ):
+            # Material after the bibliography is appendix ("A Additional Experiments"
+            # must not be filed under experiments).
+            canonical = Section.APPENDIX
+        is_sub = depth >= 2 or (canonical == Section.OTHER and depth == 0 and not looks_like_known_heading(title))
+        if is_sub and heading and section != Section.FRONT_MATTER:
+            subheading = strip_numbering(title)
+        else:
+            heading, subheading = strip_numbering(title), ""
+            if canonical != Section.OTHER:
+                section = canonical
+            elif section in (Section.FRONT_MATTER, Section.ABSTRACT):
+                section = Section.OTHER
+        parsed.headings.append({"text": title, "page": page, "section": section.value, "level": 2 if subheading else 1})
 
     for block in blocks:
         # Drop running headers/footers and bare page numbers line by line.
@@ -320,32 +390,27 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
             if _is_heading(block, body_size):
                 block = _Block(page=block.page, lines=[_Line(text, block.lines[0].size, True, 0, 0)], page_height=0)
 
+        # Heading run into the paragraph that follows it.
+        if len(block.lines) > 1 and not _is_heading(block, body_size):
+            split = _split_leading_heading(block)
+            if split is not None:
+                lead, rest = split
+                add_heading(f"{pending_number} {lead}".strip() if pending_number else lead, block.page)
+                pending_number = ""
+                if rest is None:
+                    continue
+                block = rest
+                text = clean_text(block.text)
+
         is_caption = bool(_CAPTION.match(text))
         if not is_caption and block.mean_size < body_size * SMALL_FONT_RATIO and section != Section.REFERENCES:
             continue  # figure internals, footnotes
+        if len(re.findall(r"[^\W\d_]", text)) < 2:
+            continue  # table cells / figure fragments such as "1-3" or "✦"
 
         if not is_caption and _is_heading(block, body_size):
-            title = f"{pending_number} {text}".strip() if pending_number else text
+            add_heading(f"{pending_number} {text}".strip() if pending_number else text, block.page)
             pending_number = ""
-            canonical = classify_heading(title)
-            depth = numbering_depth(title)
-            if section == Section.FRONT_MATTER and canonical == Section.OTHER:
-                heading = strip_numbering(title)  # paper title / author block
-                continue
-            if section == Section.REFERENCES and canonical == Section.OTHER:
-                canonical = Section.APPENDIX  # first heading after the bibliography
-            is_sub = depth >= 2 or (
-                canonical == Section.OTHER and depth == 0 and not looks_like_known_heading(title)
-            )
-            if is_sub and heading:
-                subheading = strip_numbering(title)
-            else:
-                heading, subheading = strip_numbering(title), ""
-                if canonical != Section.OTHER:
-                    section = canonical
-                elif section in (Section.FRONT_MATTER, Section.ABSTRACT):
-                    section = Section.OTHER
-            parsed.headings.append({"text": title, "page": block.page, "section": section.value, "level": 2 if subheading else 1})
             continue
         pending_number = ""
 
@@ -354,16 +419,30 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
             section, heading, subheading = Section.ABSTRACT, "Abstract", ""
             text = _INLINE_ABSTRACT.sub("", text)
 
+        paragraph_section = section
+        if section == Section.FRONT_MATTER and (
+            body_started or block.page > FRONT_MATTER_MAX_PAGE or len(text.split()) >= FRONT_MATTER_MAX_WORDS
+        ):
+            # No heading ended the front matter; keep body text indexable.
+            paragraph_section = Section.OTHER
+            body_started = True
+
         parsed.paragraphs.append(
             Paragraph(
                 text=text,
                 page=block.page,
                 heading=heading,
                 subheading=subheading,
-                section=section.value,
+                section=paragraph_section.value,
                 kind="caption" if is_caption else "body",
             )
         )
+
+    if parsed.paragraphs and all(p.section == Section.FRONT_MATTER.value for p in parsed.paragraphs):
+        # Nothing ever left the front matter (no headings, short paragraphs):
+        # better to index an author line than to index nothing at all.
+        for p in parsed.paragraphs:
+            p.section = Section.OTHER.value
 
     if len(parsed.text) < MIN_TEXT_LENGTH:
         raise PDFParseError(f"Too little text in {pdf_path.name} ({len(parsed.text)} chars)")

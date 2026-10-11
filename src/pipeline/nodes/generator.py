@@ -1,278 +1,179 @@
 """
-nodes/generator.py
--------------------
-The answer generation node in the CRAG pipeline.
+Generator: writes the answer from the selected evidence.
 
-Receives the final set of RELEVANT documents (from FAISS and/or web search)
-and generates a grounded, cited answer to the user's query.
+Evidence selection (CRAG actions)
+--------------------------------
+* local retrieval **correct** (≥1 relevant passage) → relevant local passages only
+* otherwise → ambiguous local passages + relevant/ambiguous web passages
+* grader failed → the retrieved passages, flagged as unverified
 
-Key responsibilities:
-    1. Build a structured context from the filtered relevant docs
-    2. Generate an answer with inline citations using Gemini 1.5 Flash
-    3. Format citations pointing back to source papers/URLs
+With no evidence the node **abstains** with a fixed message and makes no LLM
+call; it never answers from the model's parametric memory.
 
-This node always runs last in the main pipeline path,
-right before the hallucination checker.
+The model cites with ``[n]`` markers only; invalid markers are removed and the
+"Sources" list is rendered from passage metadata (see :mod:`src.pipeline.evidence`).
 """
 
+from __future__ import annotations
+
 import logging
+import time
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-
-from src.pipeline.state import CRAGState, Document
-from src.pipeline.llm_factory import get_generator_llm
-
-# ── Logging ───────────────────────────────────────────────────────────────────
+from src.config import get_settings
+from src.pipeline.evidence import (
+    UNTRUSTED_NOTICE,
+    build_citations,
+    format_evidence,
+    is_web,
+    normalise_citations,
+    render_sources,
+)
+from src.pipeline.llm_factory import get_generator_llm, response_text
+from src.pipeline.state import (
+    GRADE_AMBIGUOUS,
+    GRADE_IRRELEVANT,
+    GRADE_RELEVANT,
+    GRADE_UNGRADED,
+    SOURCE_FAISS,
+    SOURCE_MIXED,
+    SOURCE_NONE,
+    SOURCE_WEB,
+    CRAGState,
+    Document,
+    trace_entry,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+ABSTAIN_MESSAGE = (
+    "I could not find evidence in the indexed papers{web} that answers this question, "
+    "so I am not answering it. Try rephrasing, naming the paper, or widening the paper filter."
+)
+GENERATION_FAILED = "The answer could not be generated because the language model call failed."
+NO_CITATIONS = "The answer contains no citations; treat it as unsupported."
 
-MAX_CONTEXT_DOCS = 5     # Max documents to include in context
-
-
-# ── Prompt Templates ──────────────────────────────────────────────────────────
-
-GENERATOR_SYSTEM_PROMPT = """You are an expert research assistant specialising in \
-machine learning and AI. Your job is to answer questions about academic papers \
-using ONLY the provided document context.
+GENERATOR_SYSTEM_PROMPT = f"""You are a research assistant answering questions about machine-learning papers.
 
 Rules:
-1. Base your answer ENTIRELY on the provided context — do not use outside knowledge
-2. Cite sources inline using [Doc N] format where N is the document number
-3. If multiple documents support a claim, cite all of them e.g. [Doc 1][Doc 2]
-4. If the context does not contain enough information to fully answer the question,
-   say so clearly rather than guessing
-5. Structure your answer clearly — use paragraphs, not bullet points
-6. Be precise and technical — your audience are ML researchers
-7. End with a "Sources" section listing all cited documents with their titles and URLs
-
-Format:
-<answer>
-Your detailed answer here with inline [Doc N] citations...
-
-Sources:
-[Doc 1] Title — URL
-[Doc 2] Title — URL
-</answer>"""
-
+1. Use ONLY the information in the <source> passages. Do not use outside knowledge.
+2. Support every factual sentence with citation markers such as [1] or [2][3], using the source ids.
+3. Cite only a source that actually states the claim. Never cite a source for something it does not say.
+4. Sources with type="web" are web pages, not the papers; say so when you rely on them.
+5. If the passages answer only part of the question, answer that part and state clearly what is not covered.
+   If they do not answer it at all, say that the provided sources do not contain the answer.
+6. If sources disagree, report the disagreement and cite both sides.
+7. Be precise and concise. Do not add a list of sources or references at the end; it is generated separately.
+{UNTRUSTED_NOTICE}"""
 
 GENERATOR_HUMAN_PROMPT = """Question: {query}
 
-Context documents:
-{context}
+{sources}
 
-Answer the question using ONLY the context above. Include inline citations."""
+Answer the question using only these sources, with [n] citations."""
+
+MAX_CONTEXT_DOCS = 6  # v0.1 name; the active cap is Settings.max_evidence_docs
 
 
-# ── Context Builder ───────────────────────────────────────────────────────────
-
-def build_context(documents: list[Document]) -> str:
-    """
-    Build a structured context string from documents for the LLM prompt.
-
-    Each document is numbered [Doc N] so the LLM can cite them inline.
-    """
-    context_parts = []
-
-    for i, doc in enumerate(documents, start=1):
-        # Build source line depending on doc type
-        if doc.get("arxiv_id"):
-            authors = ", ".join(doc.get("authors", [])[:3])
-            if len(doc.get("authors", [])) > 3:
-                authors += " et al."
-            source_line = (
-                f"Paper: {doc.get('title', 'Unknown')}\n"
-                f"Authors: {authors}\n"
-                f"Published: {doc.get('published', 'unknown')}\n"
-                f"URL: {doc.get('url', 'N/A')}"
-            )
-        else:
-            # Web result
-            source_line = (
-                f"Web Source: {doc.get('title', 'Web Result')}\n"
-                f"URL: {doc.get('url', 'N/A')}\n"
-                f"Published: {doc.get('published', 'unknown')}"
-            )
-
-        # Truncate text to avoid token overflow
-        text = doc.get("text", "")
-        if len(text) > 1200:
-            text = text[:1200] + "..."
-
-        context_parts.append(
-            f"[Doc {i}]\n"
-            f"{source_line}\n"
-            f"Content:\n{text}"
+def select_evidence(state: CRAGState) -> list[Document]:
+    settings = get_settings()
+    docs = state.get("documents", [])
+    local = [d for d in docs if not is_web(d)]
+    web = [d for d in docs if is_web(d)]
+    relevant = [d for d in local if d.get("grade") == GRADE_RELEVANT]
+    if relevant:
+        chosen = relevant
+    elif state.get("grader_failed"):
+        chosen = [d for d in local if d.get("grade") in (GRADE_UNGRADED, GRADE_AMBIGUOUS, GRADE_RELEVANT)]
+    else:
+        chosen = [d for d in local if d.get("grade") == GRADE_AMBIGUOUS]
+        chosen += sorted(
+            [d for d in web if d.get("grade") in (GRADE_RELEVANT, GRADE_AMBIGUOUS)],
+            key=lambda d: d.get("grade") != GRADE_RELEVANT,
         )
+    return [d for d in chosen if d.get("grade") != GRADE_IRRELEVANT][: settings.max_evidence_docs]
 
-    return "\n\n" + ("\n\n" + "─" * 60 + "\n\n").join(context_parts) + "\n"
+
+def source_label(evidence: list[Document]) -> str:
+    has_web = any(is_web(d) for d in evidence)
+    has_local = any(not is_web(d) for d in evidence)
+    if has_web and has_local:
+        return SOURCE_MIXED
+    return SOURCE_WEB if has_web else SOURCE_FAISS if has_local else SOURCE_NONE
 
 
-# ── Generation ────────────────────────────────────────────────────────────────
-
-def generate_answer(query: str, context: str, llm) -> str:
-    """
-    Generate a cited answer using the LLM.
-    """
+def generate_answer(query: str, evidence: list[Document], llm) -> str:
+    """Raw model answer (raises on LLM failure)."""
     messages = [
         SystemMessage(content=GENERATOR_SYSTEM_PROMPT),
         HumanMessage(
             content=GENERATOR_HUMAN_PROMPT.format(
-                query=query,
-                context=context,
+                query=query, sources=format_evidence(evidence, get_settings().max_evidence_chars)
             )
         ),
     ]
+    answer = response_text(llm.invoke(messages))
+    return answer.removeprefix("<answer>").removesuffix("</answer>").strip()
 
-    try:
-        # Safely invoke the LLM
-        response = llm.invoke(messages)
-        raw_content = response.content
-        
-        # Google Gemini safe-extraction: If it's a list of blocks, join them into a string
-        if isinstance(raw_content, list):
-            answer = "".join(block.get("text", "") for block in raw_content if isinstance(block, dict))
-        else:
-            answer = raw_content
-            
-        # Now it is guaranteed to be a string, so we can strip it
-        answer = answer.strip()
-
-        # Strip <answer> tags if LLM included them
-        if answer.startswith("<answer>"):
-            answer = answer[8:]
-        if answer.endswith("</answer>"):
-            answer = answer[:-9]
-
-        answer = answer.strip()
-        logger.info(f"[GENERATOR] Generated answer ({len(answer)} chars)")
-        return answer
-
-    except Exception as e:
-        logger.error("[GENERATOR] Answer generation failed", exc_info=True)
-        return (
-            "I was unable to generate an answer due to an internal error. "
-            "Please try again or rephrase your question."
-        )
-
-
-# ── Node Function ─────────────────────────────────────────────────────────────
 
 def generator_node(state: CRAGState) -> dict:
-    """
-    LangGraph node: generate a cited answer from retrieved documents.
-    """
-    query  = state["query"]
-    source = state.get("source", "faiss")
-    
-    # CRITICAL ARCHITECTURAL UPDATE: 
-    # Directly use relevant_documents. The grader and web search nodes
-    # already curated this list, so we don't need to re-filter anything.
-    documents = state.get("relevant_documents", [])
+    started = time.perf_counter()
+    warnings = list(state.get("warnings", []))
+    evidence = select_evidence(state)
 
-    logger.info(
-        f"[GENERATOR] Generating answer for: '{query[:60]}' "
-        f"(source={source}, relevant docs={len(documents)})"
-    )
-
-    # Handle edge case — no documents at all
-    if not documents:
-        logger.warning("[GENERATOR] No relevant documents in state — generating fallback response")
+    if not evidence:
+        web_note = "" if not state.get("web_search_used") else " or in the web search results"
+        message = ABSTAIN_MESSAGE.format(web=web_note)
         return {
-            "generation": (
-                "I could not find relevant information to answer your question. "
-                "The local knowledge base and web search both returned no useful results. "
-                "Please try rephrasing your question or check if the topic is covered "
-                "in the indexed papers."
-            ),
+            "evidence": [],
+            "generation": message,
+            "answer_text": message,
+            "citations": [],
+            "source": SOURCE_NONE,
             "generation_ms": 0.0,
+            "trace": trace_entry(state, "generator", started, "abstained: no usable evidence"),
         }
 
-    llm = get_generator_llm()
+    gen_started = time.perf_counter()
+    try:
+        raw = generate_answer(state["query"], evidence, get_generator_llm())
+    except Exception as exc:
+        logger.error("[GENERATOR] generation failed: %s", exc)
+        warnings.append(GENERATION_FAILED)
+        return {
+            "evidence": evidence,
+            "generation": GENERATION_FAILED,
+            "answer_text": "",
+            "citations": [],
+            "source": source_label(evidence),
+            "error": f"generation failed: {type(exc).__name__}",
+            "warnings": warnings,
+            "llm_calls": state.get("llm_calls", 0) + 1,
+            "generation_ms": (time.perf_counter() - gen_started) * 1000,
+            "trace": trace_entry(state, "generator", started, "LLM call failed"),
+        }
+    generation_ms = (time.perf_counter() - gen_started) * 1000
 
-    # Step 1: Cap to MAX_CONTEXT_DOCS
-    useful_docs = documents[:MAX_CONTEXT_DOCS]
+    answer, cited, invalid = normalise_citations(raw, len(evidence))
+    citations = build_citations(evidence, cited)
+    if not cited and NO_CITATIONS not in warnings:
+        warnings.append(NO_CITATIONS)
+    if invalid:
+        logger.warning("[GENERATOR] removed citations to non-existent sources: %s", invalid)
 
-    # Step 2: Build context string
-    context = build_context(useful_docs)
-    logger.info(
-        f"[GENERATOR] Context built — "
-        f"{len(useful_docs)} docs, {len(context)} chars"
-    )
-
-    # Step 3: Generate answer
-    import time
-    start_time = time.perf_counter()
-    answer = generate_answer(query, context, llm)
-    generation_ms = (time.perf_counter() - start_time) * 1000
-
-    # Step 4: Add metadata footer
-    source_label = {
-        "faiss" : "Local paper database",
-        "web"   : "Web search (Tavily)",
-        "mixed" : "Local paper database + Web search",
-    }.get(source, source)
-
-    footer = f"\n\n---\n*Answer generated from: {source_label}*"
-    final_answer = answer + footer
-
-    logger.info("[GENERATOR] Answer generation complete")
-
+    sources_md = render_sources(citations)
+    generation = answer + (f"\n\n{sources_md}" if sources_md else "")
+    detail = f"{len(evidence)} passages, cited {cited or 'none'}" + (f", removed invalid {invalid}" if invalid else "")
     return {
-        "generation": final_answer,
+        "evidence": evidence,
+        "generation": generation,
+        "answer_text": answer,
+        "citations": citations,
+        "source": source_label(evidence),
+        "grounding": {**state.get("grounding", {}), "invalid_citations": invalid},
+        "warnings": warnings,
+        "llm_calls": state.get("llm_calls", 0) + 1,
         "generation_ms": generation_ms,
+        "trace": trace_entry(state, "generator", started, detail),
     }
-
-
-
-# ── Test ──────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    test_state: CRAGState = {
-        "query": "How does Corrective RAG decide when to use web search?",
-        "rewritten_query": "",
-        "documents": [], 
-        "relevant_documents": [ # The test now populates the correct filtered state key
-            {
-                "chunk_id"  : "2401.15884_chunk_0",
-                "arxiv_id"  : "2401.15884",
-                "text"      : (
-                    "Corrective Retrieval Augmented Generation (CRAG) introduces "
-                    "a lightweight retrieval evaluator to assess the quality of "
-                    "retrieved documents. The evaluator assigns one of three grades: "
-                    "correct, incorrect, or ambiguous. When documents are graded as "
-                    "incorrect, CRAG triggers a web search via external APIs to "
-                    "supplement the retrieved context."
-                ),
-                "score"     : 0.93,
-                "title"     : "Corrective Retrieval Augmented Generation",
-                "authors"   : ["Shi-Qi Yan", "Jia-Chen Gu", "Yun Leng", "Zhen Li"],
-                "published" : "2024-01-29",
-                "url"       : "http://arxiv.org/abs/2401.15884",
-                "abstract"  : "CRAG paper abstract",
-                "grade"     : "relevant",
-                "source"    : "faiss",
-            }
-        ],
-        "grade"                  : "relevant",
-        "document_grades"        : [],
-        "generation"             : "",
-        "hallucination"          : False,
-        "hallucination_reasoning": "",
-        "retry_count"            : 0,
-        "web_search_used"        : False,
-        "source"                 : "faiss",
-        "error"                  : "",
-    }
-
-    print("\nRunning generator node test...")
-    result = generator_node(test_state)
-
-    print("\n" + "="*60)
-    print("GENERATED ANSWER:")
-    print("="*60)
-    print(result["generation"])

@@ -1,191 +1,154 @@
 """
-state.py
----------
-Defines the shared state that flows through the LangGraph
-CRAG pipeline. Every node reads from and writes to this state.
+State shared by the nodes of the CRAG LangGraph pipeline.
 
-Think of it as the "baton" passed between nodes in a relay race.
-Each node can read any field and update any field.
+Nodes return partial dicts that LangGraph merges into the state (list fields
+are *replaced*, not appended, so nodes always return the full updated list).
 
-State fields:
-    query           : Original user question
-    rewritten_query : Query after rewriting (if ambiguous retrieval)
-    documents       : Retrieved chunks from FAISS or web search
-    generation      : Final generated answer
-    grade           : Overall retrieval grade (relevant/ambiguous/irrelevant)
-    document_grades : Individual grade for each retrieved document
-    web_search_used : Whether Tavily web search fallback was triggered
-    retry_count     : How many times we've retried (max 3 to prevent loops)
-    hallucination   : Whether hallucination was detected in the answer
-    source          : Where final context came from (faiss/web/mixed)
-    error           : Any error message if something goes wrong
+Key fields
+----------
+query / rewritten_query   original question and the latest rewrite
+documents                 every passage seen so far (local and web), each with
+                          a ``grade``; de-duplicated by ``chunk_id``
+relevant_documents        local passages graded "relevant" (recomputed, never appended)
+evidence                  the numbered passages the generator was given; citation
+                          ``[n]`` refers to ``evidence[n-1]``
+citations                 evidence entries actually cited in the answer
+grade                     overall decision: relevant | ambiguous | irrelevant
+retry_count               query rewrites performed (bounded by Settings.max_rewrites)
+grounding                 result of the grounding check (see nodes/hallucination.py)
+trace                     one entry per node execution: node, duration, short detail
+warnings                  user-visible problems (index missing, grader failure, …)
 """
 
-from typing import TypedDict
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+# ── Grade / source constants ──────────────────────────────────────────────────
+
+GRADE_RELEVANT = "relevant"
+GRADE_AMBIGUOUS = "ambiguous"
+GRADE_IRRELEVANT = "irrelevant"
+GRADE_UNGRADED = "ungraded"  # grader failed; passage is unverified
+
+SOURCE_FAISS = "faiss"
+SOURCE_WEB = "web"
+SOURCE_MIXED = "mixed"
+SOURCE_NONE = "none"
 
 
-# ── Document Schema ───────────────────────────────────────────────────────────
+def __getattr__(name: str) -> Any:
+    # v0.1 exposed a hard-coded MAX_RETRIES = 3 here, while config.py said 2 and
+    # the retriever used yet another number. The single source of truth is now
+    # Settings.max_rewrites; this alias keeps old imports working.
+    if name == "MAX_RETRIES":
+        from src.config import get_settings
 
-class Document(TypedDict):
-    """
-    A single retrieved document chunk with its metadata.
-    Used in the documents list inside CRAGState.
-    """
-    chunk_id  : str          # e.g. "2401.15884_chunk_3"
-    arxiv_id  : str          # e.g. "2401.15884"
-    text      : str          # The actual chunk text
-    score     : float        # Similarity score from FAISS (0-1)
-    title     : str          # Paper title
-    authors   : list[str]    # List of author names
-    published : str          # Publication date e.g. "2024-01-15"
-    url       : str          # arXiv URL
-    abstract  : str          # Paper abstract
-    grade     : str          # Relevance grade: "relevant"/"ambiguous"/"irrelevant"
-    source    : str          # Where this doc came from: "faiss" or "web"
+        return get_settings().max_rewrites
+    raise AttributeError(name)
 
 
-# ── Main State Schema ─────────────────────────────────────────────────────────
+class Document(TypedDict, total=False):
+    """A retrieved passage (local chunk or web result) with provenance."""
 
-class CRAGState(TypedDict):
-    """
-    The complete state passed between all nodes in the CRAG pipeline.
+    chunk_id: str
+    arxiv_id: str  # "" for web results
+    text: str
+    score: float  # cosine similarity (local) or Tavily score (web); not a probability
+    title: str
+    authors: list[str]
+    published: str
+    url: str
+    section: str
+    heading: str
+    page_start: int | None
+    page_end: int | None
+    grade: str
+    grade_reason: str
+    source: str  # "faiss" | "web"
 
-    LangGraph passes this dict from node to node.
-    Each node receives the full state, does its work,
-    and returns a dict of only the fields it wants to update.
-    LangGraph merges the update back into the state automatically.
 
-    The Annotated[list, operator.add] type on documents means
-    LangGraph will APPEND to the list rather than replace it
-    when a node returns new documents. This is important for
-    combining FAISS results with web search results.
-    """
-
-    # ── Input ──────────────────────────────────────────────────────────────
+class CRAGState(TypedDict, total=False):
+    # Input
     query: str
-    # The original user question. Set once at the start, never changed.
+    paper_filter: list[str]
+    allow_web_search: bool
 
-    # ── Retrieval ──────────────────────────────────────────────────────────
+    # Retrieval
     rewritten_query: str
-    # If the grader decides retrieval was AMBIGUOUS, the rewriter
-    # produces an improved version of the query stored here.
-    # The retriever uses this on retry instead of the original query.
-
     documents: list[Document]
-    # List of retrieved document chunks.
-
-    # The clean, filtered list specifically for the generator (accumulates)
     relevant_documents: list[Document]
 
-    # ── Grading ────────────────────────────────────────────────────────────
+    # Grading
     grade: str
-    # Overall retrieval quality decision made by the grader node.
-    # One of: "relevant" | "ambiguous" | "irrelevant"
-    # This is what the graph's conditional edges use to decide
-    # which node to run next.
+    document_grades: list[dict[str, Any]]
+    grader_failed: bool
 
-    document_grades: list[dict]
-    # Per-document grading results from the grader node.
-    # Each entry is:
-    # {
-    #   "chunk_id": str,
-    #   "grade": "relevant" | "ambiguous" | "irrelevant",
-    #   "reasoning": str
-    # }
-
-    # ── Generation ─────────────────────────────────────────────────────────
+    # Generation
+    evidence: list[Document]
     generation: str
-    # The final answer generated by the generator node.
-    # Includes inline citations pointing back to source documents.
+    answer_text: str
+    citations: list[dict[str, Any]]
 
-    # ── Hallucination Check ────────────────────────────────────────────────
+    # Grounding
     hallucination: bool
-    # Set by the hallucination checker node.
-    # True  = answer contains claims not supported by retrieved docs
-    # False = answer is grounded in the retrieved context
-
     hallucination_reasoning: str
-    # Explanation from the hallucination checker about why
-    # it flagged (or cleared) the answer.
+    grounding: dict[str, Any]
 
-    # ── Control Flow ───────────────────────────────────────────────────────
+    # Control flow / observability
     retry_count: int
-    # Tracks how many retrieval attempts have been made.
-    # Incremented each time the rewriter sends us back to retrieval.
-    # Hard limit of 3 retries prevents infinite loops.
-
     web_search_used: bool
-    # True if the Tavily web search fallback was triggered.
-    # Used for logging and evaluation — tells us how often
-    # the local knowledge base was insufficient.
-
     source: str
-    # Where the final context came from.
-    # One of: "faiss" | "web" | "mixed"
-    # "mixed" = both FAISS and web search contributed documents.
-
-    # ── Error Handling ─────────────────────────────────────────────────────
     error: str
-    # If any node encounters an unrecoverable error, it stores
-    # a message here. The graph checks this to short-circuit
-    # to a safe fallback response instead of crashing.
-
-    # ── Latency Metrics ────────────────────────────────────────────────────
+    warnings: list[str]
+    trace: list[dict[str, Any]]
+    llm_calls: int
     retrieval_ms: float
-    # Cumulative time spent on FAISS retrieval search calls in milliseconds.
-
     generation_ms: float
-    # Time spent on final LLM answer generation in milliseconds.
 
 
-# ── Initial State Factory ─────────────────────────────────────────────────────
-
-def create_initial_state(query: str) -> CRAGState:
-    """
-    Create a fresh initial state for a new user query.
-
-    All fields are set to safe default values.
-    Only `query` is provided by the caller.
-
-    Args:
-        query: The user's question
-
-    Returns:
-        A fully initialised CRAGState dict
-    """
-    if not query or not isinstance(query, str):
+def create_initial_state(
+    query: str,
+    paper_filter: list[str] | None = None,
+    allow_web_search: bool = True,
+) -> CRAGState:
+    """Fresh state for one question. Raises ``ValueError`` for an empty query."""
+    if not query or not isinstance(query, str) or not query.strip():
         raise ValueError("Query must be a non-empty string")
-
     return CRAGState(
-        query                   = query.strip(),
-        rewritten_query         = "",
-        documents               = [],
-        relevant_documents      = [],
-        grade                   = "",
-        document_grades         = [],
-        generation              = "",
-        hallucination           = False,
-        hallucination_reasoning = "",
-        retry_count             = 0,
-        web_search_used         = False,
-        source                  = "faiss",
-        error                   = "",
-        retrieval_ms            = 0.0,
-        generation_ms           = 0.0,
+        query=query.strip(),
+        paper_filter=list(paper_filter or []),
+        allow_web_search=allow_web_search,
+        rewritten_query="",
+        documents=[],
+        relevant_documents=[],
+        grade="",
+        document_grades=[],
+        grader_failed=False,
+        evidence=[],
+        generation="",
+        answer_text="",
+        citations=[],
+        hallucination=False,
+        hallucination_reasoning="",
+        grounding={},
+        retry_count=0,
+        web_search_used=False,
+        source=SOURCE_NONE,
+        error="",
+        warnings=[],
+        trace=[],
+        llm_calls=0,
+        retrieval_ms=0.0,
+        generation_ms=0.0,
     )
 
 
+def trace_entry(state: CRAGState, node: str, started: float, detail: str) -> list[dict[str, Any]]:
+    """Return ``state['trace']`` with one more entry (for nodes to put in their update)."""
+    import time
 
-# ── Grade Constants ───────────────────────────────────────────────────────────
-# Use these constants throughout the pipeline instead of raw strings
-# to avoid typos and make the code easier to read.
-
-GRADE_RELEVANT   = "relevant"
-GRADE_AMBIGUOUS  = "ambiguous"
-GRADE_IRRELEVANT = "irrelevant"
-
-SOURCE_FAISS  = "faiss"
-SOURCE_WEB    = "web"
-SOURCE_MIXED  = "mixed"
-
-MAX_RETRIES = 3
+    return [
+        *state.get("trace", []),
+        {"node": node, "ms": round((time.perf_counter() - started) * 1000, 1), "detail": detail},
+    ]

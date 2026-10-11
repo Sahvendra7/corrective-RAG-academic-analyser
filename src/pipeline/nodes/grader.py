@@ -1,296 +1,152 @@
 """
-nodes/grader.py
-----------------
-The second node in the CRAG pipeline.
+Retrieval evaluator: grades passages as relevant / ambiguous / irrelevant.
 
-Receives retrieved documents from state and grades each one
-for relevance to the original query using an LLM (Gemini 1.5 Flash).
+All ungraded passages are graded in **one** structured LLM call. v0.1 made
+one sequential call per passage (and again for every retry), which dominated
+latency (30 s per CRAG query vs 1.8 s for naive RAG in the project's own
+evaluation) and hit free-tier rate limits.
 
-Grades each document as:
-    - "relevant"   : Document clearly answers or supports the query
-    - "ambiguous"  : Document is loosely related but not directly useful
-    - "irrelevant" : Document has no meaningful relation to the query
+The overall grade is computed over *all* local passages graded so far, not
+only the latest batch:
 
-Then makes an OVERALL grade decision for the whole set:
-    - "relevant"   : Enough relevant docs to generate a good answer
-    - "ambiguous"  : Some relevant docs but query should be rewritten
-    - "irrelevant" : No useful docs found — trigger web search fallback
+    relevant   at least one local passage is relevant
+    irrelevant every local passage is irrelevant (or none was retrieved)
+    ambiguous  otherwise
 
-This overall grade is what graph.py uses to decide the next node.
+If the grading call fails, passages are marked ``ungraded`` and
+``grader_failed`` is set; the graph then answers from the unverified passages
+with a warning instead of looping through rewrites that would fail the same way.
 """
 
-import logging
-import threading
+from __future__ import annotations
 
-from langchain_core.messages import SystemMessage, HumanMessage
+import logging
+import time
+from typing import Literal
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from src.config import get_settings
+from src.pipeline.evidence import UNTRUSTED_NOTICE, format_evidence, is_web
+from src.pipeline.llm_factory import get_llm
 from src.pipeline.state import (
-    CRAGState,
-    Document,
-    GRADE_RELEVANT,
     GRADE_AMBIGUOUS,
     GRADE_IRRELEVANT,
+    GRADE_RELEVANT,
+    GRADE_UNGRADED,
+    CRAGState,
+    Document,
+    trace_entry,
 )
-from src.pipeline.llm_factory import get_llm
-
-# ── Logging ───────────────────────────────────────────────────────────────────
 
 logger = logging.getLogger(__name__)
 
-# Cached structured LLM for grading (avoids re-creating per document)
-_structured_grader_llm = None
-_grader_lock = threading.Lock()
-
-def _get_structured_grader_llm():
-    """Return cached structured LLM for document grading."""
-    global _structured_grader_llm
-    if _structured_grader_llm is None:
-        with _grader_lock:
-            if _structured_grader_llm is None:
-                llm = get_llm()
-                _structured_grader_llm = llm.with_structured_output(DocumentGrade)
-    return _structured_grader_llm
-
-# ── Pydantic Schema for Structured Output ─────────────────────────────────────
-
-class DocumentGrade(BaseModel):
-    """
-    Structured output schema for a single document grade.
-    LangChain uses this to force the LLM to return valid JSON.
-    """
-    grade: str = Field(
-        description="Relevance grade: 'relevant', 'ambiguous', or 'irrelevant'"
-    )
-    reasoning: str = Field(
-        description="One sentence explanation of why this grade was assigned"
-    )
-
-# ── Prompt Templates ──────────────────────────────────────────────────────────
-
-GRADER_SYSTEM_PROMPT = """You are an expert document relevance grader for a research paper Q&A system.
-
-Your job is to assess whether a retrieved document chunk is relevant to the user's question.
-
-Grade each document as exactly one of:
-- "relevant"   : The document directly addresses, answers, or strongly supports the question
-- "ambiguous"  : The document is related to the topic but does not directly answer the question
-- "irrelevant" : The document has no meaningful connection to the question
-
-Be strict. A document about a related topic but not the specific question is "ambiguous", not "relevant"."""
-
-GRADER_HUMAN_PROMPT = """User Question: {query}
-
-Document to grade:
----
-{text}
----
-
-Grade this document's relevance to the question."""
+GRADER_FAILED = "Relevance grading failed; the answer uses passages that were not checked for relevance."
 
 
-# ── Grade Single Document ─────────────────────────────────────────────────────
+class PassageGrade(BaseModel):
+    id: int = Field(description="The id attribute of the <source> being graded")
+    grade: Literal["relevant", "ambiguous", "irrelevant"]
+    reason: str = Field(description="One short sentence")
 
-def grade_document(query: str, doc: Document, llm) -> dict:
-    """
-    Grade a single document chunk for relevance to the query using Pydantic.
-    """
-    chunk_id = doc["chunk_id"]
 
+class BatchGrades(BaseModel):
+    grades: list[PassageGrade]
+
+
+# Kept for backwards compatibility with code importing the v0.1 schema name.
+DocumentGrade = PassageGrade
+
+GRADER_SYSTEM_PROMPT = f"""You grade retrieved passages for a question-answering system over research papers.
+
+For each <source>, decide whether it helps answer the question:
+- "relevant": it contains information that directly answers the question or a necessary part of it
+- "ambiguous": it is on the same topic but does not itself answer the question
+- "irrelevant": it is unrelated to the question
+
+Grade every source exactly once, using its id. Judge only the passage text, not the title alone.
+{UNTRUSTED_NOTICE}"""
+
+GRADER_HUMAN_PROMPT = """Question: {query}
+
+{sources}
+
+Return one grade per source id."""
+
+
+def grade_documents(query: str, docs: list[Document], llm) -> list[tuple[str, str]] | None:
+    """Grade ``docs`` in one call. Returns ``[(grade, reason), ...]`` or ``None`` on failure."""
+    settings = get_settings()
     messages = [
         SystemMessage(content=GRADER_SYSTEM_PROMPT),
-        HumanMessage(
-            content=GRADER_HUMAN_PROMPT.format(
-                query=query,
-                text=doc["text"][:1500],  # Truncate to avoid token limits
-            )
-        ),
+        HumanMessage(content=GRADER_HUMAN_PROMPT.format(query=query, sources=format_evidence(docs, settings.max_evidence_chars))),
     ]
-
-    # Use cached structured LLM (avoids re-creating wrapper per document)
-    structured_llm = _get_structured_grader_llm()
-
     try:
-        # LLM returns the Pydantic object directly
-        result = structured_llm.invoke(messages)
-        
-        if result is None:
-            logger.warning(f"[GRADER] LLM returned None for {chunk_id} — defaulting to ambiguous")
-            return {
-                "chunk_id"  : chunk_id,
-                "grade"     : GRADE_AMBIGUOUS,
-                "reasoning" : "LLM returned None (failed to parse structured output) — defaulted to ambiguous",
-            }
-        
-        grade = result.grade.lower().strip()
-
-        # Validate grade value
-        if grade not in [GRADE_RELEVANT, GRADE_AMBIGUOUS, GRADE_IRRELEVANT]:
-            logger.warning(f"[GRADER] Invalid grade '{grade}' for {chunk_id} — defaulting to ambiguous")
-            grade = GRADE_AMBIGUOUS
-
-        logger.info(f"[GRADER] {chunk_id} - {grade.upper()} | {result.reasoning[:80]}")
-
-        return {
-            "chunk_id"  : chunk_id,
-            "grade"     : grade,
-            "reasoning" : result.reasoning,
-        }
-
-    except Exception as e:
-        logger.error(f"[GRADER] Unexpected error grading {chunk_id}: {e}")
-        return {
-            "chunk_id"  : chunk_id,
-            "grade"     : GRADE_AMBIGUOUS,
-            "reasoning" : f"Grading error — defaulting to ambiguous: {str(e)}",
-        }
+        result = llm.with_structured_output(BatchGrades).invoke(messages)
+    except Exception as exc:
+        logger.error("[GRADER] grading call failed: %s", exc)
+        return None
+    if result is None:
+        logger.error("[GRADER] grader returned no structured output")
+        return None
+    by_id = {g.id: g for g in result.grades}
+    out = []
+    for n in range(1, len(docs) + 1):
+        g = by_id.get(n)
+        # A passage the model skipped is treated as ambiguous, not relevant.
+        out.append((g.grade, g.reason) if g else (GRADE_AMBIGUOUS, "not graded by the model"))
+    return out
 
 
-# ── Overall Grade Decision ────────────────────────────────────────────────────
-
-def decide_overall_grade(document_grades: list[dict]) -> str:
-    """
-    Aggregate individual document grades into one overall decision.
-    """
-    if not document_grades:
-        logger.warning("[GRADER] No document grades to aggregate — defaulting to irrelevant")
+def overall_grade(local_grades: list[str]) -> str:
+    if not local_grades:
         return GRADE_IRRELEVANT
-
-    grades = [g["grade"] for g in document_grades]
-
-    relevant_count   = grades.count(GRADE_RELEVANT)
-    ambiguous_count  = grades.count(GRADE_AMBIGUOUS)
-    irrelevant_count = grades.count(GRADE_IRRELEVANT)
-
-    logger.info(
-        f"[GRADER] Grade breakdown — "
-        f"relevant: {relevant_count}, "
-        f"ambiguous: {ambiguous_count}, "
-        f"irrelevant: {irrelevant_count}"
-    )
-
-    if relevant_count >= 1:
-        overall = GRADE_RELEVANT
-    elif irrelevant_count == len(grades):
-        overall = GRADE_IRRELEVANT
-    else:
-        overall = GRADE_AMBIGUOUS
-
-    logger.info(f"[GRADER] Overall grade: {overall.upper()}")
-    return overall
+    if GRADE_RELEVANT in local_grades:
+        return GRADE_RELEVANT
+    if all(g == GRADE_IRRELEVANT for g in local_grades):
+        return GRADE_IRRELEVANT
+    return GRADE_AMBIGUOUS
 
 
-# ── Node Function ─────────────────────────────────────────────────────────────
+def grade_pending(state: CRAGState, docs: list[Document]) -> tuple[list[Document], list[dict], bool, int]:
+    """Grade every document without a grade. Returns (docs, new grade records, failed, llm_calls)."""
+    pending = [i for i, d in enumerate(docs) if not d.get("grade")]
+    if not pending:
+        return docs, [], False, 0
+    batch = [docs[i] for i in pending]
+    grades = grade_documents(state["query"], batch, get_llm())
+    docs = [dict(d) for d in docs]  # type: ignore[misc]
+    records = []
+    for i, result in zip(pending, grades or [(GRADE_UNGRADED, "grader unavailable")] * len(pending)):
+        docs[i]["grade"], docs[i]["grade_reason"] = result
+        records.append({"chunk_id": docs[i]["chunk_id"], "grade": result[0], "reasoning": result[1]})
+    return docs, records, grades is None, 1
+
 
 def grader_node(state: CRAGState) -> dict:
-    """
-    LangGraph node: grade retrieved documents for relevance.
-    """
-    query     = state["query"]
-    all_documents = state.get("documents", [])
-
-    logger.info(f"[GRADER] Evaluating documents for query: '{query[:60]}'")
-
-    if not all_documents:
-        logger.warning("[GRADER] No documents in state — marking as irrelevant")
-        return {
-            "documents"          : [],
-            "document_grades"    : [],
-            "relevant_documents" : state.get("relevant_documents", []),
-            "grade"              : GRADE_IRRELEVANT,
-        }
-
-    llm = get_llm()
-
-    updated_documents = []
-    document_grades = []
-    new_relevant_documents = []
-    
-    for doc in all_documents:
-        # Skip grading if already graded in a previous retry
-        if doc.get("grade"):
-            updated_documents.append(doc)
-            continue
-            
-        # Grade new documents
-        grade_result = grade_document(query, doc, llm)
-        document_grades.append(grade_result)
-        
-        graded_doc = dict(doc)
-        graded_doc["grade"] = grade_result["grade"]
-        updated_documents.append(graded_doc)
-        
-        if grade_result["grade"] in [GRADE_RELEVANT, GRADE_AMBIGUOUS]:
-            new_relevant_documents.append(graded_doc)
-
-    # If no new documents were graded, default to IRRELEVANT to trigger fallback
-    overall_grade = decide_overall_grade(document_grades) if document_grades else GRADE_IRRELEVANT
-
+    started = time.perf_counter()
+    docs, records, failed, calls = grade_pending(state, list(state.get("documents", [])))
+    local = [d for d in docs if not is_web(d)]
+    warnings = list(state.get("warnings", []))
+    if failed and GRADER_FAILED not in warnings:
+        warnings.append(GRADER_FAILED)
+    grade = overall_grade([d["grade"] for d in local if d["grade"] != GRADE_UNGRADED])
+    if failed and any(d["grade"] == GRADE_UNGRADED for d in local):
+        grade = GRADE_AMBIGUOUS
+    logger.info("[GRADER] %d graded, overall=%s%s", len(records), grade, " (grader failed)" if failed else "")
     return {
-        "documents"          : updated_documents,
-        "document_grades"    : document_grades,
-        "relevant_documents" : state.get("relevant_documents", []) + new_relevant_documents, 
-        "grade"              : overall_grade,
+        "documents": docs,
+        "relevant_documents": [d for d in local if d["grade"] == GRADE_RELEVANT],
+        "document_grades": records,
+        "grade": grade,
+        "grader_failed": state.get("grader_failed", False) or failed,
+        "warnings": warnings,
+        "llm_calls": state.get("llm_calls", 0) + calls,
+        "trace": trace_entry(
+            state,
+            "grader",
+            started,
+            f"overall={grade}; " + ", ".join(f"{r['grade']}" for r in records) if records else f"overall={grade}",
+        ),
     }
-
-
-# ── Test ──────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    test_state: CRAGState = {
-        "query": "How does corrective RAG handle irrelevant documents?",
-        "rewritten_query": "",
-        "documents": [
-            {
-                "chunk_id"  : "2401.15884_chunk_0",
-                "arxiv_id"  : "2401.15884",
-                "text"      : "Corrective Retrieval Augmented Generation (CRAG) proposes a lightweight retrieval evaluator to assess the overall quality of retrieved documents for a query. When documents are deemed incorrect or ambiguous, the system triggers web searches as a corrective action to supplement the retrieved documents.",
-                "score"     : 0.91,
-                "title"     : "CRAG",
-                "authors"   : ["Author"],
-                "published" : "2024",
-                "url"       : "url",
-                "abstract"  : "abstract",
-                "grade"     : "",
-                "source"    : "faiss",
-            },
-            {
-                "chunk_id"  : "BAD_CHUNK_1",
-                "arxiv_id"  : "0000.00000",
-                "text"      : "Apples are a great source of fiber and vitamin C.",
-                "score"     : 0.21,
-                "title"     : "Nutrition",
-                "authors"   : ["Author"],
-                "published" : "2024",
-                "url"       : "url",
-                "abstract"  : "abstract",
-                "grade"     : "",
-                "source"    : "faiss",
-            }
-        ],
-        "relevant_documents"     : [],
-        "grade"                  : "",
-        "document_grades"        : [],
-        "generation"             : "",
-        "hallucination"          : False,
-        "hallucination_reasoning": "",
-        "retry_count"            : 0,
-        "web_search_used"        : False,
-        "source"                 : "faiss",
-        "error"                  : "",
-    }
-
-    print("\nRunning grader node test...")
-    result = grader_node(test_state)
-
-    print(f"\nOverall grade: {result['grade'].upper()}")
-    print(f"\nOriginal Documents Count: {len(test_state['documents'])}")
-    print(f"Filtered Relevant Documents Count: {len(result['relevant_documents'])}")
-    
-    print(f"\nPer-document grades:")
-    for g in result["document_grades"]:
-        print(f"  {g['chunk_id']} - {g['grade'].upper()}")
-        print(f"  Reasoning: {g['reasoning']}")
-        print()

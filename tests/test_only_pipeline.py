@@ -14,6 +14,8 @@ from pathlib import Path
 import sys
 import pytest
 
+pytestmark = pytest.mark.llm  # needs GEMINI_API_KEY; run with `pytest -m llm`
+
 # Allow imports from project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
