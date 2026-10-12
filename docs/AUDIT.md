@@ -73,7 +73,7 @@ Corpus-wide comparison, parser at `f3f5bd2` vs final parser (all 480 PDFs):
 | Words in excluded sections (front matter, references, acknowledgements) | 863,894 | 756,816 |
 | Paragraphs labelled "abstract" (mostly mislabelled body text) | 3,276 | 1,883 |
 
-Some papers keep fewer body words than before. Spot checks of 10 of them attribute the difference to
+32 of 480 papers keep <97% of their previous body words. Spot checks of 10 attribute the difference to
 bibliographies that are now detected, garbled equation glyphs (Unicode private-use characters)
 that are now dropped, and run-in headings now split from their paragraph — no body text loss was
 found in the checked papers after the figure-label fix.
