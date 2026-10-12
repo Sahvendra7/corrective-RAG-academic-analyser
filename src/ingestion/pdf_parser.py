@@ -46,6 +46,10 @@ from src.utils.metadata_utils import load_metadata, save_metadata
 
 logger = logging.getLogger(__name__)
 
+# Bump whenever parsing output changes: cached parses in data/processed/structured
+# with another version are ignored and re-parsed, and the index manifest records it.
+PARSER_VERSION = 3
+
 MIN_TEXT_LENGTH = 500  # below this the PDF is probably scanned / image-only
 MAX_PDF_BYTES = 50 * 1024 * 1024  # refuse pathological inputs
 MAX_PAGES = 200
@@ -87,6 +91,7 @@ class ParsedDocument:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "parser_version": PARSER_VERSION,
             "doc_id": self.doc_id,
             "num_pages": self.num_pages,
             "headings": self.headings,
@@ -275,7 +280,7 @@ def _is_heading(block: _Block, body_size: float) -> bool:
     if _CAPTION.match(text) or _is_sentence_like(text) or not re.search(r"[A-Za-z]{3}", text):
         return False
     if looks_like_known_heading(text):
-        return True
+        return _plausible_heading_text(text, block.mean_size, body_size)
     all_bold = all(ln.bold for ln in block.lines)
     larger = block.mean_size >= body_size * 1.12
     numbered = numbering_depth(text) > 0 or bool(re.match(r"^[IVX]+\.\s+[A-Z]", text))
@@ -284,7 +289,17 @@ def _is_heading(block: _Block, body_size: float) -> bool:
     return numbered and all_bold
 
 
-def _split_leading_heading(block: _Block) -> tuple[str, _Block | None] | None:
+def _plausible_heading_text(text: str, size: float, body_size: float) -> bool:
+    """Headings are not set smaller than body text and start with a capital or a number.
+
+    Guards the keyword shortcuts below: a 7 pt figure label "references" must
+    not open the bibliography (seen in arXiv 1606.05112, which lost five pages).
+    """
+    first = text.lstrip()[:1]
+    return size >= body_size * 0.9 and (first.isupper() or first.isdigit())
+
+
+def _split_leading_heading(block: _Block, body_size: float) -> tuple[str, _Block | None] | None:
     """Detect a heading set on the first line(s) of a body block.
 
     Many templates put the heading in the same text block as the paragraph that
@@ -299,7 +314,8 @@ def _split_leading_heading(block: _Block) -> tuple[str, _Block | None] | None:
         if len(block.lines) <= k:
             break
         candidate = " ".join(ln.text.strip() for ln in block.lines[:k])
-        if not looks_like_known_heading(candidate):
+        size = min(ln.size for ln in block.lines[:k])
+        if not looks_like_known_heading(candidate) or not _plausible_heading_text(candidate, size, body_size):
             continue
         rest = list(block.lines[k:])
         # IEEE drop cap: a single oversized capital ("R") followed by "ECENT years ...".
@@ -392,7 +408,7 @@ def parse_pdf(pdf_path: Path, doc_id: str | None = None) -> ParsedDocument:
 
         # Heading run into the paragraph that follows it.
         if len(block.lines) > 1 and not _is_heading(block, body_size):
-            split = _split_leading_heading(block)
+            split = _split_leading_heading(block, body_size)
             if split is not None:
                 lead, rest = split
                 add_heading(f"{pending_number} {lead}".strip() if pending_number else lead, block.page)
@@ -510,8 +526,14 @@ def load_structured(doc_id: str) -> ParsedDocument | None:
     path = structured_path(doc_id)
     if not path.exists():
         return None
-    with open(path, encoding="utf-8") as fh:
-        return ParsedDocument.from_dict(json.load(fh))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if data.get("parser_version") != PARSER_VERSION:
+        return None  # parsed by an older parser: re-parse
+    return ParsedDocument.from_dict(data)
 
 
 if __name__ == "__main__":

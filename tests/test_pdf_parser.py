@@ -179,3 +179,38 @@ def test_encrypted_pdf_raises(tmp_path):
 def test_missing_file_raises(tmp_path):
     with pytest.raises(PDFParseError, match="Not a file"):
         parse_pdf(tmp_path / "nope.pdf")
+
+
+def test_small_lowercase_figure_label_does_not_open_references(tmp_path):
+    items = [
+        TextItem("Abstract", 1, x=72, y=100, size=12, bold=True),
+        TextItem("\n".join([BODY] * 3), 1, x=72, y=120),
+        TextItem("1 Introduction", 1, x=72, y=200, size=12, bold=True),
+        # A figure label in 7 pt that happens to read "references" (arXiv 1606.05112).
+        TextItem("references\nelements of", 1, x=300, y=260, size=7),
+        TextItem("Body text after the figure continues the introduction.\n" + BODY, 1, x=72, y=320),
+        TextItem("References", 2, x=72, y=80, size=12, bold=True),
+        TextItem("[1] A. Author. A paper. arXiv preprint, 2024.", 2, x=72, y=110),
+    ]
+    doc = parse_pdf(make_pdf(tmp_path / "figlabel.pdf", items))
+    assert section_of(doc, "Body text after the figure") == "introduction"
+    assert section_of(doc, "A paper. arXiv") == "references"
+
+
+def test_structured_cache_is_versioned(tmp_path, monkeypatch, paper_pdf):
+    import json
+
+    import src.config as config
+    from src.ingestion import pdf_parser
+
+    monkeypatch.setattr(config, "STRUCTURED_DIR", tmp_path / "structured")
+    doc = parse_pdf(paper_pdf, doc_id="2401.00001")
+    path = pdf_parser.structured_path("2401.00001")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(doc.to_dict()))
+    assert pdf_parser.load_structured("2401.00001").paragraphs == doc.paragraphs
+    stale = dict(doc.to_dict(), parser_version=pdf_parser.PARSER_VERSION - 1)
+    path.write_text(json.dumps(stale))
+    assert pdf_parser.load_structured("2401.00001") is None  # forces a re-parse
+    path.write_text("{corrupt")
+    assert pdf_parser.load_structured("2401.00001") is None

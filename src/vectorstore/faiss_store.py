@@ -46,6 +46,7 @@ import numpy as np
 
 import src.config as config
 from src.ingestion.chunker import embedding_text, read_jsonl, write_jsonl
+from src.ingestion.pdf_parser import PARSER_VERSION
 from src.vectorstore.embeddings import Embedder, get_embedder
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ def build_index(
         "num_papers": len({c["arxiv_id"] for c in chunks}),
         "chunks_sha256": _sha256_lines(chunks),
         "contextual_headers": settings.contextual_headers,
+        "parser_version": PARSER_VERSION,
         "chunking": {
             "max_words": settings.chunk_max_words,
             "overlap_words": settings.chunk_overlap_words,

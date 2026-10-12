@@ -80,7 +80,9 @@ class Settings(BaseSettings):
     chunk_overlap_words: int = Field(30, ge=0)
     chunk_min_words: int = Field(25, ge=1)
     index_references: bool = False  # bibliography text is retrieval noise
-    contextual_headers: bool = True  # embed "Title | Section" together with the chunk
+    # Embed "Title | Section" together with the chunk. Off by default: on the
+    # retrieval benchmark it did not help (reports/retrieval_benchmark.md).
+    contextual_headers: bool = False
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     top_k: int = Field(5, ge=1, le=50)  # passages retrieved per attempt

@@ -133,7 +133,7 @@ All settings live in `src/config.py` and are read from the environment or `.env`
 | `CRAG_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | `hashing` = offline test embedder |
 | `CRAG_CHUNK_MAX_WORDS` / `_OVERLAP_WORDS` / `_MIN_WORDS` | 170 / 30 / 25 | chunk sizing (fits MiniLM's 256-token window) |
 | `CRAG_INDEX_REFERENCES` | false | index bibliography sections |
-| `CRAG_CONTEXTUAL_HEADERS` | true | embed "title \| section" with each chunk |
+| `CRAG_CONTEXTUAL_HEADERS` | false | embed "title \| section" with each chunk (did not help on the benchmark) |
 | `CRAG_TOP_K` | 5 | passages retrieved per round |
 | `CRAG_MAX_REWRITES` | 2 | query rewrites before falling back to the web (0–5) |
 | `CRAG_WEB_SEARCH_ENABLED` | true | global switch for Tavily |
