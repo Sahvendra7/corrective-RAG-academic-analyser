@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 # Bump whenever parsing output changes: cached parses in data/processed/structured
 # with another version are ignored and re-parsed, and the index manifest records it.
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 MIN_TEXT_LENGTH = 500  # below this the PDF is probably scanned / image-only
 MAX_PDF_BYTES = 50 * 1024 * 1024  # refuse pathological inputs
@@ -290,13 +290,15 @@ def _is_heading(block: _Block, body_size: float) -> bool:
 
 
 def _plausible_heading_text(text: str, size: float, body_size: float) -> bool:
-    """Headings are not set smaller than body text and start with a capital or a number.
+    """Headings start with a capital or a number and are not set much smaller than body text.
 
     Guards the keyword shortcuts below: a 7 pt figure label "references" must
     not open the bibliography (seen in arXiv 1606.05112, which lost five pages).
+    The size floor is loose because small-caps headings ("INTRODUCTION" at 8 pt
+    in a 10 pt IEEE body) are legitimately smaller than body text.
     """
     first = text.lstrip()[:1]
-    return size >= body_size * 0.9 and (first.isupper() or first.isdigit())
+    return size >= body_size * 0.75 and (first.isupper() or first.isdigit())
 
 
 def _split_leading_heading(block: _Block, body_size: float) -> tuple[str, _Block | None] | None:
